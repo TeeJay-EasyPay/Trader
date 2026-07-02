@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "AI Trader",
+    "slug": "ai-trader-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.local.aitrader"
+    }
+  }
+}

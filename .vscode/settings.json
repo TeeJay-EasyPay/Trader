@@ -1,0 +1,12 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": ["${workspaceFolder}\\src"],
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "terminal.integrated.env.windows": {
+    "PYTHONPATH": "${workspaceFolder}\\src",
+    "AI_TRADER_DB_PATH": "${workspaceFolder}\\data\\audit.sqlite3",
+    "AI_TRADER_OUTPUT_DIR": "${workspaceFolder}\\data",
+    "AI_TRADER_TRADING_LOG_PATH": "${workspaceFolder}\\governance\\TRADING_LOG.md"
+  }
+}

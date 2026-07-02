@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+data/*.sqlite3
+data/proposals.json
+data/founder_briefing_*.md
+.env
+mobile/node_modules/

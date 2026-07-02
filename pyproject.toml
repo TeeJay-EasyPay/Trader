@@ -1,0 +1,16 @@
+[project]
+name = "ai-trading-assistant"
+version = "0.1.0"
+description = "Personal AI-powered Alpaca paper trading assistant"
+requires-python = ">=3.11"
+dependencies = ["tzdata>=2026.2"]
+
+[project.scripts]
+ai-trader = "ai_trader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,2 @@
+[console_scripts]
+ai-trader = ai_trader.cli:main

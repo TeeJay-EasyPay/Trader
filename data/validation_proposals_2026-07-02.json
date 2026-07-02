@@ -1,0 +1,20 @@
+[
+  {
+    "ai_guardrail_failures": [],
+    "ai_guardrails_passed": true,
+    "confidence_score": 0.87,
+    "created_at": "2026-07-02T13:37:53.035466+00:00",
+    "entry_price": 298.96,
+    "market_sentiment_summary": "Mixed sentiment with concerns on inflation and supply bottlenecks, but company is proactive with new product launches.",
+    "news_summary": "Apple is facing some inflation pressure due to AI chip shortages linked to aggressive price hikes. However, it is launching 5 new iPhone models to gain market share amid memory supply crunch.",
+    "plain_english_reasoning": "Despite inflation pressures from AI chip shortages, Apple\u2019s proactive approach to launch multiple new iPhone models and stable price action suggests a conservative buy opportunity. Risk is limited to 1%, with a clear stop loss below entry and take profit set for a potential positive move above current price.",
+    "position_size": 333.0,
+    "proposal_id": "581de766-62ff-4d16-9e7e-6b27407c29b0",
+    "risk_percentage": 0.01,
+    "side": "buy",
+    "stop_loss": 296.96,
+    "symbol": "AAPL",
+    "take_profit": 305.96,
+    "technical_summary": "Price is stable near 299 with low volatility; a conservative buy setup with stop loss about 2 points below entry and take profit about 7 points above entry to ensure a favorable risk-reward ratio."
+  }
+]
