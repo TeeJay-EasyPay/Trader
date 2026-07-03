@@ -330,3 +330,29 @@
 - Kept the trading engine, execution engine, guardrails, mobile app structure, and SQLite storage unchanged.
 - Verified Python tests: 21/21 passing.
 - Verified Expo Doctor: 17/17 passing.
+
+## 2026-07-03 Sprint 4 Investment Orchestrator
+
+- Implemented `AutoTradeConfig` and added Sprint 4 environment variables.
+- Added broker adapter interface in `src/ai_trader/broker_adapters.py`.
+- Wrapped existing Alpaca paper integration as `AlpacaBrokerAdapter`.
+- Added placeholder `InteractiveBrokersAdapter`, `SaxoAdapter`, and `KrakenAdapter` with not-configured responses only.
+- Implemented `InvestmentOrchestrator` in `src/ai_trader/orchestrator.py`.
+- Added append-only SQLite tables:
+  - `ORCHESTRATOR_DECISIONS`
+  - `AUTO_TRADE_EVENTS`
+  - `DAILY_BRIEFS`
+- Routed API auto-execution through the Investment Orchestrator.
+- Kept manual approve-and-execute path on the existing Execution Engine.
+- Added `AUTO_PAPER_TRADING=false` default behavior so recommendations require manual approval unless explicitly enabled.
+- Added morning and evening brief generation with Markdown output and SQLite persistence.
+- Added `ResearchScheduler` and `research-once` CLI command for safe local or Render scheduled research.
+- Wired the Render Docker web process to start hourly background research when `RESEARCH_SCHEDULER_ENABLED=true`.
+- Updated `render.yaml` with Sprint 4 auto-trade and scheduler environment variables while keeping `AUTO_PAPER_TRADING=false`.
+- Updated `cloud.env.example` and recreated `.env.example` with Sprint 4 variables.
+- Updated only the three existing mobile screens:
+  - Trading Command Centre
+  - AI Recommendations
+  - Market Intelligence
+- Added tests for orchestrator routing, Alpaca adapter compatibility, market closed rejection, unavailable asset rejection, confidence rejection, missing stop loss rejection, max stop-loss rejection, auto mode enabled/disabled, morning brief generation, evening brief generation, and scheduler cycle execution.
+- Verified Python tests: 33/33 passing.

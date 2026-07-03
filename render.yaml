@@ -24,6 +24,24 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
+      - key: AUTO_PAPER_TRADING
+        value: "false"
+      - key: AUTO_TRADE_MIN_CONFIDENCE
+        value: "0.85"
+      - key: AUTO_TRADE_MIN_PHILOSOPHY_FIT
+        value: "0.85"
+      - key: MAX_AUTO_TRADE_AMOUNT
+        value: "25"
+      - key: DEFAULT_STOP_LOSS_PCT
+        value: "0.03"
+      - key: MAX_STOP_LOSS_PCT
+        value: "0.05"
+      - key: RESEARCH_SCHEDULER_ENABLED
+        value: "true"
+      - key: RESEARCH_SCHEDULER_INTERVAL_MINUTES
+        value: "60"
+      - key: RESEARCH_SCHEDULER_LIMIT
+        value: "30"
       - key: PAPER_TRADING_ONLY
         value: "true"
       - key: MIN_CONFIDENCE_SCORE

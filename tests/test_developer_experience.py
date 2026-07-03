@@ -18,6 +18,7 @@ from ai_trader.config import Settings
 from ai_trader.db_browser import ReadOnlyDatabaseBrowser
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
+from ai_trader.models import AutoTradeConfig
 
 
 def settings_for(tmp: str) -> Settings:
@@ -284,6 +285,7 @@ class DeveloperExperienceTests(unittest.TestCase):
                 output_dir=base.output_dir,
                 trading_log_path=base.trading_log_path,
                 guardrails=base.guardrails,
+                auto_trade=AutoTradeConfig(enabled=True),
             )
             audit = AuditDatabase(settings.db_path, settings.trading_log_path)
             proposal = TradeProposal(

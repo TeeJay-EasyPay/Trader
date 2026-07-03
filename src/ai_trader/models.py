@@ -21,6 +21,16 @@ class GuardrailConfig:
 
 
 @dataclass(frozen=True)
+class AutoTradeConfig:
+    enabled: bool = False
+    min_confidence: float = 0.85
+    min_philosophy_fit: float = 0.85
+    max_trade_amount: float = 25.0
+    default_stop_loss_pct: float = 0.03
+    max_stop_loss_pct: float = 0.05
+
+
+@dataclass(frozen=True)
 class Position:
     symbol: str
     qty: float
@@ -55,6 +65,9 @@ class TradeProposal:
     created_at: str = field(default_factory=utc_now_iso)
     ai_guardrails_passed: bool = False
     ai_guardrail_failures: list[str] = field(default_factory=list)
+    asset_type: str = "stock"
+    exchange: str = "NYSE"
+    philosophy_fit: float = 0.0
 
     def normalized(self) -> "TradeProposal":
         return TradeProposal(
@@ -74,6 +87,9 @@ class TradeProposal:
             plain_english_reasoning=self.plain_english_reasoning.strip(),
             ai_guardrails_passed=bool(self.ai_guardrails_passed),
             ai_guardrail_failures=list(self.ai_guardrail_failures),
+            asset_type=self.asset_type.lower().strip() or "stock",
+            exchange=self.exchange.upper().strip() or "NYSE",
+            philosophy_fit=float(self.philosophy_fit or 0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,3 +111,38 @@ class ValidationResult:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass(frozen=True)
+class OrderRequest:
+    symbol: str
+    side: str
+    quantity: float
+    asset_type: str
+    exchange: str
+    stop_loss: float
+    take_profit: float
+    notional_amount: float | None = None
+    client_order_id: str | None = None
+
+
+@dataclass(frozen=True)
+class OrchestratorDecision:
+    recommendation_id: str
+    symbol: str
+    asset_type: str
+    exchange: str
+    requested_action: str
+    confidence_score: float
+    philosophy_fit: float
+    selected_broker: str | None
+    market_open: bool
+    asset_available: bool
+    guardrails_passed: bool
+    decision: str
+    rejection_reason: str | None = None
+    order_id: str | None = None
+    notes: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

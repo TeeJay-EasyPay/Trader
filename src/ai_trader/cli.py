@@ -11,11 +11,12 @@ from .ai import OpenAIProposalAnalyzer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient, MockAlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
-from .briefing import generate_daily_briefing
+from .briefing import generate_daily_briefing, generate_session_brief
 from .config import Settings, load_settings
 from .execution import ExecutionEngine
 from .intelligence import InvestmentIntelligenceDatabase
 from .proposals import load_proposals, save_proposals
+from .scheduler import ResearchScheduler
 
 
 DEMO_MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -44,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
     briefing = sub.add_parser("briefing")
     briefing.add_argument("--date", default=date.today().isoformat())
 
+    morning_brief = sub.add_parser("morning-brief")
+    morning_brief.add_argument("--date", default=date.today().isoformat())
+
+    evening_brief = sub.add_parser("evening-brief")
+    evening_brief.add_argument("--date", default=date.today().isoformat())
+
     intelligence_init = sub.add_parser("intelligence-init")
     intelligence_init.add_argument("--report", action="store_true")
 
@@ -60,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     serve_api = sub.add_parser("serve-api")
     serve_api.add_argument("--host", default=None)
     serve_api.add_argument("--port", default=None, type=int)
+
+    research_once = sub.add_parser("research-once")
+    research_once.add_argument("--limit", default=30, type=int)
 
     args = parser.parse_args(argv)
     settings = load_settings()
@@ -90,6 +100,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "briefing":
         report = generate_daily_briefing(audit, date.fromisoformat(args.date), settings.output_dir)
+        print(report)
+        return 0
+
+    if args.command == "morning-brief":
+        report = generate_session_brief(
+            db_path=settings.db_path,
+            output_dir=settings.output_dir,
+            brief_type="morning",
+            briefing_date=date.fromisoformat(args.date),
+        )
+        print(report)
+        return 0
+
+    if args.command == "evening-brief":
+        report = generate_session_brief(
+            db_path=settings.db_path,
+            output_dir=settings.output_dir,
+            brief_type="evening",
+            briefing_date=date.fromisoformat(args.date),
+        )
         print(report)
         return 0
 
@@ -135,6 +165,16 @@ def main(argv: list[str] | None = None) -> int:
         host = args.host or os.getenv("AI_TRADER_API_HOST", "127.0.0.1")
         port = args.port or int(os.getenv("PORT", os.getenv("AI_TRADER_API_PORT", "8765")))
         run_server(host, port, api_token=os.getenv("AI_TRADER_API_TOKEN"))
+        return 0
+
+    if args.command == "research-once":
+        from .api import LocalApiService
+
+        service = LocalApiService(settings)
+        service.intelligence.seed_initial_data()
+        service.benchmark.seed_initial_data()
+        result = ResearchScheduler(service).run_once(limit=args.limit)
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return 0
 
     return 1
@@ -189,6 +229,10 @@ def _safe_config(settings: Settings) -> str:
         "output_dir": str(settings.output_dir),
         "trading_log_path": str(settings.trading_log_path),
         "guardrails": settings.guardrails.__dict__,
+        "auto_trade": settings.auto_trade.__dict__,
+        "research_scheduler_enabled": settings.research_scheduler_enabled,
+        "research_scheduler_interval_minutes": settings.research_scheduler_interval_minutes,
+        "research_scheduler_limit": settings.research_scheduler_limit,
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 

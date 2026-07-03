@@ -2,13 +2,13 @@
 
 Date: 2026-07-02
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented locally
 
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.
 - Required dependency installed: `tzdata`.
-- Unit tests pass: 14/14.
+- Unit tests pass: 33/33.
 - `.env` loading works.
 - Alpaca Paper Trading connection works.
 - Alpaca account retrieval works.
@@ -46,6 +46,15 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Mobile controls simplified to Start Trading and Stop Trading.
 - Market Intelligence now shows theme definitions, drivers, and risks.
 - Expo OTA update published to the `preview` branch.
+- Investment Orchestrator layer added between AI recommendations and broker execution.
+- Standard broker adapter interface added.
+- Alpaca integration wrapped as `AlpacaBrokerAdapter`.
+- Placeholder IBKR, Saxo, and Kraken adapters added with not-configured responses only.
+- Auto Paper Trading mode is controlled by `AUTO_PAPER_TRADING` and defaults to false.
+- Orchestrator decisions, auto trade events, and morning/evening briefs are appended to SQLite.
+- Research scheduler helper added for local or Render scheduled research runs.
+- Render blueprint configured to run the hourly background research scheduler in Docker with auto paper trading disabled by default.
+- Existing three mobile screens updated with orchestrator, auto-paper, broker, availability, market, and brief fields.
 
 ## Validation Result
 
@@ -89,7 +98,29 @@ Sprint 3 keeps Version 1.0 trading frozen and continues using local SQLite.
 - Mobile screens: Trading Command Centre, AI Recommendations, Market Intelligence.
 - Missing or unavailable data is surfaced as `Not available` rather than fabricated values.
 - `approve-and-execute` reconstructs stored proposals and sends them through the existing Execution Engine guardrails.
-- Current test suite: 14/14 passing inside `.venv`.
+- Current test suite: 33/33 passing inside `.venv`.
+
+## Sprint 4 Investment Orchestrator
+
+Sprint 4 keeps Paper Trading only and does not add mobile screens.
+
+- New backend modules:
+  - `src/ai_trader/broker_adapters.py`
+  - `src/ai_trader/orchestrator.py`
+  - `src/ai_trader/scheduler.py`
+- New SQLite tables:
+  - `ORCHESTRATOR_DECISIONS`
+  - `AUTO_TRADE_EVENTS`
+  - `DAILY_BRIEFS`
+- New CLI commands:
+  - `morning-brief`
+  - `evening-brief`
+  - `research-once`
+- Updated mobile screens:
+  - Trading Command Centre shows Auto Paper Trading status, selected brokers, next research run, last orchestrator decision, morning/evening brief summaries, cloud API health, and Paper mode.
+  - AI Recommendations show asset availability, suggested broker, exchange, market status, auto eligibility, rejection reason, confidence, philosophy fit, stop loss, and take profit.
+  - Market Intelligence shows 24/7 research status, market-open summary, benchmark observations, theme updates, and recent learning.
+- Tests: 33/33 passing inside `.venv`.
 
 ## Sprint 3.1 Developer Experience
 

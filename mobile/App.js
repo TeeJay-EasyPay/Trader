@@ -145,7 +145,7 @@ export default function App() {
         />
       );
     }
-    return <MarketIntelligence benchmark={benchmark} themes={themes} companies={companies} />;
+    return <MarketIntelligence benchmark={benchmark} themes={themes} companies={companies} status={status} />;
   }, [amounts, benchmark, brief, companies, portfolio, recommendations, screen, status, themes]);
 
   return (
@@ -200,6 +200,11 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
         <Metric label="Active Recommendations" value={recommendationSummary.active} />
         <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
         <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
+        <Metric label="Auto Paper Trading Status" value={status?.auto_paper_trading_status} />
+        <Metric label="Selected Active Brokers" value={formatListInline(status?.selected_active_brokers)} />
+        <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
+        <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
+        <Metric label="Cloud API Health" value={status?.cloud_api_health} />
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
@@ -229,6 +234,12 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
             </Text>
           ))
         )}
+      </Section>
+      <Section title="Morning Brief">
+        <Text style={styles.bodyText}>{notAvailable(status?.morning_brief?.summary)}</Text>
+      </Section>
+      <Section title="Evening Brief">
+        <Text style={styles.bodyText}>{notAvailable(status?.evening_brief?.summary)}</Text>
       </Section>
       <Section title="Founder Brief">
         <Text style={styles.bodyText}>{notAvailable(brief?.report_markdown)}</Text>
@@ -289,6 +300,12 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <TextBlock label="Freshness Note" value={enriched.freshness_note} />
       <Metric label="Sector" value={item.sector} />
       <Metric label="Country" value={item.country} />
+      <Metric label="Asset Availability" value={yesNo(item.asset_available)} />
+      <Metric label="Suggested Broker" value={item.suggested_broker} />
+      <Metric label="Exchange" value={item.exchange} />
+      <Metric label="Market Open" value={yesNo(item.market_open)} />
+      <Metric label="Auto Eligible" value={yesNo(enriched.auto_trade_eligible)} />
+      <TextBlock label="Rejection Reason" value={item.orchestrator_rejection_reason || enriched.auto_trade_reason} />
       <Metric label="Confidence" value={formatPercent(item.confidence)} />
       <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
       <TextBlock label="Investment Thesis" value={item.investment_thesis} />
@@ -320,10 +337,16 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
   );
 }
 
-function MarketIntelligence({ benchmark, themes, companies }) {
+function MarketIntelligence({ benchmark, themes, companies, status }) {
   const items = benchmark?.items || [];
   return (
     <View>
+      <Section title="24/7 Research Status">
+        <Metric label="Research Status" value={status?.research_status} />
+        <Metric label="Markets Currently Open" value={marketsOpenText(status)} />
+        <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
+        <TextBlock label="What AI Learned Since Last Brief" value={latestLearningText(status, benchmark)} />
+      </Section>
       <Section title="Daily Benchmark Intelligence Brief">
         <Text style={styles.bodyText}>{notAvailable(benchmark?.summary)}</Text>
       </Section>
@@ -620,6 +643,37 @@ function formatList(items) {
     return null;
   }
   return items.map((item) => `- ${item}`).join('\n');
+}
+
+function formatListInline(items) {
+  if (!items || !items.length) {
+    return null;
+  }
+  return items.join(', ');
+}
+
+function describeDecision(decision) {
+  if (!decision) {
+    return null;
+  }
+  return `${notAvailable(decision.symbol)} ${notAvailable(decision.decision)}${decision.rejection_reason ? `: ${decision.rejection_reason}` : ''}`;
+}
+
+function marketsOpenText(status) {
+  const decision = status?.last_orchestrator_decision;
+  if (!decision) {
+    return 'Not available';
+  }
+  return decision.market_open ? `${decision.exchange || 'Market'} open` : `${decision.exchange || 'Market'} closed`;
+}
+
+function latestLearningText(status, benchmark) {
+  const observed = benchmark?.items?.[0]?.ai_interpretation;
+  const decision = status?.last_orchestrator_decision;
+  if (observed && decision) {
+    return `${observed}\nLast orchestrator decision: ${describeDecision(decision)}`;
+  }
+  return observed || describeDecision(decision);
 }
 
 function companiesForTheme(theme, companies) {

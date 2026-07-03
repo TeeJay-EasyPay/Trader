@@ -17,10 +17,13 @@ from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
 from .briefing import generate_daily_briefing
+from .broker_adapters import AlpacaBrokerAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
 from .config import Settings, load_settings
 from .execution import ExecutionEngine
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import TradeProposal, utc_now_iso
+from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
+from .scheduler import ResearchScheduler
 
 
 CONTROL_SCHEMA = """
@@ -64,6 +67,7 @@ class LocalApiService:
         self.audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
         self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
+        self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
         self._initialize_control()
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
@@ -141,18 +145,29 @@ class LocalApiService:
         )
         recommendation_rows = self.recommendations(limit=50)
         active_recommendations = [row for row in recommendation_rows if row["freshness_status"] != "Expired"]
+        latest_decision = self.orchestrator.latest_decision()
+        latest_morning = self._latest_daily_brief("morning")
+        latest_evening = self._latest_daily_brief("evening")
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
             "engine_health": "Available" if self.settings.db_path.exists() else "Database not initialized",
             "last_analysis_time": last_analysis,
+            "auto_paper_trading_status": "Enabled" if self.settings.auto_trade.enabled else "Disabled",
+            "selected_active_brokers": self._active_broker_names(),
+            "next_scheduled_research_run": next_research_run(),
+            "last_orchestrator_decision": latest_decision,
+            "morning_brief": latest_morning,
+            "evening_brief": latest_evening,
+            "cloud_api_health": "Available",
+            "research_status": "24/7 research ready",
             "latest_activity": [dict(row) for row in last_activity],
             "recent_transactions": [dict(row) for row in recent_transactions],
             "recommendation_summary": {
                 "active": len(active_recommendations),
                 "expired": len(recommendation_rows) - len(active_recommendations),
-                "auto_trade_threshold": AUTO_TRADE_CONFIDENCE_THRESHOLD,
-                "auto_trade_mode": "Paper only" if self.settings.guardrails.paper_trading_only else "Disabled outside paper mode",
+                "auto_trade_threshold": self.settings.auto_trade.min_confidence,
+                "auto_trade_mode": "Auto Paper Trading" if self.settings.auto_trade.enabled else "Manual approval required",
             },
             "updated_at": control["updated_at"],
         }
@@ -231,11 +246,15 @@ class LocalApiService:
             guardrail_failures = _validation_failures(row["validation_result"])
             guardrail_checks = _guardrail_checks(row["validation_result"], row["payload_json"])
             confidence = float(row["ai_confidence"] or 0)
+            philosophy_fit = _float_or_none(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"])
+            decision = self._latest_orchestrator_decision(row["proposal_id"])
             auto_trade_eligible = (
                 guardrails_passed
                 and freshness["status"] != "Expired"
-                and confidence >= AUTO_TRADE_CONFIDENCE_THRESHOLD
+                and confidence >= self.settings.auto_trade.min_confidence
+                and philosophy_fit >= self.settings.auto_trade.min_philosophy_fit
                 and not already_executed
+                and self.settings.auto_trade.enabled
             )
             recommendations.append(
                 {
@@ -245,7 +264,14 @@ class LocalApiService:
                     "sector": row["sector"],
                     "country": row["country"],
                     "confidence": row["ai_confidence"],
-                    "investment_philosophy_fit": row["current_investment_philosophy_fit"],
+                    "asset_available": None if decision is None else bool(decision["asset_available"]),
+                    "suggested_broker": None if decision is None else decision["selected_broker"],
+                    "exchange": _proposal_exchange(row["payload_json"]),
+                    "asset_type": _proposal_asset_type(row["payload_json"]),
+                    "market_open": None if decision is None else bool(decision["market_open"]),
+                    "orchestrator_decision": None if decision is None else decision["decision"],
+                    "orchestrator_rejection_reason": None if decision is None else decision["rejection_reason"],
+                    "investment_philosophy_fit": philosophy_fit,
                     "investment_thesis": row["investment_thesis"],
                     "reason_for_recommendation": row["ai_reasoning"],
                     "key_risks": row["reasons_for_caution"] or row["validation_result"],
@@ -259,6 +285,10 @@ class LocalApiService:
                     "auto_trade_eligible": auto_trade_eligible,
                     "auto_trade_reason": _auto_trade_reason(
                         confidence=confidence,
+                        philosophy_fit=philosophy_fit,
+                        auto_enabled=self.settings.auto_trade.enabled,
+                        min_confidence=self.settings.auto_trade.min_confidence,
+                        min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
                         freshness_status=freshness["status"],
                         guardrails_passed=guardrails_passed,
                         already_executed=already_executed,
@@ -458,6 +488,8 @@ class LocalApiService:
         control = self._control_state()
         if control["trading_state"] != "running":
             return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
+        if not self.settings.auto_trade.enabled:
+            return {"status": "manual_required", "message": "AUTO_PAPER_TRADING is false. Recommendations require manual approval.", "eligible_count": 0, "skipped": []}
         if not self.settings.guardrails.paper_trading_only:
             return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
         if not self.settings.has_alpaca_credentials:
@@ -465,15 +497,15 @@ class LocalApiService:
 
         rows = self._rows(
             """
-            SELECT proposal_id, payload_json, created_at, ai_confidence,
+            SELECT ta.proposal_id, ta.payload_json, ta.created_at, ta.ai_confidence,
                    execution_guardrails_passed, validation_result, symbol
-            FROM trade_audit
-            WHERE event_type = 'agent_proposal'
-            ORDER BY ai_confidence DESC, created_at DESC, id DESC
+            FROM trade_audit ta
+            WHERE ta.event_type = 'agent_proposal'
+            ORDER BY ta.ai_confidence DESC, ta.created_at DESC, ta.id DESC
             LIMIT 50
             """
         )
-        proposals: list[TradeProposal] = []
+        decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
         skipped: list[dict[str, Any]] = []
         for row in rows:
@@ -483,7 +515,7 @@ class LocalApiService:
             seen.add(proposal_id)
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
             confidence = float(row["ai_confidence"] or 0)
-            if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
+            if confidence < self.settings.auto_trade.min_confidence:
                 skipped.append({
                     "proposal_id": proposal_id,
                     "symbol": row["symbol"],
@@ -521,9 +553,26 @@ class LocalApiService:
                 })
                 continue
             payload = json.loads(row["payload_json"])
-            proposals.append(TradeProposal.from_dict(payload["proposal"]))
+            proposal = TradeProposal.from_dict(payload["proposal"])
+            broker = self._broker()
+            context = OrchestratorContext(
+                account=broker.account_context(),
+                auto_trade=self.settings.auto_trade,
+                guardrails=self.settings.guardrails,
+            )
+            decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
+            if decision.decision == "approved":
+                decisions.append(decision.to_dict())
+            else:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": decision.rejection_reason or decision.decision,
+                    "message": decision.rejection_reason or decision.notes or decision.decision,
+                })
 
-        if not proposals:
+        if not decisions:
             return {
                 "status": "skipped",
                 "message": "No eligible paper recommendations over 85%. See skipped reasons.",
@@ -532,16 +581,38 @@ class LocalApiService:
                 "skipped": skipped[:10],
             }
 
-        engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
-        results = engine.execute_proposals(proposals)
         return {
             "status": "submitted",
             "mode": "Paper",
-            "threshold": AUTO_TRADE_CONFIDENCE_THRESHOLD,
-            "eligible_count": len(proposals),
-            "result": results,
+            "threshold": self.settings.auto_trade.min_confidence,
+            "eligible_count": len(decisions),
+            "result": decisions,
             "skipped": skipped[:10],
         }
+
+    def _adapters(self):
+        adapters = []
+        if self.settings.has_alpaca_credentials:
+            adapters.append(AlpacaBrokerAdapter(self._broker()))
+        adapters.extend([InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter()])
+        return adapters
+
+    def _active_broker_names(self) -> list[str]:
+        return [name for name, adapter in self.orchestrator.adapters.items() if adapter.get_supported_assets()]
+
+    def _latest_orchestrator_decision(self, recommendation_id: str) -> dict[str, Any] | None:
+        row = self._row(
+            "SELECT * FROM ORCHESTRATOR_DECISIONS WHERE recommendation_id = ? ORDER BY decision_id DESC LIMIT 1",
+            (recommendation_id,),
+        )
+        return dict(row) if row else None
+
+    def _latest_daily_brief(self, brief_type: str) -> dict[str, Any] | None:
+        row = self._row(
+            "SELECT * FROM DAILY_BRIEFS WHERE brief_type = ? ORDER BY brief_id DESC LIMIT 1",
+            (brief_type,),
+        )
+        return dict(row) if row else None
 
     def _broker(self) -> AlpacaPaperClient:
         return AlpacaPaperClient(
@@ -696,6 +767,11 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
     service.benchmark.seed_initial_data()
     service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
     service.benchmark.write_initial_brief(service.settings.output_dir)
+    if service.settings.research_scheduler_enabled:
+        ResearchScheduler(
+            service,
+            interval_minutes=service.settings.research_scheduler_interval_minutes,
+        ).start_background(limit=service.settings.research_scheduler_limit)
     ApiHandler.service = service
     ApiHandler.api_token = api_token
     server = ThreadingHTTPServer((host, port), ApiHandler)
@@ -762,22 +838,57 @@ def _parse_datetime(value: str) -> datetime | None:
 def _auto_trade_reason(
     *,
     confidence: float,
+    philosophy_fit: float,
+    auto_enabled: bool,
+    min_confidence: float,
+    min_philosophy_fit: float,
     freshness_status: str,
     guardrails_passed: bool,
     already_executed: bool,
     guardrail_failures: list[str] | None = None,
 ) -> str:
+    if not auto_enabled:
+        return "AUTO_PAPER_TRADING is false; manual approval is required."
     if already_executed:
         return "Already executed."
     if freshness_status == "Expired":
         return "Expired. Run new analysis before execution."
-    if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
-        return "Confidence is below 85%."
+    if confidence < min_confidence:
+        return f"Confidence is below {int(min_confidence * 100)}%."
+    if philosophy_fit < min_philosophy_fit:
+        return f"Investment philosophy fit is below {int(min_philosophy_fit * 100)}%."
     if not guardrails_passed:
         if guardrail_failures:
             return f"Execution guardrails failed: {_format_guardrail_failures(guardrail_failures)}."
         return "Execution guardrails did not pass, so auto-trade is blocked."
     return "Eligible for paper auto-trade."
+
+
+def _proposal_payload(payload_json: Any) -> dict[str, Any]:
+    if not payload_json:
+        return {}
+    try:
+        data = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    proposal = data.get("proposal") if isinstance(data, dict) else None
+    return proposal if isinstance(proposal, dict) else {}
+
+
+def _proposal_exchange(payload_json: Any) -> str:
+    return str(_proposal_payload(payload_json).get("exchange") or "NYSE")
+
+
+def _proposal_asset_type(payload_json: Any) -> str:
+    return str(_proposal_payload(payload_json).get("asset_type") or "stock")
+
+
+def _proposal_philosophy_fit(payload_json: Any) -> float:
+    value = _proposal_payload(payload_json).get("philosophy_fit")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _validation_failures(validation_result: Any) -> list[str]:

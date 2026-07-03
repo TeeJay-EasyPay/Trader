@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .models import GuardrailConfig
+from .models import AutoTradeConfig, GuardrailConfig
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -50,6 +50,10 @@ class Settings:
     output_dir: Path
     trading_log_path: Path
     guardrails: GuardrailConfig
+    auto_trade: AutoTradeConfig = field(default_factory=AutoTradeConfig)
+    research_scheduler_enabled: bool = False
+    research_scheduler_interval_minutes: int = 60
+    research_scheduler_limit: int = 30
 
     @property
     def has_alpaca_credentials(self) -> bool:
@@ -76,4 +80,15 @@ def load_settings() -> Settings:
             paper_trading_only=_bool_env("PAPER_TRADING_ONLY", True),
             allow_short_selling=_bool_env("ALLOW_SHORT_SELLING", False),
         ),
+        auto_trade=AutoTradeConfig(
+            enabled=_bool_env("AUTO_PAPER_TRADING", False),
+            min_confidence=_float_env("AUTO_TRADE_MIN_CONFIDENCE", 0.85),
+            min_philosophy_fit=_float_env("AUTO_TRADE_MIN_PHILOSOPHY_FIT", 0.85),
+            max_trade_amount=_float_env("MAX_AUTO_TRADE_AMOUNT", 25.0),
+            default_stop_loss_pct=_float_env("DEFAULT_STOP_LOSS_PCT", 0.03),
+            max_stop_loss_pct=_float_env("MAX_STOP_LOSS_PCT", 0.05),
+        ),
+        research_scheduler_enabled=_bool_env("RESEARCH_SCHEDULER_ENABLED", False),
+        research_scheduler_interval_minutes=_int_env("RESEARCH_SCHEDULER_INTERVAL_MINUTES", 60),
+        research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
     )

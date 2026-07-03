@@ -212,6 +212,29 @@ POST /auto-execute-recommendations
 POST /approve-and-execute
 ```
 
+## Sprint 4: Investment Orchestrator
+
+Sprint 4 adds an Investment Orchestrator between AI recommendations and broker execution. The AI researches and recommends; the orchestrator decides whether a recommendation is executable.
+
+Core additions:
+
+- Broker adapter interface with `AlpacaBrokerAdapter`.
+- Placeholder `InteractiveBrokersAdapter`, `SaxoAdapter`, and `KrakenAdapter` that return not configured until credentials exist.
+- `ORCHESTRATOR_DECISIONS`, `AUTO_TRADE_EVENTS`, and `DAILY_BRIEFS` SQLite tables.
+- `AUTO_PAPER_TRADING=false` by default.
+- Auto paper trading requires confidence >= 85%, philosophy fit >= 85%, paper mode, stop loss, take profit, no short selling, market open, asset availability, and all guardrails.
+- Morning and evening brief generators write Markdown and append `DAILY_BRIEFS`.
+- `research-once` runs one safe 24/7 research cycle for local or hosted schedulers.
+- Render web service starts a safe hourly background research scheduler when `RESEARCH_SCHEDULER_ENABLED=true`.
+
+Render can schedule safe research by invoking the existing `POST /run-analysis` endpoint or by running:
+
+```powershell
+.\.venv\Scripts\python.exe -m ai_trader.cli research-once --limit 30
+```
+
+Required Sprint 4 environment variables are shown in `.env.example` and `cloud.env.example`.
+
 When `AI_TRADER_API_TOKEN` is set, the mobile app must send:
 
 ```text
