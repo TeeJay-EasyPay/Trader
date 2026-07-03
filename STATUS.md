@@ -173,11 +173,24 @@ Hosted APK build:
 - Build ID: `7e6b53a3-d492-4594-af36-4e56199878d4`.
 - Channel: `hosted-preview`.
 - APK: `https://expo.dev/artifacts/eas/s2G1DWe4aWyNiBCH7S1bJgXYmhoq8f8gSE3D6UQfe5U.apk`.
-- Backend URL baked into build/update: `https://ai-trader-api.onrender.com`.
+- Backend URL baked into original hosted build/update: `https://ai-trader-api.onrender.com`.
+- Active Render backend URL: `https://trader-no0f.onrender.com`.
 - Hosted OTA update group ID: `f9a4c794-8305-47d2-83a1-99fb5b777057`.
 - Hosted Android update ID: `019f2669-3a99-765d-99f1-d747aff4f9db`.
 - Hosted EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/f9a4c794-8305-47d2-83a1-99fb5b777057`.
-- Current hosted backend check: `https://ai-trader-api.onrender.com/healthz` is not reachable yet, so hosted data will not load until the backend service is deployed.
+- Current hosted backend check target: `https://trader-no0f.onrender.com/healthz`.
+- Render health check passed: `GET /healthz` returned 200.
+- Render status check passed: `GET /status` returned 200.
+- Render portfolio check passed: `GET /portfolio` returned Alpaca Paper account data.
+- Render themes check passed: `GET /intelligence/themes` returned SQLite theme data.
+- Render recommendations check passed, currently returning an empty list because cloud SQLite has no generated proposals yet.
+
+Hosted OTA update for active Render URL:
+
+- Branch: `hosted-preview`.
+- Update group ID: `bc319f3f-0bba-48fd-992a-30601f92c2d5`.
+- Android update ID: `019f27ac-1393-79d5-b822-fa82ee3cfe37`.
+- EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/bc319f3f-0bba-48fd-992a-30601f92c2d5`.
 
 ## Hosted Backend Path
 

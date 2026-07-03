@@ -19,7 +19,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_AI_TRADER_API_URL": "https://ai-trader-api.onrender.com"
+        "EXPO_PUBLIC_AI_TRADER_API_URL": "https://trader-no0f.onrender.com"
       }
     },
     "production": {

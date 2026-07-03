@@ -254,10 +254,16 @@
 
 - Separated `hosted-preview` from the laptop `preview` OTA channel.
 - Removed the placeholder public API token from the hosted mobile build profile.
-- Built hosted Android APK with backend URL `https://ai-trader-api.onrender.com`.
+- Built hosted Android APK with initial backend URL `https://ai-trader-api.onrender.com`.
 - Build ID: `7e6b53a3-d492-4594-af36-4e56199878d4`.
 - APK: `https://expo.dev/artifacts/eas/s2G1DWe4aWyNiBCH7S1bJgXYmhoq8f8gSE3D6UQfe5U.apk`.
 - Published hosted OTA update to branch `hosted-preview`.
 - Hosted OTA update group ID: `f9a4c794-8305-47d2-83a1-99fb5b777057`.
 - Hosted Android update ID: `019f2669-3a99-765d-99f1-d747aff4f9db`.
-- Confirmed `https://ai-trader-api.onrender.com/healthz` is not reachable yet, so the hosted APK will not load real data until the backend service is deployed.
+- User created Render service at `https://trader-no0f.onrender.com`.
+- Updated hosted mobile build config to use `https://trader-no0f.onrender.com`.
+- Verified Render `/healthz`, `/status`, `/portfolio`, `/recommendations`, and `/intelligence/themes`.
+- Published hosted OTA update to point the installed hosted app at `https://trader-no0f.onrender.com`.
+- Hosted OTA update group ID: `bc319f3f-0bba-48fd-992a-30601f92c2d5`.
+- Hosted Android update ID: `019f27ac-1393-79d5-b822-fa82ee3cfe37`.
+- Render recommendations currently return an empty list because the cloud SQLite database has no generated proposals yet.

@@ -217,7 +217,7 @@ Authorization: Bearer <token>
 Test a hosted API:
 
 ```powershell
-scripts/test_hosted_api.ps1 -BaseUrl https://ai-trader-api.onrender.com -ApiToken YOUR_TOKEN
+scripts/test_hosted_api.ps1 -BaseUrl https://trader-no0f.onrender.com -ApiToken YOUR_TOKEN
 ```
 
 Build a phone APK that points to the hosted backend:
