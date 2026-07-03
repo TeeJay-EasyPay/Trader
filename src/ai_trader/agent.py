@@ -45,6 +45,14 @@ class AITradingAgent:
         news = self.market_data.get_news(symbols, limit=5)
 
         for symbol in symbols:
+            if not _has_latest_bar(symbol, market):
+                self._no_trade_probe(
+                    symbol,
+                    market,
+                    news,
+                    reason="No latest market bar was returned. The symbol may be unsupported by the broker/data provider.",
+                )
+                continue
             if demo:
                 proposal = self._demo_proposal(symbol, market, news, account)
             elif self.analyzer is not None:
@@ -86,13 +94,13 @@ class AITradingAgent:
             plain_english_reasoning="Demo proposal for end-to-end paper trading validation only.",
         ).normalized()
 
-    def _no_trade_probe(self, symbol: str, market: dict, news: dict) -> TradeProposal | None:
+    def _no_trade_probe(self, symbol: str, market: dict, news: dict, reason: str | None = None) -> TradeProposal | None:
         self.audit.record_execution_event(
             proposal_id=f"no-trade-{symbol}",
             event_type="agent_no_trade",
             payload={
                 "symbol": symbol,
-                "reason": "No configured AI key or approved deterministic strategy produced a trade.",
+                "reason": reason or "No configured AI key or approved deterministic strategy produced a trade.",
                 "market": market,
                 "news_summary": _news_summary(news),
             },
@@ -107,6 +115,11 @@ def _latest_close(symbol: str, market: dict) -> float | None:
         return None
     value = row.get("c") or row.get("close")
     return None if value is None else float(value)
+
+
+def _has_latest_bar(symbol: str, market: dict) -> bool:
+    bars = market.get("bars", {})
+    return bool(bars.get(symbol) or bars.get(symbol.upper()))
 
 
 def _news_summary(news: dict) -> str:

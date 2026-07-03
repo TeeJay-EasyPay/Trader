@@ -75,11 +75,21 @@ class AlpacaPaperClient:
 
     def get_latest_bars(self, symbols: list[str]) -> dict[str, Any]:
         query = urlencode({"symbols": ",".join(symbols), "feed": "iex"})
-        return self._request("GET", f"/v2/stocks/bars/latest?{query}", data_api=True)
+        try:
+            return self._request("GET", f"/v2/stocks/bars/latest?{query}", data_api=True)
+        except AlpacaError as exc:
+            if "asset" in str(exc).lower() and "not found" in str(exc).lower():
+                return {"bars": {}, "unavailable_symbols": symbols, "error": str(exc)}
+            raise
 
     def get_news(self, symbols: list[str], limit: int = 5) -> dict[str, Any]:
         query = urlencode({"symbols": ",".join(symbols), "limit": limit})
-        return self._request("GET", f"/v1beta1/news?{query}", data_api=True)
+        try:
+            return self._request("GET", f"/v1beta1/news?{query}", data_api=True)
+        except AlpacaError as exc:
+            if "asset" in str(exc).lower() and "not found" in str(exc).lower():
+                return {"news": [], "unavailable_symbols": symbols, "error": str(exc)}
+            raise
 
     def place_bracket_order(
         self,
@@ -158,4 +168,3 @@ class MockAlpacaPaperClient:
 
     def get_news(self, symbols: list[str], limit: int = 5) -> dict[str, Any]:
         return {"news": [{"symbols": symbols, "headline": "Mock market news", "summary": "Demo-only news context."}]}
-

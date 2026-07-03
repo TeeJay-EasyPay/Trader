@@ -9,12 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.api import LocalApiService
 from ai_trader.api import ApiHandler
+from ai_trader.agent import AITradingAgent
+from ai_trader.alpaca import AlpacaCredentials, AlpacaError, AlpacaPaperClient
 from ai_trader.audit import AuditDatabase
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.config import Settings
 from ai_trader.db_browser import ReadOnlyDatabaseBrowser
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
-from ai_trader.models import GuardrailConfig, TradeProposal, ValidationResult
+from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 
 
 def settings_for(tmp: str) -> Settings:
@@ -310,6 +312,50 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(result["eligible_count"], 0)
             self.assertEqual(result["skipped"][0]["symbol"], "EDV")
             self.assertIn("Guardrails failed", result["skipped"][0]["message"])
+
+    def test_agent_records_no_trade_when_market_bar_missing(self):
+        class EmptyMarketData:
+            def get_latest_bars(self, symbols):
+                return {"bars": {}, "unavailable_symbols": symbols}
+
+            def get_news(self, symbols, limit=5):
+                return {"news": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            agent = AITradingAgent(
+                market_data=EmptyMarketData(),
+                audit=audit,
+                guardrails=settings.guardrails,
+            )
+
+            proposals = agent.propose_trades(
+                ["KGH"],
+                account=AccountContext(equity=100_000, daily_realized_pnl=0, open_positions=[]),
+            )
+
+            self.assertEqual(proposals, [])
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT event_type, payload_json FROM execution_events ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            self.assertEqual(row[0], "agent_no_trade")
+            self.assertIn("No latest market bar", row[1])
+
+    def test_alpaca_missing_asset_returns_empty_market_data(self):
+        class MissingAssetClient(AlpacaPaperClient):
+            def _request(self, method, path, *, payload=None, data_api=False):
+                raise AlpacaError('Alpaca API error 422: {"message":"asset \\"KGHN\\" not found"}')
+
+        client = MissingAssetClient(AlpacaCredentials(api_key="key", secret_key="secret"))
+
+        bars = client.get_latest_bars(["KGH"])
+        news = client.get_news(["KGH"])
+
+        self.assertEqual(bars["bars"], {})
+        self.assertEqual(news["news"], [])
+        self.assertEqual(bars["unavailable_symbols"], ["KGH"])
 
     def test_run_analysis_uses_watchlist_limit_before_credentials_check(self):
         with tempfile.TemporaryDirectory() as tmp:

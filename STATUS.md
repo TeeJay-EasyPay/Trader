@@ -230,6 +230,11 @@ Recommendation persistence follow-up:
 - `preview` OTA update group ID: `55d45b77-db90-4f57-b411-38d067ef6382`.
 - `hosted-preview` OTA update group ID: `93fa34c0-db77-4e8b-a198-6e85ac2e393f`.
 
+Unsupported broker symbol follow-up:
+
+- Run Analysis now treats Alpaca `asset not found` responses as unavailable market data instead of a full command failure.
+- The AI Trading Agent records unsupported/no-bar symbols as `agent_no_trade` events and continues scanning the remaining watchlist.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.
