@@ -142,6 +142,8 @@ Recommendation freshness:
 - Each recommendation shows when it was generated, when it expires, and whether it is Fresh, Stale, or Expired.
 - High-confidence trade ideas expire after 4 hours, medium-confidence ideas after 12 hours, and lower-confidence ideas after 24 hours.
 - Expired recommendations are blocked from manual execution until analysis is run again.
+- Saved recommendations remain visible in the Recommendations screen for historical reference after app restart.
+- Recommendation cards are ordered from highest confidence to lowest confidence.
 
 Auto execution:
 
@@ -155,6 +157,7 @@ Mobile controls:
 - Trading controls are simplified to Start Trading and Stop Trading.
 - The Recommendations screen has Refresh, Run New Analysis, and Auto Execute 85%+ controls.
 - Market Intelligence shows theme definitions, drivers, and risks so related themes are easier to understand.
+- Market Intelligence also shows monitored companies so sectors/themes can be connected back to the recommendation cards.
 
 ## Hosted Backend
 

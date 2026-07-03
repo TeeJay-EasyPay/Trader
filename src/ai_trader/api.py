@@ -205,7 +205,7 @@ class LocalApiService:
         markdown = generate_daily_briefing(self.audit, date.today(), self.settings.output_dir)
         return {"briefing_date": date.today().isoformat(), "report_markdown": markdown, "created_at": utc_now_iso()}
 
-    def recommendations(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._rows(
             """
             SELECT ta.*, cm.company_name, cm.country, cm.sector, cm.investment_thesis,
@@ -214,7 +214,7 @@ class LocalApiService:
             LEFT JOIN COMPANY_MASTER cm ON UPPER(cm.ticker) = UPPER(ta.symbol)
             LEFT JOIN INVESTMENT_WATCHLIST iw ON iw.company_id = cm.id
             WHERE ta.event_type = 'agent_proposal'
-            ORDER BY ta.id DESC
+            ORDER BY ta.ai_confidence DESC, ta.created_at DESC, ta.id DESC
             LIMIT ?
             """,
             (limit,),
@@ -276,7 +276,14 @@ class LocalApiService:
                     "guardrails_passed": guardrails_passed,
                 }
             )
-        return recommendations
+        return sorted(
+            recommendations,
+            key=lambda item: (
+                float(item["confidence"] or 0),
+                _parse_datetime(item["created_at"]) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
 
     def companies(self) -> list[dict[str, Any]]:
         return [
@@ -458,10 +465,11 @@ class LocalApiService:
 
         rows = self._rows(
             """
-            SELECT proposal_id, payload_json, created_at, ai_confidence, execution_guardrails_passed
+            SELECT proposal_id, payload_json, created_at, ai_confidence,
+                   execution_guardrails_passed, validation_result, symbol
             FROM trade_audit
             WHERE event_type = 'agent_proposal'
-            ORDER BY id DESC
+            ORDER BY ai_confidence DESC, created_at DESC, id DESC
             LIMIT 50
             """
         )
@@ -476,22 +484,53 @@ class LocalApiService:
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
             confidence = float(row["ai_confidence"] or 0)
             if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
-                skipped.append({"proposal_id": proposal_id, "reason": "confidence_below_85_percent"})
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "confidence_below_85_percent",
+                    "message": "Confidence is below 85%.",
+                })
                 continue
             if freshness["status"] == "Expired":
-                skipped.append({"proposal_id": proposal_id, "reason": "recommendation_expired"})
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "recommendation_expired",
+                    "message": "Recommendation expired. Run new analysis before execution.",
+                })
                 continue
             if not bool(row["execution_guardrails_passed"]):
-                skipped.append({"proposal_id": proposal_id, "reason": "guardrails_not_preapproved"})
+                failures = _validation_failures(row["validation_result"])
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "guardrails_not_preapproved",
+                    "message": f"Guardrails failed: {_format_guardrail_failures(failures)}.",
+                })
                 continue
             if self._proposal_already_executed(proposal_id):
-                skipped.append({"proposal_id": proposal_id, "reason": "already_executed"})
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "already_executed",
+                    "message": "Already executed.",
+                })
                 continue
             payload = json.loads(row["payload_json"])
             proposals.append(TradeProposal.from_dict(payload["proposal"]))
 
         if not proposals:
-            return {"status": "skipped", "message": "No eligible paper recommendations over 85%.", "skipped": skipped[:10]}
+            return {
+                "status": "skipped",
+                "message": "No eligible paper recommendations over 85%. See skipped reasons.",
+                "eligible_count": 0,
+                "skipped_count": len(skipped),
+                "skipped": skipped[:10],
+            }
 
         engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
         results = engine.execute_proposals(proposals)
@@ -499,6 +538,7 @@ class LocalApiService:
             "status": "submitted",
             "mode": "Paper",
             "threshold": AUTO_TRADE_CONFIDENCE_THRESHOLD,
+            "eligible_count": len(proposals),
             "result": results,
             "skipped": skipped[:10],
         }

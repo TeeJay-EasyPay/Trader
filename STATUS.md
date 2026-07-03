@@ -220,6 +220,13 @@ Guardrail positives follow-up:
 - `preview` OTA update group ID: `bd26298e-5373-4c20-8319-b18f52135adc`.
 - `hosted-preview` OTA update group ID: `2b920796-6648-4c8f-acb7-e2088213c4f0`.
 
+Recommendation persistence follow-up:
+
+- Recommendation API now returns saved recommendation history from SQLite instead of only a short current list.
+- Recommendation cards are ordered by highest confidence first, then newest.
+- Auto Execute 85%+ now returns per-symbol skip reasons, including guardrail failures, expired ideas, and already executed recommendations.
+- Market Intelligence now includes monitored companies so sectors/themes can be connected to recommendation cards.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.

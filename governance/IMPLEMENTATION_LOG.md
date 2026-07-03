@@ -307,3 +307,12 @@
 - Verified Python tests: 16/16 passing.
 - Published OTA to `preview`: `bd26298e-5373-4c20-8319-b18f52135adc`.
 - Published OTA to `hosted-preview`: `2b920796-6648-4c8f-acb7-e2088213c4f0`.
+
+## 2026-07-03 Recommendation Persistence Follow-Up
+
+- Kept the trading engine, execution engine, guardrail logic, and SQLite storage unchanged.
+- Changed the recommendation API to return a larger saved SQLite recommendation history.
+- Sorted saved recommendations by highest confidence first, then newest.
+- Improved auto-execute responses with per-symbol skipped reasons so high-confidence but guardrail-failed cards are understandable.
+- Updated Market Intelligence to load monitored companies from `/intelligence/companies` and show company names alongside theme definitions.
+- Added tests for saved recommendation ordering and auto-execute skip explanations.

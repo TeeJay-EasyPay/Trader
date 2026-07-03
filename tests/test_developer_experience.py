@@ -125,6 +125,56 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIsNotNone(recommendations[0]["expires_at"])
             self.assertFalse(recommendations[0]["auto_trade_eligible"])
 
+    def test_recommendations_keep_history_ordered_by_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            low = TradeProposal(
+                symbol="LOW",
+                side="buy",
+                entry_price=100,
+                stop_loss=99,
+                take_profit=103,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.86,
+                news_summary="Public news context.",
+                market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Lower confidence.",
+                ai_guardrails_passed=True,
+            )
+            high = TradeProposal(
+                symbol="HIGH",
+                side="buy",
+                entry_price=100,
+                stop_loss=99,
+                take_profit=103,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.91,
+                news_summary="Public news context.",
+                market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Higher confidence.",
+                ai_guardrails_passed=True,
+            )
+            audit.record_trade_event("agent_proposal", low, validation=ValidationResult(passed=True))
+            audit.record_trade_event("agent_proposal", high, validation=ValidationResult(passed=True))
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "UPDATE trade_audit SET created_at = ? WHERE proposal_id = ?",
+                        ("2026-01-01T00:00:00+00:00", low.proposal_id),
+                    )
+
+            recommendations = LocalApiService(settings).recommendations()
+
+            self.assertGreaterEqual(len(recommendations), 2)
+            self.assertEqual(recommendations[0]["ticker"], "HIGH")
+            self.assertEqual(recommendations[1]["ticker"], "LOW")
+            self.assertEqual(recommendations[1]["freshness_status"], "Expired")
+
     def test_recommendations_include_guardrail_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
@@ -216,6 +266,50 @@ class DeveloperExperienceTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "blocked")
             self.assertIn("expired", result["message"].lower())
+
+    def test_auto_execute_explains_guardrail_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = settings_for(tmp)
+            settings = Settings(
+                alpaca_api_key="paper-key",
+                alpaca_secret_key="paper-secret",
+                alpaca_paper_base_url=base.alpaca_paper_base_url,
+                alpaca_data_base_url=base.alpaca_data_base_url,
+                openai_api_key=None,
+                openai_model=base.openai_model,
+                db_path=base.db_path,
+                output_dir=base.output_dir,
+                trading_log_path=base.trading_log_path,
+                guardrails=base.guardrails,
+            )
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            proposal = TradeProposal(
+                symbol="EDV",
+                side="sell",
+                entry_price=100,
+                stop_loss=101,
+                take_profit=98,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.87,
+                news_summary="Public news context.",
+                market_sentiment_summary="Cautious.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Test recommendation.",
+                ai_guardrails_passed=False,
+            )
+            audit.record_trade_event(
+                "agent_proposal",
+                proposal,
+                validation=ValidationResult(passed=False, failures=["short_selling_disabled"]),
+            )
+
+            result = LocalApiService(settings).auto_execute_recommendations()
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["eligible_count"], 0)
+            self.assertEqual(result["skipped"][0]["symbol"], "EDV")
+            self.assertIn("Guardrails failed", result["skipped"][0]["message"])
 
     def test_run_analysis_uses_watchlist_limit_before_credentials_check(self):
         with tempfile.TemporaryDirectory() as tmp:

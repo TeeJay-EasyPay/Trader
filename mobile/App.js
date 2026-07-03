@@ -26,6 +26,7 @@ export default function App() {
   const [recommendations, setRecommendations] = useState([]);
   const [benchmark, setBenchmark] = useState(null);
   const [themes, setThemes] = useState([]);
+  const [companies, setCompanies] = useState([]);
   const [amounts, setAmounts] = useState({});
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
 
@@ -56,20 +57,22 @@ export default function App() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes] = await Promise.all([
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies] = await Promise.all([
         request('/status'),
         request('/portfolio'),
         request('/founder-brief'),
         request('/recommendations'),
         request(`/benchmark-daily-brief?date=${todayIso()}`),
         request('/intelligence/themes'),
+        request('/intelligence/companies'),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
       setBrief(nextBrief);
-      setRecommendations(sortByNewest(nextRecommendations.recommendations || []));
+      setRecommendations(sortByConfidence(nextRecommendations.recommendations || []));
       setBenchmark(nextBenchmark);
       setThemes(nextThemes.themes || []);
+      setCompanies(nextCompanies.companies || []);
       setLastRefreshedAt(new Date().toISOString());
     } catch (error) {
       Alert.alert('Backend unavailable', `${String(error.message || error)}\n\nAPI: ${API_BASE}`);
@@ -142,8 +145,8 @@ export default function App() {
         />
       );
     }
-    return <MarketIntelligence benchmark={benchmark} themes={themes} />;
-  }, [amounts, benchmark, brief, portfolio, recommendations, screen, status, themes]);
+    return <MarketIntelligence benchmark={benchmark} themes={themes} companies={companies} />;
+  }, [amounts, benchmark, brief, companies, portfolio, recommendations, screen, status, themes]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -237,10 +240,10 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
 function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute }) {
   if (!recommendations.length) {
     return (
-      <Section title="AI Recommendations">
+      <Section title="AI Recommendation History">
         <Text style={styles.bodyText}>
-          No active recommendations yet. Tap Run New Analysis to scan the watchlist. If the AI finds no safe trade,
-          the activity history will show that analysis ran but no trade was suggested.
+          No recommendation history is available yet. Tap Run New Analysis to scan the watchlist. If the AI finds no
+          safe trade, the activity history will show that analysis ran but no trade was suggested.
         </Text>
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />
@@ -251,6 +254,12 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
   }
   return (
     <View>
+      <Section title="AI Recommendation History">
+        <Text style={styles.bodyText}>
+          Showing saved SQLite recommendations, ordered from highest confidence to lowest. Expired ideas stay visible
+          for reference, but execution is blocked until fresh analysis creates a new trade idea.
+        </Text>
+      </Section>
       <View style={styles.buttonGrid}>
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
         <Button label="Run New Analysis" onPress={onRunAnalysis} />
@@ -311,7 +320,7 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
   );
 }
 
-function MarketIntelligence({ benchmark, themes }) {
+function MarketIntelligence({ benchmark, themes, companies }) {
   const items = benchmark?.items || [];
   return (
     <View>
@@ -347,6 +356,23 @@ function MarketIntelligence({ benchmark, themes }) {
               <TextBlock label="What it means" value={item.summary} />
               <TextBlock label="Key drivers" value={item.key_drivers} />
               <TextBlock label="Key risks" value={item.key_risks} />
+              <TextBlock label="Monitored companies" value={companiesForTheme(item, companies)} />
+            </View>
+          ))
+        )}
+      </Section>
+      <Section title="Companies Monitored">
+        {!companies.length ? (
+          <Empty />
+        ) : (
+          companies.map((item) => (
+            <View key={item.id || item.ticker} style={styles.card}>
+              <Text style={styles.cardTitle}>{notAvailable(item.company_name)} ({notAvailable(item.ticker)})</Text>
+              <Metric label="Sector" value={item.sector} />
+              <Metric label="Country" value={item.country} />
+              <Metric label="Watchlist Priority" value={item.current_watchlist_priority} />
+              <Metric label="Investment Fit" value={item.current_investment_philosophy_fit} />
+              <TextBlock label="Investment Thesis" value={item.investment_thesis} />
             </View>
           ))
         )}
@@ -416,6 +442,20 @@ function commandMessage(path, result) {
     }
     return `Analysis completed across ${symbolCount} companies. ${proposalCount} recommendation(s) generated.${skippedText}`;
   }
+  if (path === '/auto-execute-recommendations') {
+    const eligibleCount = result.eligible_count || 0;
+    if (eligibleCount > 0) {
+      return `Submitted ${eligibleCount} paper trade(s).`;
+    }
+    const skipped = result.skipped || [];
+    if (skipped.length) {
+      return [
+        result.message || 'No recommendations were eligible.',
+        ...skipped.slice(0, 5).map((item) => `${notAvailable(item.symbol)}: ${item.message || item.reason}`),
+      ].join('\n');
+    }
+    return result.message || 'No recommendations were eligible.';
+  }
   return result.message || result.status || 'Done';
 }
 
@@ -457,8 +497,14 @@ function analysisActivity(status) {
     .slice(0, 8);
 }
 
-function sortByNewest(items) {
-  return [...items].sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at));
+function sortByConfidence(items) {
+  return [...items].sort((a, b) => {
+    const confidenceDelta = Number(b.confidence || 0) - Number(a.confidence || 0);
+    if (confidenceDelta !== 0) {
+      return confidenceDelta;
+    }
+    return dateMs(b.created_at) - dateMs(a.created_at);
+  });
 }
 
 function dateMs(value) {
@@ -574,6 +620,25 @@ function formatList(items) {
     return null;
   }
   return items.map((item) => `- ${item}`).join('\n');
+}
+
+function companiesForTheme(theme, companies) {
+  if (!companies || !companies.length) {
+    return null;
+  }
+  const themeText = `${theme.theme || ''} ${theme.summary || ''} ${theme.key_drivers || ''}`.toLowerCase();
+  const matches = companies.filter((company) => {
+    const sector = String(company.sector || '').toLowerCase();
+    const name = String(company.company_name || '').toLowerCase();
+    return themeText.includes(sector) || sector.includes(String(theme.theme || '').toLowerCase()) || themeText.includes(name);
+  });
+  if (!matches.length) {
+    return null;
+  }
+  return matches
+    .slice(0, 8)
+    .map((company) => `- ${company.company_name} (${company.ticker})`)
+    .join('\n');
 }
 
 function exitPlan(item) {
