@@ -192,6 +192,14 @@ Hosted OTA update for active Render URL:
 - Android update ID: `019f27ac-1393-79d5-b822-fa82ee3cfe37`.
 - EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/bc319f3f-0bba-48fd-992a-30601f92c2d5`.
 
+Follow-up OTA to remove laptop API URL from all preview builds:
+
+- `preview` branch update group ID: `dd05b9df-40bd-43c9-99eb-7dd3d129e24b`.
+- `preview` Android update ID: `019f27b7-de37-7fb0-97b6-d397fe7d2058`.
+- `hosted-preview` branch update group ID: `895a6212-1e33-404f-8437-61ddf553adab`.
+- `hosted-preview` Android update ID: `019f27b8-c67a-797e-8feb-19d810b71283`.
+- Both mobile preview channels now use `https://trader-no0f.onrender.com`.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.

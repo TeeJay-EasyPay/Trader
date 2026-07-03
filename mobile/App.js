@@ -64,7 +64,7 @@ export default function App() {
       setThemes(nextThemes.themes || []);
       setLastRefreshedAt(new Date().toISOString());
     } catch (error) {
-      Alert.alert('Local API unavailable', String(error.message || error));
+      Alert.alert('Backend unavailable', `${String(error.message || error)}\n\nAPI: ${API_BASE}`);
     } finally {
       setLoading(false);
     }
@@ -94,7 +94,7 @@ export default function App() {
       Alert.alert(
         'Command failed',
         message === 'not_found'
-          ? 'The phone app has newer buttons than the backend currently running. Restart the local API so it loads the latest backend code.'
+          ? `The phone app has newer buttons than the backend currently running.\n\nAPI: ${API_BASE}`
           : message
       );
     } finally {
@@ -142,7 +142,7 @@ export default function App() {
       <View style={styles.header}>
         <Text style={styles.title}>AI Trader</Text>
         <Text style={styles.subtitle}>
-          {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : 'Local command centre'}
+          {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
         </Text>
       </View>
       <View style={styles.tabs}>
@@ -388,6 +388,10 @@ function money(value) {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function shortApiBase() {
+  return API_BASE.replace(/^https?:\/\//, '');
 }
 
 function sortByNewest(items) {

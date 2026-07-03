@@ -267,3 +267,16 @@
 - Hosted OTA update group ID: `bc319f3f-0bba-48fd-992a-30601f92c2d5`.
 - Hosted Android update ID: `019f27ac-1393-79d5-b822-fa82ee3cfe37`.
 - Render recommendations currently return an empty list because the cloud SQLite database has no generated proposals yet.
+
+## 2026-07-03 Remove Laptop API URL From Preview Channels
+
+- Updated `mobile/eas.json` so the `preview` build profile also uses `https://trader-no0f.onrender.com`.
+- Updated mobile error copy from "Local API unavailable" to "Backend unavailable" and included the active API URL in the alert.
+- Updated the app header fallback text to show the backend host.
+- Published OTA to `preview`:
+  - Update group ID: `dd05b9df-40bd-43c9-99eb-7dd3d129e24b`.
+  - Android update ID: `019f27b7-de37-7fb0-97b6-d397fe7d2058`.
+- Published OTA to `hosted-preview`:
+  - Update group ID: `895a6212-1e33-404f-8437-61ddf553adab`.
+  - Android update ID: `019f27b8-c67a-797e-8feb-19d810b71283`.
+- Verified `https://trader-no0f.onrender.com/healthz` returned 200 before publishing.
