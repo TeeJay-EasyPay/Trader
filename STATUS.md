@@ -222,10 +222,13 @@ Guardrail positives follow-up:
 
 Recommendation persistence follow-up:
 
+- Backend commit: `2bb6f18`.
 - Recommendation API now returns saved recommendation history from SQLite instead of only a short current list.
 - Recommendation cards are ordered by highest confidence first, then newest.
 - Auto Execute 85%+ now returns per-symbol skip reasons, including guardrail failures, expired ideas, and already executed recommendations.
 - Market Intelligence now includes monitored companies so sectors/themes can be connected to recommendation cards.
+- `preview` OTA update group ID: `55d45b77-db90-4f57-b411-38d067ef6382`.
+- `hosted-preview` OTA update group ID: `93fa34c0-db77-4e8b-a198-6e85ac2e393f`.
 
 ## Hosted Backend Path
 

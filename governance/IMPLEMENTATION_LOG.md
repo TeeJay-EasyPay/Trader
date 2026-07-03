@@ -316,3 +316,7 @@
 - Improved auto-execute responses with per-symbol skipped reasons so high-confidence but guardrail-failed cards are understandable.
 - Updated Market Intelligence to load monitored companies from `/intelligence/companies` and show company names alongside theme definitions.
 - Added tests for saved recommendation ordering and auto-execute skip explanations.
+- Verified Python tests: 18/18 passing.
+- Verified Expo Doctor: 17/17 passing.
+- Published OTA to `preview`: `55d45b77-db90-4f57-b411-38d067ef6382`.
+- Published OTA to `hosted-preview`: `93fa34c0-db77-4e8b-a198-6e85ac2e393f`.
