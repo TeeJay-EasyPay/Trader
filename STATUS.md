@@ -200,6 +200,17 @@ Follow-up OTA to remove laptop API URL from all preview builds:
 - `hosted-preview` Android update ID: `019f27b8-c67a-797e-8feb-19d810b71283`.
 - Both mobile preview channels now use `https://trader-no0f.onrender.com`.
 
+Hosted analysis/activity follow-up:
+
+- Backend commit: `3b85c07`.
+- Render `/run-analysis` now scans up to 30 companies and skips broker-rejected symbols instead of failing the whole request.
+- Verified unsupported symbol handling with `AAPL` and `NOVO-B`: request returned 200 and listed `NOVO-B` in `skipped_symbols`.
+- Mobile now handles empty/non-JSON backend responses more clearly.
+- Mobile Run Analysis message now explains when no safe recommendations were generated.
+- Mobile Command Centre now displays Alpaca recent orders/fills from `/portfolio` as broker activity.
+- `preview` OTA update group ID: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
+- `hosted-preview` OTA update group ID: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.

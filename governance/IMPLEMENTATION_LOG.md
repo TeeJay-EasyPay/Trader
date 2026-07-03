@@ -280,3 +280,17 @@
   - Update group ID: `895a6212-1e33-404f-8437-61ddf553adab`.
   - Android update ID: `019f27b8-c67a-797e-8feb-19d810b71283`.
 - Verified `https://trader-no0f.onrender.com/healthz` returned 200 before publishing.
+
+## 2026-07-03 Hosted Analysis and Activity Follow-Up
+
+- Fixed mobile JSON parsing so empty or non-JSON backend responses produce a readable app error instead of `JSON Parse error`.
+- Changed mobile Run Analysis to request the 30-company watchlist scan.
+- Added clearer mobile messaging when analysis completes but no safe recommendations are generated.
+- Added Alpaca broker orders/fills from `/portfolio` into the mobile Command Centre Recent Transactions section.
+- Changed backend `/run-analysis` to scan symbols independently so one broker-rejected symbol does not fail the full analysis.
+- Added `skipped_symbols` to the analysis response.
+- Added `analysis_completed` events so the app can show that an analysis ran even if no recommendation was created.
+- Verified Render `/run-analysis` with `AAPL` succeeds.
+- Verified Render `/run-analysis` with `AAPL` and `NOVO-B` returns 200 and lists `NOVO-B` in `skipped_symbols`.
+- Published OTA to `preview`: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
+- Published OTA to `hosted-preview`: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
