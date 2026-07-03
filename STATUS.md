@@ -168,6 +168,17 @@ Follow-up OTA for mobile usability fixes:
 - Added friendlier recent transaction wording.
 - Restarted the local API after backend endpoint updates.
 
+Hosted APK build:
+
+- Build ID: `7e6b53a3-d492-4594-af36-4e56199878d4`.
+- Channel: `hosted-preview`.
+- APK: `https://expo.dev/artifacts/eas/s2G1DWe4aWyNiBCH7S1bJgXYmhoq8f8gSE3D6UQfe5U.apk`.
+- Backend URL baked into build/update: `https://ai-trader-api.onrender.com`.
+- Hosted OTA update group ID: `f9a4c794-8305-47d2-83a1-99fb5b777057`.
+- Hosted Android update ID: `019f2669-3a99-765d-99f1-d747aff4f9db`.
+- Hosted EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/f9a4c794-8305-47d2-83a1-99fb5b777057`.
+- Current hosted backend check: `https://ai-trader-api.onrender.com/healthz` is not reachable yet, so hosted data will not load until the backend service is deployed.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.

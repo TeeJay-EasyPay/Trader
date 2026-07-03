@@ -249,3 +249,15 @@
   - Python tests: 14/14 passing.
   - Python compile check passed.
   - Expo Doctor: 17/17 checks passed.
+
+## 2026-07-03 Hosted APK Build
+
+- Separated `hosted-preview` from the laptop `preview` OTA channel.
+- Removed the placeholder public API token from the hosted mobile build profile.
+- Built hosted Android APK with backend URL `https://ai-trader-api.onrender.com`.
+- Build ID: `7e6b53a3-d492-4594-af36-4e56199878d4`.
+- APK: `https://expo.dev/artifacts/eas/s2G1DWe4aWyNiBCH7S1bJgXYmhoq8f8gSE3D6UQfe5U.apk`.
+- Published hosted OTA update to branch `hosted-preview`.
+- Hosted OTA update group ID: `f9a4c794-8305-47d2-83a1-99fb5b777057`.
+- Hosted Android update ID: `019f2669-3a99-765d-99f1-d747aff4f9db`.
+- Confirmed `https://ai-trader-api.onrender.com/healthz` is not reachable yet, so the hosted APK will not load real data until the backend service is deployed.
