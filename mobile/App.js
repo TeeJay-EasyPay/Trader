@@ -204,7 +204,7 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
         <Button label="Stop Trading" onPress={() => onCommand('/stop-trading')} tone="danger" />
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
       </View>
-      <Section title="Recent Transactions">
+      <Section title="Broker Trade History">
         {!recentTransactions.length ? (
           <Empty />
         ) : (
@@ -216,11 +216,11 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
           ))
         )}
       </Section>
-      <Section title="Latest Activity">
-        {(status?.latest_activity || []).length === 0 ? (
+      <Section title="Analysis Activity">
+        {analysisActivity(status).length === 0 ? (
           <Empty />
         ) : (
-          status.latest_activity.map((item, index) => (
+          analysisActivity(status).map((item, index) => (
             <Text key={`${item.created_at}-${index}`} style={styles.bodyText}>
               {formatDateTime(item.created_at)} - {friendlyEvent(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
             </Text>
@@ -289,12 +289,15 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
       <Metric label="Suggested Position Size" value={item.suggested_position_size} />
       <Metric label="Guardrails Passed" value={yesNo(item.guardrails_passed)} />
+      <TextBlock label="Guardrail Details" value={enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
       <Metric label="Auto Trade Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Auto Trade Reason" value={enriched.auto_trade_reason} />
+      <TextBlock label="Exit Plan" value={exitPlan(item)} />
+      <TextBlock label="Auto Trade Uses" value="The suggested position size. The amount box is only for manual approval notes; guardrails still control execution." />
       <TextInput
         style={styles.input}
         keyboardType="decimal-pad"
-        placeholder="Amount to invest"
+        placeholder="Optional amount note"
         value={amount}
         onChangeText={setAmount}
       />
@@ -420,7 +423,9 @@ function shortApiBase() {
 }
 
 function combinedTransactions(status, portfolio) {
-  const auditRows = status?.recent_transactions?.length ? status.recent_transactions : status?.latest_activity || [];
+  const auditRows = (status?.recent_transactions || []).filter((item) => (
+    item.event_type === 'execution_approved' || item.event_type === 'execution_rejected'
+  ));
   const fills = (portfolio?.recent_activities || []).map((item) => ({
     event_type: 'broker_fill',
     symbol: item.symbol,
@@ -443,6 +448,12 @@ function combinedTransactions(status, portfolio) {
     .filter((item) => item.created_at || item.symbol || item.event_type)
     .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
     .slice(0, 12);
+}
+
+function analysisActivity(status) {
+  return (status?.latest_activity || [])
+    .filter((item) => item.event_type !== 'agent_no_trade')
+    .slice(0, 8);
 }
 
 function sortByNewest(items) {
@@ -515,6 +526,7 @@ function withRecommendationFreshness(item) {
         && item.already_executed !== true
       ),
     auto_trade_reason: item.auto_trade_reason || clientAutoTradeReason(item, confidence, freshness),
+    guardrail_summary: item.guardrail_summary || formatGuardrails(item.guardrail_failures),
   };
 }
 
@@ -529,9 +541,26 @@ function clientAutoTradeReason(item, confidence, freshness) {
     return 'Confidence is below 85%.';
   }
   if (item.guardrails_passed === false) {
+    const guardrails = formatGuardrails(item.guardrail_failures);
+    if (guardrails) {
+      return `Execution guardrails failed: ${guardrails}.`;
+    }
     return 'Execution guardrails did not pass, so auto-trade is blocked.';
   }
   return 'Eligible for paper auto-trade.';
+}
+
+function formatGuardrails(failures) {
+  if (!failures || !failures.length) {
+    return null;
+  }
+  return failures.map((item) => String(item).replaceAll('_', ' ')).join(', ');
+}
+
+function exitPlan(item) {
+  const stop = notAvailable(item.suggested_stop_loss);
+  const take = notAvailable(item.suggested_take_profit);
+  return `If executed, the broker order is submitted as a bracket order with stop loss ${stop} and take profit ${take}.`;
 }
 
 function friendlyEvent(eventType) {

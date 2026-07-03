@@ -205,6 +205,7 @@ class LocalApiService:
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
             already_executed = self._proposal_already_executed(row["proposal_id"])
             guardrails_passed = bool(row["execution_guardrails_passed"])
+            guardrail_failures = _validation_failures(row["validation_result"])
             confidence = float(row["ai_confidence"] or 0)
             auto_trade_eligible = (
                 guardrails_passed
@@ -237,7 +238,10 @@ class LocalApiService:
                         freshness_status=freshness["status"],
                         guardrails_passed=guardrails_passed,
                         already_executed=already_executed,
+                        guardrail_failures=guardrail_failures,
                     ),
+                    "guardrail_failures": guardrail_failures,
+                    "guardrail_summary": "Passed" if guardrails_passed else _format_guardrail_failures(guardrail_failures),
                     "already_executed": already_executed,
                     "guardrails_passed": guardrails_passed,
                 }
@@ -691,6 +695,7 @@ def _auto_trade_reason(
     freshness_status: str,
     guardrails_passed: bool,
     already_executed: bool,
+    guardrail_failures: list[str] | None = None,
 ) -> str:
     if already_executed:
         return "Already executed."
@@ -699,8 +704,29 @@ def _auto_trade_reason(
     if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
         return "Confidence is below 85%."
     if not guardrails_passed:
+        if guardrail_failures:
+            return f"Execution guardrails failed: {_format_guardrail_failures(guardrail_failures)}."
         return "Execution guardrails did not pass, so auto-trade is blocked."
     return "Eligible for paper auto-trade."
+
+
+def _validation_failures(validation_result: Any) -> list[str]:
+    if not validation_result:
+        return []
+    try:
+        data = json.loads(validation_result)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    failures = data.get("failures") or []
+    return [str(item) for item in failures]
+
+
+def _format_guardrail_failures(failures: list[str]) -> str:
+    if not failures:
+        return "No guardrail details available."
+    return ", ".join(item.replace("_", " ") for item in failures)
 
 
 def _component(healthy: bool, detail: str) -> dict[str, Any]:

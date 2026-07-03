@@ -125,6 +125,37 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIsNotNone(recommendations[0]["expires_at"])
             self.assertFalse(recommendations[0]["auto_trade_eligible"])
 
+    def test_recommendations_include_guardrail_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            proposal = TradeProposal(
+                symbol="EDV",
+                side="sell",
+                entry_price=100,
+                stop_loss=101,
+                take_profit=98,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.9,
+                news_summary="Public news context.",
+                market_sentiment_summary="Cautious.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Test recommendation.",
+                ai_guardrails_passed=False,
+            )
+            audit.record_trade_event(
+                "agent_proposal",
+                proposal,
+                validation=ValidationResult(passed=False, failures=["short_selling_disabled"]),
+            )
+
+            recommendation = LocalApiService(settings).recommendations()[0]
+
+            self.assertFalse(recommendation["guardrails_passed"])
+            self.assertEqual(recommendation["guardrail_failures"], ["short_selling_disabled"])
+            self.assertIn("short selling disabled", recommendation["guardrail_summary"])
+
     def test_expired_recommendation_is_blocked_before_execution(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
