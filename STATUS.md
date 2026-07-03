@@ -234,6 +234,7 @@ Unsupported broker symbol follow-up:
 
 - Run Analysis now treats Alpaca `asset not found` responses as unavailable market data instead of a full command failure.
 - The AI Trading Agent records unsupported/no-bar symbols as `agent_no_trade` events and continues scanning the remaining watchlist.
+- Empty AI JSON responses are treated as no-trade results instead of backend errors.
 
 ## Hosted Backend Path
 

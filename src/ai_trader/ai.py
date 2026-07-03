@@ -50,12 +50,7 @@ class OpenAIProposalAnalyzer:
         with urlopen(request, timeout=30) as response:
             raw = json.loads(response.read().decode("utf-8"))
         text = _extract_response_text(raw)
-        if not text or text.strip() == "null":
-            return None
-        data = json.loads(text)
-        if data in (None, "null"):
-            return None
-        return TradeProposal.from_dict(data)
+        return _proposal_from_response_text(text)
 
 
 def _extract_response_text(response: dict[str, Any]) -> str:
@@ -67,3 +62,14 @@ def _extract_response_text(response: dict[str, Any]) -> str:
     if chunks:
         return "".join(chunks)
     return str(response.get("output_text", ""))
+
+
+def _proposal_from_response_text(text: str) -> TradeProposal | None:
+    if not text or text.strip() == "null":
+        return None
+    data = json.loads(text)
+    if data in (None, "null"):
+        return None
+    if not isinstance(data, dict) or not data.get("symbol"):
+        return None
+    return TradeProposal.from_dict(data)

@@ -326,6 +326,7 @@
 - Fixed Run Analysis failure caused by Alpaca returning `asset not found` for an unsupported watchlist symbol.
 - Updated the Alpaca data client to return empty market/news payloads for missing assets instead of raising a fatal error.
 - Updated the AI Trading Agent to record a no-trade event when no latest market bar is available for a symbol.
+- Updated OpenAI proposal parsing so empty JSON objects are treated as no-trade results instead of constructor errors.
 - Kept the trading engine, execution engine, guardrails, mobile app structure, and SQLite storage unchanged.
-- Verified Python tests: 20/20 passing.
+- Verified Python tests: 21/21 passing.
 - Verified Expo Doctor: 17/17 passing.

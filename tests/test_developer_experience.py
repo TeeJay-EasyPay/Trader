@@ -11,6 +11,7 @@ from ai_trader.api import LocalApiService
 from ai_trader.api import ApiHandler
 from ai_trader.agent import AITradingAgent
 from ai_trader.alpaca import AlpacaCredentials, AlpacaError, AlpacaPaperClient
+from ai_trader.ai import _proposal_from_response_text
 from ai_trader.audit import AuditDatabase
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.config import Settings
@@ -356,6 +357,10 @@ class DeveloperExperienceTests(unittest.TestCase):
         self.assertEqual(bars["bars"], {})
         self.assertEqual(news["news"], [])
         self.assertEqual(bars["unavailable_symbols"], ["KGH"])
+
+    def test_openai_empty_json_means_no_trade(self):
+        self.assertIsNone(_proposal_from_response_text("{}"))
+        self.assertIsNone(_proposal_from_response_text("null"))
 
     def test_run_analysis_uses_watchlist_limit_before_credentials_check(self):
         with tempfile.TemporaryDirectory() as tmp:
