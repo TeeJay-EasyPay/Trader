@@ -88,12 +88,21 @@ class LocalApiService:
 
     def status(self) -> dict[str, Any]:
         control = self._control_state()
-        last_analysis = self._scalar("SELECT MAX(created_at) FROM trade_audit WHERE event_type IN ('agent_proposal', 'agent_no_trade')")
+        last_trade_analysis = self._scalar("SELECT MAX(created_at) FROM trade_audit WHERE event_type IN ('agent_proposal', 'agent_no_trade')")
+        last_event_analysis = self._scalar("SELECT MAX(created_at) FROM execution_events WHERE event_type IN ('agent_no_trade', 'analysis_completed')")
+        last_analysis = max([value for value in [last_trade_analysis, last_event_analysis] if value], default=None)
         last_activity = self._rows(
             """
             SELECT created_at, event_type, proposal_id, symbol, execution_result
-            FROM trade_audit
-            ORDER BY id DESC
+            FROM (
+                SELECT created_at, event_type, proposal_id, symbol, execution_result
+                FROM trade_audit
+                UNION ALL
+                SELECT created_at, event_type, proposal_id, NULL AS symbol, payload_json AS execution_result
+                FROM execution_events
+                WHERE event_type IN ('agent_no_trade', 'analysis_completed', 'engine_control')
+            )
+            ORDER BY created_at DESC
             LIMIT 8
             """
         )
@@ -313,7 +322,9 @@ class LocalApiService:
         if isinstance(symbols, str):
             symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
         if not symbols:
-            symbols = [row["ticker"] for row in self._rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT 3")]
+            limit = _int_or_default(body.get("limit"), 30)
+            limit = max(1, min(limit, 30))
+            symbols = [row["ticker"] for row in self._rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT ?", (limit,))]
         if not symbols:
             return {"status": "not_available", "message": "No symbols available in SQLite."}
         if not self.settings.has_alpaca_credentials:
@@ -325,6 +336,15 @@ class LocalApiService:
         agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
         proposals = agent.propose_trades(symbols, broker.account_context())
         auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No proposals generated."}
+        self.audit.record_execution_event(
+            "analysis",
+            "analysis_completed",
+            {
+                "symbols": symbols,
+                "proposal_count": len(proposals),
+                "auto_execution_status": auto_execution.get("status"),
+            },
+        )
         return {
             "status": "completed",
             "symbols": symbols,
@@ -509,20 +529,26 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if not self._authorized(parsed.path):
-            self._json(401, {"error": "unauthorized"})
-            return
-        status, payload = self.service.get(parsed.path, parse_qs(parsed.query))
-        self._json(status, payload)
+        try:
+            if not self._authorized(parsed.path):
+                self._json(401, {"error": "unauthorized"})
+                return
+            status, payload = self.service.get(parsed.path, parse_qs(parsed.query))
+            self._json(status, payload)
+        except Exception as exc:
+            self._json(500, {"error": "internal_error", "message": str(exc), "path": parsed.path})
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if not self._authorized(parsed.path):
-            self._json(401, {"error": "unauthorized"})
-            return
-        body = self._read_body()
-        status, payload = self.service.post(parsed.path, body)
-        self._json(status, payload)
+        try:
+            if not self._authorized(parsed.path):
+                self._json(401, {"error": "unauthorized"})
+                return
+            body = self._read_body()
+            status, payload = self.service.post(parsed.path, body)
+            self._json(status, payload)
+        except Exception as exc:
+            self._json(500, {"error": "internal_error", "message": str(exc), "path": parsed.path})
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -597,6 +623,13 @@ def _float_or_none(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:

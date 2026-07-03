@@ -169,6 +169,16 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(result["status"], "blocked")
             self.assertIn("expired", result["message"].lower())
 
+    def test_run_analysis_uses_watchlist_limit_before_credentials_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
+
+            result = LocalApiService(settings).run_analysis({"limit": 30})
+
+            self.assertEqual(result["status"], "not_available")
+            self.assertEqual(len(result["symbols"]), 30)
+
 
 if __name__ == "__main__":
     unittest.main()

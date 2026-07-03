@@ -38,9 +38,17 @@ export default function App() {
       headers,
       ...options,
     });
-    const json = await response.json();
+    const text = await response.text();
+    let json = {};
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch (error) {
+        throw new Error(`Backend returned unreadable data (${response.status}). Try again in a moment.`);
+      }
+    }
     if (!response.ok) {
-      throw new Error(json.error || `Request failed: ${response.status}`);
+      throw new Error(json.message || json.error || `Request failed: ${response.status}`);
     }
     return json;
   }, []);
@@ -87,7 +95,7 @@ export default function App() {
           throw error;
         }
       }
-      Alert.alert('Command sent', result.message || result.status || 'Done');
+      Alert.alert('Command sent', commandMessage(path, result));
       await refresh();
     } catch (error) {
       const message = String(error.message || error);
@@ -129,7 +137,7 @@ export default function App() {
           setAmounts={setAmounts}
           onApprove={approve}
           onRefresh={refresh}
-          onRunAnalysis={() => command('/run-analysis')}
+          onRunAnalysis={() => command('/run-analysis', { limit: 30 })}
           onAutoExecute={() => command('/auto-execute-recommendations')}
         />
       );
@@ -173,7 +181,7 @@ export default function App() {
 
 function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
   const positions = portfolio?.open_positions || [];
-  const recentTransactions = status?.recent_transactions?.length ? status.recent_transactions : status?.latest_activity || [];
+  const recentTransactions = combinedTransactions(status, portfolio);
   const recommendationSummary = status?.recommendation_summary || {};
   return (
     <View>
@@ -191,7 +199,7 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
         <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
       </Section>
       <View style={styles.buttonGrid}>
-        <Button label="Run Analysis" onPress={() => onCommand('/run-analysis')} />
+        <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
         <Button label="Start Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
         <Button label="Stop Trading" onPress={() => onCommand('/stop-trading')} tone="danger" />
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
@@ -230,7 +238,10 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
   if (!recommendations.length) {
     return (
       <Section title="AI Recommendations">
-        <Empty />
+        <Text style={styles.bodyText}>
+          No active recommendations yet. Tap Run New Analysis to scan the watchlist. If the AI finds no safe trade,
+          the activity history will show that analysis ran but no trade was suggested.
+        </Text>
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />
           <Button label="Run New Analysis" onPress={onRunAnalysis} />
@@ -390,8 +401,46 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function commandMessage(path, result) {
+  if (path === '/run-analysis') {
+    const proposalCount = result.proposals?.length || 0;
+    const symbolCount = result.symbols?.length || 0;
+    if (proposalCount === 0) {
+      return `Analysis completed across ${symbolCount} companies. No safe trade recommendations were generated.`;
+    }
+    return `Analysis completed across ${symbolCount} companies. ${proposalCount} recommendation(s) generated.`;
+  }
+  return result.message || result.status || 'Done';
+}
+
 function shortApiBase() {
   return API_BASE.replace(/^https?:\/\//, '');
+}
+
+function combinedTransactions(status, portfolio) {
+  const auditRows = status?.recent_transactions?.length ? status.recent_transactions : status?.latest_activity || [];
+  const fills = (portfolio?.recent_activities || []).map((item) => ({
+    event_type: 'broker_fill',
+    symbol: item.symbol,
+    side: item.side,
+    position_size: item.qty,
+    price: item.price,
+    created_at: item.transaction_time || item.date || item.updated_at,
+    raw: item,
+  }));
+  const orders = (portfolio?.recent_orders || []).map((item) => ({
+    event_type: 'broker_order',
+    symbol: item.symbol,
+    side: item.side,
+    position_size: item.qty,
+    status: item.status,
+    created_at: item.submitted_at || item.updated_at || item.created_at,
+    raw: item,
+  }));
+  return [...auditRows, ...fills, ...orders]
+    .filter((item) => item.created_at || item.symbol || item.event_type)
+    .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
+    .slice(0, 12);
 }
 
 function sortByNewest(items) {
@@ -489,7 +538,10 @@ function friendlyEvent(eventType) {
     execution_approved: 'Trade placed',
     execution_rejected: 'Trade rejected',
     agent_no_trade: 'No trade suggested',
+    analysis_completed: 'Analysis completed',
     engine_control: 'Trading control changed',
+    broker_fill: 'Broker fill',
+    broker_order: 'Broker order',
   };
   return labels[eventType] || notAvailable(eventType);
 }
@@ -498,8 +550,10 @@ function describeTransaction(item) {
   const symbol = item.symbol ? ` ${item.symbol}` : '';
   const side = item.side ? ` ${item.side.toUpperCase()}` : '';
   const size = item.position_size ? ` for ${item.position_size} shares` : '';
+  const status = item.status ? ` (${item.status})` : '';
+  const price = item.price ? ` at ${money(item.price)}` : '';
   const confidence = item.ai_confidence ? ` at ${formatPercent(item.ai_confidence)} confidence` : '';
-  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${confidence}.`;
+  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${confidence}${status}.`;
 }
 
 function yesNo(value) {
