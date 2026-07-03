@@ -298,3 +298,66 @@ All trade proposal, validation, rejection, and execution events should be append
 - Technical summary: EDV is showing resistance near current levels with pressure from rising yields, suggesting downside risk in the near term.
 - AI reasoning: With rising Treasury yields causing pain for long-duration bond ETFs and technical resistance near current prices, a conservative short position with tight stop loss offers a controlled risk trade.
 - Lessons learned: pending
+
+## 2026-07-03T09:22:36.842835+00:00 - agent_proposal
+
+- Proposal ID: db22b237-ac48-46e5-b94d-b9d374a6531a
+- Symbol: FRES
+- Side: buy
+- Entry: 1.13
+- Position size: 950.0
+- Stop loss: 1.1
+- Take profit: 1.18
+- Risk percentage: 0.01
+- AI confidence: 0.85
+- AI guardrails passed: False
+- Execution validation: failed: outside_regular_trading_hours
+- Execution result: not_submitted
+- Trade outcome: pending
+- News summary: No relevant news directly affecting Fresenius Media (FRES) at this time; broader market risks stem from bond yield changes affecting economic conditions.
+- Sentiment summary: Market sentiment for FRES is neutral with stable volume and no apparent volatility; broader equity market cautious due to rising Treasury yields.
+- Technical summary: Price is stable at 1.13 with low volatility; a conservative buy entry with a tight stop loss below recent levels to limit downside risk.
+- AI reasoning: The stock price for FRES shows stability with no clear negative catalysts. Given the low volatility and no upcoming events directly impacting FRES, a cautious buy trade with a small position size and tight stop loss offers a conservative setup to potentially capitalize on mild upward movement.
+- Lessons learned: pending
+
+## 2026-07-03T09:22:41.385653+00:00 - agent_proposal
+
+- Proposal ID: e583a31b-9bb9-4fd4-bb32-a0cb8f8559c1
+- Symbol: ANTO
+- Side: buy
+- Entry: 1.13
+- Position size: 1022.0
+- Stop loss: 1.1
+- Take profit: 1.19
+- Risk percentage: 0.01
+- AI confidence: 0.87
+- AI guardrails passed: False
+- Execution validation: failed: outside_regular_trading_hours
+- Execution result: not_submitted
+- Trade outcome: pending
+- News summary: No direct news for ANTO. Market focus is on bond ETFs and Treasury yields impacting overall risk sentiment.
+- Sentiment summary: Market cautious due to rising long-duration bond yields but equities like ANTO at support prices may offer conservative entry.
+- Technical summary: Price stable at 1.13 with low volatility; conservative stop loss set below entry indicates controlled risk approach.
+- AI reasoning: Given the stable price and low volatility, with broader market risks in bonds not directly affecting ANTO, a conservative buy with tight stop loss and modest take profit is justified.
+- Lessons learned: pending
+
+## 2026-07-03T09:22:44.575235+00:00 - agent_proposal
+
+- Proposal ID: 7f266473-d2bd-44aa-ae06-db0af36651d2
+- Symbol: EDV
+- Side: sell
+- Entry: 63.48
+- Position size: 10.0
+- Stop loss: 64.48
+- Take profit: 62.48
+- Risk percentage: 0.01
+- AI confidence: 0.87
+- AI guardrails passed: False
+- Execution validation: failed: short_selling_disabled, outside_regular_trading_hours
+- Execution result: not_submitted
+- Trade outcome: pending
+- News summary: Rising 30-year Treasury yields have caused historic drawdowns in long-duration bond ETFs like EDV, signaling risk of price declines.
+- Sentiment summary: Market shows cautious bearishness on long-duration bonds due to high yields and potential supply risks in Treasury issuance.
+- Technical summary: Price stable at 63.48 with no recent spikes; setup supports a conservative short position expecting a pullback.
+- AI reasoning: Given high Treasury yields pressure on EDV and historical drawdowns, a conservative short trade with tight stop loss and take profit aims to capitalize on expected downward movement while limiting risk.
+- Lessons learned: pending
