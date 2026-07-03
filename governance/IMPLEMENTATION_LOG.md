@@ -304,3 +304,6 @@
   - passed guardrails,
   - failed guardrails.
 - Kept the trading engine, execution engine, guardrail logic, and SQLite storage unchanged.
+- Verified Python tests: 16/16 passing.
+- Published OTA to `preview`: `bd26298e-5373-4c20-8319-b18f52135adc`.
+- Published OTA to `hosted-preview`: `2b920796-6648-4c8f-acb7-e2088213c4f0`.

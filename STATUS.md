@@ -212,6 +212,14 @@ Hosted analysis/activity follow-up:
 - `preview` OTA update group ID: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
 - `hosted-preview` OTA update group ID: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
 
+Guardrail positives follow-up:
+
+- Backend commit: `cdda131`.
+- Recommendation API now includes side-aware `guardrail_checks` and `guardrail_passes`.
+- Mobile recommendation cards now show overall result, passed guardrails, and failed guardrails.
+- `preview` OTA update group ID: `bd26298e-5373-4c20-8319-b18f52135adc`.
+- `hosted-preview` OTA update group ID: `2b920796-6648-4c8f-acb7-e2088213c4f0`.
+
 ## Hosted Backend Path
 
 Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.
