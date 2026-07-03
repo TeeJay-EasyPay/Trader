@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 
 const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'http://127.0.0.1:8765';
+const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 
 const SCREENS = ['Command', 'Recommendations', 'Intelligence'];
 
@@ -23,11 +25,17 @@ export default function App() {
   const [brief, setBrief] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [benchmark, setBenchmark] = useState(null);
+  const [themes, setThemes] = useState([]);
   const [amounts, setAmounts] = useState({});
+  const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
 
   const request = useCallback(async (path, options) => {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+    };
     const response = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       ...options,
     });
     const json = await response.json();
@@ -40,18 +48,21 @@ export default function App() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark] = await Promise.all([
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes] = await Promise.all([
         request('/status'),
         request('/portfolio'),
         request('/founder-brief'),
         request('/recommendations'),
-        request('/benchmark-daily-brief?date=2026-07-02'),
+        request(`/benchmark-daily-brief?date=${todayIso()}`),
+        request('/intelligence/themes'),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
       setBrief(nextBrief);
-      setRecommendations(nextRecommendations.recommendations || []);
+      setRecommendations(sortByNewest(nextRecommendations.recommendations || []));
       setBenchmark(nextBenchmark);
+      setThemes(nextThemes.themes || []);
+      setLastRefreshedAt(new Date().toISOString());
     } catch (error) {
       Alert.alert('Local API unavailable', String(error.message || error));
     } finally {
@@ -63,14 +74,29 @@ export default function App() {
     refresh();
   }, [refresh]);
 
-  const command = async (path, body = {}) => {
+  const command = async (path, body = {}, fallbackPath = null) => {
     setLoading(true);
     try {
-      const result = await request(path, { method: 'POST', body: JSON.stringify(body) });
+      let result;
+      try {
+        result = await request(path, { method: 'POST', body: JSON.stringify(body) });
+      } catch (error) {
+        if (fallbackPath && String(error.message || error) === 'not_found') {
+          result = await request(fallbackPath, { method: 'POST', body: JSON.stringify(body) });
+        } else {
+          throw error;
+        }
+      }
       Alert.alert('Command sent', result.message || result.status || 'Done');
       await refresh();
     } catch (error) {
-      Alert.alert('Command failed', String(error.message || error));
+      const message = String(error.message || error);
+      Alert.alert(
+        'Command failed',
+        message === 'not_found'
+          ? 'The phone app has newer buttons than the backend currently running. Restart the local API so it loads the latest backend code.'
+          : message
+      );
     } finally {
       setLoading(false);
     }
@@ -102,17 +128,22 @@ export default function App() {
           amounts={amounts}
           setAmounts={setAmounts}
           onApprove={approve}
+          onRefresh={refresh}
+          onRunAnalysis={() => command('/run-analysis')}
+          onAutoExecute={() => command('/auto-execute-recommendations')}
         />
       );
     }
-    return <MarketIntelligence benchmark={benchmark} />;
-  }, [amounts, benchmark, brief, portfolio, recommendations, screen, status]);
+    return <MarketIntelligence benchmark={benchmark} themes={themes} />;
+  }, [amounts, benchmark, brief, portfolio, recommendations, screen, status, themes]);
 
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
         <Text style={styles.title}>AI Trader</Text>
-        <Text style={styles.subtitle}>Local command centre</Text>
+        <Text style={styles.subtitle}>
+          {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : 'Local command centre'}
+        </Text>
       </View>
       <View style={styles.tabs}>
         {SCREENS.map((item) => (
@@ -130,39 +161,60 @@ export default function App() {
           <ActivityIndicator />
         </View>
       )}
-      <ScrollView contentContainerStyle={styles.content}>{content}</ScrollView>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} />}
+      >
+        {content}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
   const positions = portfolio?.open_positions || [];
+  const recentTransactions = status?.recent_transactions?.length ? status.recent_transactions : status?.latest_activity || [];
+  const recommendationSummary = status?.recommendation_summary || {};
   return (
     <View>
       <Section title="Trading Command Centre">
         <Metric label="System Status" value={status?.system_status} />
         <Metric label="Paper / Live Mode" value={status?.paper_live_mode} />
         <Metric label="Engine Health" value={status?.engine_health} />
-        <Metric label="Last Analysis Time" value={status?.last_analysis_time} />
+        <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
         <Metric label="Portfolio Value" value={money(portfolio?.portfolio_value)} />
         <Metric label="Cash Available" value={money(portfolio?.cash_available)} />
         <Metric label="Today's P&L" value={money(portfolio?.todays_pnl)} />
         <Metric label="Open Positions" value={positions.length ? `${positions.length}` : 'Not available'} />
+        <Metric label="Active Recommendations" value={recommendationSummary.active} />
+        <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
+        <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Run Analysis" onPress={() => onCommand('/run-analysis')} />
-        <Button label="Pause Trading" onPress={() => onCommand('/pause-trading')} tone="warn" />
-        <Button label="Resume Trading" onPress={() => onCommand('/resume-trading')} />
+        <Button label="Start Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
         <Button label="Stop Trading" onPress={() => onCommand('/stop-trading')} tone="danger" />
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
       </View>
+      <Section title="Recent Transactions">
+        {!recentTransactions.length ? (
+          <Empty />
+        ) : (
+          recentTransactions.map((item, index) => (
+            <View key={`${item.created_at}-transaction-${index}`} style={styles.compactRow}>
+              <Text style={styles.bodyText}>{describeTransaction(item)}</Text>
+              <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
+            </View>
+          ))
+        )}
+      </Section>
       <Section title="Latest Activity">
         {(status?.latest_activity || []).length === 0 ? (
           <Empty />
         ) : (
           status.latest_activity.map((item, index) => (
             <Text key={`${item.created_at}-${index}`} style={styles.bodyText}>
-              {notAvailable(item.created_at)} - {notAvailable(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
+              {formatDateTime(item.created_at)} - {friendlyEvent(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
             </Text>
           ))
         )}
@@ -174,44 +226,77 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
   );
 }
 
-function Recommendations({ recommendations, amounts, setAmounts, onApprove }) {
+function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute }) {
   if (!recommendations.length) {
     return (
       <Section title="AI Recommendations">
         <Empty />
+        <View style={styles.buttonGrid}>
+          <Button label="Refresh" onPress={onRefresh} tone="neutral" />
+          <Button label="Run New Analysis" onPress={onRunAnalysis} />
+        </View>
       </Section>
     );
   }
   return (
     <View>
+      <View style={styles.buttonGrid}>
+        <Button label="Refresh" onPress={onRefresh} tone="neutral" />
+        <Button label="Run New Analysis" onPress={onRunAnalysis} />
+        <Button label="Auto Execute 85%+" onPress={onAutoExecute} tone="warn" />
+      </View>
       {recommendations.map((item) => (
-        <View key={item.proposal_id} style={styles.card}>
-          <Text style={styles.cardTitle}>{notAvailable(item.company)} ({notAvailable(item.ticker)})</Text>
-          <Metric label="Sector" value={item.sector} />
-          <Metric label="Country" value={item.country} />
-          <Metric label="Confidence" value={item.confidence} />
-          <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
-          <TextBlock label="Investment Thesis" value={item.investment_thesis} />
-          <TextBlock label="Reason for Recommendation" value={item.reason_for_recommendation} />
-          <TextBlock label="Key Risks" value={item.key_risks} />
-          <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
-          <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
-          <Metric label="Suggested Position Size" value={item.suggested_position_size} />
-          <TextInput
-            style={styles.input}
-            keyboardType="decimal-pad"
-            placeholder="Amount to invest"
-            value={amounts[item.proposal_id] || ''}
-            onChangeText={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
-          />
-          <Button label="Approve & Execute" onPress={() => onApprove(item.proposal_id)} />
-        </View>
+        <RecommendationCard
+          key={item.proposal_id}
+          item={item}
+          amount={amounts[item.proposal_id] || ''}
+          setAmount={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
+          onApprove={() => onApprove(item.proposal_id)}
+        />
       ))}
     </View>
   );
 }
 
-function MarketIntelligence({ benchmark }) {
+function RecommendationCard({ item, amount, setAmount, onApprove }) {
+  const enriched = withRecommendationFreshness(item);
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>{notAvailable(enriched.company)} ({notAvailable(enriched.ticker)})</Text>
+      <Metric label="Freshness" value={enriched.freshness_status} />
+      <Metric label="Generated" value={formatDateTime(enriched.created_at)} />
+      <Metric label="Expires" value={formatDateTime(enriched.expires_at)} />
+      <TextBlock label="Freshness Note" value={enriched.freshness_note} />
+      <Metric label="Sector" value={item.sector} />
+      <Metric label="Country" value={item.country} />
+      <Metric label="Confidence" value={formatPercent(item.confidence)} />
+      <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
+      <TextBlock label="Investment Thesis" value={item.investment_thesis} />
+      <TextBlock label="Reason for Recommendation" value={item.reason_for_recommendation} />
+      <TextBlock label="Key Risks" value={item.key_risks} />
+      <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
+      <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
+      <Metric label="Suggested Position Size" value={item.suggested_position_size} />
+      <Metric label="Guardrails Passed" value={yesNo(item.guardrails_passed)} />
+      <Metric label="Auto Trade Eligible" value={yesNo(enriched.auto_trade_eligible)} />
+      <TextBlock label="Auto Trade Reason" value={enriched.auto_trade_reason} />
+      <TextInput
+        style={styles.input}
+        keyboardType="decimal-pad"
+        placeholder="Amount to invest"
+        value={amount}
+        onChangeText={setAmount}
+      />
+      <Button
+        label={enriched.freshness_status === 'Expired' ? 'Expired - Run Analysis' : 'Approve & Execute'}
+        onPress={onApprove}
+        disabled={enriched.freshness_status === 'Expired'}
+      />
+    </View>
+  );
+}
+
+function MarketIntelligence({ benchmark, themes }) {
   const items = benchmark?.items || [];
   return (
     <View>
@@ -231,6 +316,22 @@ function MarketIntelligence({ benchmark }) {
               <TextBlock label="Market lessons" value={item.market_lesson} />
               <Metric label="Related sector" value={item.related_sector} />
               <Metric label="Related theme" value={item.related_theme} />
+            </View>
+          ))
+        )}
+      </Section>
+      <Section title="Theme Definitions">
+        {!themes.length ? (
+          <Empty />
+        ) : (
+          themes.map((item) => (
+            <View key={item.id || item.theme} style={styles.card}>
+              <Text style={styles.cardTitle}>{notAvailable(item.theme)}</Text>
+              <Metric label="Outlook" value={item.current_outlook} />
+              <Metric label="Confidence" value={item.confidence} />
+              <TextBlock label="What it means" value={item.summary} />
+              <TextBlock label="Key drivers" value={item.key_drivers} />
+              <TextBlock label="Key risks" value={item.key_risks} />
             </View>
           ))
         )}
@@ -266,9 +367,9 @@ function TextBlock({ label, value }) {
   );
 }
 
-function Button({ label, onPress, tone = 'primary' }) {
+function Button({ label, onPress, tone = 'primary', disabled = false }) {
   return (
-    <TouchableOpacity style={[styles.button, styles[tone]]} onPress={onPress}>
+    <TouchableOpacity style={[styles.button, styles[tone], disabled && styles.disabledButton]} onPress={onPress} disabled={disabled}>
       <Text style={styles.buttonText}>{label}</Text>
     </TouchableOpacity>
   );
@@ -283,6 +384,125 @@ function money(value) {
     return null;
   }
   return `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function sortByNewest(items) {
+  return [...items].sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at));
+}
+
+function dateMs(value) {
+  const ms = Date.parse(value || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString(undefined, {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return value;
+  }
+  const percent = number <= 1 ? number * 100 : number;
+  return `${percent.toFixed(0)}%`;
+}
+
+function withRecommendationFreshness(item) {
+  if (item.freshness_status && item.expires_at) {
+    return item;
+  }
+  const generatedAt = item.created_at ? new Date(item.created_at) : null;
+  if (!generatedAt || Number.isNaN(generatedAt.getTime())) {
+    return {
+      ...item,
+      freshness_status: item.freshness_status || null,
+      freshness_note: item.freshness_note || null,
+      auto_trade_eligible: item.auto_trade_eligible,
+    };
+  }
+  const confidence = Number(item.confidence || 0);
+  const lifetimeHours = confidence >= 0.85 ? 4 : confidence >= 0.75 ? 12 : 24;
+  const expiresAt = new Date(generatedAt.getTime() + lifetimeHours * 60 * 60 * 1000);
+  const now = new Date();
+  const halfLife = new Date(generatedAt.getTime() + (lifetimeHours / 2) * 60 * 60 * 1000);
+  const freshness = now > expiresAt ? 'Expired' : now > halfLife ? 'Stale' : 'Fresh';
+  return {
+    ...item,
+    expires_at: item.expires_at || expiresAt.toISOString(),
+    freshness_status: item.freshness_status || freshness,
+    freshness_note: item.freshness_note || `${freshness}. This trade idea expires after ${lifetimeHours} hours.`,
+    auto_trade_eligible:
+      item.auto_trade_eligible ?? (
+        freshness !== 'Expired'
+        && confidence >= 0.85
+        && item.guardrails_passed !== false
+        && item.already_executed !== true
+      ),
+    auto_trade_reason: item.auto_trade_reason || clientAutoTradeReason(item, confidence, freshness),
+  };
+}
+
+function clientAutoTradeReason(item, confidence, freshness) {
+  if (item.already_executed) {
+    return 'Already executed.';
+  }
+  if (freshness === 'Expired') {
+    return 'Expired. Run new analysis before execution.';
+  }
+  if (confidence < 0.85) {
+    return 'Confidence is below 85%.';
+  }
+  if (item.guardrails_passed === false) {
+    return 'Execution guardrails did not pass, so auto-trade is blocked.';
+  }
+  return 'Eligible for paper auto-trade.';
+}
+
+function friendlyEvent(eventType) {
+  const labels = {
+    agent_proposal: 'AI suggested a trade',
+    execution_approved: 'Trade placed',
+    execution_rejected: 'Trade rejected',
+    agent_no_trade: 'No trade suggested',
+    engine_control: 'Trading control changed',
+  };
+  return labels[eventType] || notAvailable(eventType);
+}
+
+function describeTransaction(item) {
+  const symbol = item.symbol ? ` ${item.symbol}` : '';
+  const side = item.side ? ` ${item.side.toUpperCase()}` : '';
+  const size = item.position_size ? ` for ${item.position_size} shares` : '';
+  const confidence = item.ai_confidence ? ` at ${formatPercent(item.ai_confidence)} confidence` : '';
+  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${confidence}.`;
+}
+
+function yesNo(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value ? 'Yes' : 'No';
 }
 
 function notAvailable(value) {
@@ -388,6 +608,17 @@ const styles = StyleSheet.create({
   textBlock: {
     marginTop: 8,
   },
+  compactRow: {
+    borderBottomColor: '#e6e9ee',
+    borderBottomWidth: 1,
+    paddingVertical: 8,
+  },
+  smallText: {
+    marginTop: 3,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#667085',
+  },
   buttonGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -417,6 +648,9 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 13,
     fontWeight: '800',
+  },
+  disabledButton: {
+    backgroundColor: '#98a2b3',
   },
   card: {
     backgroundColor: '#ffffff',

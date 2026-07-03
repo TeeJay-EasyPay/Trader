@@ -2,13 +2,13 @@
 
 Date: 2026-07-02
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added
 
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.
 - Required dependency installed: `tzdata`.
-- Unit tests pass: 4/4.
+- Unit tests pass: 14/14.
 - `.env` loading works.
 - Alpaca Paper Trading connection works.
 - Alpaca account retrieval works.
@@ -34,6 +34,18 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - One-command startup script added.
 - Read-only browser-based SQLite viewer added.
 - Developer Dashboard added.
+- Hosted backend deployment path added.
+- API token authorization added for hosted use.
+- Mobile app can send a bearer token to hosted API.
+- Docker and Render blueprint added.
+- Recommendations now expose generated time, expiry time, and Fresh/Stale/Expired status.
+- Expired recommendations are blocked before execution.
+- Paper-only auto execution added for eligible recommendations at or above 85% confidence.
+- Mobile recommendations screen now supports Refresh, Run New Analysis, and Auto Execute 85%+.
+- Command Centre now shows richer recent transaction and recommendation summary data.
+- Mobile controls simplified to Start Trading and Stop Trading.
+- Market Intelligence now shows theme definitions, drivers, and risks.
+- Expo OTA update published to the `preview` branch.
 
 ## Validation Result
 
@@ -77,7 +89,7 @@ Sprint 3 keeps Version 1.0 trading frozen and continues using local SQLite.
 - Mobile screens: Trading Command Centre, AI Recommendations, Market Intelligence.
 - Missing or unavailable data is surfaced as `Not available` rather than fabricated values.
 - `approve-and-execute` reconstructs stored proposals and sends them through the existing Execution Engine guardrails.
-- Current test suite: 10/10 passing inside `.venv`.
+- Current test suite: 14/14 passing inside `.venv`.
 
 ## Sprint 3.1 Developer Experience
 
@@ -95,4 +107,83 @@ Developer workflow:
 - Mobile helper: `scripts/start_mobile_app.ps1`.
 - Read-only database browser: `scripts/browse_database.ps1`.
 - Developer Dashboard: `developer_dashboard.html` and `http://127.0.0.1:8765/developer-dashboard`.
-- Tests: 10/10 passing inside `.venv`.
+- Tests: 14/14 passing inside `.venv`.
+
+## Sprint 3.2 Mobile Trading Usability
+
+Sprint 3.2 keeps the trading engine, execution engine, knowledge engine, mobile app structure, and SQLite storage intact.
+
+- Recommendation freshness added:
+  - Fresh/Stale/Expired status.
+  - Generated and expiry timestamps.
+  - Execution blocked for expired recommendations.
+- Auto execution added for Paper Trading only:
+  - Minimum confidence: 85%.
+  - Existing Execution Engine guardrails still enforce execution.
+  - Expired, duplicate, and guardrail-failed recommendations are skipped.
+- API controls added:
+  - `POST /start-trading`
+  - `POST /auto-execute-recommendations`
+- Mobile app updates:
+  - Recommendations screen has Refresh, Run New Analysis, and Auto Execute 85%+.
+  - Trading Command Centre shows recent transactions and recommendation counts.
+  - Pause/Resume/Stop button cluster replaced by Start Trading and Stop Trading.
+  - Market Intelligence shows theme definitions, key drivers, and key risks.
+- Tests: 14/14 passing inside `.venv`.
+
+## Sprint 3.2 OTA Update
+
+An EAS Update was published for the mobile JavaScript changes.
+
+- Branch: `preview`.
+- Runtime version: `1.0.0`.
+- Update group ID: `0727fd0a-4216-413c-affa-5c712cbc1155`.
+- Android update ID: `019f2473-739d-78e5-849e-99092758dd78`.
+- EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/0727fd0a-4216-413c-affa-5c712cbc1155`.
+
+During the update, EAS installed and configured `expo-updates`:
+
+- `expo-updates`: `~0.25.28`.
+- `updates.url`: `https://u.expo.dev/58ca35af-2cf4-44a0-8da4-7f02563b635f`.
+- `runtimeVersion.policy`: `appVersion`.
+
+Important: the APK already installed before this configuration may not receive OTA updates. Builds created after this configuration are eligible for EAS Updates.
+
+Fresh APK build after OTA channel configuration:
+
+- Build ID: `d5ff21b3-6685-4940-a2d4-550cd0d9e984`.
+- Preview channel: `preview`.
+- APK: `https://expo.dev/artifacts/eas/c3aEW5gWWhVHVim0Mk2fwTGnRl7aCKosQkpYnC6n9VQ.apk`.
+- Purpose: replace the earlier APK that did not have `expo-updates`/preview channel configured.
+
+Follow-up OTA for mobile usability fixes:
+
+- Update group ID: `c4e78a76-6233-48aa-a2ee-85ce3223007e`.
+- Android update ID: `019f2657-bc70-7c6f-9e33-91ef6e217fc1`.
+- EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/c4e78a76-6233-48aa-a2ee-85ce3223007e`.
+- Added pull-to-refresh on all three app screens.
+- Reformatted recommendation confidence from decimals to percentages.
+- Reformatted timestamps into readable local date/time text.
+- Added clearer auto-trade eligibility reason text.
+- Added friendlier recent transaction wording.
+- Restarted the local API after backend endpoint updates.
+
+## Hosted Backend Path
+
+Option B has been scaffolded so the phone app can point to an always-on backend instead of the laptop.
+
+- Dockerfile: `Dockerfile`.
+- Render blueprint: `render.yaml`.
+- Environment template: `cloud.env.example`.
+- Hosted API test helper: `scripts/test_hosted_api.ps1`.
+- Mobile EAS profile: `hosted-preview`.
+- Health check: `GET /healthz`.
+- Auth: optional `AI_TRADER_API_TOKEN` checked through `Authorization: Bearer <token>` or `X-API-Key`.
+
+The next release build should use a real hosted API URL and API token in `mobile/eas.json`.
+
+Local token-auth smoke test passed:
+
+- `/healthz`: 200 without token.
+- `/status`: 401 without token.
+- `/status`: 200 with bearer token.

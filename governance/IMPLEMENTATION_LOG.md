@@ -156,3 +156,96 @@
 - Verified CLI config runs in `.venv`.
 - Verified Developer Dashboard status generation reports Python as Healthy.
 - Verified read-only SQLite browser can list 11 tables.
+
+## 2026-07-02 Hosted Backend Path
+
+- Kept trading engine, execution engine, knowledge engine, and mobile UI logic intact.
+- Added optional API-token authorization to the Python API for hosted deployment.
+- Added unauthenticated `/healthz` for cloud health checks.
+- Added Docker packaging for the existing Python backend.
+- Added Render blueprint with persistent `/data` disk for SQLite.
+- Added `cloud.env.example` for hosted environment variables.
+- Added `scripts/test_hosted_api.ps1` to verify hosted API status, Paper mode, watchlist, themes, and benchmark trader counts.
+- Updated the mobile app to send `Authorization: Bearer <token>` when `EXPO_PUBLIC_AI_TRADER_API_TOKEN` is configured.
+- Added `hosted-preview` EAS build profile.
+- Updated README and STATUS with hosted backend deployment instructions.
+- Added tests for `/healthz` and API token authorization.
+- Ran tests in `.venv`: 12/12 passing.
+- Verified local token-auth smoke test: health check public, protected API rejects missing token, bearer token succeeds.
+- Docker CLI was not available locally, so container build verification remains for the cloud host or a machine with Docker installed.
+
+## 2026-07-02 Sprint 3.2 - Mobile Trading Usability
+
+- Kept the trading engine, execution engine, knowledge engine, SQLite storage, and three-screen mobile structure intact.
+- Added recommendation freshness metadata to the API:
+  - `created_at`
+  - `expires_at`
+  - `freshness_status`
+  - `freshness_note`
+- Added expiry rules:
+  - 85%+ confidence: 4-hour trade idea lifetime.
+  - 75%-84% confidence: 12-hour trade idea lifetime.
+  - Lower confidence: 24-hour trade idea lifetime.
+- Blocked manual execution when a recommendation has expired.
+- Added paper-only auto execution endpoint: `POST /auto-execute-recommendations`.
+- Auto execution only considers recommendations at or above 85% confidence and still sends every proposal through the existing Execution Engine guardrails.
+- Added `POST /start-trading` as the simpler mobile control while keeping existing pause/resume endpoints for compatibility.
+- Enriched `/status` with recent transactions and recommendation summary counts.
+- Enriched `/portfolio` with recent Alpaca orders and fill activities when Alpaca credentials are configured.
+- Updated mobile Command Centre:
+  - Start Trading and Stop Trading controls.
+  - Recent Transactions section.
+  - Active/expired recommendation counts.
+  - Auto Trade Mode.
+- Updated mobile Recommendations:
+  - Refresh button.
+  - Run New Analysis button.
+  - Auto Execute 85%+ button.
+  - Freshness, generated time, expiry time, and auto eligibility display.
+  - Expired recommendations show as blocked.
+- Updated mobile Market Intelligence to show theme definitions, key drivers, and key risks from SQLite.
+- Added tests for recommendation freshness metadata and expired-recommendation execution blocking.
+- Ran tests in `.venv`: 14/14 passing.
+
+## 2026-07-02 Sprint 3.2 - EAS OTA Update
+
+- Ran `npx eas update --branch preview --message "Sprint 3.2 mobile trading usability"`.
+- EAS installed and configured `expo-updates`.
+- EAS configured `updates.url` to `https://u.expo.dev/58ca35af-2cf4-44a0-8da4-7f02563b635f`.
+- EAS configured `runtimeVersion` with the `appVersion` policy.
+- Published update group `0727fd0a-4216-413c-affa-5c712cbc1155`.
+- Published Android update `019f2473-739d-78e5-849e-99092758dd78`.
+- EAS dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/0727fd0a-4216-413c-affa-5c712cbc1155`.
+- Added `mobile/dist/` to `.gitignore` because EAS Update creates it during export.
+- Verified Expo Doctor after the OTA configuration: 17/17 checks passed.
+- Note: the previously installed APK may not receive OTA updates because `expo-updates` was configured during this publish. Builds made after this configuration are eligible for EAS Updates.
+- Added `channel: preview` to the EAS `preview` and `hosted-preview` build profiles.
+- Built a fresh Android preview APK after OTA channel configuration.
+- Build ID: `d5ff21b3-6685-4940-a2d4-550cd0d9e984`.
+- APK: `https://expo.dev/artifacts/eas/c3aEW5gWWhVHVim0Mk2fwTGnRl7aCKosQkpYnC6n9VQ.apk`.
+
+## 2026-07-03 Mobile UX Follow-Up
+
+- Confirmed the installed APK had the new UI but was calling a stale local API process.
+- Restarted the local API so `/start-trading` and `/auto-execute-recommendations` are available.
+- Verified `/start-trading` returns `running`.
+- Verified `/auto-execute-recommendations` no longer returns `not_found`.
+- Confirmed `0.87` confidence means 87%; auto-trade was skipped because execution guardrails did not pass, not because of decimal confidence format.
+- Added `auto_trade_reason` to recommendation API rows.
+- Updated mobile cards to show:
+  - readable generated/expiry timestamps,
+  - confidence as percentages,
+  - guardrail pass status,
+  - auto-trade eligibility reason.
+- Added pull-to-refresh to the main scroll view so each screen can be refreshed by dragging down.
+- Improved recent transaction wording for non-technical users.
+- Added fallback from `/start-trading` to `/resume-trading` for older API processes.
+- Published EAS OTA update:
+  - Branch: `preview`.
+  - Update group ID: `c4e78a76-6233-48aa-a2ee-85ce3223007e`.
+  - Android update ID: `019f2657-bc70-7c6f-9e33-91ef6e217fc1`.
+  - Dashboard: `https://expo.dev/accounts/nexuspay/projects/ai-trader-mobile/updates/c4e78a76-6233-48aa-a2ee-85ce3223007e`.
+- Verification:
+  - Python tests: 14/14 passing.
+  - Python compile check passed.
+  - Expo Doctor: 17/17 checks passed.

@@ -1,6 +1,6 @@
 {
   "name": "ai-trader-mobile",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "expo": "~51.0.0",
+    "expo-updates": "~0.25.28",
     "react": "18.2.0",
     "react-native": "0.74.5"
   },

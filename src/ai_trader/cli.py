@@ -58,8 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     benchmark_init.add_argument("--report", action="store_true")
 
     serve_api = sub.add_parser("serve-api")
-    serve_api.add_argument("--host", default="127.0.0.1")
-    serve_api.add_argument("--port", default=8765, type=int)
+    serve_api.add_argument("--host", default=None)
+    serve_api.add_argument("--port", default=None, type=int)
 
     args = parser.parse_args(argv)
     settings = load_settings()
@@ -130,7 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve-api":
         from .api import run_server
 
-        run_server(args.host, args.port)
+        import os
+
+        host = args.host or os.getenv("AI_TRADER_API_HOST", "127.0.0.1")
+        port = args.port or int(os.getenv("PORT", os.getenv("AI_TRADER_API_PORT", "8765")))
+        run_server(host, port, api_token=os.getenv("AI_TRADER_API_TOKEN"))
         return 0
 
     return 1

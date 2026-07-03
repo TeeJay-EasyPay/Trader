@@ -8,4 +8,10 @@ data/*.sqlite3
 data/proposals.json
 data/founder_briefing_*.md
 .env
+.codex-remote-attachments/
 mobile/node_modules/
+mobile/inspect-output/
+mobile/dist/
+data/*.apk
+data/eas-build-*.log
+data/eas-build-*.txt

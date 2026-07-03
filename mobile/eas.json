@@ -1,0 +1,31 @@
+{
+  "cli": {
+    "version": ">= 18.11.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "preview": {
+      "channel": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_AI_TRADER_API_URL": "http://192.168.0.142:8765"
+      }
+    },
+    "hosted-preview": {
+      "channel": "hosted-preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_AI_TRADER_API_URL": "https://ai-trader-api.onrender.com"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  }
+}

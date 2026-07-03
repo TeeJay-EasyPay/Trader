@@ -2,15 +2,37 @@
   "expo": {
     "name": "AI Trader",
     "slug": "ai-trader-mobile",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": ["**/*"],
+    "splash": {
+      "backgroundColor": "#ffffff",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "./plugins/with-cleartext-traffic"
+    ],
     "ios": {
       "supportsTablet": false
     },
     "android": {
-      "package": "com.local.aitrader"
+      "package": "com.local.aitrader",
+      "versionCode": 1
+    },
+    "extra": {
+      "eas": {
+        "projectId": "58ca35af-2cf4-44a0-8da4-7f02563b635f"
+      }
+    },
+    "owner": "nexuspay",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/58ca35af-2cf4-44a0-8da4-7f02563b635f"
     }
   }
 }

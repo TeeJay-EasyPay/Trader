@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: ai-trader-api
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    disk:
+      name: ai-trader-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: AI_TRADER_API_TOKEN
+        sync: false
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_PAPER_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: ALPACA_DATA_BASE_URL
+        value: https://data.alpaca.markets
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: PAPER_TRADING_ONLY
+        value: "true"
+      - key: MIN_CONFIDENCE_SCORE
+        value: "0.85"
+      - key: MAX_RISK_PER_TRADE_PCT
+        value: "0.01"
+      - key: MAX_DAILY_LOSS_PCT
+        value: "0.03"
+      - key: MAX_OPEN_POSITIONS
+        value: "3"

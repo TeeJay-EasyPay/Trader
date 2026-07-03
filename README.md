@@ -112,9 +112,11 @@ API endpoints:
 - `GET /benchmark-traders`
 - `GET /benchmark-daily-brief`
 - `POST /run-analysis`
+- `POST /start-trading`
 - `POST /pause-trading`
 - `POST /resume-trading`
 - `POST /stop-trading`
+- `POST /auto-execute-recommendations`
 - `POST /approve-and-execute`
 
 Browse SQLite without SQL:
@@ -134,6 +136,141 @@ scripts/start_mobile_app.ps1
 For a physical phone, replace `127.0.0.1` with the laptop LAN IP address in `EXPO_PUBLIC_AI_TRADER_API_URL`.
 
 The app has three screens only: Trading Command Centre, AI Recommendations, and Market Intelligence. Missing values are shown as `Not available`. Execution still goes through the existing Execution Engine guardrails.
+
+Recommendation freshness:
+
+- Each recommendation shows when it was generated, when it expires, and whether it is Fresh, Stale, or Expired.
+- High-confidence trade ideas expire after 4 hours, medium-confidence ideas after 12 hours, and lower-confidence ideas after 24 hours.
+- Expired recommendations are blocked from manual execution until analysis is run again.
+
+Auto execution:
+
+- `POST /auto-execute-recommendations` submits only Paper Trading recommendations at or above 85% confidence.
+- Auto execution still uses the existing Execution Engine and guardrails.
+- Auto execution skips expired recommendations, already executed recommendations, and recommendations that did not pass guardrails.
+
+Mobile controls:
+
+- Trading controls are simplified to Start Trading and Stop Trading.
+- The Recommendations screen has Refresh, Run New Analysis, and Auto Execute 85%+ controls.
+- Market Intelligence shows theme definitions, drivers, and risks so related themes are easier to understand.
+
+## Hosted Backend
+
+The phone app can run without the laptop when the backend runs on an always-on host.
+
+Architecture:
+
+```text
+Honor Magic V3 app -> Hosted AI Trader API -> SQLite + Trading Engine + Alpaca/OpenAI
+```
+
+The hosted API uses the existing Python trading engine, execution engine, guardrails, knowledge engine, and SQLite schema. It does not move broker keys or execution logic into the phone.
+
+Cloud deployment files:
+
+- `Dockerfile`
+- `render.yaml`
+- `cloud.env.example`
+
+Recommended first host: Render with a persistent disk mounted at `/data`.
+
+Render setup:
+
+1. Push this repository to GitHub.
+2. In Render, create a new Blueprint from `render.yaml`.
+3. Add secret environment variables:
+   - `AI_TRADER_API_TOKEN`
+   - `ALPACA_API_KEY`
+   - `ALPACA_SECRET_KEY`
+   - `OPENAI_API_KEY`
+4. Keep `PAPER_TRADING_ONLY=true` until the hosted app has been tested.
+5. Deploy.
+
+The backend exposes:
+
+```text
+GET /healthz
+GET /status
+GET /portfolio
+GET /founder-brief
+GET /recommendations
+GET /intelligence/companies
+GET /intelligence/themes
+GET /benchmark-traders
+GET /benchmark-daily-brief
+POST /run-analysis
+POST /start-trading
+POST /pause-trading
+POST /resume-trading
+POST /stop-trading
+POST /auto-execute-recommendations
+POST /approve-and-execute
+```
+
+When `AI_TRADER_API_TOKEN` is set, the mobile app must send:
+
+```text
+Authorization: Bearer <token>
+```
+
+Test a hosted API:
+
+```powershell
+scripts/test_hosted_api.ps1 -BaseUrl https://ai-trader-api.onrender.com -ApiToken YOUR_TOKEN
+```
+
+Build a phone APK that points to the hosted backend:
+
+```powershell
+cd mobile
+npx eas build --platform android --profile hosted-preview
+```
+
+Before building, update `mobile/eas.json`:
+
+```json
+{
+  "EXPO_PUBLIC_AI_TRADER_API_URL": "https://your-hosted-api.example.com",
+  "EXPO_PUBLIC_AI_TRADER_API_TOKEN": "your-api-token"
+}
+```
+
+Important: `EXPO_PUBLIC_*` values are embedded in the app bundle. For a personal app this is acceptable as a first hosted preview, but a stronger production release should add real user login and short-lived tokens.
+
+## Install On Honor Magic V3
+
+Android preview build:
+
+```text
+https://expo.dev/artifacts/eas/1LZ_09cZkatp7D8bR09MlBl1KnR6ZcKQN7M-CU7nnQc.apk
+```
+
+Before opening the app on the phone:
+
+1. Keep the laptop and Honor Magic V3 on the same WiFi network.
+2. Start the local API on the laptop:
+
+```powershell
+scripts/start_local_api.ps1
+```
+
+3. Confirm the phone-facing API URL is reachable from the laptop:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://192.168.0.142:8765/status
+```
+
+4. Open the APK link on the Honor Magic V3 and allow Android to install from the browser if prompted.
+5. Open AI Trader.
+
+This preview build embeds:
+
+```text
+EXPO_PUBLIC_AI_TRADER_API_URL=http://192.168.0.142:8765
+```
+
+If the laptop IP changes, update `mobile/eas.json`, rebuild with `npx eas build --platform android --profile preview`, and install the new APK.
 
 ## Troubleshooting
 

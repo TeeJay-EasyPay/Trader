@@ -5,7 +5,7 @@ import socket
 import sqlite3
 import sys
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS engine_control (
 );
 """
 
+AUTO_TRADE_CONFIDENCE_THRESHOLD = 0.85
+
 
 class LocalApiService:
     def __init__(self, settings: Settings):
@@ -42,6 +44,8 @@ class LocalApiService:
         self._initialize_control()
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
+        if path == "/healthz":
+            return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":
             return 200, self.status()
         if path == "/portfolio":
@@ -68,12 +72,16 @@ class LocalApiService:
     def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if path == "/run-analysis":
             return 200, self.run_analysis(body)
+        if path == "/start-trading":
+            return 200, self.set_trading_state("running", "start-trading")
         if path == "/pause-trading":
             return 200, self.set_trading_state("paused", "pause-trading")
         if path == "/resume-trading":
             return 200, self.set_trading_state("running", "resume-trading")
         if path == "/stop-trading":
             return 200, self.set_trading_state("stopped", "stop-trading")
+        if path == "/auto-execute-recommendations":
+            return 200, self.auto_execute_recommendations()
         if path == "/approve-and-execute":
             return 200, self.approve_and_execute(body)
         return 404, {"error": "not_found", "path": path}
@@ -89,12 +97,31 @@ class LocalApiService:
             LIMIT 8
             """
         )
+        recent_transactions = self._rows(
+            """
+            SELECT created_at, event_type, proposal_id, symbol, side, position_size,
+                   ai_confidence, execution_result
+            FROM trade_audit
+            WHERE event_type IN ('execution_approved', 'execution_rejected', 'agent_proposal', 'agent_no_trade')
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        )
+        recommendation_rows = self.recommendations(limit=50)
+        active_recommendations = [row for row in recommendation_rows if row["freshness_status"] != "Expired"]
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
             "engine_health": "Available" if self.settings.db_path.exists() else "Database not initialized",
             "last_analysis_time": last_analysis,
             "latest_activity": [dict(row) for row in last_activity],
+            "recent_transactions": [dict(row) for row in recent_transactions],
+            "recommendation_summary": {
+                "active": len(active_recommendations),
+                "expired": len(recommendation_rows) - len(active_recommendations),
+                "auto_trade_threshold": AUTO_TRADE_CONFIDENCE_THRESHOLD,
+                "auto_trade_mode": "Paper only" if self.settings.guardrails.paper_trading_only else "Disabled outside paper mode",
+            },
             "updated_at": control["updated_at"],
         }
 
@@ -111,6 +138,8 @@ class LocalApiService:
             broker = self._broker()
             account = broker.get_account()
             positions = broker.get_positions()
+            orders = broker.get_orders(status="all", limit=10)
+            activities = broker.get_activities("FILL")
             return {
                 "portfolio_value": _float_or_none(account.get("portfolio_value") or account.get("equity")),
                 "cash_available": _float_or_none(account.get("cash")),
@@ -124,6 +153,8 @@ class LocalApiService:
                     }
                     for row in positions
                 ],
+                "recent_orders": orders[:10] if isinstance(orders, list) else [],
+                "recent_activities": activities[:10] if isinstance(activities, list) else [],
                 "source": "Alpaca Paper Trading",
             }
         except Exception as exc:
@@ -142,7 +173,7 @@ class LocalApiService:
         markdown = generate_daily_briefing(self.audit, date.today(), self.settings.output_dir)
         return {"briefing_date": date.today().isoformat(), "report_markdown": markdown, "created_at": utc_now_iso()}
 
-    def recommendations(self) -> list[dict[str, Any]]:
+    def recommendations(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._rows(
             """
             SELECT ta.*, cm.company_name, cm.country, cm.sector, cm.investment_thesis,
@@ -152,8 +183,9 @@ class LocalApiService:
             LEFT JOIN INVESTMENT_WATCHLIST iw ON iw.company_id = cm.id
             WHERE ta.event_type = 'agent_proposal'
             ORDER BY ta.id DESC
-            LIMIT 20
-            """
+            LIMIT ?
+            """,
+            (limit,),
         )
         recommendations: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -161,6 +193,16 @@ class LocalApiService:
             if row["proposal_id"] in seen:
                 continue
             seen.add(row["proposal_id"])
+            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+            already_executed = self._proposal_already_executed(row["proposal_id"])
+            guardrails_passed = bool(row["execution_guardrails_passed"])
+            confidence = float(row["ai_confidence"] or 0)
+            auto_trade_eligible = (
+                guardrails_passed
+                and freshness["status"] != "Expired"
+                and confidence >= AUTO_TRADE_CONFIDENCE_THRESHOLD
+                and not already_executed
+            )
             recommendations.append(
                 {
                     "proposal_id": row["proposal_id"],
@@ -177,7 +219,18 @@ class LocalApiService:
                     "suggested_take_profit": row["take_profit"],
                     "suggested_position_size": row["position_size"],
                     "created_at": row["created_at"],
-                    "guardrails_passed": bool(row["execution_guardrails_passed"]),
+                    "expires_at": freshness["expires_at"],
+                    "freshness_status": freshness["status"],
+                    "freshness_note": freshness["note"],
+                    "auto_trade_eligible": auto_trade_eligible,
+                    "auto_trade_reason": _auto_trade_reason(
+                        confidence=confidence,
+                        freshness_status=freshness["status"],
+                        guardrails_passed=guardrails_passed,
+                        already_executed=already_executed,
+                    ),
+                    "already_executed": already_executed,
+                    "guardrails_passed": guardrails_passed,
                 }
             )
         return recommendations
@@ -271,7 +324,13 @@ class LocalApiService:
             analyzer = OpenAIProposalAnalyzer(self.settings.openai_api_key, self.settings.openai_model, self.settings.guardrails)
         agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
         proposals = agent.propose_trades(symbols, broker.account_context())
-        return {"status": "completed", "symbols": symbols, "proposals": [proposal.to_dict() for proposal in proposals]}
+        auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No proposals generated."}
+        return {
+            "status": "completed",
+            "symbols": symbols,
+            "proposals": [proposal.to_dict() for proposal in proposals],
+            "auto_execution": auto_execution,
+        }
 
     def set_trading_state(self, state: str, command: str) -> dict[str, Any]:
         with closing(self._connect()) as conn:
@@ -305,11 +364,75 @@ class LocalApiService:
         )
         if not row:
             return {"status": "rejected", "message": "Proposal not found in SQLite."}
+        recommendation = self._row(
+            "SELECT created_at, ai_confidence FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
+            (str(proposal_id),),
+        )
+        if recommendation:
+            freshness = _recommendation_freshness(recommendation["created_at"], recommendation["ai_confidence"])
+            if freshness["status"] == "Expired":
+                return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}
         payload = json.loads(row["payload_json"])
         proposal = TradeProposal.from_dict(payload["proposal"])
         engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
         result = engine.execute_proposals([proposal])
         return {"status": "submitted", "result": result, "amount_requested": body.get("amount")}
+
+    def auto_execute_recommendations(self) -> dict[str, Any]:
+        control = self._control_state()
+        if control["trading_state"] != "running":
+            return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
+        if not self.settings.guardrails.paper_trading_only:
+            return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
+        if not self.settings.has_alpaca_credentials:
+            return {"status": "not_available", "message": "Alpaca paper credentials are required for auto execution."}
+
+        rows = self._rows(
+            """
+            SELECT proposal_id, payload_json, created_at, ai_confidence, execution_guardrails_passed
+            FROM trade_audit
+            WHERE event_type = 'agent_proposal'
+            ORDER BY id DESC
+            LIMIT 50
+            """
+        )
+        proposals: list[TradeProposal] = []
+        seen: set[str] = set()
+        skipped: list[dict[str, Any]] = []
+        for row in rows:
+            proposal_id = row["proposal_id"]
+            if proposal_id in seen:
+                continue
+            seen.add(proposal_id)
+            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+            confidence = float(row["ai_confidence"] or 0)
+            if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
+                skipped.append({"proposal_id": proposal_id, "reason": "confidence_below_85_percent"})
+                continue
+            if freshness["status"] == "Expired":
+                skipped.append({"proposal_id": proposal_id, "reason": "recommendation_expired"})
+                continue
+            if not bool(row["execution_guardrails_passed"]):
+                skipped.append({"proposal_id": proposal_id, "reason": "guardrails_not_preapproved"})
+                continue
+            if self._proposal_already_executed(proposal_id):
+                skipped.append({"proposal_id": proposal_id, "reason": "already_executed"})
+                continue
+            payload = json.loads(row["payload_json"])
+            proposals.append(TradeProposal.from_dict(payload["proposal"]))
+
+        if not proposals:
+            return {"status": "skipped", "message": "No eligible paper recommendations over 85%.", "skipped": skipped[:10]}
+
+        engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
+        results = engine.execute_proposals(proposals)
+        return {
+            "status": "submitted",
+            "mode": "Paper",
+            "threshold": AUTO_TRADE_CONFIDENCE_THRESHOLD,
+            "result": results,
+            "skipped": skipped[:10],
+        }
 
     def _broker(self) -> AlpacaPaperClient:
         return AlpacaPaperClient(
@@ -336,6 +459,18 @@ class LocalApiService:
     def _control_state(self) -> dict[str, Any]:
         row = self._row("SELECT * FROM engine_control WHERE id = 1")
         return dict(row) if row else {"trading_state": "unknown", "updated_at": None, "last_command": None}
+
+    def _proposal_already_executed(self, proposal_id: str) -> bool:
+        return bool(
+            self._scalar(
+                """
+                SELECT COUNT(*)
+                FROM trade_audit
+                WHERE proposal_id = ? AND event_type = 'execution_approved'
+                """,
+                (proposal_id,),
+            )
+        )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.settings.db_path)
@@ -370,14 +505,21 @@ class LocalApiService:
 
 class ApiHandler(BaseHTTPRequestHandler):
     service: LocalApiService
+    api_token: str | None = None
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if not self._authorized(parsed.path):
+            self._json(401, {"error": "unauthorized"})
+            return
         status, payload = self.service.get(parsed.path, parse_qs(parsed.query))
         self._json(status, payload)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not self._authorized(parsed.path):
+            self._json(401, {"error": "unauthorized"})
+            return
         body = self._read_body()
         status, payload = self.service.post(parsed.path, body)
         self._json(status, payload)
@@ -400,6 +542,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             raise ValueError("POST body must be a JSON object")
         return data
 
+    def _authorized(self, path: str) -> bool:
+        if path in {"/healthz"}:
+            return True
+        if not self.api_token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        api_key = self.headers.get("X-API-Key", "")
+        return auth == f"Bearer {self.api_token}" or api_key == self.api_token
+
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         if "html" in payload and len(payload) == 1:
             body = str(payload["html"]).encode("utf-8")
@@ -421,16 +572,17 @@ class ApiHandler(BaseHTTPRequestHandler):
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None = None) -> None:
     service = LocalApiService(load_settings())
     service.intelligence.seed_initial_data()
     service.benchmark.seed_initial_data()
     service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
     service.benchmark.write_initial_brief(service.settings.output_dir)
     ApiHandler.service = service
+    ApiHandler.api_token = api_token
     server = ThreadingHTTPServer((host, port), ApiHandler)
     print(f"AI Trader local API listening on http://{host}:{port}")
     server.serve_forever()
@@ -445,6 +597,62 @@ def _float_or_none(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:
+    if not created_at:
+        return {"status": "Not available", "expires_at": None, "note": "Generated time is not available."}
+    generated_at = _parse_datetime(created_at)
+    if generated_at is None:
+        return {"status": "Not available", "expires_at": None, "note": "Generated time could not be parsed."}
+    confidence_value = float(confidence or 0)
+    if confidence_value >= 0.85:
+        lifetime = timedelta(hours=4)
+    elif confidence_value >= 0.75:
+        lifetime = timedelta(hours=12)
+    else:
+        lifetime = timedelta(hours=24)
+    expires_at = generated_at + lifetime
+    now = datetime.now(timezone.utc)
+    if now > expires_at:
+        status = "Expired"
+    elif now > generated_at + (lifetime / 2):
+        status = "Stale"
+    else:
+        status = "Fresh"
+    return {
+        "status": status,
+        "expires_at": expires_at.isoformat(),
+        "note": f"{status}. Trade idea lifetime is {int(lifetime.total_seconds() / 3600)} hours.",
+    }
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _auto_trade_reason(
+    *,
+    confidence: float,
+    freshness_status: str,
+    guardrails_passed: bool,
+    already_executed: bool,
+) -> str:
+    if already_executed:
+        return "Already executed."
+    if freshness_status == "Expired":
+        return "Expired. Run new analysis before execution."
+    if confidence < AUTO_TRADE_CONFIDENCE_THRESHOLD:
+        return "Confidence is below 85%."
+    if not guardrails_passed:
+        return "Execution guardrails did not pass, so auto-trade is blocked."
+    return "Eligible for paper auto-trade."
 
 
 def _component(healthy: bool, detail: str) -> dict[str, Any]:

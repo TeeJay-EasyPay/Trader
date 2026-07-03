@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+data/*.sqlite3
+data/*.apk
+mobile/node_modules
+mobile/inspect-output
