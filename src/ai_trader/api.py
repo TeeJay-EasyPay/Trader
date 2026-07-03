@@ -334,7 +334,20 @@ class LocalApiService:
         if self.settings.openai_api_key:
             analyzer = OpenAIProposalAnalyzer(self.settings.openai_api_key, self.settings.openai_model, self.settings.guardrails)
         agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
-        proposals = agent.propose_trades(symbols, broker.account_context())
+        account = broker.account_context()
+        proposals: list[TradeProposal] = []
+        skipped_symbols: list[dict[str, str]] = []
+        for symbol in symbols:
+            try:
+                proposals.extend(agent.propose_trades([symbol], account))
+            except Exception as exc:
+                reason = str(exc)
+                skipped_symbols.append({"symbol": symbol, "reason": reason})
+                self.audit.record_execution_event(
+                    f"analysis-skip-{symbol}",
+                    "agent_no_trade",
+                    {"symbol": symbol, "reason": reason},
+                )
         auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No proposals generated."}
         self.audit.record_execution_event(
             "analysis",
@@ -342,6 +355,7 @@ class LocalApiService:
             {
                 "symbols": symbols,
                 "proposal_count": len(proposals),
+                "skipped_symbols": skipped_symbols,
                 "auto_execution_status": auto_execution.get("status"),
             },
         )
@@ -349,6 +363,7 @@ class LocalApiService:
             "status": "completed",
             "symbols": symbols,
             "proposals": [proposal.to_dict() for proposal in proposals],
+            "skipped_symbols": skipped_symbols,
             "auto_execution": auto_execution,
         }
 

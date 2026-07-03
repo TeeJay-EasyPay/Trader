@@ -405,10 +405,12 @@ function commandMessage(path, result) {
   if (path === '/run-analysis') {
     const proposalCount = result.proposals?.length || 0;
     const symbolCount = result.symbols?.length || 0;
+    const skippedCount = result.skipped_symbols?.length || 0;
+    const skippedText = skippedCount ? ` ${skippedCount} symbol(s) were skipped because the broker/data provider rejected them.` : '';
     if (proposalCount === 0) {
-      return `Analysis completed across ${symbolCount} companies. No safe trade recommendations were generated.`;
+      return `Analysis completed across ${symbolCount} companies. No safe trade recommendations were generated.${skippedText}`;
     }
-    return `Analysis completed across ${symbolCount} companies. ${proposalCount} recommendation(s) generated.`;
+    return `Analysis completed across ${symbolCount} companies. ${proposalCount} recommendation(s) generated.${skippedText}`;
   }
   return result.message || result.status || 'Done';
 }
