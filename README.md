@@ -148,6 +148,7 @@ Auto execution:
 - `POST /auto-execute-recommendations` submits only Paper Trading recommendations at or above 85% confidence.
 - Auto execution still uses the existing Execution Engine and guardrails.
 - Auto execution skips expired recommendations, already executed recommendations, and recommendations that did not pass guardrails.
+- Recommendation cards show both passed guardrails and failed guardrails so high confidence is not confused with trade approval.
 
 Mobile controls:
 
@@ -237,6 +238,14 @@ Before building, update `mobile/eas.json`:
 ```
 
 Important: `EXPO_PUBLIC_*` values are embedded in the app bundle. For a personal app this is acceptable as a first hosted preview, but a stronger production release should add real user login and short-lived tokens.
+
+Current hosted preview backend:
+
+```text
+https://trader-no0f.onrender.com
+```
+
+Mobile JavaScript changes are published with EAS Update to the `preview` and `hosted-preview` channels after verification. The installed hosted APK should pick up eligible OTA updates on restart.
 
 ## Install On Honor Magic V3
 

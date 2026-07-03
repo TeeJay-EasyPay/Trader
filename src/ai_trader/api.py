@@ -34,6 +34,29 @@ CREATE TABLE IF NOT EXISTS engine_control (
 
 AUTO_TRADE_CONFIDENCE_THRESHOLD = 0.85
 
+GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
+    ("paper_trading_only_failed", "Paper trading account confirmed", "all"),
+    ("invalid_side", "Trade side is valid", "all"),
+    ("position_size_must_be_positive", "Position size is positive", "all"),
+    ("entry_price_must_be_positive", "Entry price is positive", "all"),
+    ("stop_loss_mandatory", "Stop loss is present", "all"),
+    ("take_profit_mandatory", "Take profit is present", "all"),
+    ("confidence_below_minimum", "Confidence meets the minimum threshold", "all"),
+    ("account_equity_must_be_positive", "Account equity is positive", "all"),
+    ("risk_must_be_positive", "Trade risk is measurable", "all"),
+    ("max_account_risk_per_trade_exceeded", "Trade risk stays within account limit", "all"),
+    ("declared_risk_percentage_exceeded", "Declared risk percentage is within limit", "all"),
+    ("maximum_daily_loss_exceeded", "Daily loss limit has not been breached", "all"),
+    ("maximum_open_positions_exceeded", "Open position limit has room", "all"),
+    ("duplicate_open_position", "No duplicate long position", "buy"),
+    ("short_selling_disabled", "Short selling rule is satisfied", "sell"),
+    ("buy_stop_loss_must_be_below_entry", "Buy stop loss is below entry", "buy"),
+    ("buy_take_profit_must_be_above_entry", "Buy take profit is above entry", "buy"),
+    ("sell_stop_loss_must_be_above_entry", "Sell stop loss is above entry", "sell"),
+    ("sell_take_profit_must_be_below_entry", "Sell take profit is below entry", "sell"),
+    ("outside_regular_trading_hours", "Inside regular US market hours", "all"),
+]
+
 
 class LocalApiService:
     def __init__(self, settings: Settings):
@@ -206,6 +229,7 @@ class LocalApiService:
             already_executed = self._proposal_already_executed(row["proposal_id"])
             guardrails_passed = bool(row["execution_guardrails_passed"])
             guardrail_failures = _validation_failures(row["validation_result"])
+            guardrail_checks = _guardrail_checks(row["validation_result"], row["payload_json"])
             confidence = float(row["ai_confidence"] or 0)
             auto_trade_eligible = (
                 guardrails_passed
@@ -242,6 +266,12 @@ class LocalApiService:
                     ),
                     "guardrail_failures": guardrail_failures,
                     "guardrail_summary": "Passed" if guardrails_passed else _format_guardrail_failures(guardrail_failures),
+                    "guardrail_checks": guardrail_checks,
+                    "guardrail_passes": [
+                        check["label"]
+                        for check in guardrail_checks
+                        if check["status"] == "passed"
+                    ],
                     "already_executed": already_executed,
                     "guardrails_passed": guardrails_passed,
                 }
@@ -711,16 +741,66 @@ def _auto_trade_reason(
 
 
 def _validation_failures(validation_result: Any) -> list[str]:
-    if not validation_result:
-        return []
-    try:
-        data = json.loads(validation_result)
-    except (TypeError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, dict):
+    data = _validation_payload(validation_result)
+    if not data:
         return []
     failures = data.get("failures") or []
     return [str(item) for item in failures]
+
+
+def _validation_payload(validation_result: Any) -> dict[str, Any] | None:
+    if not validation_result:
+        return None
+    try:
+        data = json.loads(validation_result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _guardrail_checks(validation_result: Any, payload_json: Any = None) -> list[dict[str, str]]:
+    data = _validation_payload(validation_result)
+    if not data:
+        return []
+    side = _proposal_side(payload_json)
+    failures = set(_validation_failures(validation_result))
+    known = {key for key, _, _ in GUARDRAIL_CHECKS}
+    checks = [
+        {
+            "key": key,
+            "label": label,
+            "status": "failed" if key in failures else "passed",
+        }
+        for key, label, applies_to in GUARDRAIL_CHECKS
+        if applies_to == "all" or applies_to == side or key in failures
+    ]
+    checks.extend(
+        {
+            "key": key,
+            "label": key.replace("_", " "),
+            "status": "failed",
+        }
+        for key in sorted(failures - known)
+    )
+    return checks
+
+
+def _proposal_side(payload_json: Any) -> str | None:
+    if not payload_json:
+        return None
+    try:
+        data = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    proposal = data.get("proposal")
+    if not isinstance(proposal, dict):
+        return None
+    side = proposal.get("side")
+    return str(side).lower() if side else None
 
 
 def _format_guardrail_failures(failures: list[str]) -> str:

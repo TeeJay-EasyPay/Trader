@@ -208,6 +208,7 @@ Hosted analysis/activity follow-up:
 - Mobile now handles empty/non-JSON backend responses more clearly.
 - Mobile Run Analysis message now explains when no safe recommendations were generated.
 - Mobile Command Centre now displays Alpaca recent orders/fills from `/portfolio` as broker activity.
+- Recommendation cards now show passed guardrails as well as failed guardrails for clearer trade decisions.
 - `preview` OTA update group ID: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
 - `hosted-preview` OTA update group ID: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
 

@@ -294,3 +294,13 @@
 - Verified Render `/run-analysis` with `AAPL` and `NOVO-B` returns 200 and lists `NOVO-B` in `skipped_symbols`.
 - Published OTA to `preview`: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
 - Published OTA to `hosted-preview`: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
+
+## 2026-07-03 Guardrail Positives Follow-Up
+
+- Added a backend `guardrail_checks` checklist to each recommendation so the app can show passed checks and failed checks from the same validation result.
+- Added `guardrail_passes` to recommendation API rows for a simple positive guardrail summary.
+- Updated mobile recommendation cards to show:
+  - overall guardrail result,
+  - passed guardrails,
+  - failed guardrails.
+- Kept the trading engine, execution engine, guardrail logic, and SQLite storage unchanged.

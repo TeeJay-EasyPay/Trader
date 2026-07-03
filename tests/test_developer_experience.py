@@ -155,6 +155,23 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertFalse(recommendation["guardrails_passed"])
             self.assertEqual(recommendation["guardrail_failures"], ["short_selling_disabled"])
             self.assertIn("short selling disabled", recommendation["guardrail_summary"])
+            self.assertIn("Stop loss is present", recommendation["guardrail_passes"])
+            failed_checks = [
+                check for check in recommendation["guardrail_checks"]
+                if check["status"] == "failed"
+            ]
+            passed_checks = [
+                check for check in recommendation["guardrail_checks"]
+                if check["status"] == "passed"
+            ]
+            self.assertEqual(failed_checks, [
+                {
+                    "key": "short_selling_disabled",
+                    "label": "Short selling rule is satisfied",
+                    "status": "failed",
+                }
+            ])
+            self.assertTrue(passed_checks)
 
     def test_expired_recommendation_is_blocked_before_execution(self):
         with tempfile.TemporaryDirectory() as tmp:

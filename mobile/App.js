@@ -288,8 +288,9 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
       <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
       <Metric label="Suggested Position Size" value={item.suggested_position_size} />
-      <Metric label="Guardrails Passed" value={yesNo(item.guardrails_passed)} />
-      <TextBlock label="Guardrail Details" value={enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
+      <Metric label="Guardrail Result" value={yesNo(item.guardrails_passed)} />
+      <TextBlock label="Passed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'passed') || formatList(enriched.guardrail_passes)} />
+      <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
       <Metric label="Auto Trade Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Auto Trade Reason" value={enriched.auto_trade_reason} />
       <TextBlock label="Exit Plan" value={exitPlan(item)} />
@@ -555,6 +556,24 @@ function formatGuardrails(failures) {
     return null;
   }
   return failures.map((item) => String(item).replaceAll('_', ' ')).join(', ');
+}
+
+function formatGuardrailChecks(checks, status) {
+  if (!checks || !checks.length) {
+    return null;
+  }
+  const matching = checks.filter((item) => item.status === status);
+  if (!matching.length) {
+    return status === 'failed' ? 'None' : null;
+  }
+  return matching.map((item) => `- ${item.label || String(item.key).replaceAll('_', ' ')}`).join('\n');
+}
+
+function formatList(items) {
+  if (!items || !items.length) {
+    return null;
+  }
+  return items.map((item) => `- ${item}`).join('\n');
 }
 
 function exitPlan(item) {
