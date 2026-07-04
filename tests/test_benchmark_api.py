@@ -63,7 +63,7 @@ class BenchmarkAndApiTests(unittest.TestCase):
             benchmark = service.benchmark_daily_brief("2026-07-02")
             run_analysis = service.run_analysis({})
 
-            self.assertIsNone(portfolio["portfolio_value"])
+            self.assertIn("Not available -", portfolio["portfolio_value"])
             self.assertEqual(len(benchmark["items"]), len(BENCHMARK_RESEARCH))
             self.assertEqual(run_analysis["status"], "not_available")
 

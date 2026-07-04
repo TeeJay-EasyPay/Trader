@@ -12,8 +12,10 @@ class BrokerAdapter(Protocol):
     name: str
 
     def get_account(self) -> dict[str, Any]: ...
+    def get_balances(self) -> dict[str, Any]: ...
     def get_positions(self) -> list[dict[str, Any]]: ...
     def get_orders(self) -> list[dict[str, Any]]: ...
+    def get_trade_history(self) -> list[dict[str, Any]]: ...
     def get_supported_markets(self) -> list[str]: ...
     def get_supported_assets(self) -> list[str]: ...
     def is_asset_available(self, symbol: str, exchange: str, asset_type: str) -> bool: ...
@@ -33,11 +35,18 @@ class AlpacaBrokerAdapter:
     def get_account(self) -> dict[str, Any]:
         return self.client.get_account()
 
+    def get_balances(self) -> dict[str, Any]:
+        account = self.client.get_account()
+        return {"cash": account.get("cash"), "currency": account.get("currency"), "buying_power": account.get("buying_power")}
+
     def get_positions(self) -> list[dict[str, Any]]:
         return self.client.get_positions()
 
     def get_orders(self) -> list[dict[str, Any]]:
         return self.client.get_orders(status="all", limit=50)
+
+    def get_trade_history(self) -> list[dict[str, Any]]:
+        return self.client.get_activities("FILL")
 
     def get_supported_markets(self) -> list[str]:
         return ["NYSE", "NASDAQ", "AMEX", "ARCA", "OTC"]
@@ -108,10 +117,16 @@ class PlaceholderBrokerAdapter:
     def get_account(self) -> dict[str, Any]:
         return self._not_configured()
 
+    def get_balances(self) -> dict[str, Any]:
+        return self._not_configured()
+
     def get_positions(self) -> list[dict[str, Any]]:
         return []
 
     def get_orders(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_trade_history(self) -> list[dict[str, Any]]:
         return []
 
     def get_supported_markets(self) -> list[str]:
@@ -151,7 +166,52 @@ class SaxoAdapter(PlaceholderBrokerAdapter):
 
 class KrakenAdapter(PlaceholderBrokerAdapter):
     def __init__(self) -> None:
-        super().__init__("kraken", ("KRAKEN_API_KEY",))
+        super().__init__("kraken", ("KRAKEN_API_KEY", "KRAKEN_API_SECRET"))
+
+    @property
+    def trading_enabled(self) -> bool:
+        return os.getenv("KRAKEN_TRADING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    def get_supported_markets(self) -> list[str]:
+        return ["KRAKEN"] if self.configured else []
+
+    def get_supported_assets(self) -> list[str]:
+        return ["crypto"] if self.configured else []
+
+    def place_order(self, order_request: OrderRequest) -> dict[str, Any]:
+        if not self.configured:
+            return self._not_configured()
+        if not self.trading_enabled:
+            return {"status": "disabled", "broker": self.name, "reason": "KRAKEN_TRADING_ENABLED is false"}
+        return {"status": "not_implemented", "broker": self.name, "reason": "Kraken live integration is prepared but not enabled in Sprint 5"}
+
+    def place_bracket_order(self, order_request: OrderRequest) -> dict[str, Any]:
+        return self.place_order(order_request)
+
+
+class CoinbaseAdapter(PlaceholderBrokerAdapter):
+    def __init__(self) -> None:
+        super().__init__("coinbase", ("COINBASE_API_KEY", "COINBASE_API_SECRET"))
+
+    @property
+    def trading_enabled(self) -> bool:
+        return os.getenv("COINBASE_TRADING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    def get_supported_markets(self) -> list[str]:
+        return ["COINBASE"] if self.configured else []
+
+    def get_supported_assets(self) -> list[str]:
+        return ["crypto"] if self.configured else []
+
+    def place_order(self, order_request: OrderRequest) -> dict[str, Any]:
+        if not self.configured:
+            return self._not_configured()
+        if not self.trading_enabled:
+            return {"status": "disabled", "broker": self.name, "reason": "COINBASE_TRADING_ENABLED is false"}
+        return {"status": "not_implemented", "broker": self.name, "reason": "Coinbase Advanced Trade integration is prepared but not enabled in Sprint 5"}
+
+    def place_bracket_order(self, order_request: OrderRequest) -> dict[str, Any]:
+        return self.place_order(order_request)
 
 
 def alpaca_adapter_from_env(
@@ -173,4 +233,3 @@ def alpaca_adapter_from_env(
             )
         )
     )
-

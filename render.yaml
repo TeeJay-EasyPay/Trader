@@ -36,6 +36,30 @@ services:
         value: "0.03"
       - key: MAX_STOP_LOSS_PCT
         value: "0.05"
+      - key: CRYPTO_MAX_AUTO_TRADE_AMOUNT
+        value: "10"
+      - key: CRYPTO_DEFAULT_STOP_LOSS_PCT
+        value: "0.02"
+      - key: CRYPTO_MAX_STOP_LOSS_PCT
+        value: "0.05"
+      - key: KRAKEN_SANDBOX_MODE
+        value: "true"
+      - key: KRAKEN_TRADING_ENABLED
+        value: "false"
+      - key: KRAKEN_API_KEY
+        sync: false
+      - key: KRAKEN_API_SECRET
+        sync: false
+      - key: COINBASE_TRADING_ENABLED
+        value: "false"
+      - key: COINBASE_API_KEY
+        sync: false
+      - key: COINBASE_API_SECRET
+        sync: false
+      - key: COINBASE_API_PASSPHRASE
+        sync: false
+      - key: COINBASE_PORTFOLIO_ID
+        sync: false
       - key: RESEARCH_SCHEDULER_ENABLED
         value: "true"
       - key: RESEARCH_SCHEDULER_INTERVAL_MINUTES

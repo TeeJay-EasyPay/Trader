@@ -36,7 +36,7 @@ class ResearchScheduler:
 
     def run_once(self, *, limit: int = 30) -> ResearchCycleResult:
         started = utc_now_iso()
-        result = self.service.run_analysis({"limit": limit})
+        result = self.service.run_analysis({"limit": limit, "trigger_type": "scheduled"})
         completed = utc_now_iso()
         return ResearchCycleResult(
             started_at=started,

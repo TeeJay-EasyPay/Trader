@@ -235,6 +235,20 @@ Render can schedule safe research by invoking the existing `POST /run-analysis` 
 
 Required Sprint 4 environment variables are shown in `.env.example` and `cloud.env.example`.
 
+## Sprint 5: Operational Clarity and Crypto Preparation
+
+Sprint 5 keeps the app to the existing three screens and keeps live stock trading disabled.
+
+- Recommendations now parse qualitative values such as `Good`, `Medium`, `High`, `Low`, `Cautious`, and `Positive` without crashing.
+- Portfolio dashboard refreshes append `PORTFOLIO_SNAPSHOTS`.
+- Scheduled and manual analysis append `RESEARCH_RUNS`.
+- `CRYPTO_ASSET_MASTER` is created for a future public-data crypto universe. The system does not insert dummy rankings when live public rankings are unavailable.
+- Kraken and Coinbase adapters are prepared with safe not-configured/disabled states.
+- Kraken required permissions: view balances, view open orders/trades, create/cancel orders. Do not grant withdrawal permission.
+- Coinbase required permissions: view and trade. Do not grant transfer permission.
+- Crypto auto-trade limits are separate from equity limits and default to smaller amounts.
+- Command screen now includes an executive summary and exchange selector for All, Alpaca, Kraken, and Coinbase.
+
 When `AI_TRADER_API_TOKEN` is set, the mobile app must send:
 
 ```text

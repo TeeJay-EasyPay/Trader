@@ -2,13 +2,13 @@
 
 Date: 2026-07-02
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented locally
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally
 
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.
 - Required dependency installed: `tzdata`.
-- Unit tests pass: 33/33.
+- Unit tests pass: 42/42.
 - `.env` loading works.
 - Alpaca Paper Trading connection works.
 - Alpaca account retrieval works.
@@ -55,6 +55,11 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Research scheduler helper added for local or Render scheduled research runs.
 - Render blueprint configured to run the hourly background research scheduler in Docker with auto paper trading disabled by default.
 - Existing three mobile screens updated with orchestrator, auto-paper, broker, availability, market, and brief fields.
+- Sprint 5 robust parsing prevents qualitative scores such as `Good` from crashing recommendations.
+- Portfolio snapshots and research run tracking added.
+- Command screen exchange selector and executive summary added.
+- Kraken and Coinbase safe adapter preparation added.
+- Crypto universe table added without dummy ranking data.
 
 ## Validation Result
 
@@ -121,6 +126,19 @@ Sprint 4 keeps Paper Trading only and does not add mobile screens.
   - AI Recommendations show asset availability, suggested broker, exchange, market status, auto eligibility, rejection reason, confidence, philosophy fit, stop loss, and take profit.
   - Market Intelligence shows 24/7 research status, market-open summary, benchmark observations, theme updates, and recent learning.
 - Tests: 33/33 passing inside `.venv`.
+
+## Sprint 5 Operational Clarity
+
+- New table: `PORTFOLIO_SNAPSHOTS`.
+- New table: `RESEARCH_RUNS`.
+- New table: `CRYPTO_ASSET_MASTER`.
+- Recommendations use robust score parsing for qualitative AI/intelligence values.
+- Alpaca dashboard fields now include explicit unavailable reasons.
+- Benchmark brief falls back to latest seeded research with an explicit reason when today's rows are unavailable.
+- Kraken and Coinbase adapters return not-configured or disabled responses unless credentials and trading flags are explicitly configured.
+- Existing Command screen now has an executive summary and exchange selector.
+- Existing Intelligence screen now shows research freshness and benchmark source/confidence fields.
+- Tests: 42/42 passing inside `.venv`.
 - Published to GitHub `master` at commit `cfcd023` so Render can auto-deploy if auto-deploy is enabled.
 - Hosted Render health checks were attempted immediately after push, but `https://trader-no0f.onrender.com` was not accepting connections from this environment at that moment.
 

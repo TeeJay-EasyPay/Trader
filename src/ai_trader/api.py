@@ -17,12 +17,13 @@ from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
 from .briefing import generate_daily_briefing
-from .broker_adapters import AlpacaBrokerAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
+from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
 from .config import Settings, load_settings
 from .execution import ExecutionEngine
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import TradeProposal, utc_now_iso
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
+from .operational import display_value, initialize_operational_schema, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .scheduler import ResearchScheduler
 
 
@@ -68,6 +69,7 @@ class LocalApiService:
         self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
         self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
         self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
+        initialize_operational_schema(settings.db_path)
         self._initialize_control()
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
@@ -76,7 +78,7 @@ class LocalApiService:
         if path == "/status":
             return 200, self.status()
         if path == "/portfolio":
-            return 200, self.portfolio()
+            return 200, self.portfolio(_first(query, "broker") or "all")
         if path == "/founder-brief":
             return 200, self.founder_brief()
         if path == "/recommendations":
@@ -148,6 +150,8 @@ class LocalApiService:
         latest_decision = self.orchestrator.latest_decision()
         latest_morning = self._latest_daily_brief("morning")
         latest_evening = self._latest_daily_brief("evening")
+        research_run = latest_research_run(self.settings.db_path)
+        executive_summary = self.executive_summary()
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -155,12 +159,18 @@ class LocalApiService:
             "last_analysis_time": last_analysis,
             "auto_paper_trading_status": "Enabled" if self.settings.auto_trade.enabled else "Disabled",
             "selected_active_brokers": self._active_broker_names(),
-            "next_scheduled_research_run": next_research_run(),
+            "next_scheduled_research_run": (research_run or {}).get("next_scheduled_run") or next_research_run(),
+            "last_research_run": research_run,
+            "research_status": _research_status(research_run),
+            "research_assets_reviewed": _research_assets_reviewed(research_run),
+            "research_recommendations_created": (research_run or {}).get("recommendations_created"),
+            "auto_trading_enabled": self.settings.auto_trade.enabled,
+            "paper_or_sandbox_mode": self.settings.guardrails.paper_trading_only,
+            "executive_summary": executive_summary,
             "last_orchestrator_decision": latest_decision,
             "morning_brief": latest_morning,
             "evening_brief": latest_evening,
             "cloud_api_health": "Available",
-            "research_status": "24/7 research ready",
             "latest_activity": [dict(row) for row in last_activity],
             "recent_transactions": [dict(row) for row in recent_transactions],
             "recommendation_summary": {
@@ -172,14 +182,18 @@ class LocalApiService:
             "updated_at": control["updated_at"],
         }
 
-    def portfolio(self) -> dict[str, Any]:
+    def portfolio(self, broker_filter: str = "all") -> dict[str, Any]:
+        broker_filter = broker_filter.lower()
+        if broker_filter in {"kraken", "coinbase"}:
+            return self._unconfigured_exchange_portfolio(broker_filter)
         if not self.settings.has_alpaca_credentials:
             return {
-                "portfolio_value": None,
-                "cash_available": None,
-                "todays_pnl": None,
+                "portfolio_value": "Not available - Alpaca paper credentials are not configured",
+                "cash_available": "Not available - Alpaca paper credentials are not configured",
+                "todays_pnl": "Not available - Alpaca paper credentials are not configured",
                 "open_positions": [],
                 "source": "Not available: Alpaca paper credentials are not configured.",
+                "executive_summary": self.executive_summary(),
             }
         try:
             broker = self._broker()
@@ -187,30 +201,50 @@ class LocalApiService:
             positions = broker.get_positions()
             orders = broker.get_orders(status="all", limit=10)
             activities = broker.get_activities("FILL")
+            snapshot = record_portfolio_snapshot(
+                self.settings.db_path,
+                broker="alpaca",
+                exchange="Alpaca",
+                account=account,
+                positions=positions,
+                notes="Dashboard refresh snapshot.",
+            )
+            latest_trade = _latest_trade(orders, activities)
             return {
-                "portfolio_value": _float_or_none(account.get("portfolio_value") or account.get("equity")),
-                "cash_available": _float_or_none(account.get("cash")),
-                "todays_pnl": None,
+                "broker": "alpaca",
+                "exchange": "Alpaca",
+                "portfolio_value": display_value(snapshot["portfolio_value"], "Alpaca returned no portfolio value"),
+                "cash_available": display_value(snapshot["cash"], "Alpaca returned no cash balance"),
+                "buying_power": display_value(snapshot["buying_power"], "Alpaca returned no buying power"),
+                "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
+                "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
+                "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
+                "month_start_value": display_value(snapshot["month_start_value"], "no month-start snapshot yet"),
+                "amount_traded_today": _amount_traded_today(activities),
+                "latest_trade": latest_trade or "Not available - no Alpaca fills or orders returned",
                 "open_positions": [
                     {
                         "symbol": row.get("symbol"),
-                        "qty": _float_or_none(row.get("qty")),
-                        "market_value": _float_or_none(row.get("market_value")),
-                        "unrealized_pl": _float_or_none(row.get("unrealized_pl")),
+                        "qty": safe_float(row.get("qty")),
+                        "market_value": safe_float(row.get("market_value")),
+                        "unrealized_pl": safe_float(row.get("unrealized_pl")),
                     }
                     for row in positions
                 ],
+                "open_positions_summary": f"{len(positions)}" if positions else "Not available - Alpaca returned no open positions",
                 "recent_orders": orders[:10] if isinstance(orders, list) else [],
                 "recent_activities": activities[:10] if isinstance(activities, list) else [],
+                "executive_summary": self.executive_summary(),
                 "source": "Alpaca Paper Trading",
             }
         except Exception as exc:
             return {
-                "portfolio_value": None,
-                "cash_available": None,
-                "todays_pnl": None,
+                "portfolio_value": f"Not available - {exc}",
+                "cash_available": f"Not available - {exc}",
+                "todays_pnl": f"Not available - {exc}",
                 "open_positions": [],
                 "source": f"Not available: {exc}",
+                "executive_summary": self.executive_summary(),
             }
 
     def founder_brief(self) -> dict[str, Any]:
@@ -245,8 +279,8 @@ class LocalApiService:
             guardrails_passed = bool(row["execution_guardrails_passed"])
             guardrail_failures = _validation_failures(row["validation_result"])
             guardrail_checks = _guardrail_checks(row["validation_result"], row["payload_json"])
-            confidence = float(row["ai_confidence"] or 0)
-            philosophy_fit = _float_or_none(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"])
+            confidence = safe_score(row["ai_confidence"]) or 0.0
+            philosophy_fit = safe_score(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
             decision = self._latest_orchestrator_decision(row["proposal_id"])
             auto_trade_eligible = (
                 guardrails_passed
@@ -263,7 +297,7 @@ class LocalApiService:
                     "ticker": row["symbol"],
                     "sector": row["sector"],
                     "country": row["country"],
-                    "confidence": row["ai_confidence"],
+                    "confidence": confidence if confidence else None,
                     "asset_available": None if decision is None else bool(decision["asset_available"]),
                     "suggested_broker": None if decision is None else decision["selected_broker"],
                     "exchange": _proposal_exchange(row["payload_json"]),
@@ -309,7 +343,7 @@ class LocalApiService:
         return sorted(
             recommendations,
             key=lambda item: (
-                float(item["confidence"] or 0),
+                safe_score(item["confidence"]) or 0,
                 _parse_datetime(item["created_at"]) or datetime.min.replace(tzinfo=timezone.utc),
             ),
             reverse=True,
@@ -352,8 +386,34 @@ class LocalApiService:
                 (brief_date,),
             )
         ]
-        summary = "Not available" if not rows else "Benchmark intelligence is for learning only. Do not copy trades automatically."
-        return {"date": brief_date, "summary": summary, "items": rows}
+        reason = None
+        source_date = brief_date
+        if not rows:
+            latest = self._scalar("SELECT MAX(research_date) FROM BENCHMARK_DAILY_RESEARCH")
+            if latest:
+                source_date = latest
+                rows = [
+                    dict(row)
+                    for row in self._rows(
+                        """
+                        SELECT bt.trader_name, bt.platform, bt.strategy_style, bt.risk_rating,
+                               bdr.research_date, bdr.source, bdr.observed_trade_or_portfolio_change,
+                               bdr.ai_interpretation, bdr.risk_lesson, bdr.market_lesson,
+                               bdr.related_company, bdr.related_sector, bdr.related_theme,
+                               bdr.confidence, bdr.impact_on_our_view
+                        FROM BENCHMARK_DAILY_RESEARCH bdr
+                        JOIN BENCHMARK_TRADERS bt ON bt.trader_id = bdr.trader_id
+                        WHERE bdr.research_date = ?
+                        ORDER BY bt.trader_name ASC
+                        """,
+                        (latest,),
+                    )
+                ]
+                reason = f"No benchmark rows for {brief_date}; showing latest seeded research from {latest}."
+            else:
+                reason = "Benchmark seed data is unavailable in SQLite."
+        summary = reason if reason and not rows else "Benchmark intelligence is for learning only. Do not copy trades automatically."
+        return {"date": brief_date, "source_date": source_date, "summary": summary, "items": rows, "unavailable_reason": reason}
 
     def developer_status(self) -> dict[str, Any]:
         watchlist_count = self._count("INVESTMENT_WATCHLIST", "active = 1")
@@ -389,6 +449,8 @@ class LocalApiService:
         }
 
     def run_analysis(self, body: dict[str, Any]) -> dict[str, Any]:
+        started_at = utc_now_iso()
+        trigger_type = str(body.get("trigger_type") or "manual")
         symbols = body.get("symbols")
         if isinstance(symbols, str):
             symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
@@ -397,9 +459,13 @@ class LocalApiService:
             limit = max(1, min(limit, 30))
             symbols = [row["ticker"] for row in self._rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT ?", (limit,))]
         if not symbols:
-            return {"status": "not_available", "message": "No symbols available in SQLite."}
+            result = {"status": "not_available", "message": "No symbols available in SQLite."}
+            self._record_research_from_result(started_at, result, [], trigger_type)
+            return result
         if not self.settings.has_alpaca_credentials:
-            return {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
+            result = {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
+            self._record_research_from_result(started_at, result, symbols, trigger_type)
+            return result
         broker = self._broker()
         analyzer = None
         if self.settings.openai_api_key:
@@ -430,13 +496,15 @@ class LocalApiService:
                 "auto_execution_status": auto_execution.get("status"),
             },
         )
-        return {
+        result = {
             "status": "completed",
             "symbols": symbols,
             "proposals": [proposal.to_dict() for proposal in proposals],
             "skipped_symbols": skipped_symbols,
             "auto_execution": auto_execution,
         }
+        self._record_research_from_result(started_at, result, symbols, trigger_type)
+        return result
 
     def set_trading_state(self, state: str, command: str) -> dict[str, Any]:
         with closing(self._connect()) as conn:
@@ -482,6 +550,7 @@ class LocalApiService:
         proposal = TradeProposal.from_dict(payload["proposal"])
         engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
         result = engine.execute_proposals([proposal])
+        self.portfolio("alpaca")
         return {"status": "submitted", "result": result, "amount_requested": body.get("amount")}
 
     def auto_execute_recommendations(self) -> dict[str, Any]:
@@ -563,6 +632,7 @@ class LocalApiService:
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
             if decision.decision == "approved":
                 decisions.append(decision.to_dict())
+                self.portfolio("alpaca")
             else:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -594,11 +664,73 @@ class LocalApiService:
         adapters = []
         if self.settings.has_alpaca_credentials:
             adapters.append(AlpacaBrokerAdapter(self._broker()))
-        adapters.extend([InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter()])
+        adapters.extend([InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter(), CoinbaseAdapter()])
         return adapters
 
     def _active_broker_names(self) -> list[str]:
         return [name for name, adapter in self.orchestrator.adapters.items() if adapter.get_supported_assets()]
+
+    def executive_summary(self) -> list[dict[str, Any]]:
+        alpaca = self._latest_snapshot_summary("alpaca", "Alpaca")
+        return [
+            alpaca or {"broker": "Alpaca", "status": "Not configured" if not self.settings.has_alpaca_credentials else "Not available - no portfolio snapshots yet"},
+            {"broker": "Kraken", "status": "Not configured"},
+            {"broker": "Coinbase", "status": "Not configured"},
+        ]
+
+    def _latest_snapshot_summary(self, broker: str, label: str) -> dict[str, Any] | None:
+        row = self._row("SELECT * FROM PORTFOLIO_SNAPSHOTS WHERE broker = ? ORDER BY snapshot_id DESC LIMIT 1", (broker,))
+        if not row:
+            return None
+        return {
+            "broker": label,
+            "portfolio_balance": display_value(row["portfolio_value"], "no portfolio snapshot value"),
+            "cash_balance": display_value(row["cash"], "no cash snapshot value"),
+            "last_day_pnl": display_value(row["day_pnl"], "no prior snapshot"),
+            "last_week_pnl": display_value(row["week_pnl"], "no prior weekly snapshot"),
+            "last_month_pnl": display_value(row["month_pnl"], "no month-start snapshot"),
+            "amount_traded_today": 0,
+            "month_start_portfolio_balance": display_value(row["month_start_value"], "no month-start snapshot"),
+            "open_positions": display_value(row["open_positions_count"], "no position snapshots yet"),
+            "status": "Connected",
+        }
+
+    def _unconfigured_exchange_portfolio(self, broker: str) -> dict[str, Any]:
+        label = broker.capitalize()
+        return {
+            "broker": broker,
+            "exchange": label,
+            "portfolio_value": f"Not available - {label} not configured",
+            "cash_available": f"Not available - {label} not configured",
+            "todays_pnl": f"Not available - {label} not configured",
+            "open_positions": [],
+            "open_positions_summary": f"Not available - {label} not configured",
+            "recent_orders": [],
+            "recent_activities": [],
+            "source": f"{label} not configured",
+            "executive_summary": self.executive_summary(),
+        }
+
+    def _record_research_from_result(self, started_at: str, result: dict[str, Any], symbols: list[str], trigger_type: str) -> None:
+        errors = [item.get("reason", "") for item in result.get("skipped_symbols", []) if item.get("reason")]
+        auto = result.get("auto_execution") or {}
+        record_research_run(
+            self.settings.db_path,
+            started_at=started_at,
+            completed_at=utc_now_iso(),
+            status=result.get("status", "unknown"),
+            trigger_type=trigger_type,
+            markets_reviewed=["Alpaca", "Benchmark Intelligence"],
+            companies_reviewed=len(symbols),
+            crypto_assets_reviewed=self._count("CRYPTO_ASSET_MASTER", "active = 1"),
+            benchmark_traders_reviewed=self._count("BENCHMARK_TRADERS", "active = 1"),
+            recommendations_created=len(result.get("proposals", [])),
+            trades_executed=len(auto.get("result", [])) if isinstance(auto.get("result"), list) else 0,
+            trades_rejected=auto.get("skipped_count", 0) or len(auto.get("skipped", [])) if isinstance(auto, dict) else 0,
+            errors=errors,
+            next_scheduled_run=next_research_run(),
+            summary=result.get("message") or f"Research completed with {len(result.get('proposals', []))} recommendation(s).",
+        )
 
     def _latest_orchestrator_decision(self, recommendation_id: str) -> dict[str, Any] | None:
         row = self._row(
@@ -675,6 +807,8 @@ class LocalApiService:
             "MARKET_THEMES",
             "BENCHMARK_TRADERS",
             "trade_audit",
+            "CRYPTO_ASSET_MASTER",
+            "BENCHMARK_DAILY_RESEARCH",
         }:
             raise ValueError(f"Unsupported count table: {table}")
         sql = f"SELECT COUNT(*) FROM {table}"
@@ -765,6 +899,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
     service = LocalApiService(load_settings())
     service.intelligence.seed_initial_data()
     service.benchmark.seed_initial_data()
+    seed_crypto_universe(service.settings.db_path, fetch_live=False)
     service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
     service.benchmark.write_initial_brief(service.settings.output_dir)
     if service.settings.research_scheduler_enabled:
@@ -785,9 +920,7 @@ def _first(query: dict[str, list[str]], key: str) -> str | None:
 
 
 def _float_or_none(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    return float(value)
+    return safe_float(value)
 
 
 def _int_or_default(value: Any, default: int) -> int:
@@ -803,7 +936,7 @@ def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[s
     generated_at = _parse_datetime(created_at)
     if generated_at is None:
         return {"status": "Not available", "expires_at": None, "note": "Generated time could not be parsed."}
-    confidence_value = float(confidence or 0)
+    confidence_value = safe_score(confidence) or 0
     if confidence_value >= 0.85:
         lifetime = timedelta(hours=4)
     elif confidence_value >= 0.75:
@@ -885,10 +1018,45 @@ def _proposal_asset_type(payload_json: Any) -> str:
 
 def _proposal_philosophy_fit(payload_json: Any) -> float:
     value = _proposal_payload(payload_json).get("philosophy_fit")
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    return safe_score(value) or 0.0
+
+
+def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:
+    combined = []
+    for item in activities:
+        combined.append({"type": "fill", **item, "sort_time": item.get("transaction_time") or item.get("date")})
+    for item in orders:
+        combined.append({"type": "order", **item, "sort_time": item.get("submitted_at") or item.get("updated_at") or item.get("created_at")})
+    combined.sort(key=lambda item: item.get("sort_time") or "", reverse=True)
+    return combined[0] if combined else None
+
+
+def _amount_traded_today(activities: list[dict[str, Any]]) -> float:
+    today = date.today().isoformat()
+    amount = 0.0
+    for item in activities:
+        timestamp = str(item.get("transaction_time") or item.get("date") or "")
+        if not timestamp.startswith(today):
+            continue
+        qty = safe_float(item.get("qty")) or 0.0
+        price = safe_float(item.get("price")) or 0.0
+        amount += abs(qty * price)
+    return amount
+
+
+def _research_status(run: dict[str, Any] | None) -> str:
+    if not run:
+        return "idle - no research run recorded yet"
+    status = str(run.get("status") or "idle")
+    if status == "completed":
+        return "idle"
+    return status
+
+
+def _research_assets_reviewed(run: dict[str, Any] | None) -> int | None:
+    if not run:
+        return None
+    return int(run.get("companies_reviewed") or 0) + int(run.get("crypto_assets_reviewed") or 0)
 
 
 def _validation_failures(validation_result: Any) -> list[str]:

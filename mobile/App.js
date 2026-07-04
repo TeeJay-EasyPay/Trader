@@ -28,6 +28,7 @@ export default function App() {
   const [themes, setThemes] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [amounts, setAmounts] = useState({});
+  const [selectedExchange, setSelectedExchange] = useState('All');
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
 
   const request = useCallback(async (path, options) => {
@@ -127,6 +128,8 @@ export default function App() {
           status={status}
           portfolio={portfolio}
           brief={brief}
+          selectedExchange={selectedExchange}
+          setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
           onCommand={command}
         />
@@ -182,22 +185,57 @@ export default function App() {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
+function CommandCentre({ status, portfolio, brief, selectedExchange, setSelectedExchange, onRefresh, onCommand }) {
   const positions = portfolio?.open_positions || [];
-  const recentTransactions = combinedTransactions(status, portfolio);
+  const recentTransactions = combinedTransactions(status, portfolio, selectedExchange);
   const recommendationSummary = status?.recommendation_summary || {};
+  const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
+  const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   return (
     <View>
+      <Section title="Executive Summary">
+        {!executiveSummary.length ? (
+          <Empty />
+        ) : (
+          executiveSummary.map((item) => (
+            <View key={item.broker} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{notAvailable(item.broker)}</Text>
+              <Metric label="Balance" value={moneyOrText(item.portfolio_balance)} />
+              <Metric label="Cash" value={moneyOrText(item.cash_balance)} />
+              <Metric label="Day P&L" value={moneyOrText(item.last_day_pnl)} />
+              <Metric label="Week P&L" value={moneyOrText(item.last_week_pnl)} />
+              <Metric label="Month P&L" value={moneyOrText(item.last_month_pnl)} />
+              <Metric label="Traded Today" value={moneyOrText(item.amount_traded_today)} />
+              <Metric label="Month Start" value={moneyOrText(item.month_start_portfolio_balance)} />
+              <Metric label="Open Positions" value={item.open_positions} />
+              <Metric label="Status" value={item.status} />
+            </View>
+          ))
+        )}
+      </Section>
+      <Section title="Exchange Filter">
+        <View style={styles.buttonGrid}>
+          {['All', 'Alpaca', 'Kraken', 'Coinbase'].map((item) => (
+            <Button
+              key={item}
+              label={item}
+              tone={selectedExchange === item ? 'primary' : 'neutral'}
+              onPress={() => setSelectedExchange(item)}
+            />
+          ))}
+        </View>
+      </Section>
       <Section title="Trading Command Centre">
         <Metric label="System Status" value={status?.system_status} />
         <Metric label="Paper / Live Mode" value={status?.paper_live_mode} />
         <Metric label="Engine Health" value={status?.engine_health} />
         <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
-        <Metric label="Portfolio Value" value={money(portfolio?.portfolio_value)} />
-        <Metric label="Cash Available" value={money(portfolio?.cash_available)} />
-        <Metric label="Today's P&L" value={money(portfolio?.todays_pnl)} />
-        <Metric label="Open Positions" value={positions.length ? `${positions.length}` : 'Not available'} />
+        <Metric label="Portfolio Value" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'portfolio')} />
+        <Metric label="Cash Available" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'cash')} />
+        <Metric label="Today's P&L" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'dayPnl')} />
+        <Metric label="Open Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'positions') || (positions.length ? `${positions.length}` : 'Not available')} />
         <Metric label="Active Recommendations" value={recommendationSummary.active} />
+        <Metric label="Latest Trade" value={describeLatestTrade(portfolio?.latest_trade)} />
         <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
         <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
         <Metric label="Auto Paper Trading Status" value={status?.auto_paper_trading_status} />
@@ -212,7 +250,7 @@ function CommandCentre({ status, portfolio, brief, onRefresh, onCommand }) {
         <Button label="Stop Trading" onPress={() => onCommand('/stop-trading')} tone="danger" />
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
       </View>
-      <Section title="Broker Trade History">
+      <Section title={`${selectedExchange === 'All' ? 'Alpaca' : selectedExchange} Trade History`}>
         {!recentTransactions.length ? (
           <Empty />
         ) : (
@@ -343,6 +381,11 @@ function MarketIntelligence({ benchmark, themes, companies, status }) {
     <View>
       <Section title="24/7 Research Status">
         <Metric label="Research Status" value={status?.research_status} />
+        <Metric label="Last Research Run" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
+        <Metric label="Assets Reviewed" value={status?.research_assets_reviewed} />
+        <Metric label="Recommendations Created" value={status?.research_recommendations_created} />
+        <Metric label="Auto Trading Enabled" value={yesNo(status?.auto_trading_enabled)} />
+        <Metric label="Paper/Sandbox Mode" value={yesNo(status?.paper_or_sandbox_mode)} />
         <Metric label="Markets Currently Open" value={marketsOpenText(status)} />
         <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
         <TextBlock label="What AI Learned Since Last Brief" value={latestLearningText(status, benchmark)} />
@@ -357,6 +400,8 @@ function MarketIntelligence({ benchmark, themes, companies, status }) {
           items.map((item, index) => (
             <View key={`${item.trader_name}-${index}`} style={styles.card}>
               <Text style={styles.cardTitle}>{notAvailable(item.trader_name)}</Text>
+              <Metric label="Source / Platform" value={item.platform || item.source} />
+              <Metric label="Confidence" value={item.confidence} />
               <TextBlock label="Public activity" value={item.observed_trade_or_portfolio_change} />
               <TextBlock label="AI learned" value={item.ai_interpretation} />
               <TextBlock label="Risk lessons" value={item.risk_lesson} />
@@ -450,6 +495,13 @@ function money(value) {
   return `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
+function moneyOrText(value) {
+  if (typeof value === 'string' && value.startsWith('Not available')) {
+    return value;
+  }
+  return money(value);
+}
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -486,7 +538,10 @@ function shortApiBase() {
   return API_BASE.replace(/^https?:\/\//, '');
 }
 
-function combinedTransactions(status, portfolio) {
+function combinedTransactions(status, portfolio, selectedExchange = 'All') {
+  if (selectedExchange === 'Kraken' || selectedExchange === 'Coinbase') {
+    return [];
+  }
   const auditRows = (status?.recent_transactions || []).filter((item) => (
     item.event_type === 'execution_approved' || item.event_type === 'execution_rejected'
   ));
@@ -512,6 +567,20 @@ function combinedTransactions(status, portfolio) {
     .filter((item) => item.created_at || item.symbol || item.event_type)
     .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
     .slice(0, 12);
+}
+
+function describeLatestTrade(value) {
+  if (!value || typeof value === 'string') {
+    return value;
+  }
+  return describeTransaction({
+    event_type: value.type === 'fill' ? 'broker_fill' : 'broker_order',
+    symbol: value.symbol,
+    side: value.side,
+    position_size: value.qty,
+    price: value.price,
+    status: value.status,
+  });
 }
 
 function analysisActivity(status) {
@@ -657,6 +726,33 @@ function describeDecision(decision) {
     return null;
   }
   return `${notAvailable(decision.symbol)} ${notAvailable(decision.decision)}${decision.rejection_reason ? `: ${decision.rejection_reason}` : ''}`;
+}
+
+function exchangeSummary(items, selectedExchange) {
+  if (!items || selectedExchange === 'All') {
+    return null;
+  }
+  return items.find((item) => String(item.broker || '').toLowerCase() === selectedExchange.toLowerCase()) || null;
+}
+
+function selectedPortfolioValue(selectedExchange, summary, portfolio, field) {
+  if (selectedExchange === 'Kraken' || selectedExchange === 'Coinbase') {
+    if (!summary) {
+      return `${selectedExchange} not configured`;
+    }
+    if (summary.status && !summary.portfolio_balance) {
+      return summary.status;
+    }
+    if (field === 'portfolio') return moneyOrText(summary.portfolio_balance);
+    if (field === 'cash') return moneyOrText(summary.cash_balance);
+    if (field === 'dayPnl') return moneyOrText(summary.last_day_pnl);
+    if (field === 'positions') return summary.open_positions;
+  }
+  if (field === 'portfolio') return moneyOrText(portfolio?.portfolio_value);
+  if (field === 'cash') return moneyOrText(portfolio?.cash_available);
+  if (field === 'dayPnl') return moneyOrText(portfolio?.todays_pnl);
+  if (field === 'positions') return portfolio?.open_positions_summary;
+  return null;
 }
 
 function marketsOpenText(status) {

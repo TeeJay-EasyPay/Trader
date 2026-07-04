@@ -359,3 +359,19 @@
 - Committed Sprint 4 Render-ready changes as `cfcd023`.
 - Pushed `master` to `origin` so Render can auto-deploy if auto-deploy is enabled.
 - Attempted hosted health checks after push; `https://trader-no0f.onrender.com` was not accepting connections from this environment at that moment.
+
+## 2026-07-04 Sprint 5 Operational Clarity and Crypto Preparation
+
+- Added `src/ai_trader/operational.py` for robust score parsing, portfolio snapshots, research runs, and crypto universe schema.
+- Fixed qualitative values such as `Good`, `Medium`, `High`, `Low`, `Cautious`, and `Positive` so recommendations no longer crash on numeric conversion.
+- Added `PORTFOLIO_SNAPSHOTS`, `RESEARCH_RUNS`, and `CRYPTO_ASSET_MASTER` tables.
+- Portfolio dashboard refresh now records an Alpaca snapshot and returns explicit `Not available - reason` values when data cannot be calculated.
+- Research analysis now records auditable research run rows.
+- Benchmark daily brief now falls back to the latest seeded benchmark research with an explicit reason when today's data is unavailable.
+- Updated Command screen with executive summary and exchange selector for All, Alpaca, Kraken, and Coinbase.
+- Renamed visible trade history to exchange-specific wording such as Alpaca Trade History.
+- Added Kraken and Coinbase adapter preparation with trading disabled by default.
+- Added crypto-specific auto-trade guardrail environment variables.
+- Updated Render and cloud environment documentation for Sprint 5.
+- Added Sprint 5 tests for qualitative parsing, P&L unavailable reasons, snapshots, research run tracking, benchmark fallback, exchange selector not-configured states, Kraken/Coinbase not configured, crypto universe table creation, and safe crypto auto-trade rejection.
+- Verified Python tests: 42/42 passing.

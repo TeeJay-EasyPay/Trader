@@ -28,6 +28,9 @@ class AutoTradeConfig:
     max_trade_amount: float = 25.0
     default_stop_loss_pct: float = 0.03
     max_stop_loss_pct: float = 0.05
+    crypto_max_trade_amount: float = 10.0
+    crypto_default_stop_loss_pct: float = 0.02
+    crypto_max_stop_loss_pct: float = 0.05
 
 
 @dataclass(frozen=True)
