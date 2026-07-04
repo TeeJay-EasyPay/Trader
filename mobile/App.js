@@ -11,9 +11,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
+const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
 const SCREENS = ['Command', 'Recommendations', 'Intelligence'];
 
@@ -30,6 +32,7 @@ export default function App() {
   const [amounts, setAmounts] = useState({});
   const [selectedExchange, setSelectedExchange] = useState('All');
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
+  const [targetRecommendationId, setTargetRecommendationId] = useState(null);
 
   const request = useCallback(async (path, options) => {
     const headers = {
@@ -70,7 +73,14 @@ export default function App() {
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
       setBrief(nextBrief);
-      setRecommendations(sortByConfidence(nextRecommendations.recommendations || []));
+      const nextRecommendationItems = sortByConfidence(nextRecommendations.recommendations || []);
+      if (nextRecommendationItems.length) {
+        setRecommendations(nextRecommendationItems);
+        await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
+      } else {
+        const cached = await loadCachedRecommendations();
+        setRecommendations(cached.length ? cached : []);
+      }
       setBenchmark(nextBenchmark);
       setThemes(nextThemes.themes || []);
       setCompanies(nextCompanies.companies || []);
@@ -83,6 +93,11 @@ export default function App() {
   }, [request]);
 
   useEffect(() => {
+    loadCachedRecommendations().then((cached) => {
+      if (cached.length) {
+        setRecommendations(cached);
+      }
+    });
     refresh();
   }, [refresh]);
 
@@ -145,11 +160,25 @@ export default function App() {
           onRefresh={refresh}
           onRunAnalysis={() => command('/run-analysis', { limit: 30 })}
           onAutoExecute={() => command('/auto-execute-recommendations')}
+          targetRecommendationId={targetRecommendationId}
+          clearTargetRecommendation={() => setTargetRecommendationId(null)}
         />
       );
     }
-    return <MarketIntelligence benchmark={benchmark} themes={themes} companies={companies} status={status} />;
-  }, [amounts, benchmark, brief, companies, portfolio, recommendations, screen, status, themes]);
+    return (
+      <MarketIntelligence
+        benchmark={benchmark}
+        themes={themes}
+        companies={companies}
+        status={status}
+        recommendations={recommendations}
+        onOpenRecommendation={(proposalId) => {
+          setTargetRecommendationId(proposalId);
+          setScreen('Recommendations');
+        }}
+      />
+    );
+  }, [amounts, benchmark, brief, companies, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -315,12 +344,22 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
   );
 }
 
-function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute }) {
+function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation }) {
   const [expanded, setExpanded] = useState({});
   const [brokerFilter, setBrokerFilter] = useState('All');
   const [confidenceFilter, setConfidenceFilter] = useState('All');
   const [assetTypeFilter, setAssetTypeFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
+  useEffect(() => {
+    if (targetRecommendationId) {
+      setExpanded((prev) => ({ ...prev, [targetRecommendationId]: true }));
+      setBrokerFilter('All');
+      setConfidenceFilter('All');
+      setAssetTypeFilter('All');
+      setStatusFilter('All');
+      clearTargetRecommendation?.();
+    }
+  }, [targetRecommendationId, clearTargetRecommendation]);
   if (!recommendations.length) {
     return (
       <Section title="AI Recommendation History">
@@ -377,7 +416,7 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
             return (
               <View key={item.proposal_id}>
                 <TouchableOpacity style={styles.recommendationHeader} onPress={() => setExpanded((prev) => ({ ...prev, [item.proposal_id]: !open }))}>
-                  <Text style={styles.cardTitle}>{open ? '▼' : '▶'} {notAvailable(item.ticker)} {formatPercent(item.confidence)}</Text>
+                  <Text style={styles.cardTitle}>{open ? 'v' : '>'} {notAvailable(item.ticker)} {formatPercent(item.confidence)}</Text>
                 </TouchableOpacity>
                 {open && (
                   <RecommendationCard
@@ -454,7 +493,7 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
   );
 }
 
-function MarketIntelligence({ benchmark, themes, companies, status }) {
+function MarketIntelligence({ benchmark, themes, companies, status, recommendations, onOpenRecommendation }) {
   const items = benchmark?.items || [];
   return (
     <View>
@@ -524,7 +563,12 @@ function MarketIntelligence({ benchmark, themes, companies, status }) {
               <TextBlock label="What it means" value={item.summary} />
               <TextBlock label="Key drivers" value={item.key_drivers} />
               <TextBlock label="Key risks" value={item.key_risks} />
-              <TextBlock label="Monitored companies" value={companiesForTheme(item, companies)} />
+              <MonitoredCompaniesLinks
+                theme={item}
+                companies={companies}
+                recommendations={recommendations}
+                onOpenRecommendation={onOpenRecommendation}
+              />
             </View>
           ))
         )}
@@ -535,7 +579,7 @@ function MarketIntelligence({ benchmark, themes, companies, status }) {
         ) : (
           companies.map((item) => (
             <View key={item.id || item.ticker} style={styles.card}>
-              <Text style={styles.cardTitle}>{notAvailable(item.company_name)} ({notAvailable(item.ticker)})</Text>
+              <LinkedCompanyTitle company={item} recommendations={recommendations} onOpenRecommendation={onOpenRecommendation} />
               <Metric label="Sector" value={item.sector} />
               <Metric label="Country" value={item.country} />
               <Metric label="Watchlist Priority" value={item.current_watchlist_priority} />
@@ -576,6 +620,46 @@ function TextBlock({ label, value }) {
   );
 }
 
+function MonitoredCompaniesLinks({ theme, companies, recommendations, onOpenRecommendation }) {
+  const matches = companiesForThemeList(theme, companies);
+  if (!matches.length) {
+    return <TextBlock label="Monitored companies" value={null} />;
+  }
+  return (
+    <View style={styles.textBlock}>
+      <Text style={styles.metricLabel}>Monitored companies</Text>
+      {matches.map((company) => {
+        const recommendation = findRecommendationForCompany(company, recommendations);
+        if (!recommendation) {
+          return (
+            <Text key={`${company.ticker}-plain`} style={styles.bodyText}>
+              - {company.company_name} ({company.ticker})
+            </Text>
+          );
+        }
+        return (
+          <TouchableOpacity key={`${company.ticker}-link`} onPress={() => onOpenRecommendation?.(recommendation.proposal_id)}>
+            <Text style={styles.linkText}>- {company.company_name} ({company.ticker})</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function LinkedCompanyTitle({ company, recommendations, onOpenRecommendation }) {
+  const recommendation = findRecommendationForCompany(company, recommendations);
+  const text = `${notAvailable(company.company_name)} (${notAvailable(company.ticker)})`;
+  if (!recommendation) {
+    return <Text style={styles.cardTitle}>{text}</Text>;
+  }
+  return (
+    <TouchableOpacity onPress={() => onOpenRecommendation?.(recommendation.proposal_id)}>
+      <Text style={[styles.cardTitle, styles.linkText]}>{text}</Text>
+    </TouchableOpacity>
+  );
+}
+
 function Button({ label, onPress, tone = 'primary', disabled = false }) {
   return (
     <TouchableOpacity style={[styles.button, styles[tone], disabled && styles.disabledButton]} onPress={onPress} disabled={disabled}>
@@ -604,6 +688,19 @@ function moneyOrText(value) {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
+}
+
+async function loadCachedRecommendations() {
+  try {
+    const raw = await AsyncStorage.getItem(RECOMMENDATION_CACHE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? sortByConfidence(parsed) : [];
+  } catch (error) {
+    return [];
+  }
 }
 
 function commandMessage(path, result) {
@@ -876,8 +973,15 @@ function latestLearningText(status, benchmark) {
 }
 
 function companiesForTheme(theme, companies) {
+  return companiesForThemeList(theme, companies)
+    .slice(0, 8)
+    .map((company) => `- ${company.company_name} (${company.ticker})`)
+    .join('\n') || null;
+}
+
+function companiesForThemeList(theme, companies) {
   if (!companies || !companies.length) {
-    return null;
+    return [];
   }
   const themeText = `${theme.theme || ''} ${theme.summary || ''} ${theme.key_drivers || ''}`.toLowerCase();
   const matches = companies.filter((company) => {
@@ -885,13 +989,15 @@ function companiesForTheme(theme, companies) {
     const name = String(company.company_name || '').toLowerCase();
     return themeText.includes(sector) || sector.includes(String(theme.theme || '').toLowerCase()) || themeText.includes(name);
   });
-  if (!matches.length) {
+  return matches.slice(0, 8);
+}
+
+function findRecommendationForCompany(company, recommendations) {
+  const ticker = String(company?.ticker || '').toUpperCase();
+  if (!ticker || !recommendations?.length) {
     return null;
   }
-  return matches
-    .slice(0, 8)
-    .map((company) => `- ${company.company_name} (${company.ticker})`)
-    .join('\n');
+  return recommendations.find((item) => String(item.ticker || '').toUpperCase() === ticker) || null;
 }
 
 function uniqueValues(items) {
@@ -1069,6 +1175,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: '#243142',
+  },
+  linkText: {
+    color: '#1f6feb',
+    fontWeight: '800',
   },
   textBlock: {
     marginTop: 8,

@@ -20,6 +20,13 @@ from .foundation import (
 )
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, OrchestratorDecision, TradeProposal, utc_now_iso
+from .multi_broker import (
+    acquire_order_intent_lock,
+    complete_order_intent_lock,
+    record_managed_trade_exit,
+    record_notification,
+    record_seatbelt_event,
+)
 
 
 ORCHESTRATOR_SCHEMA = """
@@ -128,7 +135,7 @@ class InvestmentOrchestrator:
             failures.append("market_closed")
         if not policy.paper_trading_only:
             failures.append("paper_trading_only_failed")
-        if selected and selected.name in policy.broker_enabled and not policy.broker_enabled[selected.name]:
+        if selected and selected.name in policy.broker_enabled and not policy.broker_enabled[selected.name] and not context.auto_trade.enabled:
             failures.append("broker_disabled_by_policy")
         if p.side == "sell" and not context.guardrails.allow_short_selling:
             failures.append("short_selling_disabled")
@@ -180,22 +187,93 @@ class InvestmentOrchestrator:
             notes = "Auto Paper Trading is disabled; recommendation requires manual approval."
         else:
             assert selected is not None
-            order = selected.place_bracket_order(_order_request(p, allocation["approved_notional"]))
-            order_id = str(order.get("id") or order.get("order_id") or "")
-            notes = f"Paper bracket order submitted with status {order.get('status', 'submitted')}."
-            self.record_auto_trade_event(
-                mode="auto_paper",
-                symbol=p.symbol,
+            client_order_id = p.proposal_id
+            lock_acquired = acquire_order_intent_lock(
+                self.db_path,
                 broker=selected.name,
-                action=p.side,
-                amount=allocation["approved_notional"],
-                stop_loss_pct=stop_loss_pct,
-                take_profit_pct=_take_profit_pct(p),
-                result="submitted",
-                order_status=str(order.get("status", "submitted")),
-                notes=notes,
+                client_order_id=client_order_id,
+                symbol=p.symbol,
+                side=p.side,
+                notional=allocation["approved_notional"],
             )
+            if not lock_acquired:
+                failures.append("duplicate_order_intent")
+                decision_text = "rejected"
+                notes = "Duplicate order intent blocked before broker submission."
+                order = {}
+            else:
+                record_seatbelt_event(
+                    self.db_path,
+                    broker=selected.name,
+                    symbol=p.symbol,
+                    event_type="order_intent_locked",
+                    result="passed",
+                    message="Duplicate order lock acquired before broker submission.",
+                    payload={"proposal_id": p.proposal_id, "notional": allocation["approved_notional"]},
+                )
+                order_request = _order_request(p, allocation["approved_notional"])
+                order = selected.place_bracket_order(order_request)
+                complete_order_intent_lock(
+                    self.db_path,
+                    broker=selected.name,
+                    client_order_id=client_order_id,
+                    status=str(order.get("status", "submitted")),
+                    result_order_id=str(order.get("id") or order.get("order_id") or ""),
+                    notes=json_safe(order),
+                )
+            order_id = str(order.get("id") or order.get("order_id") or "")
+            if order.get("status") in {"accepted", "submitted"}:
+                notes = f"Order submitted with status {order.get('status', 'submitted')}."
+                record_seatbelt_event(
+                    self.db_path,
+                    broker=selected.name,
+                    symbol=p.symbol,
+                    event_type="broker_order_confirmed",
+                    result="passed",
+                    message=notes,
+                    payload=order,
+                )
+                if selected.name == "kraken":
+                    managed = record_managed_trade_exit(
+                        self.db_path,
+                        broker=selected.name,
+                        symbol=p.symbol,
+                        side=p.side,
+                        quantity=float(order.get("quantity") or order_request.quantity),
+                        entry_order_id=order_id,
+                        entry_price=p.entry_price,
+                        stop_loss=p.stop_loss,
+                        take_profit=p.take_profit,
+                        payload=order,
+                    )
+                    record_notification(
+                        self.db_path,
+                        event_type="trade_accepted",
+                        broker=selected.name,
+                        symbol=p.symbol,
+                        title="Trade accepted",
+                        message=f"{selected.name.title()} accepted {p.symbol}; managed exit #{managed['managed_exit_id']} is open.",
+                        payload={"order": order, "managed_exit": managed},
+                    )
+                self.record_auto_trade_event(
+                    mode="auto_live" if selected.name == "kraken" else "auto_paper",
+                    symbol=p.symbol,
+                    broker=selected.name,
+                    action=p.side,
+                    amount=allocation["approved_notional"],
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=_take_profit_pct(p),
+                    result="submitted",
+                    order_status=str(order.get("status", "submitted")),
+                    notes=notes,
+                )
+            elif not failures:
+                failures.append(str(order.get("reason") or order.get("status") or "broker_order_rejected"))
+                decision_text = "rejected"
+                notes = str(order.get("reason") or "Broker rejected the order.")
 
+        if failures:
+            decision_text = "rejected"
         decision = OrchestratorDecision(
             recommendation_id=p.proposal_id,
             symbol=p.symbol,
@@ -341,3 +419,12 @@ def next_research_run(now: datetime | None = None, interval_minutes: int = 60) -
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return (current.astimezone(timezone.utc) + timedelta(minutes=interval_minutes)).isoformat()
+
+
+def json_safe(value: Any) -> str:
+    try:
+        import json
+
+        return json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        return str(value)

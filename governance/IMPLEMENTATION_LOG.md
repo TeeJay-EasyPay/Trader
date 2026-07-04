@@ -457,3 +457,26 @@
 - Updated `.env.example`, `cloud.env.example`, `render.yaml`, `README.md`, `STATUS.md`, and `governance/FOUNDER_BRIEF.md`.
 - Added tests for independent broker auto-trading, API broker control, recommendation set persistence, crypto research score storage, and legacy auto flag compatibility.
 - Verified Python tests: 53/53 passing.
+
+## 2026-07-04 Kraken Controlled Live Micro-Trading Seatbelts
+
+- Added explicit live Kraken approval switches:
+  - `KRAKEN_LIVE_TRADING_APPROVED`
+  - `KRAKEN_SUBMIT_REAL_ORDERS`
+  - `KRAKEN_MAX_ORDER_GBP`
+  - `KRAKEN_MIN_ORDER_GBP`
+  - `KRAKEN_MAX_OPEN_TRADES`
+  - `KRAKEN_ALLOWED_PAIRS`
+- Implemented Kraken `AddOrder` market order submission behind broker-specific auto trading, live approval, and hard mechanical checks.
+- Added duplicate order intent locks before broker submission.
+- Added managed exit records after accepted Kraken entries.
+- Added protective exit monitoring through `POST /monitor-managed-exits`.
+- Added SQLite tables:
+  - `ORDER_INTENT_LOCKS`
+  - `MANAGED_TRADE_EXITS`
+  - `MECHANICAL_SEATBELT_EVENTS`
+- Added queued notifications for trade accepted, stop loss, take profit, and exit submission.
+- Added mobile recommendation cache using AsyncStorage so recommendation history survives app restarts and backend/network gaps.
+- Added Intelligence-to-Recommendations linking: monitored company names link to matching recommendation cards and open the selected card.
+- Added tests for Kraken live micro-order rejection and validation-mode submission.
+- Verified Python tests: 55/55 passing.

@@ -397,7 +397,31 @@ Kraken read integration:
 - Fetches ticker prices through the public API helper.
 - Shows authentication failure reasons instead of pretending credentials are absent.
 
-Kraken order submission remains guarded and returns `not_implemented` unless a founder-approved final execution method is added. This keeps the platform prepared without accidentally enabling live crypto execution.
+Kraken controlled live micro-trading:
+
+- `KRAKEN_AUTO_TRADING=true` enables Kraken as a broker-specific autonomous entry candidate.
+- `KRAKEN_LIVE_TRADING_APPROVED=true` is a separate Founder approval switch required before Kraken can submit real orders.
+- `KRAKEN_SUBMIT_REAL_ORDERS=false` keeps Kraken AddOrder in validation mode; set it to `true` only when the Founder wants real spot orders.
+- `KRAKEN_MAX_ORDER_GBP=5` caps one Kraken order.
+- `KRAKEN_MIN_ORDER_GBP=1` prevents invalid tiny orders.
+- `KRAKEN_MAX_OPEN_TRADES=1` limits simultaneous Kraken entries.
+- `KRAKEN_ALLOWED_PAIRS=XBTGBP,ETHGBP,SOLGBP` restricts trading pairs.
+
+Mechanical live-execution seatbelts:
+
+- duplicate order intent lock before broker submission,
+- maximum order amount check,
+- minimum order amount check,
+- allowed pair check,
+- open Kraken order count check,
+- GBP balance check for buys,
+- stop loss and take profit mandatory,
+- broker submission confirmation,
+- managed exit record after entry,
+- `POST /monitor-managed-exits` checks open managed exits and submits the protective exit when stop loss or take profit is hit,
+- notification events are queued for trade accepted, stop loss, take profit, and exit submission.
+
+Disabling Kraken auto trading stops new entries. Existing managed exits remain eligible for protective exit submission.
 
 ## Install On Honor Magic V3
 

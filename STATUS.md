@@ -8,7 +8,7 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 
 - Python runtime installed and verified: Python 3.12.10.
 - Required dependency installed: `tzdata`.
-- Unit tests pass: 53/53.
+- Unit tests pass: 55/55.
 - `.env` loading works.
 - Alpaca Paper Trading connection works.
 - Alpaca account retrieval works.
@@ -71,6 +71,10 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Recommendation cards are grouped by broker, collapsed by default, sorted by confidence, and filterable.
 - Kraken read integration validates credentials, balances, holdings, open orders, closed orders, trade history, and ticker prices.
 - Notification events are queued in SQLite for research, broker control, and trade lifecycle events.
+- Kraken controlled live micro-trading path added behind explicit `KRAKEN_LIVE_TRADING_APPROVED` and `KRAKEN_SUBMIT_REAL_ORDERS` switches.
+- Mechanical seatbelts added for Kraken: duplicate order locks, max/min order size, allowed pairs, max open trades, GBP balance check, mandatory exits, broker confirmation, managed exit tracking, and protective exit monitoring.
+- Mobile recommendation history is cached locally as a fallback so reopening the app does not blank the screen during backend/network gaps.
+- Intelligence company names link to matching recommendation cards when a recommendation exists.
 
 ## Multi-Broker Autonomous Platform Sprint
 
@@ -89,7 +93,7 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
   - `COINBASE_AUTO_TRADING`
   - `BINANCE_AUTO_TRADING`
   - `IBKR_AUTO_TRADING`
-- Tests: 53/53 passing inside `.venv`.
+- Tests: 55/55 passing inside `.venv`.
 
 ## Foundation Sprint Autonomous Investment Platform
 

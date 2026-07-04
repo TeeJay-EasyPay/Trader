@@ -105,6 +105,50 @@ CREATE TABLE IF NOT EXISTS CRYPTO_RESEARCH_SCORES (
     reasoning_json TEXT NOT NULL,
     source TEXT
 );
+
+CREATE TABLE IF NOT EXISTS ORDER_INTENT_LOCKS (
+    lock_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    broker TEXT NOT NULL,
+    client_order_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    notional REAL,
+    status TEXT NOT NULL,
+    result_order_id TEXT,
+    notes TEXT,
+    UNIQUE(broker, client_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS MANAGED_TRADE_EXITS (
+    managed_exit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    broker TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entry_order_id TEXT,
+    entry_price REAL NOT NULL,
+    stop_loss REAL NOT NULL,
+    take_profit REAL NOT NULL,
+    status TEXT NOT NULL,
+    exit_order_id TEXT,
+    exit_reason TEXT,
+    last_checked_at TEXT,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS MECHANICAL_SEATBELT_EVENTS (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    broker TEXT NOT NULL,
+    symbol TEXT,
+    event_type TEXT NOT NULL,
+    result TEXT NOT NULL,
+    message TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
 """
 
 
@@ -469,6 +513,164 @@ def record_notification(
                 ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
                 """,
                 (utc_now_iso(), event_type, broker, symbol, title, message, json.dumps(payload or {}, sort_keys=True, default=str)),
+            )
+
+
+def acquire_order_intent_lock(
+    db_path: Path,
+    *,
+    broker: str,
+    client_order_id: str,
+    symbol: str,
+    side: str,
+    notional: float | None,
+) -> bool:
+    initialize_multi_broker_schema(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO ORDER_INTENT_LOCKS (
+                        created_at, broker, client_order_id, symbol, side,
+                        notional, status, result_order_id, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'locked', NULL, 'Order intent locked before broker submission.')
+                    """,
+                    (utc_now_iso(), broker.lower(), client_order_id, symbol.upper(), side.lower(), notional),
+                )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def complete_order_intent_lock(
+    db_path: Path,
+    *,
+    broker: str,
+    client_order_id: str,
+    status: str,
+    result_order_id: str | None,
+    notes: str | None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE ORDER_INTENT_LOCKS
+                SET status = ?, result_order_id = ?, notes = ?
+                WHERE broker = ? AND client_order_id = ?
+                """,
+                (status, result_order_id, notes, broker.lower(), client_order_id),
+            )
+
+
+def record_managed_trade_exit(
+    db_path: Path,
+    *,
+    broker: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry_order_id: str | None,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    initialize_multi_broker_schema(db_path)
+    now = utc_now_iso()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO MANAGED_TRADE_EXITS (
+                    created_at, updated_at, broker, symbol, side, quantity,
+                    entry_order_id, entry_price, stop_loss, take_profit,
+                    status, exit_order_id, exit_reason, last_checked_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL, ?)
+                """,
+                (
+                    now,
+                    now,
+                    broker.lower(),
+                    symbol.upper(),
+                    side.lower(),
+                    quantity,
+                    entry_order_id,
+                    entry_price,
+                    stop_loss,
+                    take_profit,
+                    json.dumps(payload, sort_keys=True, default=str),
+                ),
+            )
+            managed_exit_id = cursor.lastrowid
+    return {"managed_exit_id": managed_exit_id, "status": "open", "created_at": now}
+
+
+def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    sql = "SELECT * FROM MANAGED_TRADE_EXITS WHERE status = 'open'"
+    params: tuple[Any, ...] = ()
+    if broker:
+        sql += " AND broker = ?"
+        params = (broker.lower(),)
+    sql += " ORDER BY managed_exit_id ASC"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def close_managed_exit(
+    db_path: Path,
+    managed_exit_id: int,
+    *,
+    exit_order_id: str | None,
+    exit_reason: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE MANAGED_TRADE_EXITS
+                SET updated_at = ?, status = 'closed', exit_order_id = ?,
+                    exit_reason = ?, last_checked_at = ?, payload_json = ?
+                WHERE managed_exit_id = ?
+                """,
+                (
+                    utc_now_iso(),
+                    exit_order_id,
+                    exit_reason,
+                    utc_now_iso(),
+                    json.dumps(payload or {}, sort_keys=True, default=str),
+                    managed_exit_id,
+                ),
+            )
+
+
+def record_seatbelt_event(
+    db_path: Path,
+    *,
+    broker: str,
+    symbol: str | None,
+    event_type: str,
+    result: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO MECHANICAL_SEATBELT_EVENTS (
+                    created_at, broker, symbol, event_type, result, message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (utc_now_iso(), broker.lower(), symbol, event_type, result, message, json.dumps(payload or {}, sort_keys=True, default=str)),
             )
 
 

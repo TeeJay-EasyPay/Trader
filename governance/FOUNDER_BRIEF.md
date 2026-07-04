@@ -21,10 +21,11 @@ The Investment Orchestrator is now the central execution authority. Brokers oper
 
 ## Current Safety Position
 
-- Live trading remains unapproved.
-- Kraken order submission remains disabled pending final Founder-approved execution implementation.
+- Kraken live order submission is implemented but remains behind explicit Founder approval switches.
+- `KRAKEN_LIVE_TRADING_APPROVED=false` and `KRAKEN_SUBMIT_REAL_ORDERS=false` keep Kraken from placing real orders until changed in Render.
 - Broker-specific auto-trading defaults to false.
 - Existing positions remain managed when auto trading is disabled; new autonomous entries stop.
+- Kraken micro-trading has mechanical protections: duplicate lock, max order size, min order size, max open trades, allowed pair list, balance check, mandatory stop/take-profit, broker confirmation, and managed exit tracking.
 
 ## Founder Decision Points
 

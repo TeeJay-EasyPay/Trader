@@ -22,7 +22,7 @@ from .config import Settings, load_settings
 from .execution import ExecutionEngine
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
 from .intelligence import InvestmentIntelligenceDatabase
-from .models import TradeProposal, utc_now_iso
+from .models import OrderRequest, TradeProposal, utc_now_iso
 from .multi_broker import (
     all_broker_runtime,
     broker_auto_settings,
@@ -30,6 +30,8 @@ from .multi_broker import (
     initialize_multi_broker_schema,
     latest_broker_trades,
     latest_recommendation_set,
+    close_managed_exit,
+    open_managed_exits,
     record_broker_trade_history,
     record_notification,
     record_recommendation_set,
@@ -135,6 +137,8 @@ class LocalApiService:
             return 200, self.approve_and_execute(body)
         if path == "/broker-auto-trading":
             return 200, self.set_broker_auto_trading(body)
+        if path == "/monitor-managed-exits":
+            return 200, self.monitor_managed_exits()
         return 404, {"error": "not_found", "path": path}
 
     def status(self) -> dict[str, Any]:
@@ -777,6 +781,77 @@ class LocalApiService:
         )
         return {"status": "updated", **result}
 
+    def monitor_managed_exits(self) -> dict[str, Any]:
+        checked = []
+        for item in open_managed_exits(self.settings.db_path):
+            broker = item["broker"]
+            adapter = self.orchestrator.adapters.get(broker)
+            if broker != "kraken" or adapter is None or not hasattr(adapter, "current_prices"):
+                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "skipped", "reason": "broker_monitor_not_available"})
+                continue
+            pair = _kraken_pair_for_symbol(item["symbol"])
+            prices = adapter.current_prices([pair])
+            price = _kraken_last_price(prices, pair)
+            if price is None:
+                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "skipped", "reason": "price_not_available"})
+                continue
+            side = str(item["side"]).lower()
+            stop_loss = safe_float(item["stop_loss"]) or 0
+            take_profit = safe_float(item["take_profit"]) or 0
+            should_exit = False
+            reason = None
+            if side == "buy" and price <= stop_loss:
+                should_exit = True
+                reason = "stop_loss_triggered"
+            elif side == "buy" and price >= take_profit:
+                should_exit = True
+                reason = "take_profit_triggered"
+            elif side == "sell" and price >= stop_loss:
+                should_exit = True
+                reason = "stop_loss_triggered"
+            elif side == "sell" and price <= take_profit:
+                should_exit = True
+                reason = "take_profit_triggered"
+            if not should_exit:
+                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "open", "price": price})
+                continue
+            exit_side = "sell" if side == "buy" else "buy"
+            order_request = OrderRequest(
+                symbol=item["symbol"],
+                side=exit_side,
+                quantity=float(item["quantity"]),
+                asset_type="crypto",
+                exchange="KRAKEN",
+                stop_loss=0,
+                take_profit=0,
+                notional_amount=price * float(item["quantity"]),
+                client_order_id=f"exit-{item['managed_exit_id']}-{reason}",
+                quote_currency="GBP",
+                broker_pair=pair,
+            )
+            result = adapter.place_exit_order(order_request)
+            if result.get("status") in {"accepted", "submitted"}:
+                close_managed_exit(
+                    self.settings.db_path,
+                    int(item["managed_exit_id"]),
+                    exit_order_id=str(result.get("id") or result.get("order_id") or ""),
+                    exit_reason=reason or "exit_triggered",
+                    payload={"price": price, "order": result},
+                )
+                record_notification(
+                    self.settings.db_path,
+                    event_type=reason or "trade_exited",
+                    broker=broker,
+                    symbol=item["symbol"],
+                    title=(reason or "Trade exited").replace("_", " ").title(),
+                    message=f"{broker.title()} {item['symbol']} exit submitted at {price}.",
+                    payload={"managed_exit": dict(item), "order": result, "price": price},
+                )
+                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_submitted", "reason": reason, "price": price})
+            else:
+                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_failed", "reason": result.get("reason"), "price": price})
+        return {"status": "checked", "managed_exits": checked}
+
     def broker_panels(self) -> list[dict[str, Any]]:
         panels = []
         settings = broker_auto_settings(self.settings.db_path)
@@ -1367,6 +1442,27 @@ def _sum_balances(balances: Any) -> float | None:
         total += amount
         found = True
     return total if found else None
+
+
+def _kraken_pair_for_symbol(symbol: str, quote: str = "GBP") -> str:
+    base = symbol.upper().replace("/", "").replace("-", "")
+    if base.endswith(quote):
+        base = base[: -len(quote)]
+    if base == "BTC":
+        base = "XBT"
+    return f"{base}{quote}"
+
+
+def _kraken_last_price(prices: dict[str, Any], pair: str) -> float | None:
+    if not isinstance(prices, dict):
+        return None
+    payload = prices.get(pair) or next(iter(prices.values()), None)
+    if not isinstance(payload, dict):
+        return None
+    last = payload.get("c")
+    if isinstance(last, list) and last:
+        return safe_float(last[0])
+    return safe_float(last)
 
 
 def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -127,6 +127,8 @@ class OrderRequest:
     take_profit: float
     notional_amount: float | None = None
     client_order_id: str | None = None
+    quote_currency: str = "GBP"
+    broker_pair: str | None = None
 
 
 @dataclass(frozen=True)
