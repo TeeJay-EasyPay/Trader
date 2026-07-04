@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 
-const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'http://127.0.0.1:8765';
+const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 
 const SCREENS = ['Command', 'Recommendations', 'Intelligence'];
