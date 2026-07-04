@@ -20,6 +20,7 @@ from .briefing import generate_daily_briefing
 from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
 from .config import Settings, load_settings
 from .execution import ExecutionEngine
+from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import TradeProposal, utc_now_iso
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
@@ -69,6 +70,7 @@ class LocalApiService:
         self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
         self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
         self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
+        initialize_foundation_schema(settings.db_path)
         initialize_operational_schema(settings.db_path)
         self._initialize_control()
 
@@ -152,6 +154,7 @@ class LocalApiService:
         latest_evening = self._latest_daily_brief("evening")
         research_run = latest_research_run(self.settings.db_path)
         executive_summary = self.executive_summary()
+        policy = load_trading_policy(self.settings.db_path, auto_trade=self.settings.auto_trade, guardrails=self.settings.guardrails)
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -162,10 +165,13 @@ class LocalApiService:
             "next_scheduled_research_run": (research_run or {}).get("next_scheduled_run") or next_research_run(),
             "last_research_run": research_run,
             "research_status": _research_status(research_run),
+            "due_diligence_status": self._due_diligence_status(),
             "research_assets_reviewed": _research_assets_reviewed(research_run),
+            "crypto_projects_reviewed": self._count("CRYPTO_MASTER", "active = 1"),
             "research_recommendations_created": (research_run or {}).get("recommendations_created"),
             "auto_trading_enabled": self.settings.auto_trade.enabled,
             "paper_or_sandbox_mode": self.settings.guardrails.paper_trading_only,
+            "trading_policy": policy.to_dict(),
             "executive_summary": executive_summary,
             "last_orchestrator_decision": latest_decision,
             "morning_brief": latest_morning,
@@ -282,6 +288,8 @@ class LocalApiService:
             confidence = safe_score(row["ai_confidence"]) or 0.0
             philosophy_fit = safe_score(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
             decision = self._latest_orchestrator_decision(row["proposal_id"])
+            due_diligence = latest_due_diligence(self.settings.db_path, row["proposal_id"])
+            investment_score = latest_investment_score(self.settings.db_path, row["proposal_id"])
             auto_trade_eligible = (
                 guardrails_passed
                 and freshness["status"] != "Expired"
@@ -298,6 +306,7 @@ class LocalApiService:
                     "sector": row["sector"],
                     "country": row["country"],
                     "confidence": confidence if confidence else None,
+                    "investment_score": _score_payload(investment_score, confidence, philosophy_fit),
                     "asset_available": None if decision is None else bool(decision["asset_available"]),
                     "suggested_broker": None if decision is None else decision["selected_broker"],
                     "exchange": _proposal_exchange(row["payload_json"]),
@@ -312,7 +321,10 @@ class LocalApiService:
                     "suggested_stop_loss": row["stop_loss"],
                     "suggested_take_profit": row["take_profit"],
                     "suggested_position_size": row["position_size"],
+                    "recommended_position_size": row["position_size"],
                     "created_at": row["created_at"],
+                    "due_diligence_status": (due_diligence or {}).get("overall_status") or "Not available - not assessed by orchestrator yet",
+                    "due_diligence": due_diligence,
                     "expires_at": freshness["expires_at"],
                     "freshness_status": freshness["status"],
                     "freshness_note": freshness["note"],
@@ -583,7 +595,7 @@ class LocalApiService:
                 continue
             seen.add(proposal_id)
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
-            confidence = float(row["ai_confidence"] or 0)
+            confidence = safe_score(row["ai_confidence"]) or 0.0
             if confidence < self.settings.auto_trade.min_confidence:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -809,12 +821,20 @@ class LocalApiService:
             "trade_audit",
             "CRYPTO_ASSET_MASTER",
             "BENCHMARK_DAILY_RESEARCH",
+            "CRYPTO_MASTER",
+            "DUE_DILIGENCE_ASSESSMENTS",
         }:
             raise ValueError(f"Unsupported count table: {table}")
         sql = f"SELECT COUNT(*) FROM {table}"
         if where:
             sql += f" WHERE {where}"
         return int(self._scalar(sql) or 0)
+
+    def _due_diligence_status(self) -> str:
+        latest = self._row("SELECT overall_status, created_at FROM DUE_DILIGENCE_ASSESSMENTS ORDER BY assessment_id DESC LIMIT 1")
+        if not latest:
+            return "idle - no due diligence assessment recorded yet"
+        return f"{latest['overall_status']} at {latest['created_at']}"
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -1019,6 +1039,32 @@ def _proposal_asset_type(payload_json: Any) -> str:
 def _proposal_philosophy_fit(payload_json: Any) -> float:
     value = _proposal_payload(payload_json).get("philosophy_fit")
     return safe_score(value) or 0.0
+
+
+def _score_payload(score: dict[str, Any] | None, confidence: float, philosophy_fit: float) -> dict[str, Any]:
+    if score:
+        return {
+            "fundamental_score": score.get("fundamental_score"),
+            "technical_score": score.get("technical_score"),
+            "market_score": score.get("market_score"),
+            "macro_score": score.get("macro_score"),
+            "behavioural_score": score.get("behavioural_score"),
+            "investment_policy_score": score.get("investment_policy_score"),
+            "risk_score": score.get("risk_score"),
+            "overall_confidence": score.get("overall_confidence"),
+            "reasoning": score.get("reasoning"),
+        }
+    return {
+        "fundamental_score": confidence or None,
+        "technical_score": confidence or None,
+        "market_score": confidence or None,
+        "macro_score": None,
+        "behavioural_score": None,
+        "investment_policy_score": philosophy_fit or None,
+        "risk_score": None,
+        "overall_confidence": confidence or None,
+        "reasoning": {"status": "Not available - not assessed by orchestrator yet"},
+    }
 
 
 def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:

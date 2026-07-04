@@ -375,3 +375,47 @@
 - Updated Render and cloud environment documentation for Sprint 5.
 - Added Sprint 5 tests for qualitative parsing, P&L unavailable reasons, snapshots, research run tracking, benchmark fallback, exchange selector not-configured states, Kraken/Coinbase not configured, crypto universe table creation, and safe crypto auto-trade rejection.
 - Verified Python tests: 42/42 passing.
+
+## 2026-07-04 Foundation Sprint - Autonomous Investment Platform
+
+- Reviewed governance documents, `STATUS.md`, `IMPLEMENTATION_LOG.md`, `README.md`, Render configuration, broker implementations, Investment Intelligence Engine, and mobile app.
+- Created Founder-governed constitutional documents:
+  - `INVESTMENT_POLICY_STATEMENT.md`
+  - `RISK_MANAGEMENT_POLICY.md`
+  - `BROKER_EXECUTION_POLICY.md`
+  - `AI_LEARNING_POLICY.md`
+  - `INVESTMENT_UNIVERSE.md`
+- Added `src/ai_trader/foundation.py`.
+- Added configurable SQLite policy tables:
+  - `INVESTMENT_POLICIES`
+  - `RISK_POLICIES`
+  - `BROKER_POLICIES`
+  - `LEARNING_POLICIES`
+- Added permanent decision and audit tables:
+  - `CAPITAL_ALLOCATION_HISTORY`
+  - `DUE_DILIGENCE_ASSESSMENTS`
+  - `INVESTMENT_SCORES`
+  - `BROKER_DECISIONS`
+  - `EXECUTION_DECISIONS`
+- Added crypto knowledge tables:
+  - `CRYPTO_MASTER`
+  - `CRYPTO_MARKET_DATA`
+  - `CRYPTO_DAILY_UPDATES`
+  - `CRYPTO_PROJECT_ANALYSIS`
+  - `CRYPTO_TOKENOMICS`
+  - `CRYPTO_ONCHAIN_METRICS`
+  - `CRYPTO_SENTIMENT`
+  - `CRYPTO_RISK`
+  - `CRYPTO_NEWS`
+  - `CRYPTO_BENCHMARK_ALIGNMENT`
+  - `CRYPTO_TRADING_HISTORY`
+- Updated the Investment Orchestrator so autonomous execution now validates governance policy, due diligence, investment scores, investment universe, broker state, market state, risk, and capital allocation.
+- Updated API recommendations and status payloads with due diligence status, crypto projects reviewed, trading policy snapshot, and structured investment score fields.
+- Updated mobile app without adding screens:
+  - Command screen broker panels for Alpaca and Kraken.
+  - Recommendation cards show due diligence and Investment Score fields.
+  - Intelligence screen shows Alpaca and Kraken intelligence sections.
+- Updated Kraken adapter to support Render `KRAKEN_PRIVATE_KEY` while preserving `KRAKEN_API_SECRET` compatibility and disabled-by-default trading.
+- Updated `.env.example`, `cloud.env.example`, and `render.yaml`.
+- Added foundation tests for policy seeding, due diligence, investment scores, capital allocation, orchestrator decision recording, emergency shutdown, and Kraken credential naming.
+- Verified Python tests: 48/48 passing.

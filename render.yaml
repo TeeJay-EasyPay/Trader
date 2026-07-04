@@ -48,6 +48,8 @@ services:
         value: "false"
       - key: KRAKEN_API_KEY
         sync: false
+      - key: KRAKEN_PRIVATE_KEY
+        sync: false
       - key: KRAKEN_API_SECRET
         sync: false
       - key: COINBASE_TRADING_ENABLED

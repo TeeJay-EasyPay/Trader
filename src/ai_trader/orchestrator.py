@@ -8,6 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from .broker_adapters import BrokerAdapter
+from .foundation import (
+    calculate_capital_allocation,
+    calculate_investment_score,
+    create_due_diligence_assessment,
+    initialize_foundation_schema,
+    load_trading_policy,
+    record_broker_decision,
+    record_execution_decision,
+    validate_investment_universe,
+)
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, OrchestratorDecision, TradeProposal, utc_now_iso
 
@@ -86,6 +96,7 @@ class InvestmentOrchestrator:
         with closing(sqlite3.connect(self.db_path)) as conn:
             with conn:
                 conn.executescript(ORCHESTRATOR_SCHEMA)
+        initialize_foundation_schema(self.db_path)
 
     def evaluate_recommendation(
         self,
@@ -99,6 +110,15 @@ class InvestmentOrchestrator:
         market_open = selected.is_market_open(p.exchange) if selected else False
         asset_available = selected.is_asset_available(p.symbol, p.exchange, p.asset_type) if selected else False
         validation = validate_trade_proposal(p, context.account, context.guardrails, now=context.now)
+        policy = load_trading_policy(self.db_path, auto_trade=context.auto_trade, guardrails=context.guardrails)
+        due_diligence = create_due_diligence_assessment(self.db_path, p)
+        investment_score = calculate_investment_score(self.db_path, p)
+        allocation = calculate_capital_allocation(
+            self.db_path,
+            p,
+            policy,
+            account_equity=context.account.equity,
+        )
         failures: list[str] = []
         if selected is None:
             failures.append("no_configured_broker_supports_asset")
@@ -106,25 +126,48 @@ class InvestmentOrchestrator:
             failures.append("asset_unavailable")
         if not market_open:
             failures.append("market_closed")
-        if not context.guardrails.paper_trading_only:
+        if not policy.paper_trading_only:
             failures.append("paper_trading_only_failed")
+        if selected and selected.name in policy.broker_enabled and not policy.broker_enabled[selected.name]:
+            failures.append("broker_disabled_by_policy")
         if p.side == "sell" and not context.guardrails.allow_short_selling:
             failures.append("short_selling_disabled")
-        if p.confidence_score < context.auto_trade.min_confidence:
+        if p.confidence_score < policy.min_ai_confidence:
             failures.append("confidence_below_auto_trade_minimum")
-        if p.philosophy_fit < context.auto_trade.min_philosophy_fit:
+        if p.philosophy_fit < policy.min_investment_policy_fit:
             failures.append("philosophy_fit_below_auto_trade_minimum")
+        if investment_score["overall_confidence"] < policy.min_ai_confidence:
+            failures.append("investment_score_below_policy_minimum")
+        if investment_score["investment_policy_score"] < policy.min_investment_policy_fit:
+            failures.append("investment_policy_score_below_minimum")
+        if due_diligence["overall_status"] != "completed":
+            failures.append("due_diligence_incomplete")
         if p.stop_loss <= 0:
             failures.append("stop_loss_mandatory")
-        if p.take_profit <= 0:
+        if policy.take_profit_required and p.take_profit <= 0:
             failures.append("take_profit_mandatory")
         stop_loss_pct = _stop_loss_pct(p)
-        if stop_loss_pct > context.auto_trade.max_stop_loss_pct:
+        if stop_loss_pct > policy.max_stop_loss_pct:
             failures.append("max_stop_loss_pct_exceeded")
-        if (p.entry_price * p.position_size) > context.auto_trade.max_trade_amount:
-            failures.append("max_auto_trade_amount_exceeded")
+        if context.account.equity <= policy.emergency_shutdown_balance:
+            failures.append("emergency_shutdown_balance_breached")
+        if len(context.account.open_positions) >= policy.max_concurrent_positions:
+            failures.append("maximum_concurrent_positions_exceeded")
+        if allocation["result"] != "approved":
+            failures.append("capital_allocation_rejected")
+        failures.extend(validate_investment_universe(self.db_path, p, policy))
         failures.extend(validation.failures)
         failures = list(dict.fromkeys(failures))
+        record_broker_decision(
+            self.db_path,
+            p,
+            selected_broker=selected.name if selected else None,
+            broker_healthy=selected is not None,
+            asset_available=asset_available,
+            market_open=market_open,
+            result="rejected" if failures else "approved",
+            reason=", ".join(failures) if failures else None,
+        )
 
         decision_text = "approved"
         order_id = None
@@ -137,7 +180,7 @@ class InvestmentOrchestrator:
             notes = "Auto Paper Trading is disabled; recommendation requires manual approval."
         else:
             assert selected is not None
-            order = selected.place_bracket_order(_order_request(p, context.auto_trade.max_trade_amount))
+            order = selected.place_bracket_order(_order_request(p, allocation["approved_notional"]))
             order_id = str(order.get("id") or order.get("order_id") or "")
             notes = f"Paper bracket order submitted with status {order.get('status', 'submitted')}."
             self.record_auto_trade_event(
@@ -145,7 +188,7 @@ class InvestmentOrchestrator:
                 symbol=p.symbol,
                 broker=selected.name,
                 action=p.side,
-                amount=min(p.entry_price * p.position_size, context.auto_trade.max_trade_amount),
+                amount=allocation["approved_notional"],
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=_take_profit_pct(p),
                 result="submitted",
@@ -171,13 +214,21 @@ class InvestmentOrchestrator:
             notes=notes,
         )
         self.record_decision(decision)
+        record_execution_decision(
+            self.db_path,
+            p,
+            decision=decision_text,
+            validation_result=", ".join(failures) if failures else "passed",
+            order_id=order_id,
+            reason=decision.rejection_reason or notes,
+        )
         if failures:
             self.record_auto_trade_event(
                 mode="auto_paper" if context.auto_trade.enabled else "manual_required",
                 symbol=p.symbol,
                 broker=selected.name if selected else None,
                 action=p.side,
-                amount=min(p.entry_price * p.position_size, context.auto_trade.max_trade_amount),
+                amount=allocation["approved_notional"],
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=_take_profit_pct(p),
                 result="rejected",
@@ -258,9 +309,8 @@ class InvestmentOrchestrator:
         return None
 
 
-def _order_request(proposal: TradeProposal, max_amount: float) -> OrderRequest:
-    max_qty = max_amount / proposal.entry_price if proposal.entry_price > 0 else 0
-    qty = max(0.000001, min(proposal.position_size, max_qty))
+def _order_request(proposal: TradeProposal, approved_notional: float) -> OrderRequest:
+    qty = max(0.000001, approved_notional / proposal.entry_price if proposal.entry_price > 0 else 0)
     return OrderRequest(
         symbol=proposal.symbol,
         side=proposal.side,
@@ -269,7 +319,7 @@ def _order_request(proposal: TradeProposal, max_amount: float) -> OrderRequest:
         exchange=proposal.exchange,
         stop_loss=proposal.stop_loss,
         take_profit=proposal.take_profit,
-        notional_amount=min(proposal.entry_price * proposal.position_size, max_amount),
+        notional_amount=approved_notional,
         client_order_id=proposal.proposal_id,
     )
 
@@ -291,4 +341,3 @@ def next_research_run(now: datetime | None = None, interval_minutes: int = 60) -
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return (current.astimezone(timezone.utc) + timedelta(minutes=interval_minutes)).isoformat()
-

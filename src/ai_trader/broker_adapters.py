@@ -166,7 +166,11 @@ class SaxoAdapter(PlaceholderBrokerAdapter):
 
 class KrakenAdapter(PlaceholderBrokerAdapter):
     def __init__(self) -> None:
-        super().__init__("kraken", ("KRAKEN_API_KEY", "KRAKEN_API_SECRET"))
+        super().__init__("kraken", ("KRAKEN_API_KEY",))
+
+    @property
+    def configured(self) -> bool:
+        return bool(os.getenv("KRAKEN_API_KEY") and (os.getenv("KRAKEN_PRIVATE_KEY") or os.getenv("KRAKEN_API_SECRET")))
 
     @property
     def trading_enabled(self) -> bool:

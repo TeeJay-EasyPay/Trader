@@ -156,3 +156,50 @@ The CLI supports:
 - Portfolio optimization.
 - Web dashboard.
 - Commercial user management.
+
+## Foundation Sprint Architecture Addendum
+
+Date: 2026-07-04
+Status: Founder-governed autonomous investment platform baseline
+
+Trader now uses the following permanent execution chain:
+
+```text
+Research Engine
+-> Knowledge Engines
+-> Investment Intelligence Engine
+-> Due Diligence Engine
+-> Investment Orchestrator
+-> Broker Adapter Layer
+-> Alpaca / Kraken / Future Brokers
+```
+
+The Investment Orchestrator is the only autonomous component allowed to execute trades. AI components research, learn, score, and recommend, but they do not place orders.
+
+New governance and policy layer:
+
+- Constitutional governance documents live in `governance/`.
+- Configurable SQLite policy tables define investment, risk, broker, learning, and capital allocation controls.
+- Every autonomous trade records due diligence, investment score, broker decision, execution decision, and capital allocation history.
+
+Due diligence has six required pillars:
+
+- Fundamental Intelligence
+- Technical Intelligence
+- Market Intelligence
+- Macro Intelligence
+- Behavioural Intelligence
+- Investment Policy Intelligence
+
+Every recommendation now has a structured Investment Score:
+
+- Fundamental Score
+- Technical Score
+- Market Score
+- Macro Score
+- Behavioural Score
+- Investment Policy Score
+- Risk Score
+- Overall Confidence
+
+Crypto knowledge schema is present, but crypto execution remains disabled unless the Founder changes policy and broker settings.

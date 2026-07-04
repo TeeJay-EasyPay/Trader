@@ -287,6 +287,62 @@ https://trader-no0f.onrender.com
 
 Mobile JavaScript changes are published with EAS Update to the `preview` and `hosted-preview` channels after verification. The installed hosted APK should pick up eligible OTA updates on restart.
 
+## Foundation Sprint: Autonomous Investment Platform
+
+The Foundation Sprint establishes Trader as a Founder-governed autonomous investment platform while keeping the existing three-screen app and paper/sandbox safety posture.
+
+Governance documents:
+
+- `governance/INVESTMENT_POLICY_STATEMENT.md`
+- `governance/RISK_MANAGEMENT_POLICY.md`
+- `governance/BROKER_EXECUTION_POLICY.md`
+- `governance/AI_LEARNING_POLICY.md`
+- `governance/INVESTMENT_UNIVERSE.md`
+
+New SQLite policy and decision tables:
+
+- `INVESTMENT_POLICIES`
+- `RISK_POLICIES`
+- `BROKER_POLICIES`
+- `LEARNING_POLICIES`
+- `CAPITAL_ALLOCATION_HISTORY`
+- `DUE_DILIGENCE_ASSESSMENTS`
+- `INVESTMENT_SCORES`
+- `BROKER_DECISIONS`
+- `EXECUTION_DECISIONS`
+
+Crypto knowledge tables:
+
+- `CRYPTO_MASTER`
+- `CRYPTO_MARKET_DATA`
+- `CRYPTO_DAILY_UPDATES`
+- `CRYPTO_PROJECT_ANALYSIS`
+- `CRYPTO_TOKENOMICS`
+- `CRYPTO_ONCHAIN_METRICS`
+- `CRYPTO_SENTIMENT`
+- `CRYPTO_RISK`
+- `CRYPTO_NEWS`
+- `CRYPTO_BENCHMARK_ALIGNMENT`
+- `CRYPTO_TRADING_HISTORY`
+
+Execution rule:
+
+```text
+AI research -> due diligence -> investment score -> Investment Orchestrator -> broker adapter
+```
+
+The Investment Orchestrator is the only autonomous execution gate. It validates governance, due diligence, policy, risk, broker health, asset availability, market status, investment universe, and capital allocation before any paper order can be submitted.
+
+Kraken credentials are read from Render environment variables only:
+
+```text
+KRAKEN_API_KEY
+KRAKEN_PRIVATE_KEY
+KRAKEN_TRADING_ENABLED=false
+```
+
+`KRAKEN_API_SECRET` is still accepted as a backward-compatible local alias, but `KRAKEN_PRIVATE_KEY` is the preferred Render name. Withdrawal permissions must never be granted.
+
 ## Install On Honor Magic V3
 
 Android preview build:

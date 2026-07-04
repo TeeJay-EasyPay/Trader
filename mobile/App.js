@@ -229,6 +229,7 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
         <Metric label="System Status" value={status?.system_status} />
         <Metric label="Paper / Live Mode" value={status?.paper_live_mode} />
         <Metric label="Engine Health" value={status?.engine_health} />
+        <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
         <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
         <Metric label="Portfolio Value" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'portfolio')} />
         <Metric label="Cash Available" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'cash')} />
@@ -243,6 +244,27 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
         <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
         <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
         <Metric label="Cloud API Health" value={status?.cloud_api_health} />
+      </Section>
+      <Section title="Broker Panels">
+        {['Alpaca', 'Kraken'].map((broker) => {
+          const summary = exchangeSummary(executiveSummary, broker);
+          return (
+            <View key={`${broker}-panel`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{broker}</Text>
+              <Metric label="Portfolio" value={selectedPortfolioValue(broker, summary, portfolio, 'portfolio')} />
+              <Metric label="Cash" value={selectedPortfolioValue(broker, summary, portfolio, 'cash')} />
+              <Metric label="Buying Power" value={broker === 'Alpaca' ? moneyOrText(portfolio?.buying_power) : summary?.buying_power} />
+              <Metric label="Day P&L" value={selectedPortfolioValue(broker, summary, portfolio, 'dayPnl')} />
+              <Metric label="Week P&L" value={moneyOrText(summary?.last_week_pnl)} />
+              <Metric label="Month P&L" value={moneyOrText(summary?.last_month_pnl)} />
+              <Metric label="Open Positions" value={selectedPortfolioValue(broker, summary, portfolio, 'positions')} />
+              <Metric label="Trades" value={broker === 'Alpaca' ? describeLatestTrade(portfolio?.latest_trade) : summary?.status} />
+              <Metric label="Research Status" value={status?.research_status} />
+              <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
+              <Metric label="Auto Trading Status" value={status?.auto_paper_trading_status} />
+            </View>
+          );
+        })}
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
@@ -345,6 +367,14 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Auto Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Rejection Reason" value={item.orchestrator_rejection_reason || enriched.auto_trade_reason} />
       <Metric label="Confidence" value={formatPercent(item.confidence)} />
+      <Metric label="Investment Score" value={formatPercent(item.investment_score?.overall_confidence)} />
+      <Metric label="Fundamental Score" value={formatPercent(item.investment_score?.fundamental_score)} />
+      <Metric label="Technical Score" value={formatPercent(item.investment_score?.technical_score)} />
+      <Metric label="Market Score" value={formatPercent(item.investment_score?.market_score)} />
+      <Metric label="Macro Score" value={formatPercent(item.investment_score?.macro_score)} />
+      <Metric label="Behavioural Score" value={formatPercent(item.investment_score?.behavioural_score)} />
+      <Metric label="Policy Score" value={formatPercent(item.investment_score?.investment_policy_score)} />
+      <Metric label="Risk Score" value={formatPercent(item.investment_score?.risk_score)} />
       <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
       <TextBlock label="Investment Thesis" value={item.investment_thesis} />
       <TextBlock label="Reason for Recommendation" value={item.reason_for_recommendation} />
@@ -352,6 +382,8 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
       <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
       <Metric label="Suggested Position Size" value={item.suggested_position_size} />
+      <Metric label="Recommended Position Size" value={item.recommended_position_size} />
+      <Metric label="Due Diligence Status" value={item.due_diligence_status} />
       <Metric label="Guardrail Result" value={yesNo(item.guardrails_passed)} />
       <TextBlock label="Passed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'passed') || formatList(enriched.guardrail_passes)} />
       <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
@@ -383,12 +415,33 @@ function MarketIntelligence({ benchmark, themes, companies, status }) {
         <Metric label="Research Status" value={status?.research_status} />
         <Metric label="Last Research Run" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
         <Metric label="Assets Reviewed" value={status?.research_assets_reviewed} />
+        <Metric label="Crypto Projects Reviewed" value={status?.crypto_projects_reviewed} />
         <Metric label="Recommendations Created" value={status?.research_recommendations_created} />
         <Metric label="Auto Trading Enabled" value={yesNo(status?.auto_trading_enabled)} />
         <Metric label="Paper/Sandbox Mode" value={yesNo(status?.paper_or_sandbox_mode)} />
         <Metric label="Markets Currently Open" value={marketsOpenText(status)} />
         <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
         <TextBlock label="What AI Learned Since Last Brief" value={latestLearningText(status, benchmark)} />
+      </Section>
+      <Section title="Alpaca Intelligence">
+        <Metric label="Research Running" value={status?.research_status} />
+        <Metric label="Due Diligence Running" value={status?.due_diligence_status} />
+        <Metric label="Last Update" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
+        <Metric label="Next Update" value={formatDateTime(status?.next_scheduled_research_run)} />
+        <Metric label="Companies Reviewed" value={status?.last_research_run?.companies_reviewed} />
+        <Metric label="Themes" value={themes.length} />
+        <Metric label="Benchmark Investors" value={items.length} />
+        <TextBlock label="Latest Learnings" value={latestLearningText(status, benchmark)} />
+        <Metric label="Research Freshness" value={status?.research_status} />
+      </Section>
+      <Section title="Kraken Intelligence">
+        <Metric label="Research Running" value={status?.research_status} />
+        <Metric label="Due Diligence Running" value={status?.due_diligence_status} />
+        <Metric label="Last Update" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
+        <Metric label="Next Update" value={formatDateTime(status?.next_scheduled_research_run)} />
+        <Metric label="Crypto Projects Reviewed" value={status?.crypto_projects_reviewed} />
+        <Metric label="Research Freshness" value={status?.research_status} />
+        <TextBlock label="Latest Learnings" value="Crypto trading remains disabled until Founder approval and complete project due diligence." />
       </Section>
       <Section title="Daily Benchmark Intelligence Brief">
         <Text style={styles.bodyText}>{notAvailable(benchmark?.summary)}</Text>
