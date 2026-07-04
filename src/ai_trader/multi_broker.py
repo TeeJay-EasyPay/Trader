@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .models import utc_now_iso
+from .operational import safe_float, safe_score
+
+
+MULTI_BROKER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS BROKER_AUTO_TRADING_SETTINGS (
+    broker TEXT PRIMARY KEY,
+    auto_trading_enabled INTEGER NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'paper_or_sandbox',
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS BROKER_RUNTIME_STATE (
+    broker TEXT PRIMARY KEY,
+    connection_status TEXT NOT NULL,
+    research_status TEXT NOT NULL,
+    due_diligence_status TEXT NOT NULL,
+    current_asset TEXT,
+    current_stage TEXT,
+    research_queue_json TEXT NOT NULL,
+    assets_reviewed_today INTEGER NOT NULL DEFAULT 0,
+    research_cycles_today INTEGER NOT NULL DEFAULT 0,
+    last_scan TEXT,
+    next_scan TEXT,
+    research_freshness TEXT,
+    last_recommendation TEXT,
+    last_trade_submitted TEXT,
+    updated_at TEXT NOT NULL,
+    details_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS BROKER_TRADE_HISTORY (
+    trade_history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    broker TEXT NOT NULL,
+    external_id TEXT,
+    symbol TEXT,
+    asset_type TEXT,
+    side TEXT,
+    quantity REAL,
+    price REAL,
+    notional REAL,
+    status TEXT NOT NULL,
+    opened_at TEXT,
+    closed_at TEXT,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    UNIQUE(broker, external_id, status, updated_at)
+);
+
+CREATE TABLE IF NOT EXISTS NOTIFICATION_EVENTS (
+    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    broker TEXT,
+    symbol TEXT,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    delivery_status TEXT NOT NULL DEFAULT 'queued',
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS RECOMMENDATION_SETS (
+    set_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    broker TEXT,
+    symbols_json TEXT NOT NULL,
+    proposal_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS CRYPTO_RESEARCH_SCORES (
+    score_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    category TEXT,
+    technical_trend_score REAL,
+    momentum_score REAL,
+    rsi REAL,
+    moving_average_position REAL,
+    macd REAL,
+    volume_trend REAL,
+    volatility REAL,
+    liquidity REAL,
+    market_structure REAL,
+    sentiment REAL,
+    news_score REAL,
+    onchain_activity REAL,
+    risk_score REAL,
+    overall_due_diligence_score REAL,
+    confidence_score REAL,
+    reasoning_json TEXT NOT NULL,
+    source TEXT
+);
+"""
+
+
+DEFAULT_BROKERS = ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]
+
+
+@dataclass(frozen=True)
+class BrokerRuntime:
+    broker: str
+    connection_status: str
+    research_status: str
+    due_diligence_status: str
+    current_asset: str | None
+    current_stage: str | None
+    research_queue: list[str]
+    assets_reviewed_today: int
+    research_cycles_today: int
+    last_scan: str | None
+    next_scan: str | None
+    research_freshness: str | None
+    last_recommendation: str | None
+    last_trade_submitted: str | None
+    updated_at: str
+    details: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def initialize_multi_broker_schema(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.executescript(MULTI_BROKER_SCHEMA)
+            now = utc_now_iso()
+            for broker in DEFAULT_BROKERS:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO BROKER_AUTO_TRADING_SETTINGS (
+                        broker, auto_trading_enabled, mode, updated_at, updated_by, notes
+                    ) VALUES (?, 0, 'paper_or_sandbox', ?, 'system', 'Disabled by default.')
+                    """,
+                    (broker, now),
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO BROKER_RUNTIME_STATE (
+                        broker, connection_status, research_status, due_diligence_status,
+                        current_asset, current_stage, research_queue_json,
+                        assets_reviewed_today, research_cycles_today, last_scan,
+                        next_scan, research_freshness, last_recommendation,
+                        last_trade_submitted, updated_at, details_json
+                    ) VALUES (?, 'Not checked', 'idle', 'idle', NULL, NULL, '[]', 0, 0, NULL, NULL, 'Not available', NULL, NULL, ?, '{}')
+                    """,
+                    (broker, now),
+                )
+
+
+def broker_auto_trading_enabled(db_path: Path, broker: str, env_default: bool = False) -> bool:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT auto_trading_enabled FROM BROKER_AUTO_TRADING_SETTINGS WHERE broker = ?",
+            (broker.lower(),),
+        ).fetchone()
+    if row is None:
+        return env_default
+    return bool(row[0])
+
+
+def set_broker_auto_trading(db_path: Path, broker: str, enabled: bool, *, updated_by: str = "founder") -> dict[str, Any]:
+    initialize_multi_broker_schema(db_path)
+    broker_key = broker.lower()
+    now = utc_now_iso()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO BROKER_AUTO_TRADING_SETTINGS (
+                    broker, auto_trading_enabled, mode, updated_at, updated_by, notes
+                ) VALUES (?, ?, 'paper_or_sandbox', ?, ?, ?)
+                ON CONFLICT(broker) DO UPDATE SET
+                    auto_trading_enabled = excluded.auto_trading_enabled,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by,
+                    notes = excluded.notes
+                """,
+                (
+                    broker_key,
+                    int(enabled),
+                    now,
+                    updated_by,
+                    "Auto trading enabled for this broker only." if enabled else "New autonomous entries disabled for this broker.",
+                ),
+            )
+    record_notification(
+        db_path,
+        event_type="broker_auto_trading_enabled" if enabled else "broker_auto_trading_disabled",
+        broker=broker_key,
+        symbol=None,
+        title=f"{broker_key.title()} auto trading {'enabled' if enabled else 'disabled'}",
+        message=f"{broker_key.title()} will {'start autonomous entries' if enabled else 'stop creating new autonomous entries'}. Existing positions remain managed.",
+        payload={"broker": broker_key, "enabled": enabled},
+    )
+    return {"broker": broker_key, "auto_trading_enabled": enabled, "updated_at": now}
+
+
+def broker_auto_settings(db_path: Path) -> dict[str, bool]:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        return {
+            row[0]: bool(row[1])
+            for row in conn.execute("SELECT broker, auto_trading_enabled FROM BROKER_AUTO_TRADING_SETTINGS")
+        }
+
+
+def update_broker_runtime(
+    db_path: Path,
+    broker: str,
+    *,
+    connection_status: str | None = None,
+    research_status: str | None = None,
+    due_diligence_status: str | None = None,
+    current_asset: str | None = None,
+    current_stage: str | None = None,
+    research_queue: list[str] | None = None,
+    assets_reviewed_today: int | None = None,
+    research_cycles_today: int | None = None,
+    last_scan: str | None = None,
+    next_scan: str | None = None,
+    research_freshness: str | None = None,
+    last_recommendation: str | None = None,
+    last_trade_submitted: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> BrokerRuntime:
+    initialize_multi_broker_schema(db_path)
+    broker_key = broker.lower()
+    current = broker_runtime(db_path, broker_key)
+    now = utc_now_iso()
+    merged = BrokerRuntime(
+        broker=broker_key,
+        connection_status=connection_status or current.connection_status,
+        research_status=research_status or current.research_status,
+        due_diligence_status=due_diligence_status or current.due_diligence_status,
+        current_asset=current_asset if current_asset is not None else current.current_asset,
+        current_stage=current_stage if current_stage is not None else current.current_stage,
+        research_queue=research_queue if research_queue is not None else current.research_queue,
+        assets_reviewed_today=assets_reviewed_today if assets_reviewed_today is not None else current.assets_reviewed_today,
+        research_cycles_today=research_cycles_today if research_cycles_today is not None else current.research_cycles_today,
+        last_scan=last_scan if last_scan is not None else current.last_scan,
+        next_scan=next_scan if next_scan is not None else current.next_scan,
+        research_freshness=research_freshness if research_freshness is not None else current.research_freshness,
+        last_recommendation=last_recommendation if last_recommendation is not None else current.last_recommendation,
+        last_trade_submitted=last_trade_submitted if last_trade_submitted is not None else current.last_trade_submitted,
+        updated_at=now,
+        details={**current.details, **(details or {})},
+    )
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO BROKER_RUNTIME_STATE (
+                    broker, connection_status, research_status, due_diligence_status,
+                    current_asset, current_stage, research_queue_json,
+                    assets_reviewed_today, research_cycles_today, last_scan, next_scan,
+                    research_freshness, last_recommendation, last_trade_submitted,
+                    updated_at, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker) DO UPDATE SET
+                    connection_status = excluded.connection_status,
+                    research_status = excluded.research_status,
+                    due_diligence_status = excluded.due_diligence_status,
+                    current_asset = excluded.current_asset,
+                    current_stage = excluded.current_stage,
+                    research_queue_json = excluded.research_queue_json,
+                    assets_reviewed_today = excluded.assets_reviewed_today,
+                    research_cycles_today = excluded.research_cycles_today,
+                    last_scan = excluded.last_scan,
+                    next_scan = excluded.next_scan,
+                    research_freshness = excluded.research_freshness,
+                    last_recommendation = excluded.last_recommendation,
+                    last_trade_submitted = excluded.last_trade_submitted,
+                    updated_at = excluded.updated_at,
+                    details_json = excluded.details_json
+                """,
+                (
+                    merged.broker,
+                    merged.connection_status,
+                    merged.research_status,
+                    merged.due_diligence_status,
+                    merged.current_asset,
+                    merged.current_stage,
+                    json.dumps(merged.research_queue),
+                    merged.assets_reviewed_today,
+                    merged.research_cycles_today,
+                    merged.last_scan,
+                    merged.next_scan,
+                    merged.research_freshness,
+                    merged.last_recommendation,
+                    merged.last_trade_submitted,
+                    merged.updated_at,
+                    json.dumps(merged.details, sort_keys=True),
+                ),
+            )
+    return merged
+
+
+def broker_runtime(db_path: Path, broker: str) -> BrokerRuntime:
+    initialize_multi_broker_schema(db_path)
+    broker_key = broker.lower()
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM BROKER_RUNTIME_STATE WHERE broker = ?", (broker_key,)).fetchone()
+    if row is None:
+        now = utc_now_iso()
+        return BrokerRuntime(broker_key, "Not checked", "idle", "idle", None, None, [], 0, 0, None, None, "Not available", None, None, now, {})
+    return BrokerRuntime(
+        broker=row["broker"],
+        connection_status=row["connection_status"],
+        research_status=row["research_status"],
+        due_diligence_status=row["due_diligence_status"],
+        current_asset=row["current_asset"],
+        current_stage=row["current_stage"],
+        research_queue=_json_list(row["research_queue_json"]),
+        assets_reviewed_today=int(row["assets_reviewed_today"] or 0),
+        research_cycles_today=int(row["research_cycles_today"] or 0),
+        last_scan=row["last_scan"],
+        next_scan=row["next_scan"],
+        research_freshness=row["research_freshness"],
+        last_recommendation=row["last_recommendation"],
+        last_trade_submitted=row["last_trade_submitted"],
+        updated_at=row["updated_at"],
+        details=_json_dict(row["details_json"]),
+    )
+
+
+def all_broker_runtime(db_path: Path) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    settings = broker_auto_settings(db_path)
+    return [
+        {**broker_runtime(db_path, broker).to_dict(), "auto_trading_enabled": settings.get(broker, False)}
+        for broker in settings
+    ]
+
+
+def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> int:
+    initialize_multi_broker_schema(db_path)
+    inserted = 0
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            for item in trades:
+                external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
+                status = str(item.get("status") or item.get("type") or "unknown")
+                now = utc_now_iso()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO BROKER_TRADE_HISTORY (
+                            broker, external_id, symbol, asset_type, side, quantity,
+                            price, notional, status, opened_at, closed_at, updated_at,
+                            payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            broker.lower(),
+                            external_id or None,
+                            item.get("symbol") or item.get("pair"),
+                            item.get("asset_type"),
+                            item.get("side") or item.get("type"),
+                            safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
+                            safe_float(item.get("price")),
+                            safe_float(item.get("notional")),
+                            status,
+                            item.get("created_at") or item.get("opentm") or item.get("time"),
+                            item.get("closed_at") or item.get("closetm"),
+                            item.get("updated_at") or now,
+                            json.dumps(item, sort_keys=True, default=str),
+                        ),
+                    )
+                    inserted += 1
+                except sqlite3.IntegrityError:
+                    continue
+    return inserted
+
+
+def latest_broker_trades(db_path: Path, broker: str, limit: int = 20) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM BROKER_TRADE_HISTORY WHERE broker = ? ORDER BY trade_history_id DESC LIMIT ?",
+            (broker.lower(), limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_recommendation_set(
+    db_path: Path,
+    *,
+    trigger_type: str,
+    broker: str | None,
+    symbols: list[str],
+    proposal_ids: list[str],
+    status: str,
+    summary: str | None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO RECOMMENDATION_SETS (
+                    created_at, trigger_type, broker, symbols_json,
+                    proposal_ids_json, status, summary
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (utc_now_iso(), trigger_type, broker, json.dumps(symbols), json.dumps(proposal_ids), status, summary),
+            )
+    if proposal_ids:
+        record_notification(
+            db_path,
+            event_type="new_recommendation",
+            broker=broker,
+            symbol=None,
+            title="New recommendation set",
+            message=f"{len(proposal_ids)} recommendation(s) generated.",
+            payload={"proposal_ids": proposal_ids, "symbols": symbols},
+        )
+
+
+def latest_recommendation_set(db_path: Path) -> dict[str, Any] | None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM RECOMMENDATION_SETS ORDER BY set_id DESC LIMIT 1").fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    payload["symbols"] = _json_list(payload.pop("symbols_json"))
+    payload["proposal_ids"] = _json_list(payload.pop("proposal_ids_json"))
+    return payload
+
+
+def record_notification(
+    db_path: Path,
+    *,
+    event_type: str,
+    broker: str | None,
+    symbol: str | None,
+    title: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO NOTIFICATION_EVENTS (
+                    created_at, event_type, broker, symbol, title, message,
+                    delivery_status, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
+                """,
+                (utc_now_iso(), event_type, broker, symbol, title, message, json.dumps(payload or {}, sort_keys=True, default=str)),
+            )
+
+
+def record_crypto_research_score(db_path: Path, *, symbol: str, category: str | None, metrics: dict[str, Any], source: str) -> dict[str, Any]:
+    initialize_multi_broker_schema(db_path)
+    technical = safe_score(metrics.get("technical_trend_score")) or 0.0
+    momentum = safe_score(metrics.get("momentum_score")) or 0.0
+    risk = safe_score(metrics.get("risk_score")) or 0.0
+    sentiment = safe_score(metrics.get("sentiment")) or 0.0
+    liquidity = safe_score(metrics.get("liquidity")) or 0.0
+    overall = safe_score(metrics.get("overall_due_diligence_score"))
+    if overall is None:
+        overall = round((technical + momentum + risk + sentiment + liquidity) / 5, 4)
+    confidence = safe_score(metrics.get("confidence_score")) or overall
+    payload = {
+        "symbol": symbol.upper(),
+        "category": category,
+        "technical_trend_score": technical,
+        "momentum_score": momentum,
+        "rsi": safe_float(metrics.get("rsi")),
+        "moving_average_position": safe_float(metrics.get("moving_average_position")),
+        "macd": safe_float(metrics.get("macd")),
+        "volume_trend": safe_score(metrics.get("volume_trend")),
+        "volatility": safe_float(metrics.get("volatility")),
+        "liquidity": liquidity,
+        "market_structure": safe_score(metrics.get("market_structure")),
+        "sentiment": sentiment,
+        "news_score": safe_score(metrics.get("news_score")),
+        "onchain_activity": safe_score(metrics.get("onchain_activity")),
+        "risk_score": risk,
+        "overall_due_diligence_score": overall,
+        "confidence_score": confidence,
+        "reasoning": metrics.get("reasoning") or {"source": source},
+        "source": source,
+    }
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO CRYPTO_RESEARCH_SCORES (
+                    created_at, symbol, category, technical_trend_score, momentum_score,
+                    rsi, moving_average_position, macd, volume_trend, volatility,
+                    liquidity, market_structure, sentiment, news_score, onchain_activity,
+                    risk_score, overall_due_diligence_score, confidence_score,
+                    reasoning_json, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now_iso(),
+                    payload["symbol"],
+                    category,
+                    payload["technical_trend_score"],
+                    payload["momentum_score"],
+                    payload["rsi"],
+                    payload["moving_average_position"],
+                    payload["macd"],
+                    payload["volume_trend"],
+                    payload["volatility"],
+                    payload["liquidity"],
+                    payload["market_structure"],
+                    payload["sentiment"],
+                    payload["news_score"],
+                    payload["onchain_activity"],
+                    payload["risk_score"],
+                    payload["overall_due_diligence_score"],
+                    payload["confidence_score"],
+                    json.dumps(payload["reasoning"], sort_keys=True, default=str),
+                    source,
+                ),
+            )
+    return payload
+
+
+def research_freshness(last_scan: str | None, *, max_age_minutes: int = 90) -> str:
+    if not last_scan:
+        return "Not available - no scan recorded yet"
+    try:
+        parsed = datetime.fromisoformat(last_scan.replace("Z", "+00:00"))
+    except ValueError:
+        return "Unknown - last scan timestamp could not be parsed"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    if age <= timedelta(minutes=max_age_minutes):
+        return "Fresh"
+    return f"Stale - last scan was {int(age.total_seconds() // 60)} minutes ago"
+
+
+def today_runtime_counts(db_path: Path, broker: str) -> dict[str, int]:
+    today = date.today().isoformat()
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        reviewed = conn.execute(
+            "SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES WHERE created_at LIKE ?",
+            (f"{today}%",),
+        ).fetchone()[0]
+        trades = conn.execute(
+            "SELECT COUNT(*) FROM BROKER_TRADE_HISTORY WHERE broker = ? AND updated_at LIKE ?",
+            (broker.lower(), f"{today}%"),
+        ).fetchone()[0]
+    return {"assets_reviewed_today": int(reviewed or 0), "trades_today": int(trades or 0)}
+
+
+def _json_list(value: Any) -> list[str]:
+    try:
+        data = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if isinstance(data, list):
+        return [str(item) for item in data]
+    return []
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    try:
+        data = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}

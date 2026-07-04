@@ -82,6 +82,13 @@ def load_settings() -> Settings:
         ),
         auto_trade=AutoTradeConfig(
             enabled=_bool_env("AUTO_PAPER_TRADING", False),
+            broker_enabled={
+                "alpaca": _bool_env("ALPACA_AUTO_TRADING", _bool_env("AUTO_PAPER_TRADING", False)),
+                "kraken": _bool_env("KRAKEN_AUTO_TRADING", _bool_env("KRAKEN_TRADING_ENABLED", False)),
+                "coinbase": _bool_env("COINBASE_AUTO_TRADING", False),
+                "binance": _bool_env("BINANCE_AUTO_TRADING", False),
+                "interactive_brokers": _bool_env("IBKR_AUTO_TRADING", False),
+            },
             min_confidence=_float_env("AUTO_TRADE_MIN_CONFIDENCE", 0.85),
             min_philosophy_fit=_float_env("AUTO_TRADE_MIN_PHILOSOPHY_FIT", 0.85),
             max_trade_amount=_float_env("MAX_AUTO_TRADE_AMOUNT", 25.0),

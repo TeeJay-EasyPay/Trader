@@ -2,13 +2,13 @@
 
 Date: 2026-07-02
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented
 
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.
 - Required dependency installed: `tzdata`.
-- Unit tests pass: 48/48.
+- Unit tests pass: 53/53.
 - `.env` loading works.
 - Alpaca Paper Trading connection works.
 - Alpaca account retrieval works.
@@ -65,6 +65,31 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Crypto knowledge schema expanded for project analysis, tokenomics, on-chain metrics, sentiment, risk, news, benchmark alignment, and trading history.
 - Investment Orchestrator now records due diligence, investment score, broker decision, execution decision, and capital allocation before autonomous execution.
 - Kraken adapter supports `KRAKEN_PRIVATE_KEY` while keeping trading disabled by default.
+- Broker-specific auto trading is stored in SQLite and exposed through `POST /broker-auto-trading`.
+- Command Centre broker panels are driven by backend broker runtime state.
+- Recommendation history sets are persisted for audit.
+- Recommendation cards are grouped by broker, collapsed by default, sorted by confidence, and filterable.
+- Kraken read integration validates credentials, balances, holdings, open orders, closed orders, trade history, and ticker prices.
+- Notification events are queued in SQLite for research, broker control, and trade lifecycle events.
+
+## Multi-Broker Autonomous Platform Sprint
+
+- New backend module: `src/ai_trader/multi_broker.py`.
+- New SQLite tables:
+  - `BROKER_AUTO_TRADING_SETTINGS`
+  - `BROKER_RUNTIME_STATE`
+  - `BROKER_TRADE_HISTORY`
+  - `NOTIFICATION_EVENTS`
+  - `RECOMMENDATION_SETS`
+  - `CRYPTO_RESEARCH_SCORES`
+- New endpoint: `POST /broker-auto-trading`.
+- New environment variables:
+  - `ALPACA_AUTO_TRADING`
+  - `KRAKEN_AUTO_TRADING`
+  - `COINBASE_AUTO_TRADING`
+  - `BINANCE_AUTO_TRADING`
+  - `IBKR_AUTO_TRADING`
+- Tests: 53/53 passing inside `.venv`.
 
 ## Foundation Sprint Autonomous Investment Platform
 

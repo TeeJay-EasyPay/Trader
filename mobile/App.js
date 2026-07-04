@@ -190,6 +190,7 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
   const recentTransactions = combinedTransactions(status, portfolio, selectedExchange);
   const recommendationSummary = status?.recommendation_summary || {};
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
+  const brokerPanels = status?.brokers || [];
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   return (
     <View>
@@ -246,25 +247,31 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
         <Metric label="Cloud API Health" value={status?.cloud_api_health} />
       </Section>
       <Section title="Broker Panels">
-        {['Alpaca', 'Kraken'].map((broker) => {
-          const summary = exchangeSummary(executiveSummary, broker);
+        {brokerPanels.length ? brokerPanels.map((broker) => {
+          const label = broker.label || notAvailable(broker.broker);
           return (
-            <View key={`${broker}-panel`} style={styles.compactRow}>
-              <Text style={styles.cardTitle}>{broker}</Text>
-              <Metric label="Portfolio" value={selectedPortfolioValue(broker, summary, portfolio, 'portfolio')} />
-              <Metric label="Cash" value={selectedPortfolioValue(broker, summary, portfolio, 'cash')} />
-              <Metric label="Buying Power" value={broker === 'Alpaca' ? moneyOrText(portfolio?.buying_power) : summary?.buying_power} />
-              <Metric label="Day P&L" value={selectedPortfolioValue(broker, summary, portfolio, 'dayPnl')} />
-              <Metric label="Week P&L" value={moneyOrText(summary?.last_week_pnl)} />
-              <Metric label="Month P&L" value={moneyOrText(summary?.last_month_pnl)} />
-              <Metric label="Open Positions" value={selectedPortfolioValue(broker, summary, portfolio, 'positions')} />
-              <Metric label="Trades" value={broker === 'Alpaca' ? describeLatestTrade(portfolio?.latest_trade) : summary?.status} />
-              <Metric label="Research Status" value={status?.research_status} />
-              <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
-              <Metric label="Auto Trading Status" value={status?.auto_paper_trading_status} />
+            <View key={`${broker.broker}-panel`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{label}</Text>
+              <Metric label="Connection Status" value={broker.connection_status} />
+              <Metric label="Portfolio" value={moneyOrText(broker.portfolio_value)} />
+              <Metric label="Cash" value={moneyOrText(broker.cash_available)} />
+              <Metric label="Buying Power" value={moneyOrText(broker.buying_power)} />
+              <Metric label="Open Positions" value={broker.open_positions} />
+              <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
+              <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
+              <Metric label="Month P&L" value={moneyOrText(broker.month_pnl)} />
+              <Metric label="Trades Today" value={broker.trades_today} />
+              <Metric label="Research Status" value={broker.research_status} />
+              <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
+              <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
+              <View style={styles.buttonGrid}>
+                <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
+                <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
+                <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
+              </View>
             </View>
           );
-        })}
+        }) : <Empty />}
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
@@ -309,6 +316,11 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
 }
 
 function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute }) {
+  const [expanded, setExpanded] = useState({});
+  const [brokerFilter, setBrokerFilter] = useState('All');
+  const [confidenceFilter, setConfidenceFilter] = useState('All');
+  const [assetTypeFilter, setAssetTypeFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All');
   if (!recommendations.length) {
     return (
       <Section title="AI Recommendation History">
@@ -331,19 +343,54 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
           for reference, but execution is blocked until fresh analysis creates a new trade idea.
         </Text>
       </Section>
+      <Section title="Filters">
+        <View style={styles.buttonGrid}>
+          {['All', ...uniqueValues(recommendations.map((item) => item.suggested_broker || item.exchange).filter(Boolean))].map((item) => (
+            <Button key={`broker-${item}`} label={item} tone={brokerFilter === item ? 'primary' : 'neutral'} onPress={() => setBrokerFilter(item)} />
+          ))}
+        </View>
+        <View style={styles.buttonGrid}>
+          {['All', '85%+', '90%+'].map((item) => (
+            <Button key={`confidence-${item}`} label={item} tone={confidenceFilter === item ? 'primary' : 'neutral'} onPress={() => setConfidenceFilter(item)} />
+          ))}
+        </View>
+        <View style={styles.buttonGrid}>
+          {['All', ...uniqueValues(recommendations.map((item) => item.asset_type).filter(Boolean))].map((item) => (
+            <Button key={`asset-${item}`} label={item} tone={assetTypeFilter === item ? 'primary' : 'neutral'} onPress={() => setAssetTypeFilter(item)} />
+          ))}
+        </View>
+        <View style={styles.buttonGrid}>
+          {['All', 'Fresh', 'Stale', 'Expired'].map((item) => (
+            <Button key={`status-${item}`} label={item} tone={statusFilter === item ? 'primary' : 'neutral'} onPress={() => setStatusFilter(item)} />
+          ))}
+        </View>
+      </Section>
       <View style={styles.buttonGrid}>
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
         <Button label="Run New Analysis" onPress={onRunAnalysis} />
         <Button label="Auto Execute 85%+" onPress={onAutoExecute} tone="warn" />
       </View>
-      {recommendations.map((item) => (
-        <RecommendationCard
-          key={item.proposal_id}
-          item={item}
-          amount={amounts[item.proposal_id] || ''}
-          setAmount={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
-          onApprove={() => onApprove(item.proposal_id)}
-        />
+      {Object.entries(groupRecommendations(filterRecommendations(recommendations, brokerFilter, confidenceFilter, assetTypeFilter, statusFilter))).map(([broker, items]) => (
+        <Section key={`group-${broker}`} title={broker}>
+          {items.map((item) => {
+            const open = !!expanded[item.proposal_id];
+            return (
+              <View key={item.proposal_id}>
+                <TouchableOpacity style={styles.recommendationHeader} onPress={() => setExpanded((prev) => ({ ...prev, [item.proposal_id]: !open }))}>
+                  <Text style={styles.cardTitle}>{open ? '▼' : '▶'} {notAvailable(item.ticker)} {formatPercent(item.confidence)}</Text>
+                </TouchableOpacity>
+                {open && (
+                  <RecommendationCard
+                    item={item}
+                    amount={amounts[item.proposal_id] || ''}
+                    setAmount={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
+                    onApprove={() => onApprove(item.proposal_id)}
+                  />
+                )}
+              </View>
+            );
+          })}
+        </Section>
       ))}
     </View>
   );
@@ -583,6 +630,9 @@ function commandMessage(path, result) {
       ].join('\n');
     }
     return result.message || 'No recommendations were eligible.';
+  }
+  if (path === '/broker-auto-trading') {
+    return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.`;
   }
   return result.message || result.status || 'Done';
 }
@@ -844,6 +894,45 @@ function companiesForTheme(theme, companies) {
     .join('\n');
 }
 
+function uniqueValues(items) {
+  return [...new Set(items.map((item) => String(item)).filter(Boolean))];
+}
+
+function groupRecommendations(items) {
+  return items.reduce((groups, item) => {
+    const broker = item.suggested_broker || item.exchange || 'Unassigned';
+    if (!groups[broker]) {
+      groups[broker] = [];
+    }
+    groups[broker].push(item);
+    groups[broker].sort((a, b) => (Number(b.confidence || 0) - Number(a.confidence || 0)));
+    return groups;
+  }, {});
+}
+
+function filterRecommendations(items, brokerFilter, confidenceFilter, assetTypeFilter, statusFilter) {
+  return items.filter((item) => {
+    const broker = item.suggested_broker || item.exchange || 'Unassigned';
+    if (brokerFilter !== 'All' && broker !== brokerFilter) {
+      return false;
+    }
+    if (assetTypeFilter !== 'All' && item.asset_type !== assetTypeFilter) {
+      return false;
+    }
+    if (statusFilter !== 'All' && item.freshness_status !== statusFilter) {
+      return false;
+    }
+    const confidence = Number(item.confidence || 0);
+    if (confidenceFilter === '85%+' && confidence < 0.85) {
+      return false;
+    }
+    if (confidenceFilter === '90%+' && confidence < 0.9) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function exitPlan(item) {
   const stop = notAvailable(item.suggested_stop_loss);
   const take = notAvailable(item.suggested_take_profit);
@@ -988,6 +1077,14 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e6e9ee',
     borderBottomWidth: 1,
     paddingVertical: 8,
+  },
+  recommendationHeader: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#dde1e7',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
   },
   smallText: {
     marginTop: 3,

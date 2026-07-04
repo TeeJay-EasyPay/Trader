@@ -26,6 +26,16 @@ services:
         value: gpt-4.1-mini
       - key: AUTO_PAPER_TRADING
         value: "false"
+      - key: ALPACA_AUTO_TRADING
+        value: "false"
+      - key: KRAKEN_AUTO_TRADING
+        value: "false"
+      - key: COINBASE_AUTO_TRADING
+        value: "false"
+      - key: BINANCE_AUTO_TRADING
+        value: "false"
+      - key: IBKR_AUTO_TRADING
+        value: "false"
       - key: AUTO_TRADE_MIN_CONFIDENCE
         value: "0.85"
       - key: AUTO_TRADE_MIN_PHILOSOPHY_FIT

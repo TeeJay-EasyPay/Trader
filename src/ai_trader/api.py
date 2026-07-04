@@ -23,6 +23,20 @@ from .execution import ExecutionEngine
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import TradeProposal, utc_now_iso
+from .multi_broker import (
+    all_broker_runtime,
+    broker_auto_settings,
+    broker_auto_trading_enabled,
+    initialize_multi_broker_schema,
+    latest_broker_trades,
+    latest_recommendation_set,
+    record_broker_trade_history,
+    record_notification,
+    record_recommendation_set,
+    set_broker_auto_trading,
+    today_runtime_counts,
+    update_broker_runtime,
+)
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
 from .operational import display_value, initialize_operational_schema, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .scheduler import ResearchScheduler
@@ -72,6 +86,8 @@ class LocalApiService:
         self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
         initialize_foundation_schema(settings.db_path)
         initialize_operational_schema(settings.db_path)
+        initialize_multi_broker_schema(settings.db_path)
+        self._apply_env_broker_auto_defaults()
         self._initialize_control()
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
@@ -98,6 +114,8 @@ class LocalApiService:
             return 200, self.developer_status()
         if path == "/developer-dashboard":
             return 200, {"html": DEVELOPER_DASHBOARD_HTML}
+        if path == "/brokers":
+            return 200, {"brokers": self.broker_panels()}
         return 404, {"error": "not_found", "path": path}
 
     def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -115,6 +133,8 @@ class LocalApiService:
             return 200, self.auto_execute_recommendations()
         if path == "/approve-and-execute":
             return 200, self.approve_and_execute(body)
+        if path == "/broker-auto-trading":
+            return 200, self.set_broker_auto_trading(body)
         return 404, {"error": "not_found", "path": path}
 
     def status(self) -> dict[str, Any]:
@@ -155,13 +175,17 @@ class LocalApiService:
         research_run = latest_research_run(self.settings.db_path)
         executive_summary = self.executive_summary()
         policy = load_trading_policy(self.settings.db_path, auto_trade=self.settings.auto_trade, guardrails=self.settings.guardrails)
+        brokers = self.broker_panels()
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
             "engine_health": "Available" if self.settings.db_path.exists() else "Database not initialized",
             "last_analysis_time": last_analysis,
             "auto_paper_trading_status": "Enabled" if self.settings.auto_trade.enabled else "Disabled",
+            "broker_auto_trading": broker_auto_settings(self.settings.db_path),
             "selected_active_brokers": self._active_broker_names(),
+            "brokers": brokers,
+            "continuous_research": self._continuous_research_status(brokers),
             "next_scheduled_research_run": (research_run or {}).get("next_scheduled_run") or next_research_run(),
             "last_research_run": research_run,
             "research_status": _research_status(research_run),
@@ -191,7 +215,7 @@ class LocalApiService:
     def portfolio(self, broker_filter: str = "all") -> dict[str, Any]:
         broker_filter = broker_filter.lower()
         if broker_filter in {"kraken", "coinbase"}:
-            return self._unconfigured_exchange_portfolio(broker_filter)
+            return self._exchange_portfolio(broker_filter)
         if not self.settings.has_alpaca_credentials:
             return {
                 "portfolio_value": "Not available - Alpaca paper credentials are not configured",
@@ -463,6 +487,17 @@ class LocalApiService:
     def run_analysis(self, body: dict[str, Any]) -> dict[str, Any]:
         started_at = utc_now_iso()
         trigger_type = str(body.get("trigger_type") or "manual")
+        broker_name = str(body.get("broker") or "alpaca").lower()
+        update_broker_runtime(
+            self.settings.db_path,
+            broker_name,
+            research_status="running",
+            due_diligence_status="running",
+            current_stage="due_diligence",
+            last_scan=started_at,
+            next_scan=next_research_run(),
+            research_freshness="Fresh",
+        )
         symbols = body.get("symbols")
         if isinstance(symbols, str):
             symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
@@ -473,10 +508,12 @@ class LocalApiService:
         if not symbols:
             result = {"status": "not_available", "message": "No symbols available in SQLite."}
             self._record_research_from_result(started_at, result, [], trigger_type)
+            update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="idle", current_stage="complete")
             return result
         if not self.settings.has_alpaca_credentials:
             result = {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
             self._record_research_from_result(started_at, result, symbols, trigger_type)
+            update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="blocked", current_stage="credentials", details={"last_error": result["message"]})
             return result
         broker = self._broker()
         analyzer = None
@@ -516,6 +553,31 @@ class LocalApiService:
             "auto_execution": auto_execution,
         }
         self._record_research_from_result(started_at, result, symbols, trigger_type)
+        update_broker_runtime(
+            self.settings.db_path,
+            broker_name,
+            research_status="idle",
+            due_diligence_status="completed",
+            current_asset=symbols[-1] if symbols else None,
+            current_stage="complete",
+            research_queue=symbols,
+            assets_reviewed_today=len(symbols),
+            research_cycles_today=1,
+            last_scan=utc_now_iso(),
+            next_scan=next_research_run(),
+            research_freshness="Fresh",
+            last_recommendation=proposals[-1].symbol if proposals else None,
+            details={"skipped_symbols": skipped_symbols},
+        )
+        record_notification(
+            self.settings.db_path,
+            event_type="research_completed",
+            broker=broker_name,
+            symbol=None,
+            title="Research completed",
+            message=f"Due diligence completed for {len(symbols)} asset(s). {len(proposals)} recommendation(s) generated.",
+            payload={"symbols": symbols, "proposal_count": len(proposals), "skipped_symbols": skipped_symbols},
+        )
         return result
 
     def set_trading_state(self, state: str, command: str) -> dict[str, Any]:
@@ -569,13 +631,11 @@ class LocalApiService:
         control = self._control_state()
         if control["trading_state"] != "running":
             return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
-        if not self.settings.auto_trade.enabled:
-            return {"status": "manual_required", "message": "AUTO_PAPER_TRADING is false. Recommendations require manual approval.", "eligible_count": 0, "skipped": []}
+        broker_settings = broker_auto_settings(self.settings.db_path)
+        if not any(broker_settings.values()):
+            return {"status": "manual_required", "message": "No broker has auto trading enabled. Enable auto trading for an individual broker to allow new autonomous entries.", "eligible_count": 0, "skipped": []}
         if not self.settings.guardrails.paper_trading_only:
             return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
-        if not self.settings.has_alpaca_credentials:
-            return {"status": "not_available", "message": "Alpaca paper credentials are required for auto execution."}
-
         rows = self._rows(
             """
             SELECT ta.proposal_id, ta.payload_json, ta.created_at, ta.ai_confidence,
@@ -635,15 +695,45 @@ class LocalApiService:
                 continue
             payload = json.loads(row["payload_json"])
             proposal = TradeProposal.from_dict(payload["proposal"])
+            selected_broker = self.orchestrator._select_adapter(proposal)
+            broker_name = selected_broker.name if selected_broker else "unknown"
+            if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "alpaca_credentials_missing",
+                    "message": "Alpaca paper credentials are required for Alpaca execution.",
+                })
+                continue
+            if not broker_auto_trading_enabled(self.settings.db_path, broker_name, self.settings.auto_trade.broker_enabled.get(broker_name, False)):
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": f"{broker_name}_auto_trading_disabled",
+                    "message": f"Auto trading is disabled for {broker_name}.",
+                })
+                continue
             broker = self._broker()
             context = OrchestratorContext(
                 account=broker.account_context(),
-                auto_trade=self.settings.auto_trade,
+                auto_trade=self._auto_config_for_broker(broker_name),
                 guardrails=self.settings.guardrails,
             )
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
             if decision.decision == "approved":
                 decisions.append(decision.to_dict())
+                update_broker_runtime(self.settings.db_path, broker_name, last_trade_submitted=decision.symbol, current_stage="trade_submitted")
+                record_notification(
+                    self.settings.db_path,
+                    event_type="trade_submitted",
+                    broker=broker_name,
+                    symbol=decision.symbol,
+                    title="Trade submitted",
+                    message=f"{broker_name.title()} submitted {decision.symbol}.",
+                    payload=decision.to_dict(),
+                )
                 self.portfolio("alpaca")
             else:
                 skipped.append({
@@ -672,6 +762,58 @@ class LocalApiService:
             "skipped": skipped[:10],
         }
 
+    def set_broker_auto_trading(self, body: dict[str, Any]) -> dict[str, Any]:
+        broker = str(body.get("broker") or "").lower()
+        if not broker:
+            return {"status": "rejected", "message": "broker is required."}
+        enabled = bool(body.get("enabled"))
+        result = set_broker_auto_trading(self.settings.db_path, broker, enabled)
+        update_broker_runtime(
+            self.settings.db_path,
+            broker,
+            research_status="running" if enabled else "idle",
+            current_stage="auto_trading_enabled" if enabled else "auto_trading_disabled",
+            research_freshness="Fresh" if enabled else None,
+        )
+        return {"status": "updated", **result}
+
+    def broker_panels(self) -> list[dict[str, Any]]:
+        panels = []
+        settings = broker_auto_settings(self.settings.db_path)
+        for broker in ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]:
+            runtime = {**update_broker_runtime(self.settings.db_path, broker).to_dict()}
+            portfolio = self._exchange_portfolio(broker) if broker != "alpaca" else self._alpaca_panel_portfolio()
+            counts = today_runtime_counts(self.settings.db_path, broker)
+            panels.append({
+                "broker": broker,
+                "label": _broker_label(broker),
+                "connection_status": portfolio.get("connection_status") or runtime.get("connection_status"),
+                "portfolio_value": portfolio.get("portfolio_value"),
+                "cash_available": portfolio.get("cash_available"),
+                "buying_power": portfolio.get("buying_power"),
+                "open_positions": portfolio.get("open_positions_summary"),
+                "todays_pnl": portfolio.get("todays_pnl"),
+                "week_pnl": portfolio.get("week_pnl"),
+                "month_pnl": portfolio.get("month_pnl"),
+                "trades_today": counts["trades_today"],
+                "research_status": runtime.get("research_status"),
+                "due_diligence_status": runtime.get("due_diligence_status"),
+                "auto_trading_enabled": settings.get(broker, False),
+                "current_asset": runtime.get("current_asset"),
+                "current_stage": runtime.get("current_stage"),
+                "research_queue": runtime.get("research_queue"),
+                "assets_reviewed_today": runtime.get("assets_reviewed_today"),
+                "research_cycles_today": runtime.get("research_cycles_today"),
+                "last_scan": runtime.get("last_scan"),
+                "next_scan": runtime.get("next_scan"),
+                "research_freshness": runtime.get("research_freshness"),
+                "last_recommendation": runtime.get("last_recommendation"),
+                "last_trade_submitted": runtime.get("last_trade_submitted"),
+                "trade_history": latest_broker_trades(self.settings.db_path, broker, limit=10),
+                "source": portfolio.get("source"),
+            })
+        return panels
+
     def _adapters(self):
         adapters = []
         if self.settings.has_alpaca_credentials:
@@ -684,11 +826,20 @@ class LocalApiService:
 
     def executive_summary(self) -> list[dict[str, Any]]:
         alpaca = self._latest_snapshot_summary("alpaca", "Alpaca")
-        return [
-            alpaca or {"broker": "Alpaca", "status": "Not configured" if not self.settings.has_alpaca_credentials else "Not available - no portfolio snapshots yet"},
-            {"broker": "Kraken", "status": "Not configured"},
-            {"broker": "Coinbase", "status": "Not configured"},
-        ]
+        summaries = [alpaca or {"broker": "Alpaca", "status": "Not configured" if not self.settings.has_alpaca_credentials else "Not available - no portfolio snapshots yet"}]
+        for broker in ["kraken", "coinbase", "binance", "interactive_brokers"]:
+            portfolio = self._exchange_portfolio(broker)
+            summaries.append({
+                "broker": _broker_label(broker),
+                "portfolio_balance": portfolio.get("portfolio_value"),
+                "cash_balance": portfolio.get("cash_available"),
+                "last_day_pnl": portfolio.get("todays_pnl"),
+                "last_week_pnl": portfolio.get("week_pnl"),
+                "last_month_pnl": portfolio.get("month_pnl"),
+                "open_positions": portfolio.get("open_positions_summary"),
+                "status": portfolio.get("connection_status") or portfolio.get("source"),
+            })
+        return summaries
 
     def _latest_snapshot_summary(self, broker: str, label: str) -> dict[str, Any] | None:
         row = self._row("SELECT * FROM PORTFOLIO_SNAPSHOTS WHERE broker = ? ORDER BY snapshot_id DESC LIMIT 1", (broker,))
@@ -720,12 +871,138 @@ class LocalApiService:
             "recent_orders": [],
             "recent_activities": [],
             "source": f"{label} not configured",
-            "executive_summary": self.executive_summary(),
+        }
+
+    def _exchange_portfolio(self, broker: str) -> dict[str, Any]:
+        broker = broker.lower()
+        adapter = self.orchestrator.adapters.get(broker)
+        if not adapter:
+            return self._unconfigured_exchange_portfolio(broker)
+        account = adapter.get_account()
+        configured = getattr(adapter, "configured", False)
+        if isinstance(account, dict) and account.get("status") == "authentication_failed":
+            update_broker_runtime(self.settings.db_path, broker, connection_status=f"Authentication failed - {account.get('reason')}", details=account)
+            return {
+                "broker": broker,
+                "exchange": _broker_label(broker),
+                "connection_status": f"Authentication failed - {account.get('reason')}",
+                "portfolio_value": f"Not available - {account.get('reason')}",
+                "cash_available": f"Not available - {account.get('reason')}",
+                "buying_power": f"Not available - {account.get('reason')}",
+                "todays_pnl": f"Not available - {account.get('reason')}",
+                "week_pnl": f"Not available - {account.get('reason')}",
+                "month_pnl": f"Not available - {account.get('reason')}",
+                "open_positions": [],
+                "open_positions_summary": "Not available - authentication failed",
+                "recent_orders": [],
+                "recent_activities": [],
+                "source": f"{_broker_label(broker)} authentication failed",
+            }
+        if not configured:
+            return self._unconfigured_exchange_portfolio(broker)
+        positions = adapter.get_positions()
+        orders = adapter.get_orders()
+        history = adapter.get_trade_history()
+        record_broker_trade_history(self.settings.db_path, broker, orders + history)
+        update_broker_runtime(
+            self.settings.db_path,
+            broker,
+            connection_status="Connected",
+            details={"account_status": account.get("status") if isinstance(account, dict) else "connected"},
+        )
+        cash = _sum_balances(account.get("balances") if isinstance(account, dict) else None)
+        return {
+            "broker": broker,
+            "exchange": _broker_label(broker),
+            "connection_status": "Connected",
+            "portfolio_value": cash if cash is not None else "Not available - broker returned no portfolio valuation",
+            "cash_available": cash if cash is not None else "Not available - broker returned no balances",
+            "buying_power": cash if cash is not None else "Not available - broker returned no buying power",
+            "todays_pnl": "Not available - broker P&L snapshots not available yet",
+            "week_pnl": "Not available - broker P&L snapshots not available yet",
+            "month_pnl": "Not available - broker P&L snapshots not available yet",
+            "open_positions": positions,
+            "open_positions_summary": f"{len(positions)}",
+            "recent_orders": orders[:10],
+            "recent_activities": history[:10],
+            "source": _broker_label(broker),
+        }
+
+    def _alpaca_panel_portfolio(self) -> dict[str, Any]:
+        if not self.settings.has_alpaca_credentials:
+            return self._unconfigured_exchange_portfolio("alpaca")
+        row = self._latest_snapshot_summary("alpaca", "Alpaca")
+        if not row:
+            return {"connection_status": "Connected", "source": "Alpaca Paper Trading"}
+        return {
+            "connection_status": row.get("status"),
+            "portfolio_value": row.get("portfolio_balance"),
+            "cash_available": row.get("cash_balance"),
+            "buying_power": None,
+            "todays_pnl": row.get("last_day_pnl"),
+            "week_pnl": row.get("last_week_pnl"),
+            "month_pnl": row.get("last_month_pnl"),
+            "open_positions_summary": row.get("open_positions"),
+            "source": "Alpaca Paper Trading",
+        }
+
+    def _auto_config_for_broker(self, broker: str) -> Any:
+        enabled = broker_auto_trading_enabled(self.settings.db_path, broker, self.settings.auto_trade.broker_enabled.get(broker, False))
+        return type(self.settings.auto_trade)(
+            enabled=enabled,
+            broker_enabled=dict(self.settings.auto_trade.broker_enabled),
+            min_confidence=self.settings.auto_trade.min_confidence,
+            min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
+            max_trade_amount=self.settings.auto_trade.crypto_max_trade_amount if broker == "kraken" else self.settings.auto_trade.max_trade_amount,
+            default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct if broker == "kraken" else self.settings.auto_trade.default_stop_loss_pct,
+            max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct if broker == "kraken" else self.settings.auto_trade.max_stop_loss_pct,
+            crypto_max_trade_amount=self.settings.auto_trade.crypto_max_trade_amount,
+            crypto_default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
+            crypto_max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct,
+        )
+
+    def _apply_env_broker_auto_defaults(self) -> None:
+        if self.settings.auto_trade.enabled:
+            set_broker_auto_trading(self.settings.db_path, "alpaca", True, updated_by="legacy_auto_paper_trading")
+        for broker, enabled in self.settings.auto_trade.broker_enabled.items():
+            if enabled:
+                set_broker_auto_trading(self.settings.db_path, broker, True, updated_by="environment")
+
+    def _continuous_research_status(self, brokers: list[dict[str, Any]]) -> dict[str, Any]:
+        active = [broker for broker in brokers if broker.get("research_status") == "running"]
+        latest = latest_recommendation_set(self.settings.db_path)
+        return {
+            "research_running": bool(active) or self.settings.research_scheduler_enabled,
+            "current_broker": active[0]["broker"] if active else None,
+            "current_asset": active[0].get("current_asset") if active else None,
+            "current_stage": active[0].get("current_stage") if active else "waiting_for_next_scan",
+            "research_queue": active[0].get("research_queue") if active else [],
+            "assets_reviewed_today": sum(int(item.get("assets_reviewed_today") or 0) for item in brokers),
+            "research_cycles_today": sum(int(item.get("research_cycles_today") or 0) for item in brokers),
+            "last_scan": max([item.get("last_scan") for item in brokers if item.get("last_scan")] or [None]),
+            "next_scan": next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
+            "research_freshness": "Fresh" if self.settings.research_scheduler_enabled else "Idle - scheduler disabled",
+            "last_recommendation": latest,
+            "last_trade_submitted": max([item.get("last_trade_submitted") for item in brokers if item.get("last_trade_submitted")] or [None]),
         }
 
     def _record_research_from_result(self, started_at: str, result: dict[str, Any], symbols: list[str], trigger_type: str) -> None:
         errors = [item.get("reason", "") for item in result.get("skipped_symbols", []) if item.get("reason")]
         auto = result.get("auto_execution") or {}
+        proposal_ids = [
+            str(item.get("proposal_id"))
+            for item in result.get("proposals", [])
+            if isinstance(item, dict) and item.get("proposal_id")
+        ]
+        record_recommendation_set(
+            self.settings.db_path,
+            trigger_type=trigger_type,
+            broker=None,
+            symbols=symbols,
+            proposal_ids=proposal_ids,
+            status=result.get("status", "unknown"),
+            summary=result.get("message") or f"{len(proposal_ids)} recommendation(s) generated.",
+        )
         record_research_run(
             self.settings.db_path,
             started_at=started_at,
@@ -1065,6 +1342,31 @@ def _score_payload(score: dict[str, Any] | None, confidence: float, philosophy_f
         "overall_confidence": confidence or None,
         "reasoning": {"status": "Not available - not assessed by orchestrator yet"},
     }
+
+
+def _broker_label(broker: str) -> str:
+    labels = {
+        "alpaca": "Alpaca",
+        "kraken": "Kraken",
+        "coinbase": "Coinbase",
+        "binance": "Binance",
+        "interactive_brokers": "Interactive Brokers",
+    }
+    return labels.get(broker.lower(), broker.replace("_", " ").title())
+
+
+def _sum_balances(balances: Any) -> float | None:
+    if not isinstance(balances, dict):
+        return None
+    total = 0.0
+    found = False
+    for value in balances.values():
+        amount = safe_float(value)
+        if amount is None:
+            continue
+        total += amount
+        found = True
+    return total if found else None
 
 
 def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:

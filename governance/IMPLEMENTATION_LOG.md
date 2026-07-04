@@ -419,3 +419,41 @@
 - Updated `.env.example`, `cloud.env.example`, and `render.yaml`.
 - Added foundation tests for policy seeding, due diligence, investment scores, capital allocation, orchestrator decision recording, emergency shutdown, and Kraken credential naming.
 - Verified Python tests: 48/48 passing.
+
+## 2026-07-04 Multi-Broker Autonomous Platform Sprint
+
+- Added `src/ai_trader/multi_broker.py`.
+- Added broker-specific auto-trading settings with SQLite persistence.
+- Added broker runtime state so every broker can report connection, research, due diligence, current asset, current stage, queue, freshness, and last trade independently.
+- Added broker trade history persistence for accepted, pending, filled, cancelled, closed, and other broker statuses.
+- Added notification event queue for research, broker control, trade submission, and future push notification delivery.
+- Added recommendation set persistence so the latest analysis run remains auditable and can be made active.
+- Added crypto research score table for technical trend, momentum, RSI, moving average position, MACD, volume trend, volatility, liquidity, market structure, sentiment, news, on-chain activity, risk, due diligence, and confidence.
+- Added broker-specific environment flags:
+  - `ALPACA_AUTO_TRADING`
+  - `KRAKEN_AUTO_TRADING`
+  - `COINBASE_AUTO_TRADING`
+  - `BINANCE_AUTO_TRADING`
+  - `IBKR_AUTO_TRADING`
+- Updated the API:
+  - `GET /status` now includes broker panels, continuous research state, and broker-specific auto-trading state.
+  - `GET /brokers` returns broker panels.
+  - `POST /broker-auto-trading` enables or disables new autonomous entries for one broker only.
+  - `POST /auto-execute-recommendations` no longer reports `AUTO_PAPER_TRADING is false`; it reports broker-specific enablement.
+- Completed Kraken read adapter surface:
+  - Authenticated balance check.
+  - Holdings from balances.
+  - Open orders.
+  - Closed orders.
+  - Trade history.
+  - Current prices through public ticker helper.
+  - Authentication failures are returned with reasons when credentials exist.
+- Kept Kraken order submission disabled pending final Founder-approved execution method.
+- Updated mobile app without adding screens:
+  - Broker panels are generated from backend brokers.
+  - Enable/Disable Auto Trading buttons control one broker only.
+  - Recommendations are grouped by broker, collapsed by default, sorted by confidence, and filterable.
+  - Intelligence displays broader continuous research state.
+- Updated `.env.example`, `cloud.env.example`, `render.yaml`, `README.md`, `STATUS.md`, and `governance/FOUNDER_BRIEF.md`.
+- Added tests for independent broker auto-trading, API broker control, recommendation set persistence, crypto research score storage, and legacy auto flag compatibility.
+- Verified Python tests: 53/53 passing.

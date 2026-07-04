@@ -343,6 +343,62 @@ KRAKEN_TRADING_ENABLED=false
 
 `KRAKEN_API_SECRET` is still accepted as a backward-compatible local alias, but `KRAKEN_PRIVATE_KEY` is the preferred Render name. Withdrawal permissions must never be granted.
 
+## Multi-Broker Autonomous Platform
+
+The Investment Orchestrator is now the central execution authority for all brokers. Each broker has independent auto-trading state stored in SQLite and controlled through the API/mobile app.
+
+Broker-specific auto-trading flags:
+
+```text
+ALPACA_AUTO_TRADING=false
+KRAKEN_AUTO_TRADING=false
+COINBASE_AUTO_TRADING=false
+BINANCE_AUTO_TRADING=false
+IBKR_AUTO_TRADING=false
+```
+
+`AUTO_PAPER_TRADING` remains only as a backward-compatible fallback. New broker controls should use the broker-specific settings or the mobile Command Centre buttons.
+
+New API endpoint:
+
+```text
+POST /broker-auto-trading
+```
+
+Body:
+
+```json
+{
+  "broker": "kraken",
+  "enabled": true
+}
+```
+
+Broker runtime and audit tables:
+
+- `BROKER_AUTO_TRADING_SETTINGS`
+- `BROKER_RUNTIME_STATE`
+- `BROKER_TRADE_HISTORY`
+- `NOTIFICATION_EVENTS`
+- `RECOMMENDATION_SETS`
+- `CRYPTO_RESEARCH_SCORES`
+
+The Command Centre now renders broker panels from backend data. Enabling auto trading for Kraken does not enable Alpaca, Coinbase, Binance, or Interactive Brokers.
+
+Recommendation history is persisted in SQLite through `RECOMMENDATION_SETS`, and the Recommendations screen continues to read saved recommendations from SQLite on open. Recommendation cards are grouped by broker, collapsed by default, sorted by confidence, and filterable by broker, confidence, asset type, and status.
+
+Kraken read integration:
+
+- Validates credentials when present.
+- Fetches balances.
+- Fetches holdings from balances.
+- Fetches open orders.
+- Fetches closed orders and trade history.
+- Fetches ticker prices through the public API helper.
+- Shows authentication failure reasons instead of pretending credentials are absent.
+
+Kraken order submission remains guarded and returns `not_implemented` unless a founder-approved final execution method is added. This keeps the platform prepared without accidentally enabling live crypto execution.
+
 ## Install On Honor Magic V3
 
 Android preview build:

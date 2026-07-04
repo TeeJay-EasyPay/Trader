@@ -23,6 +23,7 @@ class GuardrailConfig:
 @dataclass(frozen=True)
 class AutoTradeConfig:
     enabled: bool = False
+    broker_enabled: dict[str, bool] = field(default_factory=dict)
     min_confidence: float = 0.85
     min_philosophy_fit: float = 0.85
     max_trade_amount: float = 25.0
