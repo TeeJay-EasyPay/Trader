@@ -23,7 +23,7 @@ from .ai import OpenAIProposalAnalyzer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
-from .briefing import generate_daily_briefing
+from .briefing import generate_daily_briefing, generate_session_brief
 from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from .config import Settings, load_settings
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
@@ -319,6 +319,13 @@ class LocalApiService:
             return 200, {"performance_attribution": list_performance_attribution(self.settings.db_path)}
         if path == "/daily-learning-update":
             return 200, self.daily_learning_update(_first(query, "date"))
+        if path == "/trading-report":
+            return 200, self.trading_report(
+                report_date=_first(query, "date"),
+                broker=_first(query, "broker") or "all",
+                report_type=_first(query, "type") or "daily",
+                persist=False,
+            )
         if path == "/notifications":
             return 200, {"notifications": self.notifications(unread_only=_first(query, "unread_only") == "true")}
         return 404, {"error": "not_found", "path": path}
@@ -347,6 +354,8 @@ class LocalApiService:
             return 200, self.set_broker_auto_trading(body)
         if path == "/monitor-managed-exits":
             return 200, self.monitor_managed_exits()
+        if path == "/generate-report":
+            return 200, self.generate_report(body)
         if path == "/notifications/ack":
             return 200, self.ack_notifications(body)
         if path == "/register-push-token":
@@ -499,6 +508,182 @@ class LocalApiService:
             return {"briefing_date": row["briefing_date"], "report_markdown": row["report_markdown"], "created_at": row["created_at"]}
         markdown = generate_daily_briefing(self.audit, date.today(), self.settings.output_dir)
         return {"briefing_date": date.today().isoformat(), "report_markdown": markdown, "created_at": utc_now_iso()}
+
+    def generate_report(self, body: dict[str, Any]) -> dict[str, Any]:
+        report_type = str(body.get("type") or "daily").lower()
+        broker = str(body.get("broker") or "all").lower()
+        report_date = str(body.get("date") or date.today().isoformat())
+        return self.trading_report(report_date=report_date, broker=broker, report_type=report_type, persist=True)
+
+    def trading_report(self, *, report_date: str | None, broker: str = "all", report_type: str = "daily", persist: bool = False) -> dict[str, Any]:
+        report_date = report_date or date.today().isoformat()
+        broker = (broker or "all").lower()
+        report_type = (report_type or "daily").lower()
+        try:
+            parsed_date = date.fromisoformat(report_date)
+        except ValueError:
+            parsed_date = date.today()
+            report_date = parsed_date.isoformat()
+        if report_type in {"morning", "evening"}:
+            session_markdown = generate_session_brief(
+                db_path=self.settings.db_path,
+                output_dir=self.settings.output_dir,
+                brief_type=report_type,
+                briefing_date=parsed_date,
+            )
+            markdown = f"{session_markdown}\n\n{self._broker_learning_report_markdown(report_date, broker, report_type)}"
+        else:
+            markdown = self._broker_learning_report_markdown(report_date, broker, report_type)
+            if persist and broker == "all":
+                self.audit.record_briefing(report_date, markdown, {"report_type": report_type, "broker": broker})
+        path = self._write_trading_report(report_date, broker, report_type, markdown) if persist else None
+        summary = _first_markdown_bullet(markdown) or f"{report_type.title()} report generated for {broker.title()} on {report_date}."
+        if persist:
+            record_notification(
+                self.settings.db_path,
+                event_type="trading_report_generated",
+                broker=None if broker == "all" else broker,
+                symbol=None,
+                title=f"{report_type.title()} report generated",
+                message=summary,
+                payload={"date": report_date, "broker": broker, "report_type": report_type, "path": str(path) if path else None},
+            )
+        return {
+            "status": "generated" if persist else "available",
+            "date": report_date,
+            "broker": broker,
+            "report_type": report_type,
+            "summary": summary,
+            "report_markdown": markdown,
+            "path": str(path) if path else None,
+            "generated_at": utc_now_iso(),
+        }
+
+    def _broker_learning_report_markdown(self, report_date: str, broker: str, report_type: str) -> str:
+        start = f"{report_date}T00:00:00"
+        end = f"{report_date}T23:59:59"
+        broker_filter = "" if broker == "all" else " AND LOWER(broker) = LOWER(?)"
+        broker_params: tuple[Any, ...] = () if broker == "all" else (broker,)
+        snapshots = [
+            dict(row)
+            for row in self._rows(
+                f"""
+                SELECT broker, exchange, created_at, portfolio_value, day_pnl, week_pnl, month_pnl
+                FROM PORTFOLIO_SNAPSHOTS
+                WHERE created_at >= ? AND created_at <= ?{broker_filter}
+                ORDER BY created_at ASC
+                """,
+                (start, end, *broker_params),
+            )
+        ]
+        attribution = [
+            dict(row)
+            for row in self._rows(
+                f"""
+                SELECT * FROM PERFORMANCE_ATTRIBUTION
+                WHERE created_at >= ? AND created_at <= ?{broker_filter}
+                ORDER BY attribution_id DESC
+                """,
+                (start, end, *broker_params),
+            )
+        ]
+        decisions = [
+            dict(row)
+            for row in self._rows(
+                f"""
+                SELECT * FROM ORCHESTRATOR_DECISIONS
+                WHERE created_at >= ? AND created_at <= ?
+                {'' if broker == 'all' else 'AND LOWER(selected_broker) = LOWER(?)'}
+                ORDER BY decision_id DESC
+                LIMIT 30
+                """,
+                (start, end, *broker_params),
+            )
+        ]
+        broker_trades = [
+            dict(row)
+            for row in self._rows(
+                f"""
+                SELECT * FROM BROKER_TRADE_HISTORY
+                WHERE updated_at >= ? AND updated_at <= ?{broker_filter}
+                ORDER BY trade_history_id DESC
+                LIMIT 30
+                """,
+                (start, end, *broker_params),
+            )
+        ]
+        learning = self.daily_learning_update(report_date)
+        if broker != "all":
+            learning = {
+                **learning,
+                "closed_trades": [row for row in learning.get("closed_trades", []) if str(row.get("broker") or "").lower() == broker],
+            }
+        total_closed_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+        losing_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+        winning_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+        latest_snapshots = _latest_snapshot_by_broker(snapshots)
+        pnl_lines = []
+        for name, row in latest_snapshots.items():
+            pnl_lines.append(
+                f"- {name.title()}: day P&L {_money_text(row.get('day_pnl'))}, "
+                f"week P&L {_money_text(row.get('week_pnl'))}, portfolio {_money_text(row.get('portfolio_value'))}"
+            )
+        likely_causes = _report_likely_causes(snapshots, attribution, decisions, broker_trades)
+        markdown = f"""# AI Trader {report_type.title()} Trading Report
+
+Date: {report_date}
+Broker: {broker.title() if broker != "all" else "All brokers"}
+
+## Executive Answer
+
+- Latest broker snapshot movement: {len(latest_snapshots)} broker snapshot(s) reviewed.
+- Closed trade P&L recorded in attribution: {_money_text(total_closed_pnl)}.
+- Closed winners: {len(winning_trades)}.
+- Closed losers: {len(losing_trades)}.
+- Orchestrator decisions reviewed: {len(decisions)}.
+- Broker trade-history rows reviewed: {len(broker_trades)}.
+
+## P&L Snapshot
+
+{_list_or_none(pnl_lines)}
+
+## Why Performance Moved
+
+{_list_or_none(likely_causes)}
+
+## Closed Trade Detail
+
+{_report_trade_lines(attribution)}
+
+## Guardrail And Orchestrator Rejections
+
+{_report_decision_lines(decisions)}
+
+## What AI Trader Learned
+
+{_list_or_none(learning.get("trade_lessons") or [])}
+
+## Successful Trader / Benchmark Learning
+
+{_list_or_none(learning.get("benchmark_learning") or [])}
+
+## Recommendations For Founder Approval
+
+{_list_or_none(learning.get("recommendations_for_founder") or [])}
+
+## Important Note
+
+This report explains available evidence. It does not automatically change strategy, guardrails, broker permissions, or execution logic.
+"""
+        return markdown
+
+    def _write_trading_report(self, report_date: str, broker: str, report_type: str, markdown: str) -> Path:
+        self.settings.output_dir.mkdir(parents=True, exist_ok=True)
+        safe_broker = "".join(ch for ch in broker.lower() if ch.isalnum() or ch in {"-", "_"}) or "all"
+        safe_type = "".join(ch for ch in report_type.lower() if ch.isalnum() or ch in {"-", "_"}) or "daily"
+        path = self.settings.output_dir / f"{safe_type}_trading_report_{safe_broker}_{report_date}.md"
+        path.write_text(markdown, encoding="utf-8")
+        return path
 
     def recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._rows(
@@ -1867,6 +2052,88 @@ def _int_or_default(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _list_or_none(items: list[str]) -> str:
+    if not items:
+        return "- None recorded"
+    return "\n".join(item if str(item).startswith("- ") else f"- {item}" for item in items)
+
+
+def _money_text(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "Not available"
+    return f"{number:,.2f}"
+
+
+def _first_markdown_bullet(markdown: str) -> str | None:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            return stripped[2:]
+    return None
+
+
+def _latest_snapshot_by_broker(snapshots: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in snapshots:
+        broker = str(row.get("broker") or row.get("exchange") or "unknown")
+        latest[broker] = row
+    return latest
+
+
+def _report_likely_causes(
+    snapshots: list[dict[str, Any]],
+    attribution: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    broker_trades: list[dict[str, Any]],
+) -> list[str]:
+    causes: list[str] = []
+    latest_snapshots = _latest_snapshot_by_broker(snapshots)
+    for broker, row in latest_snapshots.items():
+        day_pnl = safe_float(row.get("day_pnl"))
+        if day_pnl is not None and day_pnl < 0:
+            causes.append(f"{broker.title()} latest day P&L snapshot is negative at {_money_text(day_pnl)}.")
+        elif day_pnl is not None and day_pnl > 0:
+            causes.append(f"{broker.title()} latest day P&L snapshot is positive at {_money_text(day_pnl)}.")
+    closed_losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+    if closed_losses:
+        symbols = Counter(str(row.get("symbol") or "unknown") for row in closed_losses)
+        causes.append(f"Closed losing trades contributed {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in closed_losses))}; symbols involved: {dict(symbols)}.")
+    if not attribution and broker_trades:
+        causes.append("Broker trade/order rows exist, but no closed performance-attribution rows were recorded yet; part of the movement may be open/unrealised P&L.")
+    if not attribution and not broker_trades:
+        causes.append("No closed trade attribution or broker trade rows were recorded for this date; the loss is most likely from open-position mark-to-market movement captured in broker snapshots.")
+    rejected = [row for row in decisions if row.get("decision") == "rejected"]
+    if rejected:
+        reasons = Counter(str(row.get("rejection_reason") or "unknown") for row in rejected)
+        causes.append(f"Orchestrator rejected {len(rejected)} idea(s), mainly for: {dict(reasons)}.")
+    return causes
+
+
+def _report_trade_lines(attribution: list[dict[str, Any]]) -> str:
+    if not attribution:
+        return "- No closed trade attribution rows recorded for this date."
+    lines = []
+    for row in attribution[:20]:
+        lines.append(
+            f"- {row.get('broker', 'unknown')} {row.get('symbol', 'unknown')} {row.get('side', '')}: "
+            f"entry {_money_text(row.get('entry_price'))}, exit {_money_text(row.get('exit_price'))}, "
+            f"qty {row.get('quantity') or 'N/A'}, P&L {_money_text(row.get('profit_loss'))}, "
+            f"exit reason {row.get('exit_reason') or 'N/A'}"
+        )
+    return "\n".join(lines)
+
+
+def _report_decision_lines(decisions: list[dict[str, Any]]) -> str:
+    rejected = [row for row in decisions if row.get("decision") == "rejected"]
+    if not rejected:
+        return "- No rejected orchestrator decisions recorded for this date."
+    return "\n".join(
+        f"- {row.get('symbol', 'unknown')} via {row.get('selected_broker') or 'unknown'}: {row.get('rejection_reason') or 'rejected'}"
+        for row in rejected[:20]
+    )
 
 
 def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:

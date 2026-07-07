@@ -60,6 +60,17 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
   - `hosted-preview` update group: `3388fe5e-18ee-4a19-8ee8-11b1049a4fbb`.
 - Hosted checks after push: `/healthz`, `/status`, and `/recommendations` returned 200; `/daily-learning-update` and `/performance-attribution` were not reachable from this environment and need Render log review if they remain unavailable after deployment settles.
 
+## 2026-07-07 On-Demand Trading Reports Follow-Up
+
+- Added `GET /trading-report` and `POST /generate-report`.
+- Reports can now be generated for today, yesterday, morning, evening, all brokers, or one selected broker.
+- Mobile Command Centre now has a Reports section with Today Report, Yesterday Report, Morning Report, and Evening Report buttons.
+- Each broker panel now includes a broker-specific Daily Report button.
+- Generated reports are displayed in the app immediately and saved as Markdown under the configured output directory.
+- Reports explain P&L movement using broker snapshots, closed performance attribution, broker trade history, guardrail/orchestrator rejections, and learning recommendations.
+- Verified Python tests: 70/70.
+- Verified Expo Doctor: 17/17.
+
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.

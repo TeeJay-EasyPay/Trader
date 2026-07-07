@@ -80,6 +80,44 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertTrue(payload["benchmark_learning"])
             self.assertIn("Founder approval", " ".join(payload["recommendations_for_founder"]))
 
+    def test_generate_trading_report_explains_negative_pnl_and_saves_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            report_date = "2026-07-07"
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO PORTFOLIO_SNAPSHOTS (
+                            created_at, broker, exchange, portfolio_value, cash,
+                            buying_power, day_pnl, week_pnl, month_pnl,
+                            open_positions_count, notes
+                        ) VALUES (?, 'alpaca', 'Alpaca', 99000, 10000, 40000, -1000, -2000, -2000, 1, 'test')
+                        """,
+                        (f"{report_date}T15:00:00+00:00",),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO PERFORMANCE_ATTRIBUTION (
+                            created_at, proposal_id, broker, symbol, asset_type, side,
+                            entry_price, exit_price, quantity, profit_loss, opened_at,
+                            closed_at, holding_period_seconds, entry_reason, exit_reason,
+                            primary_factors_json
+                        ) VALUES (?, 'p2', 'alpaca', 'NVDA', 'equity', 'buy', 100, 90, 10, -100, ?, ?, 3600, 'momentum', 'stop_loss_triggered', '{}')
+                        """,
+                        (f"{report_date}T16:00:00+00:00", f"{report_date}T15:00:00+00:00", f"{report_date}T16:00:00+00:00"),
+                    )
+
+            status, payload = service.post("/generate-report", {"date": report_date, "broker": "alpaca", "type": "daily"})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["status"], "generated")
+            self.assertIn("negative", payload["report_markdown"])
+            self.assertIn("NVDA", payload["report_markdown"])
+            self.assertIn("What AI Trader Learned", payload["report_markdown"])
+            self.assertTrue(Path(payload["path"]).exists())
+
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

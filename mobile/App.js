@@ -36,6 +36,7 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
+  const [latestReport, setLatestReport] = useState(null);
 
   const request = useCallback(async (path, options) => {
     const headers = {
@@ -131,6 +132,9 @@ export default function App() {
           throw error;
         }
       }
+      if (path === '/generate-report') {
+        setLatestReport(result);
+      }
       Alert.alert('Command sent', commandMessage(path, result));
       await refresh();
     } catch (error) {
@@ -162,6 +166,7 @@ export default function App() {
           brief={brief}
           notifications={notifications}
           performanceAttribution={performanceAttribution}
+          latestReport={latestReport}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
@@ -193,13 +198,14 @@ export default function App() {
         companies={companies}
         status={status}
         recommendations={recommendations}
+        dailyLearning={dailyLearning}
         onOpenRecommendation={(proposalId) => {
           setTargetRecommendationId(proposalId);
           setScreen('Recommendations');
         }}
       />
     );
-  }, [amounts, benchmark, brief, companies, dailyLearning, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
+  }, [amounts, benchmark, brief, companies, dailyLearning, latestReport, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -235,7 +241,7 @@ export default function App() {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
+function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
   const positions = portfolio?.open_positions || [];
   const recentTransactions = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution);
   const recommendationSummary = status?.recommendation_summary || {};
@@ -341,6 +347,18 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
         <Metric label="Cloud API Health" value={status?.cloud_api_health} />
       </Section>
+      <Section title="Reports">
+        <View style={styles.buttonGrid}>
+          <Button label="Today Report" onPress={() => onCommand('/generate-report', { type: 'daily', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} />
+          <Button label="Yesterday Report" onPress={() => onCommand('/generate-report', { type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
+          <Button label="Morning Report" onPress={() => onCommand('/generate-report', { type: 'morning', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+          <Button label="Evening Report" onPress={() => onCommand('/generate-report', { type: 'evening', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+        </View>
+        <Text style={styles.smallText}>
+          Reports explain P&L movement using broker snapshots, closed trades, orders, guardrail rejections, and learning notes.
+        </Text>
+        {latestReport ? <ReportPanel report={latestReport} /> : null}
+      </Section>
       <Section title="Broker Panels">
         {brokerPanels.length ? brokerPanels.map((broker) => {
           const label = broker.label || notAvailable(broker.broker);
@@ -369,6 +387,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
               <View style={styles.buttonGrid}>
                 <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
+                <Button label={`Daily Report (${label})`} onPress={() => onCommand('/generate-report', { type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
                 <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
                 <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
               </View>
@@ -408,6 +427,17 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
       <Section title="Founder Brief">
         <Text style={styles.bodyText}>{notAvailable(brief?.report_markdown)}</Text>
       </Section>
+    </View>
+  );
+}
+
+function ReportPanel({ report }) {
+  return (
+    <View style={styles.compactRow}>
+      <Text style={styles.cardTitle}>{notAvailable(report.report_type).toUpperCase()} report - {notAvailable(report.broker)} - {notAvailable(report.date)}</Text>
+      <Text style={styles.bodyText}>{notAvailable(report.summary)}</Text>
+      <TextBlock label="Report" value={report.report_markdown} />
+      {report.path ? <Text style={styles.smallText}>Saved: {report.path}</Text> : null}
     </View>
   );
 }
@@ -823,6 +853,19 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function yesterdayIso() {
+  const value = new Date();
+  value.setDate(value.getDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
+function selectedBrokerKey(selectedExchange) {
+  if (!selectedExchange || selectedExchange === 'All') {
+    return 'all';
+  }
+  return String(selectedExchange).toLowerCase();
+}
+
 function bodyPreview(text) {
   const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
   if (!trimmed) {
@@ -871,6 +914,9 @@ function commandMessage(path, result) {
   }
   if (path === '/broker-auto-trading') {
     return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.`;
+  }
+  if (path === '/generate-report') {
+    return `${notAvailable(result.report_type)} report generated for ${notAvailable(result.broker)} on ${notAvailable(result.date)}.\n\n${notAvailable(result.summary)}`;
   }
   return result.message || result.status || 'Done';
 }

@@ -613,3 +613,24 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - `/status` returned 200.
   - `/recommendations` returned 200.
   - `/daily-learning-update` and `/performance-attribution` were not reachable from this environment; this matches the previously observed hosted instability around attribution endpoints and should be checked in Render logs if it persists.
+
+## 2026-07-07 On-Demand Trading Reports Follow-Up
+
+- Added `GET /trading-report` for read-only report retrieval.
+- Added `POST /generate-report` for app-triggered daily, morning, and evening report generation.
+- Report generation now combines:
+  - portfolio snapshots,
+  - closed trade performance attribution,
+  - broker trade history,
+  - orchestrator decisions and rejections,
+  - daily learning update lessons,
+  - benchmark/successful-trader learning notes.
+- Mobile Command Centre now includes a Reports section with Today Report, Yesterday Report, Morning Report, and Evening Report buttons.
+- Broker cards now include a broker-specific Daily Report button.
+- Generated reports are shown immediately inside the app and saved as Markdown to the configured output directory.
+- Added a regression test proving a negative P&L day and losing closed trade are explained in the generated report.
+- Verification completed:
+  - Python compile check passed.
+  - Python unit test suite passed: 70/70.
+  - `git diff --check` passed.
+  - `npx expo-doctor` passed: 17/17 checks.

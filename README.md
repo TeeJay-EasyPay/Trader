@@ -122,6 +122,8 @@ API endpoints:
 - `POST /monitor-managed-exits`
 - `GET /performance-attribution`
 - `GET /daily-learning-update`
+- `GET /trading-report`
+- `POST /generate-report`
 - `GET /notifications`
 - `POST /notifications/ack`
 - `POST /register-push-token`
@@ -222,6 +224,8 @@ POST /run-crypto-analysis
 POST /monitor-managed-exits
 GET /performance-attribution
 GET /daily-learning-update
+GET /trading-report
+POST /generate-report
 GET /notifications
 POST /notifications/ack
 POST /register-push-token
@@ -453,6 +457,7 @@ This sprint made continuous autonomous operation actually continuous, not manual
 - Kraken can now generate its own trade proposals from that research (`POST /run-crypto-analysis`) and route them through the same orchestrator, guardrail, and auto-execute path as equities - previously nothing in the codebase ever produced a crypto trade proposal.
 - Every closed managed exit records a `PERFORMANCE_ATTRIBUTION` row: entry/exit price, P&L, holding period, and the reasoning that justified entry, queryable at `GET /performance-attribution`.
 - `GET /daily-learning-update` summarises yesterday's closed trades, wins/losses, guardrail rejections, benchmark trader observations, and recommendations for Founder approval. It learns from AI Trader's own outcomes and public benchmark/successful-trader observations where available, but it does not copy trades or change guardrails automatically.
+- `POST /generate-report` creates an on-demand daily, morning, or evening report for all brokers or a selected broker. The mobile Command Centre exposes Today Report, Yesterday Report, Morning Report, Evening Report, and per-broker Daily Report buttons. Reports explain P&L movement using portfolio snapshots, closed trades, broker trade history, orchestrator rejections, and learning notes.
 - The mobile Command Centre shows trade history as collapsed rows. Tap a trade to see entry, exit, quantity, P&L, reasons, and broker payload; tap it again to collapse.
 - `GET /notifications` / `POST /notifications/ack` back an in-app notification center; `POST /register-push-token` plus a background dispatcher deliver high-priority events (stop-loss, take-profit, broker/research failures) through Expo's push service. The backend is ready; the mobile client does not yet register a device token (needs `expo-notifications` added and a rebuilt app to verify end-to-end).
 - On a non-loopback host (e.g. Render), if `AI_TRADER_API_TOKEN` is missing the API starts in hosted read-only mode: GET status/recommendation screens stay available, but all POST trading/control commands are rejected until the token is configured. Token checks use constant-time comparison and a source IP is locked out after repeated auth failures.
