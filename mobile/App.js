@@ -50,7 +50,9 @@ export default function App() {
       try {
         json = JSON.parse(text);
       } catch (error) {
-        throw new Error(`Backend returned unreadable data (${response.status}). Try again in a moment.`);
+        throw new Error(
+          `Backend returned non-JSON data from ${path} (${response.status}). ${bodyPreview(text)}`
+        );
       }
     }
     if (!response.ok) {
@@ -62,15 +64,21 @@ export default function App() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      const optional = (path, fallback) => request(path).catch(() => fallback);
       const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies, nextNotifications] = await Promise.all([
         request('/status'),
-        request('/portfolio'),
-        request('/founder-brief'),
-        request('/recommendations'),
-        request(`/benchmark-daily-brief?date=${todayIso()}`),
-        request('/intelligence/themes'),
-        request('/intelligence/companies'),
-        request('/notifications').catch(() => ({ notifications: [] })),
+        optional('/portfolio', {
+          portfolio_value: 'Not available',
+          cash_available: 'Not available',
+          open_positions: [],
+          executive_summary: [],
+        }),
+        optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
+        optional('/recommendations', { recommendations: [] }),
+        optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
+        optional('/intelligence/themes', { themes: [] }),
+        optional('/intelligence/companies', { companies: [] }),
+        optional('/notifications', { notifications: [] }),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
@@ -743,6 +751,14 @@ function moneyOrText(value) {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function bodyPreview(text) {
+  const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) {
+    return 'The response body was empty.';
+  }
+  return `Response started with: ${trimmed.slice(0, 80)}`;
 }
 
 async function loadCachedRecommendations() {
