@@ -18,7 +18,7 @@ const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
-const SCREENS = ['Command', 'Recommendations', 'Intelligence'];
+const SCREENS = ['Command', 'Recommendations', 'Intelligence', 'Ask'];
 
 export default function App() {
   const [screen, setScreen] = useState('Command');
@@ -38,6 +38,12 @@ export default function App() {
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
+  const [askMessages, setAskMessages] = useState([
+    {
+      role: 'assistant',
+      text: 'Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned. I am read-only and cannot place trades.',
+    },
+  ]);
 
   const request = useCallback(async (path, options) => {
     const headers = {
@@ -215,6 +221,17 @@ export default function App() {
         />
       );
     }
+    if (screen === 'Ask') {
+      return (
+        <AskAiTrader
+          messages={askMessages}
+          setMessages={setAskMessages}
+          request={request}
+          loading={loading}
+          setLoading={setLoading}
+        />
+      );
+    }
     return (
       <MarketIntelligence
         benchmark={benchmark}
@@ -229,7 +246,7 @@ export default function App() {
         }}
       />
     );
-  }, [amounts, benchmark, brief, companies, dailyLearning, latestReport, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
+  }, [amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -794,6 +811,68 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
             </View>
           ))
         )}
+      </Section>
+    </View>
+  );
+}
+
+function AskAiTrader({ messages, setMessages, request, loading, setLoading }) {
+  const [question, setQuestion] = useState('');
+  const ask = async (text) => {
+    const finalQuestion = String(text || question || '').trim();
+    if (!finalQuestion) {
+      return;
+    }
+    setQuestion('');
+    setMessages((prev) => [...prev, { role: 'user', text: finalQuestion }]);
+    setLoading(true);
+    try {
+      const result = await request('/ask-ai-trader', {
+        method: 'POST',
+        body: JSON.stringify({ question: finalQuestion }),
+      });
+      const note = result.note ? `\n\n${result.note}` : '';
+      setMessages((prev) => [...prev, { role: 'assistant', text: `${notAvailable(result.answer)}${note}` }]);
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: `I could not answer that yet: ${String(error.message || error)}` }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const suggestions = [
+    'Am I up or down today, and why?',
+    'What open positions do I have?',
+    'Which recent trades made or lost money?',
+    'What has AI Trader learned today?',
+    'Is AI Trader getting better at trading?',
+  ];
+  return (
+    <View>
+      <Section title="Ask AI Trader">
+        <Text style={styles.bodyText}>
+          Ask for a plain-English explanation of AI Trader data. This chat is read-only and cannot place trades, approve trades, enable auto trading, or change guardrails.
+        </Text>
+        <View style={styles.buttonGrid}>
+          {suggestions.map((item) => (
+            <Button key={item} label={item} tone="neutral" onPress={() => ask(item)} disabled={loading} />
+          ))}
+        </View>
+        <TextInput
+          style={[styles.input, styles.multilineInput]}
+          multiline
+          placeholder="Ask AI Trader a question..."
+          value={question}
+          onChangeText={setQuestion}
+        />
+        <Button label={loading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={loading || !question.trim()} />
+      </Section>
+      <Section title="Conversation">
+        {messages.map((item, index) => (
+          <View key={`${item.role}-${index}`} style={item.role === 'user' ? styles.chatUser : styles.chatAssistant}>
+            <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
+            <Text style={styles.bodyText}>{item.text}</Text>
+          </View>
+        ))}
       </Section>
     </View>
   );
@@ -1570,7 +1649,32 @@ const styles = StyleSheet.create({
     borderColor: '#cfd6df',
     backgroundColor: '#ffffff',
     paddingHorizontal: 12,
+    paddingVertical: 10,
     marginVertical: 12,
     fontSize: 14,
+  },
+  multilineInput: {
+    minHeight: 92,
+    textAlignVertical: 'top',
+  },
+  chatUser: {
+    alignSelf: 'flex-end',
+    maxWidth: '92%',
+    backgroundColor: '#e7f0ff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#b9d3ff',
+    padding: 10,
+    marginBottom: 10,
+  },
+  chatAssistant: {
+    alignSelf: 'flex-start',
+    maxWidth: '96%',
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dde1e7',
+    padding: 10,
+    marginBottom: 10,
   },
 });

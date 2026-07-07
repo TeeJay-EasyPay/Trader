@@ -53,6 +53,42 @@ class OpenAIProposalAnalyzer:
         return _proposal_from_response_text(text)
 
 
+class OpenAIReadOnlyExplainer:
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+
+    def answer(self, question: str, context: dict[str, Any]) -> str:
+        prompt = {
+            "role": "read_only_ai_trader_explainer",
+            "instruction": (
+                "Answer the Founder's question in plain English using only the supplied AI Trader context. "
+                "You are read-only. You must never place trades, approve trades, disable guardrails, enable auto trading, "
+                "change broker settings, or claim that you performed any action. "
+                "If the evidence is incomplete, say what is missing and what can be inferred. "
+                "Be concise, practical, and clear for a non-technical founder."
+            ),
+            "question": question,
+            "context": context,
+        }
+        payload = {
+            "model": self.model,
+            "input": json.dumps(prompt, default=str),
+        }
+        request = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=45) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        return _extract_response_text(raw).strip()
+
+
 def _extract_response_text(response: dict[str, Any]) -> str:
     chunks: list[str] = []
     for item in response.get("output", []):

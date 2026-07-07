@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .agent import AITradingAgent, propose_crypto_trades
-from .ai import OpenAIProposalAnalyzer
+from .ai import OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
@@ -373,6 +373,8 @@ class LocalApiService:
             return 200, self.monitor_managed_exits()
         if path == "/generate-report":
             return 200, self.generate_report(body)
+        if path == "/ask-ai-trader":
+            return 200, self.ask_ai_trader(body)
         if path == "/notifications/ack":
             return 200, self.ack_notifications(body)
         if path == "/register-push-token":
@@ -535,6 +537,96 @@ class LocalApiService:
         broker = str(body.get("broker") or "all").lower()
         report_date = str(body.get("date") or date.today().isoformat())
         return self.trading_report(report_date=report_date, broker=broker, report_type=report_type, persist=True)
+
+    def ask_ai_trader(self, body: dict[str, Any]) -> dict[str, Any]:
+        question = str(body.get("question") or "").strip()
+        if not question:
+            return {
+                "status": "rejected",
+                "answer": "Ask me a question about AI Trader's balances, trades, reports, recommendations, or learning.",
+                "read_only": True,
+            }
+        context = self._ask_ai_context()
+        if not self.settings.openai_api_key:
+            return {
+                "status": "openai_not_configured",
+                "answer": _deterministic_ai_trader_answer(question, context),
+                "read_only": True,
+                "model": None,
+                "note": "OPENAI_API_KEY is not configured for this AI Trader deployment, so this answer used the local evidence summary only.",
+                "evidence": context,
+            }
+        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_model)
+        answer = explainer.answer(question, context)
+        return {
+            "status": "answered",
+            "answer": answer or _deterministic_ai_trader_answer(question, context),
+            "read_only": True,
+            "model": self.settings.openai_model,
+            "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
+            "evidence": context,
+        }
+
+    def _ask_ai_context(self) -> dict[str, Any]:
+        return {
+            "generated_at": utc_now_iso(),
+            "safety_boundary": "Read-only explanation. No trading, approvals, broker controls, or guardrail changes are available to this endpoint.",
+            "latest_portfolio_snapshots": [
+                dict(row) for row in self._rows(
+                    """
+                    SELECT broker, exchange, created_at, portfolio_value, cash, buying_power,
+                           day_pnl, week_pnl, month_pnl, open_positions_count
+                    FROM PORTFOLIO_SNAPSHOTS
+                    ORDER BY created_at DESC
+                    LIMIT 12
+                    """
+                )
+            ],
+            "latest_broker_trades": [
+                dict(row) for row in self._rows(
+                    """
+                    SELECT broker, symbol, side, quantity, price, notional, status,
+                           opened_at, closed_at, updated_at
+                    FROM BROKER_TRADE_HISTORY
+                    ORDER BY COALESCE(closed_at, opened_at, updated_at) DESC, trade_history_id DESC
+                    LIMIT 30
+                    """
+                )
+            ],
+            "latest_closed_trade_attribution": [
+                dict(row) for row in self._rows(
+                    """
+                    SELECT broker, symbol, asset_type, side, entry_price, exit_price, quantity,
+                           profit_loss, opened_at, closed_at, entry_reason, exit_reason
+                    FROM PERFORMANCE_ATTRIBUTION
+                    ORDER BY COALESCE(closed_at, created_at) DESC, attribution_id DESC
+                    LIMIT 20
+                    """
+                )
+            ],
+            "latest_reports": [
+                dict(row) for row in self._rows(
+                    """
+                    SELECT report_date, broker, report_type, summary, created_at
+                    FROM TRADING_REPORTS
+                    ORDER BY report_id DESC
+                    LIMIT 8
+                    """
+                )
+            ],
+            "latest_recommendations": self.recommendations(limit=10),
+            "latest_orchestrator_decisions": [
+                dict(row) for row in self._rows(
+                    """
+                    SELECT created_at, selected_broker, symbol, requested_action, decision, rejection_reason, confidence_score
+                    FROM ORCHESTRATOR_DECISIONS
+                    ORDER BY decision_id DESC
+                    LIMIT 20
+                    """
+                )
+            ],
+            "daily_learning": self.daily_learning_update(date.today().isoformat()),
+        }
 
     def trading_report(self, *, report_date: str | None, broker: str = "all", report_type: str = "daily", persist: bool = False) -> dict[str, Any]:
         report_date = report_date or date.today().isoformat()
@@ -2487,6 +2579,48 @@ def _plain_english_report_answer(
         )
     lines.append("Learning note: AI Trader should only claim trading-skill improvement from completed trades with entry, exit, and P&L. Open positions are useful evidence, but they are not final lessons yet.")
     return lines
+
+
+def _deterministic_ai_trader_answer(question: str, context: dict[str, Any]) -> str:
+    snapshots = context.get("latest_portfolio_snapshots") or []
+    trades = context.get("latest_broker_trades") or []
+    attribution = context.get("latest_closed_trade_attribution") or []
+    learning = context.get("daily_learning") or {}
+    lines = [
+        "I can answer from stored AI Trader evidence, but I am read-only and cannot place or approve trades.",
+    ]
+    if snapshots:
+        latest = snapshots[0]
+        invested = _estimated_in_positions(latest.get("portfolio_value"), latest.get("cash"))
+        lines.append(
+            f"Latest {latest.get('broker', 'broker')} snapshot: account {_money_text(latest.get('portfolio_value'))}, "
+            f"cash {_money_text(latest.get('cash'))}, estimated in positions {_money_text(invested)}, "
+            f"open positions {latest.get('open_positions_count') or 'not available'}."
+        )
+        day_pnl = safe_float(latest.get("day_pnl"))
+        if day_pnl is not None:
+            moved = "up" if day_pnl > 0 else "down" if day_pnl < 0 else "flat"
+            lines.append(f"Latest day P&L evidence says the account is {moved} by {_money_text(day_pnl)}.")
+    else:
+        lines.append("No portfolio snapshots are stored yet, so I cannot prove current performance.")
+    if attribution:
+        total = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+        winners = sum(1 for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0)
+        losers = sum(1 for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0)
+        lines.append(f"Closed-trade attribution shows {_money_text(total)} across {len(attribution)} recent closed trade(s): {winners} winner(s), {losers} loser(s).")
+    elif trades:
+        latest_trade = trades[0]
+        lines.append(
+            f"I can see broker activity, but no recent closed-trade attribution. Latest broker row: "
+            f"{latest_trade.get('side') or 'activity'} {latest_trade.get('symbol') or 'unknown'} "
+            f"for {latest_trade.get('quantity') or 'unknown'} at {_money_text(latest_trade.get('price'))}."
+        )
+    else:
+        lines.append("No recent broker trades are stored in the evidence bundle.")
+    if learning.get("summary"):
+        lines.append(f"Learning summary: {learning.get('summary')}")
+    lines.append("For a fuller answer, configure OPENAI_API_KEY on the AI Trader deployment so the Ask screen can explain this evidence conversationally.")
+    return "\n\n".join(lines)
 
 
 def _current_open_position_lines(report_context: dict[str, Any], broker: str) -> str:

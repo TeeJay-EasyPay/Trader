@@ -201,6 +201,31 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIn("Weekly report window", weekly_payload["report_markdown"])
             self.assertIn("Start And End Balances", weekly_payload["report_markdown"])
 
+    def test_ask_ai_trader_is_read_only_and_uses_local_evidence_without_openai(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO PORTFOLIO_SNAPSHOTS (
+                            created_at, broker, exchange, portfolio_value, cash,
+                            buying_power, day_pnl, week_pnl, month_pnl,
+                            open_positions_count, notes
+                        ) VALUES ('2026-07-07T12:00:00+00:00', 'alpaca', 'Alpaca', 100000, 89000, 89000, -1000, -1000, -1000, 1, 'test')
+                        """
+                    )
+
+            status, payload = service.post("/ask-ai-trader", {"question": "Why am I down today and can you trade out of it?"})
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["read_only"])
+            self.assertEqual(payload["status"], "openai_not_configured")
+            self.assertIn("cannot place or approve trades", payload["answer"])
+            self.assertIn("Latest alpaca snapshot", payload["answer"])
+            self.assertIn("estimated in positions", payload["answer"])
+
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
