@@ -67,6 +67,8 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
 - Mobile Command Centre now has a Reports section with Today Report, Yesterday Report, Morning Report, and Evening Report buttons.
 - Each broker panel now includes a broker-specific Daily Report button.
 - Generated reports are displayed in the app immediately and saved as Markdown under the configured output directory.
+- Generated reports are now saved under the output folder's `reports/` directory, stored in SQLite table `TRADING_REPORTS`, and served in the browser at `/reports/{report_id}`.
+- The mobile app opens the report browser page automatically and provides an `Open Report` button on the generated report panel.
 - Reports explain P&L movement using broker snapshots, closed performance attribution, broker trade history, guardrail/orchestrator rejections, and learning recommendations.
 - Verified Python tests: 70/70.
 - Verified Expo Doctor: 17/17.

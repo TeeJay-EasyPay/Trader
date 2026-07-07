@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   RefreshControl,
   SafeAreaView,
   ScrollView,
@@ -160,6 +161,9 @@ export default function App() {
       }).toString();
       const result = await request(`/trading-report?${query}`);
       setLatestReport(result);
+      if (result.report_url) {
+        await Linking.openURL(absoluteApiUrl(result.report_url));
+      }
       Alert.alert('Report ready', commandMessage('/trading-report', result));
       await refresh();
     } catch (error) {
@@ -456,6 +460,11 @@ function ReportPanel({ report }) {
     <View style={styles.compactRow}>
       <Text style={styles.cardTitle}>{notAvailable(report.report_type).toUpperCase()} report - {notAvailable(report.broker)} - {notAvailable(report.date)}</Text>
       <Text style={styles.bodyText}>{notAvailable(report.summary)}</Text>
+      {report.report_url ? (
+        <View style={styles.buttonGrid}>
+          <Button label="Open Report" onPress={() => Linking.openURL(absoluteApiUrl(report.report_url))} />
+        </View>
+      ) : null}
       <TextBlock label="Report" value={report.report_markdown} />
       {report.path ? <Text style={styles.smallText}>Saved: {report.path}</Text> : null}
     </View>
@@ -943,6 +952,16 @@ function commandMessage(path, result) {
 
 function shortApiBase() {
   return API_BASE.replace(/^https?:\/\//, '');
+}
+
+function absoluteApiUrl(path) {
+  if (!path) {
+    return API_BASE;
+  }
+  if (String(path).startsWith('http')) {
+    return path;
+  }
+  return `${API_BASE}${String(path).startsWith('/') ? '' : '/'}${path}`;
 }
 
 function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = []) {

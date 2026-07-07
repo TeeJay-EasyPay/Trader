@@ -117,6 +117,17 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIn("NVDA", payload["report_markdown"])
             self.assertIn("What AI Trader Learned", payload["report_markdown"])
             self.assertTrue(Path(payload["path"]).exists())
+            self.assertIsNotNone(payload["report_id"])
+            self.assertEqual(payload["report_url"], f"/reports/{payload['report_id']}")
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                stored = conn.execute("SELECT COUNT(*) FROM TRADING_REPORTS").fetchone()[0]
+            self.assertEqual(stored, 1)
+
+            page_status, page_payload = service.get(payload["report_url"], {})
+
+            self.assertEqual(page_status, 200)
+            self.assertIn("html", page_payload)
+            self.assertIn("AI Trader Daily Report", page_payload["html"])
 
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:

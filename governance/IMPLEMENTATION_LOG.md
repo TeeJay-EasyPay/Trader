@@ -628,6 +628,10 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Mobile Command Centre now includes a Reports section with Today Report, Yesterday Report, Morning Report, and Evening Report buttons.
 - Broker cards now include a broker-specific Daily Report button.
 - Generated reports are shown immediately inside the app and saved as Markdown to the configured output directory.
+- Added `TRADING_REPORTS` SQLite storage for generated reports.
+- Generated report Markdown files now live under the backend output folder's `reports/` directory.
+- Added browser report pages at `/reports/{report_id}`.
+- Updated the mobile app to open the report browser URL automatically and show an `Open Report` button.
 - Added a regression test proving a negative P&L day and losing closed trade are explained in the generated report.
 - Verification completed:
   - Python compile check passed.

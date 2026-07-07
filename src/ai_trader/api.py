@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import logging
 import os
@@ -89,6 +90,19 @@ CREATE TABLE IF NOT EXISTS engine_control (
 );
 """
 
+REPORT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS TRADING_REPORTS (
+    report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    report_date TEXT NOT NULL,
+    broker TEXT NOT NULL,
+    report_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    report_markdown TEXT NOT NULL,
+    file_path TEXT
+);
+"""
+
 AUTO_TRADE_CONFIDENCE_THRESHOLD = 0.85
 
 GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
@@ -125,6 +139,7 @@ class LocalApiService:
         initialize_foundation_schema(settings.db_path)
         initialize_operational_schema(settings.db_path)
         initialize_multi_broker_schema(settings.db_path)
+        self._initialize_report_schema()
         self._apply_env_broker_auto_defaults()
         self._initialize_control()
 
@@ -324,8 +339,10 @@ class LocalApiService:
                 report_date=_first(query, "date"),
                 broker=_first(query, "broker") or "all",
                 report_type=_first(query, "type") or "daily",
-                persist=False,
+                persist=True,
             )
+        if path.startswith("/reports/"):
+            return self.report_page(path)
         if path == "/notifications":
             return 200, {"notifications": self.notifications(unread_only=_first(query, "unread_only") == "true")}
         return 404, {"error": "not_found", "path": path}
@@ -538,6 +555,14 @@ class LocalApiService:
                 self.audit.record_briefing(report_date, markdown, {"report_type": report_type, "broker": broker})
         path = self._write_trading_report(report_date, broker, report_type, markdown) if persist else None
         summary = _first_markdown_bullet(markdown) or f"{report_type.title()} report generated for {broker.title()} on {report_date}."
+        report_id = self._record_trading_report(
+            report_date=report_date,
+            broker=broker,
+            report_type=report_type,
+            summary=summary,
+            markdown=markdown,
+            path=path,
+        ) if persist else None
         if persist:
             record_notification(
                 self.settings.db_path,
@@ -546,18 +571,59 @@ class LocalApiService:
                 symbol=None,
                 title=f"{report_type.title()} report generated",
                 message=summary,
-                payload={"date": report_date, "broker": broker, "report_type": report_type, "path": str(path) if path else None},
+                payload={"date": report_date, "broker": broker, "report_type": report_type, "path": str(path) if path else None, "report_id": report_id},
             )
         return {
             "status": "generated" if persist else "available",
+            "report_id": report_id,
             "date": report_date,
             "broker": broker,
             "report_type": report_type,
             "summary": summary,
             "report_markdown": markdown,
             "path": str(path) if path else None,
+            "report_url": f"/reports/{report_id}" if report_id is not None else None,
             "generated_at": utc_now_iso(),
         }
+
+    def report_page(self, path: str) -> tuple[int, dict[str, Any]]:
+        report_id_text = path.removeprefix("/reports/").split("/", 1)[0].removesuffix(".html")
+        try:
+            report_id = int(report_id_text)
+        except ValueError:
+            return 404, {"error": "not_found", "path": path}
+        row = self._row("SELECT * FROM TRADING_REPORTS WHERE report_id = ?", (report_id,))
+        if not row:
+            return 404, {"error": "not_found", "path": path}
+        title = f"AI Trader {row['report_type'].title()} Report - {row['broker']} - {row['report_date']}"
+        escaped_title = html.escape(title)
+        escaped_summary = html.escape(row["summary"] or "")
+        escaped_markdown = html.escape(row["report_markdown"] or "")
+        escaped_path = html.escape(row["file_path"] or "Saved in SQLite only")
+        page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escaped_title}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7f9; color: #17202a; }}
+    main {{ max-width: 960px; margin: 0 auto; background: #fff; border: 1px solid #dde1e7; border-radius: 8px; padding: 20px; }}
+    h1 {{ font-size: 24px; margin-top: 0; }}
+    .meta {{ color: #667085; font-size: 14px; margin-bottom: 18px; }}
+    pre {{ white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; line-height: 1.45; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escaped_title}</h1>
+    <div class="meta">Generated: {html.escape(row['created_at'])}<br>Saved file: {escaped_path}</div>
+    <p><strong>Summary:</strong> {escaped_summary}</p>
+    <pre>{escaped_markdown}</pre>
+  </main>
+</body>
+</html>"""
+        return 200, {"html": page}
 
     def _broker_learning_report_markdown(self, report_date: str, broker: str, report_type: str) -> str:
         start = f"{report_date}T00:00:00"
@@ -678,12 +744,37 @@ This report explains available evidence. It does not automatically change strate
         return markdown
 
     def _write_trading_report(self, report_date: str, broker: str, report_type: str, markdown: str) -> Path:
-        self.settings.output_dir.mkdir(parents=True, exist_ok=True)
+        report_dir = self.settings.output_dir / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
         safe_broker = "".join(ch for ch in broker.lower() if ch.isalnum() or ch in {"-", "_"}) or "all"
         safe_type = "".join(ch for ch in report_type.lower() if ch.isalnum() or ch in {"-", "_"}) or "daily"
-        path = self.settings.output_dir / f"{safe_type}_trading_report_{safe_broker}_{report_date}.md"
+        path = report_dir / f"{safe_type}_trading_report_{safe_broker}_{report_date}.md"
         path.write_text(markdown, encoding="utf-8")
         return path
+
+    def _record_trading_report(
+        self,
+        *,
+        report_date: str,
+        broker: str,
+        report_type: str,
+        summary: str,
+        markdown: str,
+        path: Path | None,
+    ) -> int:
+        with closing(sqlite3.connect(self.settings.db_path)) as conn:
+            with conn:
+                conn.executescript(REPORT_SCHEMA)
+                cursor = conn.execute(
+                    """
+                    INSERT INTO TRADING_REPORTS (
+                        created_at, report_date, broker, report_type, summary,
+                        report_markdown, file_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (utc_now_iso(), report_date, broker, report_type, summary, markdown, str(path) if path else None),
+                )
+                return int(cursor.lastrowid)
 
     def recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._rows(
@@ -1732,6 +1823,11 @@ This report explains available evidence. It does not automatically change strate
                     """,
                     (utc_now_iso(),),
                 )
+
+    def _initialize_report_schema(self) -> None:
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.executescript(REPORT_SCHEMA)
 
     def _control_state(self) -> dict[str, Any]:
         row = self._row("SELECT * FROM engine_control WHERE id = 1")
