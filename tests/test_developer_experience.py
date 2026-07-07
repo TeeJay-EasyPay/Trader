@@ -118,6 +118,48 @@ class DeveloperExperienceTests(unittest.TestCase):
                         """,
                         (f"{report_date}T16:00:00+00:00", f"{report_date}T15:00:00+00:00", f"{report_date}T16:00:00+00:00"),
                     )
+                    conn.execute(
+                        """
+                        INSERT INTO BROKER_TRADE_HISTORY (
+                            broker, external_id, symbol, asset_type, side, quantity,
+                            price, notional, status, opened_at, closed_at, updated_at,
+                            payload_json
+                        ) VALUES (
+                            'alpaca', 'fill-buy-1', 'ABC', 'equity', 'buy', 10,
+                            100, 1000, 'fill', ?, NULL, ?,
+                            '{"type":"fill","symbol":"ABC","side":"buy","qty":"10","price":"100","transaction_time":"2026-07-07T10:00:00+00:00"}'
+                        )
+                        """,
+                        (f"{report_date}T10:00:00+00:00", f"{report_date}T10:00:00+00:00"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO BROKER_TRADE_HISTORY (
+                            broker, external_id, symbol, asset_type, side, quantity,
+                            price, notional, status, opened_at, closed_at, updated_at,
+                            payload_json
+                        ) VALUES (
+                            'alpaca', 'fill-sell-1', 'ABC', 'equity', 'sell', 10,
+                            110, 1100, 'fill', ?, NULL, ?,
+                            '{"type":"fill","symbol":"ABC","side":"sell","qty":"10","price":"110","transaction_time":"2026-07-07T11:00:00+00:00"}'
+                        )
+                        """,
+                        (f"{report_date}T11:00:00+00:00", f"{report_date}T11:00:00+00:00"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO BROKER_TRADE_HISTORY (
+                            broker, external_id, symbol, asset_type, side, quantity,
+                            price, notional, status, opened_at, closed_at, updated_at,
+                            payload_json
+                        ) VALUES (
+                            'alpaca', 'fill-sell-rog', 'ROG', 'equity', 'sell', 4,
+                            141.2, 564.8, 'fill', ?, NULL, ?,
+                            '{"type":"fill","symbol":"ROG","side":"sell","qty":"4","price":"141.2","transaction_time":"2026-07-07T12:00:00+00:00"}'
+                        )
+                        """,
+                        (f"{report_date}T12:00:00+00:00", f"{report_date}T12:00:00+00:00"),
+                    )
 
             status, payload = service.post("/generate-report", {"date": report_date, "broker": "alpaca", "type": "daily"})
 
@@ -130,6 +172,12 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIn("opened 2026-07-07T15:00:00+00:00", payload["report_markdown"])
             self.assertIn("closed 2026-07-07T16:00:00+00:00", payload["report_markdown"])
             self.assertIn("P&L -100.00", payload["report_markdown"])
+            self.assertIn("Reconstructed Broker Fill P&L", payload["report_markdown"])
+            self.assertIn("Matched trade 1", payload["report_markdown"])
+            self.assertIn("ABC", payload["report_markdown"])
+            self.assertIn("P&L 100.00", payload["report_markdown"])
+            self.assertIn("Open/unmatched fills", payload["report_markdown"])
+            self.assertIn("ROG", payload["report_markdown"])
             self.assertIn("Lessons Learned", payload["report_markdown"])
             self.assertIn("Recommendations For Founder Approval", payload["report_markdown"])
             self.assertTrue(Path(payload["path"]).exists())

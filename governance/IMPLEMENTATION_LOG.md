@@ -642,6 +642,9 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - lessons learned,
   - Founder-approved recommendations.
 - Added Weekly Report and Monthly Report buttons to the mobile Reports section.
+- Added broker-fill FIFO reconstruction to reports so buy/sell fills can be paired into realised P&L even when `PERFORMANCE_ATTRIBUTION` has no closed row.
+- Reports now list open/unmatched fills separately so fills like an unmatched `SELL ROG` are visible and explained as not enough evidence to compute closed-trade P&L inside the report window.
+- Updated broker trade-history recording to preserve Alpaca `transaction_time` for future fill rows.
 - Added a regression test proving a negative P&L day and losing closed trade are explained in the generated report.
 - Verification completed:
   - Python compile check passed.

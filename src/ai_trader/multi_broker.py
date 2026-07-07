@@ -469,9 +469,9 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
                             safe_float(item.get("price")),
                             safe_float(item.get("notional")),
                             status,
-                            item.get("created_at") or item.get("opentm") or item.get("time"),
+                            item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
                             item.get("closed_at") or item.get("closetm"),
-                            item.get("updated_at") or now,
+                            item.get("updated_at") or item.get("transaction_time") or now,
                             json.dumps(item, sort_keys=True, default=str),
                         ),
                     )

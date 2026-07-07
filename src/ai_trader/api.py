@@ -681,9 +681,10 @@ class LocalApiService:
         total_closed_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
         losing_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
         winning_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+        reconstructed = _reconstruct_broker_fill_pnl(broker_trades)
         balance_summary = _balance_summary_by_broker(snapshots)
-        performance_lines = _performance_summary_lines(balance_summary, attribution, broker_trades)
-        likely_causes = _report_likely_causes(snapshots, attribution, decisions, broker_trades)
+        performance_lines = _performance_summary_lines(balance_summary, attribution, broker_trades, reconstructed)
+        likely_causes = _report_likely_causes(snapshots, attribution, decisions, broker_trades, reconstructed)
         markdown = f"""# AI Trader {report_type.title()} Trading Report
 
 Report Date: {report_date.isoformat()}
@@ -696,8 +697,11 @@ Broker: {broker.title() if broker != "all" else "All brokers"}
 
 - Start/end balance snapshots reviewed: {len(balance_summary)} broker(s).
 - Closed trade P&L recorded in attribution: {_money_text(total_closed_pnl)}.
+- Broker-fill reconstructed realised P&L: {_money_text(reconstructed["realized_pnl"])}.
 - Closed winners: {len(winning_trades)}.
 - Closed losers: {len(losing_trades)}.
+- Matched broker-fill round trips: {len(reconstructed["matched_trades"])}.
+- Open/unmatched broker-fill lots: {len(reconstructed["open_lots"])}.
 - Orchestrator decisions reviewed: {len(decisions)}.
 - Broker trade-history rows reviewed: {len(broker_trades)}.
 
@@ -713,11 +717,15 @@ Broker: {broker.title() if broker != "all" else "All brokers"}
 
 {_list_or_none(likely_causes)}
 
+## Reconstructed Broker Fill P&L
+
+{_reconstructed_trade_lines(reconstructed)}
+
 ## All Closed Trades With Entry, Exit, Times, And P&L
 
 {_report_trade_lines(attribution)}
 
-## Broker Trade / Order Rows
+## Broker Fills And Orders Seen
 
 {_report_broker_trade_lines(broker_trades)}
 
@@ -2246,6 +2254,7 @@ def _performance_summary_lines(
     balance_summary: dict[str, dict[str, Any]],
     attribution: list[dict[str, Any]],
     broker_trades: list[dict[str, Any]],
+    reconstructed: dict[str, Any],
 ) -> list[str]:
     lines = []
     total_closed_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
@@ -2255,11 +2264,14 @@ def _performance_summary_lines(
         if safe_float(item.get("balance_change")) is not None
     )
     lines.append(f"Closed-trade realised/attributed P&L: {_money_text(total_closed_pnl)}.")
+    lines.append(f"Broker-fill reconstructed realised P&L: {_money_text(reconstructed.get('realized_pnl'))}.")
     if balance_summary:
         lines.append(f"Start-to-end portfolio balance movement across available broker snapshots: {_money_text(total_balance_change)}.")
     else:
         lines.append("Start-to-end portfolio balance movement is unavailable because no period snapshots were recorded.")
     lines.append(f"Closed trade count with full attribution: {len(attribution)}.")
+    lines.append(f"Matched broker-fill round trips: {len(reconstructed.get('matched_trades') or [])}.")
+    lines.append(f"Open/unmatched broker-fill lots: {len(reconstructed.get('open_lots') or [])}.")
     lines.append(f"Broker trade/order rows reviewed: {len(broker_trades)}.")
     if balance_summary and attribution:
         difference = total_balance_change - total_closed_pnl
@@ -2272,6 +2284,7 @@ def _report_likely_causes(
     attribution: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
     broker_trades: list[dict[str, Any]],
+    reconstructed: dict[str, Any],
 ) -> list[str]:
     causes: list[str] = []
     balance_summary = _balance_summary_by_broker(snapshots)
@@ -2294,6 +2307,18 @@ def _report_likely_causes(
     if closed_wins:
         symbols = Counter(str(row.get("symbol") or "unknown") for row in closed_wins)
         causes.append(f"Closed winning trades contributed {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in closed_wins))}; symbols involved: {dict(symbols)}.")
+    matched = reconstructed.get("matched_trades") or []
+    open_lots = reconstructed.get("open_lots") or []
+    if matched:
+        wins = [row for row in matched if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+        losses = [row for row in matched if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+        if wins:
+            causes.append(f"Matched broker fills show {len(wins)} profitable round trip(s), contributing {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in wins))}.")
+        if losses:
+            causes.append(f"Matched broker fills show {len(losses)} losing round trip(s), contributing {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in losses))}.")
+    if open_lots:
+        symbols = Counter(str(row.get("symbol") or "unknown") for row in open_lots)
+        causes.append(f"{len(open_lots)} broker fill lot(s) remain open/unmatched in this window, so portfolio movement may be unrealised P&L; open symbols/lots: {dict(symbols)}.")
     if not attribution and broker_trades:
         causes.append("Broker trade/order rows exist, but no closed performance-attribution rows were recorded yet; part of the movement may be open/unrealised P&L.")
     if not attribution and not broker_trades:
@@ -2325,13 +2350,156 @@ def _report_broker_trade_lines(broker_trades: list[dict[str, Any]]) -> str:
         return "- No broker trade/order rows recorded for this report window."
     lines = []
     for index, row in enumerate(broker_trades, start=1):
+        parsed = _broker_trade_payload(row)
+        event_time = _broker_trade_time(row)
+        side = _broker_trade_side(row)
+        symbol = _broker_trade_symbol(row)
+        quantity = _broker_trade_quantity(row)
+        price = _broker_trade_price(row)
         lines.append(
-            f"- Row {index}: {row.get('broker', 'unknown')} {row.get('symbol') or 'N/A'} {row.get('side') or ''}; "
+            f"- Row {index}: {row.get('broker', 'unknown')} {symbol or 'N/A'} {side or ''}; "
             f"status {row.get('status') or 'N/A'}; opened {row.get('opened_at') or 'N/A'}; "
-            f"closed {row.get('closed_at') or 'N/A'}; updated {row.get('updated_at') or 'N/A'}; "
-            f"qty {row.get('quantity') or 'N/A'}; price {_money_text(row.get('price'))}; notional {_money_text(row.get('notional'))}."
+            f"closed {row.get('closed_at') or 'N/A'}; updated {row.get('updated_at') or 'N/A'}; event time {event_time or 'N/A'}; "
+            f"qty {quantity if quantity is not None else 'N/A'}; price {_money_text(price)}; notional {_money_text(row.get('notional') or parsed.get('net_amount'))}; "
+            f"raw type {parsed.get('type') or parsed.get('activity_type') or 'N/A'}."
         )
     return "\n".join(lines)
+
+
+def _reconstruct_broker_fill_pnl(broker_trades: list[dict[str, Any]]) -> dict[str, Any]:
+    lots: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    matched: list[dict[str, Any]] = []
+    fill_rows = [
+        row for row in broker_trades
+        if _broker_trade_side(row) in {"buy", "sell"}
+        and _broker_trade_quantity(row) is not None
+        and _broker_trade_price(row) is not None
+    ]
+    fill_rows.sort(key=lambda row: _broker_trade_time(row) or row.get("updated_at") or "")
+    for row in fill_rows:
+        symbol = _broker_trade_symbol(row) or "UNKNOWN"
+        side = _broker_trade_side(row) or ""
+        qty_remaining = _broker_trade_quantity(row) or 0.0
+        price = _broker_trade_price(row) or 0.0
+        event_time = _broker_trade_time(row)
+        opposite = "sell" if side == "buy" else "buy"
+        same_lots = lots[symbol]
+        while qty_remaining > 0 and same_lots and same_lots[0]["side"] == opposite:
+            lot = same_lots[0]
+            close_qty = min(qty_remaining, lot["quantity"])
+            if lot["side"] == "buy" and side == "sell":
+                pnl = (price - lot["price"]) * close_qty
+                entry_side = "buy"
+            else:
+                pnl = (lot["price"] - price) * close_qty
+                entry_side = "sell"
+            matched.append({
+                "broker": row.get("broker"),
+                "symbol": symbol,
+                "entry_side": entry_side,
+                "exit_side": side,
+                "quantity": close_qty,
+                "entry_price": lot["price"],
+                "exit_price": price,
+                "entry_time": lot.get("time"),
+                "exit_time": event_time,
+                "profit_loss": pnl,
+                "reason": "FIFO match from broker fill history in this report window.",
+            })
+            lot["quantity"] -= close_qty
+            qty_remaining -= close_qty
+            if lot["quantity"] <= 1e-9:
+                same_lots.pop(0)
+        if qty_remaining > 1e-9:
+            same_lots.append({
+                "broker": row.get("broker"),
+                "symbol": symbol,
+                "side": side,
+                "quantity": qty_remaining,
+                "price": price,
+                "time": event_time,
+                "reason": "No matching opposite-side fill inside this report window.",
+            })
+    open_lots = [lot for symbol_lots in lots.values() for lot in symbol_lots]
+    realized_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in matched)
+    return {"matched_trades": matched, "open_lots": open_lots, "realized_pnl": realized_pnl}
+
+
+def _reconstructed_trade_lines(reconstructed: dict[str, Any]) -> str:
+    matched = reconstructed.get("matched_trades") or []
+    open_lots = reconstructed.get("open_lots") or []
+    lines: list[str] = []
+    if matched:
+        for index, row in enumerate(matched, start=1):
+            result = "made" if (safe_float(row.get("profit_loss")) or 0.0) >= 0 else "lost"
+            lines.append(
+                f"- Matched trade {index}: {row.get('broker', 'unknown')} {row.get('symbol')} "
+                f"{row.get('entry_side')}->{row.get('exit_side')}; opened {row.get('entry_time') or 'N/A'}; "
+                f"closed {row.get('exit_time') or 'N/A'}; qty {row.get('quantity')}; "
+                f"entry {_money_text(row.get('entry_price'))}; exit {_money_text(row.get('exit_price'))}; "
+                f"{result} {_money_text(abs(safe_float(row.get('profit_loss')) or 0.0))}; P&L {_money_text(row.get('profit_loss'))}; "
+                f"reason: {row.get('reason')}."
+            )
+    else:
+        lines.append("- No buy/sell fills could be matched into a closed round trip inside this report window.")
+    if open_lots:
+        lines.append("- Open/unmatched fills:")
+        for row in open_lots:
+            lines.append(
+                f"  - {row.get('broker', 'unknown')} {row.get('symbol')} {row.get('side')}; "
+                f"time {row.get('time') or 'N/A'}; qty {row.get('quantity')}; price {_money_text(row.get('price'))}; "
+                f"reason: {row.get('reason')}"
+            )
+    return "\n".join(lines)
+
+
+def _broker_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload_json")
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _broker_trade_symbol(row: dict[str, Any]) -> str | None:
+    payload = _broker_trade_payload(row)
+    value = row.get("symbol") or payload.get("symbol") or payload.get("pair")
+    return str(value).upper() if value else None
+
+
+def _broker_trade_side(row: dict[str, Any]) -> str | None:
+    payload = _broker_trade_payload(row)
+    value = row.get("side") or payload.get("side") or payload.get("type")
+    value = str(value).lower() if value else ""
+    if value in {"buy", "sell"}:
+        return value
+    return None
+
+
+def _broker_trade_quantity(row: dict[str, Any]) -> float | None:
+    payload = _broker_trade_payload(row)
+    return safe_float(row.get("quantity") or payload.get("qty") or payload.get("quantity") or payload.get("vol"))
+
+
+def _broker_trade_price(row: dict[str, Any]) -> float | None:
+    payload = _broker_trade_payload(row)
+    return safe_float(row.get("price") or payload.get("price") or payload.get("filled_avg_price"))
+
+
+def _broker_trade_time(row: dict[str, Any]) -> str | None:
+    payload = _broker_trade_payload(row)
+    return (
+        row.get("closed_at")
+        or row.get("opened_at")
+        or payload.get("transaction_time")
+        or payload.get("filled_at")
+        or payload.get("created_at")
+        or payload.get("time")
+        or row.get("updated_at")
+    )
 
 
 def _report_decision_lines(decisions: list[dict[str, Any]]) -> str:

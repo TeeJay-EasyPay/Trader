@@ -71,6 +71,7 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
 - The mobile app opens the report browser page automatically and provides an `Open Report` button on the generated report panel.
 - Reports explain P&L movement using broker snapshots, closed performance attribution, broker trade history, guardrail/orchestrator rejections, and learning recommendations.
 - Reports now include a fuller trade-performance structure for daily, morning, evening, weekly, and monthly windows: start/end balance, period performance, all closed trades with entry/exit/times/P&L, broker trade rows, why money was won or lost, lessons learned, and Founder-approved improvement recommendations.
+- Reports now also reconstruct P&L from raw broker fills where buy and sell fills can be matched, and explicitly list open/unmatched fills when the movement is likely unrealised/open-position P&L.
 - Verified Python tests: 70/70.
 - Verified Expo Doctor: 17/17.
 
