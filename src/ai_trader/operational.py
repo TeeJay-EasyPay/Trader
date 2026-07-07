@@ -233,6 +233,31 @@ def record_research_run(
             )
 
 
+def latest_pnl_snapshot(db_path: Path, broker: str) -> dict[str, Any]:
+    initialize_operational_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT day_pnl, week_pnl, month_pnl, portfolio_value
+            FROM PORTFOLIO_SNAPSHOTS WHERE broker = ?
+            ORDER BY snapshot_id DESC LIMIT 1
+            """,
+            (broker.lower(),),
+        ).fetchone()
+        peak = conn.execute(
+            "SELECT MAX(portfolio_value) FROM PORTFOLIO_SNAPSHOTS WHERE broker = ?",
+            (broker.lower(),),
+        ).fetchone()
+    return {
+        "day_pnl": row["day_pnl"] if row else None,
+        "week_pnl": row["week_pnl"] if row else None,
+        "month_pnl": row["month_pnl"] if row else None,
+        "portfolio_value": row["portfolio_value"] if row else None,
+        "peak_equity": peak[0] if peak and peak[0] is not None else None,
+    }
+
+
 def latest_research_run(db_path: Path) -> dict[str, Any] | None:
     initialize_operational_schema(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
@@ -241,25 +266,38 @@ def latest_research_run(db_path: Path) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+CRYPTO_CATEGORY_ENDPOINTS: dict[str, str] = {
+    "Top 20 by market cap": (
+        "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc"
+        "&per_page=20&page=1&price_change_percentage=24h,7d,30d"
+    ),
+    "Top 20 AI coins": (
+        "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=artificial-intelligence"
+        "&order=market_cap_desc&per_page=20&page=1&price_change_percentage=24h,7d,30d"
+    ),
+    "Top 20 security/privacy coins": (
+        "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=privacy-coins"
+        "&order=market_cap_desc&per_page=20&page=1&price_change_percentage=24h,7d,30d"
+    ),
+}
+
+
 def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str, Any]:
     initialize_operational_schema(db_path)
     assets: list[dict[str, Any]] = []
+    market_rows: list[dict[str, Any]] = []
     source = "Unavailable"
     notes = "Live public ranking fetch was not requested."
     if fetch_live:
         try:
-            with urlopen("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=60&page=1", timeout=20) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-            for row in raw[:20]:
-                assets.append(_crypto_row(row, "Top 20 by market cap", "CoinGecko public markets API"))
-            for row in raw:
-                name = f"{row.get('name', '')} {row.get('symbol', '')}".lower()
-                if any(term in name for term in ["ai", "artificial", "fetch", "render", "near", "bittensor"]):
-                    assets.append(_crypto_row(row, "Top 20 AI coins", "CoinGecko public markets API"))
-                if any(term in name for term in ["privacy", "monero", "zcash", "dash", "secret"]):
-                    assets.append(_crypto_row(row, "Top 20 security/privacy coins", "CoinGecko public markets API"))
+            for category_label, url in CRYPTO_CATEGORY_ENDPOINTS.items():
+                with urlopen(url, timeout=20) as response:
+                    raw = json.loads(response.read().decode("utf-8"))
+                for row in raw:
+                    assets.append(_crypto_row(row, category_label, "CoinGecko public markets API"))
+                    market_rows.append(row)
             source = "CoinGecko public markets API"
-            notes = "Fetched live public market data where matching categories were available."
+            notes = "Fetched live public market data across market-cap, AI, and privacy/security categories."
         except Exception as exc:
             notes = f"Rankings unavailable: {exc}"
     with closing(sqlite3.connect(db_path)) as conn:
@@ -283,7 +321,94 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
                             utc_now_iso(),
                         ),
                     )
+    if assets:
+        _populate_crypto_master_and_scores(db_path, assets, market_rows)
     return {"inserted": len(assets), "source": source, "notes": notes}
+
+
+def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any]], market_rows: list[dict[str, Any]]) -> None:
+    # Deferred imports: foundation.py and multi_broker.py both import this module, so importing
+    # them at module load time here would be circular. By call time (runtime, not import time)
+    # both modules are already fully loaded, so this is safe.
+    from .foundation import initialize_foundation_schema
+    from .multi_broker import record_crypto_research_score
+
+    initialize_foundation_schema(db_path)
+    now = utc_now_iso()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            for asset, raw_row in zip(assets, market_rows):
+                conn.execute(
+                    """
+                    INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(symbol, category) DO UPDATE SET
+                        active = 1, name = excluded.name, updated_at = excluded.updated_at
+                    """,
+                    (asset["symbol"], asset["name"], asset["category"], asset["source"], now, now),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO CRYPTO_MARKET_DATA (
+                        symbol, observed_at, price_usd, market_cap_usd, volume_24h_usd, source, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        asset["symbol"],
+                        now,
+                        safe_float(raw_row.get("current_price")),
+                        safe_float(raw_row.get("market_cap")),
+                        safe_float(raw_row.get("total_volume")),
+                        asset["source"],
+                        json.dumps(raw_row, default=str),
+                    ),
+                )
+    for asset, raw_row in zip(assets, market_rows):
+        record_crypto_research_score(
+            db_path,
+            symbol=asset["symbol"],
+            category=asset["category"],
+            metrics=_crypto_metrics_from_market_row(raw_row),
+            source=asset["source"],
+        )
+
+
+def _crypto_metrics_from_market_row(row: dict[str, Any]) -> dict[str, Any]:
+    change_24h = safe_float(row.get("price_change_percentage_24h_in_currency") or row.get("price_change_percentage_24h"))
+    change_7d = safe_float(row.get("price_change_percentage_7d_in_currency"))
+    change_30d = safe_float(row.get("price_change_percentage_30d_in_currency"))
+    market_cap = safe_float(row.get("market_cap"))
+    volume = safe_float(row.get("total_volume"))
+    liquidity = min(1.0, volume / market_cap) if market_cap and volume and market_cap > 0 else None
+    volatility = min(1.0, abs(change_30d) / 100) if change_30d is not None else None
+    risk_score = round(1.0 - volatility, 4) if volatility is not None else None
+    return {
+        "technical_trend_score": _pct_to_unit_score(change_7d),
+        "momentum_score": _pct_to_unit_score(change_24h),
+        "volatility": volatility,
+        "liquidity": liquidity,
+        "risk_score": risk_score,
+        # No free reliable on-chain/sentiment/news feed is wired up yet - these are left
+        # unset (None) rather than fabricated, so due diligence correctly treats them as
+        # insufficient_data instead of silently passing.
+        "sentiment": None,
+        "news_score": None,
+        "onchain_activity": None,
+        "reasoning": {
+            "source": "CoinGecko public markets API",
+            "note": "technical/momentum/volatility/liquidity are computed from live price, volume, and market-cap data. "
+            "on-chain activity, sentiment, and news are not available without a paid data provider and are left blank.",
+            "price_change_pct_24h": change_24h,
+            "price_change_pct_7d": change_7d,
+            "price_change_pct_30d": change_30d,
+        },
+    }
+
+
+def _pct_to_unit_score(pct: float | None) -> float | None:
+    if pct is None:
+        return None
+    return round(max(0.0, min(1.0, 0.5 + (pct / 100.0))), 4)
 
 
 def _crypto_row(row: dict[str, Any], category: str, source: str) -> dict[str, Any]:

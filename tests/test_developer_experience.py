@@ -19,6 +19,7 @@ from ai_trader.db_browser import ReadOnlyDatabaseBrowser
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
+from ai_trader.scheduler import IntervalWorker, ResearchScheduler
 
 
 def settings_for(tmp: str) -> Settings:
@@ -95,6 +96,99 @@ class DeveloperExperienceTests(unittest.TestCase):
         handler.headers = Headers({})
         self.assertFalse(handler._authorized("/status"))
         self.assertTrue(handler._authorized("/healthz"))
+
+    def test_repeated_auth_failures_lock_out_the_source_ip(self):
+        class Headers:
+            def __init__(self, values):
+                self.values = values
+
+            def get(self, key, default=""):
+                return self.values.get(key, default)
+
+        handler = object.__new__(ApiHandler)
+        handler.api_token = "secret"
+        handler.client_address = ("203.0.113.9", 4321)
+        handler.headers = Headers({})
+        for _ in range(handler._MAX_AUTH_FAILURES):
+            handler._authorized("/status")
+
+        handler.headers = Headers({"Authorization": "Bearer secret"})
+        self.assertFalse(
+            handler._authorized("/status"),
+            "The correct token must still be rejected once the source IP is locked out.",
+        )
+
+        other = object.__new__(ApiHandler)
+        other.api_token = "secret"
+        other.client_address = ("203.0.113.10", 4321)
+        other.headers = Headers({"Authorization": "Bearer secret"})
+        self.assertTrue(other._authorized("/status"), "Lockout must be scoped per source IP.")
+
+    def test_hosted_read_only_mode_rejects_post_commands(self):
+        captured = {}
+
+        class Handler:
+            path = "/start-trading"
+            hosted_read_only = True
+
+            def _authorized(self, path):
+                return True
+
+            def _json(self, status, payload):
+                captured["status"] = status
+                captured["payload"] = payload
+
+        ApiHandler.do_POST(Handler())
+
+        self.assertEqual(captured["status"], 403)
+        self.assertEqual(captured["payload"]["error"], "hosted_read_only")
+
+    def test_research_scheduler_background_loop_survives_a_failed_cycle(self):
+        import threading
+        import time
+
+        calls = []
+        errors = []
+
+        class FailingService:
+            def run_analysis(self, body):
+                calls.append(body)
+                raise RuntimeError("simulated broker timeout")
+
+        scheduler = ResearchScheduler(FailingService(), interval_minutes=0, on_error=errors.append)
+        stop = scheduler.start_background(limit=1)
+        try:
+            time.sleep(0.2)
+            thread = next((t for t in threading.enumerate() if t.name == "ai-trader-research-scheduler"), None)
+            self.assertIsNotNone(thread, "The scheduler thread should have started.")
+            self.assertTrue(thread.is_alive(), "A raised exception must not kill the scheduler thread.")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(errors), 1)
+        finally:
+            stop.set()
+
+    def test_interval_worker_keeps_running_after_an_exception(self):
+        import threading
+        import time
+
+        calls = []
+        errors = []
+
+        def flaky():
+            calls.append(1)
+            raise RuntimeError("simulated failure")
+
+        worker = IntervalWorker(flaky, interval_seconds=0.01, name="test-worker", on_error=errors.append)
+        stop = worker.start_background()
+        try:
+            time.sleep(0.2)
+            thread = next((t for t in threading.enumerate() if t.name == "test-worker"), None)
+            self.assertIsNotNone(thread, "The worker thread should have started.")
+            self.assertTrue(thread.is_alive(), "A raised exception must not kill the worker thread.")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(errors), 1)
+        finally:
+            stop.set()
 
     def test_recommendations_include_freshness_and_expiry(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,6 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -298,6 +299,7 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     "default_stop_loss_pct": (0.03, "float", "Default stop loss distance."),
     "maximum_stop_loss_pct": (0.05, "float", "Maximum permitted stop loss distance."),
     "trailing_stop_enabled": (False, "boolean", "Trailing stops require founder approval."),
+    "trailing_stop_pct": (0.02, "float", "Trailing stop distance once trailing stops are enabled."),
     "take_profit_required": (True, "boolean", "Every autonomous trade needs a take profit."),
     "maximum_concurrent_positions": (3, "integer", "Maximum open positions."),
     "maximum_drawdown_pct": (0.15, "float", "Maximum tolerated drawdown before shutdown."),
@@ -342,8 +344,10 @@ class TradingPolicy:
     default_stop_loss_pct: float
     max_stop_loss_pct: float
     trailing_stop_enabled: bool
+    trailing_stop_pct: float
     take_profit_required: bool
     max_concurrent_positions: int
+    max_drawdown_pct: float
     crypto_enabled: bool
     equities_enabled: bool
     broker_enabled: dict[str, bool]
@@ -365,8 +369,10 @@ class TradingPolicy:
             "default_stop_loss_pct": self.default_stop_loss_pct,
             "max_stop_loss_pct": self.max_stop_loss_pct,
             "trailing_stop_enabled": self.trailing_stop_enabled,
+            "trailing_stop_pct": self.trailing_stop_pct,
             "take_profit_required": self.take_profit_required,
             "max_concurrent_positions": self.max_concurrent_positions,
+            "max_drawdown_pct": self.max_drawdown_pct,
             "crypto_enabled": self.crypto_enabled,
             "equities_enabled": self.equities_enabled,
             "broker_enabled": self.broker_enabled,
@@ -409,22 +415,71 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         default_stop_loss_pct=float(risk.get("default_stop_loss_pct", getattr(auto_trade, "default_stop_loss_pct", 0.03))),
         max_stop_loss_pct=float(risk.get("maximum_stop_loss_pct", getattr(auto_trade, "max_stop_loss_pct", 0.05))),
         trailing_stop_enabled=bool(risk.get("trailing_stop_enabled", False)),
+        trailing_stop_pct=float(risk.get("trailing_stop_pct", 0.02)),
         take_profit_required=bool(risk.get("take_profit_required", True)),
         max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
+        max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
         crypto_enabled=bool(investment.get("crypto_enabled", False)),
         equities_enabled=bool(investment.get("equities_enabled", True)),
         broker_enabled=brokers,
     )
 
 
+def _macro_context_available(conn: sqlite3.Connection, proposal: TradeProposal) -> bool:
+    try:
+        if proposal.asset_type == "crypto":
+            row = conn.execute(
+                "SELECT 1 FROM CRYPTO_RESEARCH_SCORES WHERE UPPER(symbol) = UPPER(?) ORDER BY score_id DESC LIMIT 1",
+                (proposal.symbol,),
+            ).fetchone()
+            return row is not None
+        company = conn.execute(
+            "SELECT sector, industry FROM COMPANY_MASTER WHERE UPPER(ticker) = UPPER(?) LIMIT 1",
+            (proposal.symbol,),
+        ).fetchone()
+        if not company or not (company[0] or company[1]):
+            return False
+        keywords = {word.lower() for word in f"{company[0] or ''} {company[1] or ''}".split() if len(word) > 3}
+        if not keywords:
+            return False
+        themes = conn.execute("SELECT theme, summary, key_drivers FROM MARKET_THEMES").fetchall()
+        for theme_row in themes:
+            haystack = " ".join(str(value or "") for value in theme_row).lower()
+            if any(keyword in haystack for keyword in keywords):
+                return True
+        return False
+    except sqlite3.OperationalError:
+        return False
+
+
+def _behavioural_context_available(conn: sqlite3.Connection, proposal: TradeProposal) -> bool:
+    try:
+        if proposal.asset_type == "crypto":
+            row = conn.execute(
+                "SELECT sentiment FROM CRYPTO_RESEARCH_SCORES WHERE UPPER(symbol) = UPPER(?) ORDER BY score_id DESC LIMIT 1",
+                (proposal.symbol,),
+            ).fetchone()
+            return bool(row and row[0] is not None)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM BENCHMARK_DAILY_RESEARCH WHERE research_date = ?",
+            (date.today().isoformat(),),
+        ).fetchone()
+        return bool(row and row[0])
+    except sqlite3.OperationalError:
+        return False
+
+
 def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> dict[str, Any]:
     p = proposal.normalized()
+    with closing(sqlite3.connect(db_path)) as probe_conn:
+        macro_available = _macro_context_available(probe_conn, p)
+        behavioural_available = _behavioural_context_available(probe_conn, p)
     statuses = {
         "fundamental_status": "completed" if p.news_summary else "incomplete",
         "technical_status": "completed" if p.technical_summary else "incomplete",
         "market_status": "completed" if p.market_sentiment_summary else "incomplete",
-        "macro_status": "completed",
-        "behavioural_status": "completed",
+        "macro_status": "completed" if macro_available else "insufficient_data",
+        "behavioural_status": "completed" if behavioural_available else "insufficient_data",
         "investment_policy_status": "completed" if p.philosophy_fit else "incomplete",
     }
     overall = "completed" if all(value == "completed" for value in statuses.values()) else "incomplete"
@@ -432,8 +487,16 @@ def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> d
         "fundamental": p.news_summary,
         "technical": p.technical_summary,
         "market": p.market_sentiment_summary,
-        "macro": "Macro review completed using available market context.",
-        "behavioural": "Behavioural review completed using sentiment and benchmark context when available.",
+        "macro": (
+            "Macro review matched against tracked market themes / crypto research scores."
+            if macro_available
+            else "No macro data source (matching market theme or crypto research score) was found for this symbol."
+        ),
+        "behavioural": (
+            "Behavioural review matched against today's benchmark trader research / crypto sentiment score."
+            if behavioural_available
+            else "No behavioural data source (benchmark trader activity or crypto sentiment) was found for this symbol today."
+        ),
         "investment_policy": f"Policy fit score: {p.philosophy_fit}",
     }
     with closing(sqlite3.connect(db_path)) as conn:
@@ -477,21 +540,32 @@ def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> d
 def calculate_investment_score(db_path: Path, proposal: TradeProposal) -> dict[str, Any]:
     p = proposal.normalized()
     confidence = float(p.confidence_score or 0.0)
-    fundamental = max(confidence, 0.75) if p.news_summary else 0.0
-    technical = max(confidence, safe_score(p.technical_summary) or 0.75) if p.technical_summary else 0.0
-    market = max(confidence, safe_score(p.market_sentiment_summary) or 0.75) if p.market_sentiment_summary else 0.0
-    macro = max(confidence, 0.70)
-    behavioural = max(confidence, 0.70)
+    fundamental = confidence if p.news_summary else 0.0
+    technical = (safe_score(p.technical_summary) or confidence) if p.technical_summary else 0.0
+    market = (safe_score(p.market_sentiment_summary) or confidence) if p.market_sentiment_summary else 0.0
+    with closing(sqlite3.connect(db_path)) as probe_conn:
+        macro_available = _macro_context_available(probe_conn, p)
+        behavioural_available = _behavioural_context_available(probe_conn, p)
+    macro = confidence if macro_available else 0.0
+    behavioural = confidence if behavioural_available else 0.0
     policy = float(p.philosophy_fit or 0.0)
     stop_loss_pct = abs(p.entry_price - p.stop_loss) / p.entry_price if p.entry_price else 1.0
     risk = max(0.0, min(1.0, 1.0 - stop_loss_pct))
     overall = round((fundamental + technical + market + macro + behavioural + policy + risk) / 7, 4)
     reasoning = {
-        "fundamental": "News and company context reviewed.",
-        "technical": p.technical_summary,
-        "market": p.market_sentiment_summary,
-        "macro": "Macro context reviewed with available data.",
-        "behavioural": "Sentiment and behaviour context reviewed with available data.",
+        "fundamental": "News and company context reviewed." if p.news_summary else "No news/company context supplied.",
+        "technical": p.technical_summary or "No technical summary supplied.",
+        "market": p.market_sentiment_summary or "No market sentiment summary supplied.",
+        "macro": (
+            "Matched against tracked market themes / crypto research scores."
+            if macro_available
+            else "No macro data source found for this symbol - scored zero, not floored."
+        ),
+        "behavioural": (
+            "Matched against today's benchmark trader research / crypto sentiment score."
+            if behavioural_available
+            else "No behavioural data source found for this symbol today - scored zero, not floored."
+        ),
         "investment_policy": "Compared with Founder-approved policy and universe.",
         "risk": f"Stop loss distance is {stop_loss_pct:.4f}.",
     }

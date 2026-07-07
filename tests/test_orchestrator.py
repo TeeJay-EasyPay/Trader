@@ -4,17 +4,60 @@ import tempfile
 import time
 import unittest
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.broker_adapters import AlpacaBrokerAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
 from ai_trader.briefing import generate_session_brief
-from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal
+from ai_trader.intelligence import InvestmentIntelligenceDatabase
+from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, Position, TradeProposal, utc_now_iso
+from ai_trader.operational import initialize_operational_schema
 from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext
 from ai_trader.scheduler import ResearchScheduler
+
+
+def seed_due_diligence_context(db_path: Path) -> None:
+    """Gives the default AAPL test proposal real macro (market theme) and behavioural
+    (benchmark trader) context so due diligence completes instead of insufficient_data -
+    matching a genuinely well-researched trade rather than papering over the check."""
+    InvestmentIntelligenceDatabase(db_path)
+    BenchmarkIntelligenceDatabase(db_path)
+    now = utc_now_iso()
+    today = date.today().isoformat()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO COMPANY_MASTER (company_name, ticker, exchange, sector, industry, last_updated, created_at, updated_at)
+                VALUES ('Apple Inc', 'AAPL', 'NASDAQ', 'Technology', 'Consumer Electronics', ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO MARKET_THEMES (theme, summary, key_drivers, last_updated, created_at, updated_at)
+                VALUES ('Technology Sector Growth', 'Technology adoption continues.', 'Technology demand', ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO BENCHMARK_TRADERS (trader_name, platform, created_date, last_updated)
+                VALUES ('Test Trader', 'Test Platform', ?, ?)
+                """,
+                (now, now),
+            )
+            trader_id = conn.execute(
+                "SELECT trader_id FROM BENCHMARK_TRADERS WHERE trader_name = 'Test Trader'"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO BENCHMARK_DAILY_RESEARCH (research_date, trader_id, source, created_date) VALUES (?, ?, 'test', ?)",
+                (today, trader_id, now),
+            )
 
 
 MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -104,7 +147,9 @@ def context(auto_enabled=True):
 class OrchestratorTests(unittest.TestCase):
     def run_decision(self, item, adapter=None, auto_enabled=True):
         with tempfile.TemporaryDirectory() as tmp:
-            orchestrator = InvestmentOrchestrator(db_path=Path(tmp) / "audit.sqlite3", adapters=[adapter or FakeAdapter()])
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter or FakeAdapter()])
             return orchestrator.evaluate_recommendation(item, context(auto_enabled=auto_enabled), auto_execute=True)
 
     def test_routes_executable_auto_trade_to_adapter(self):
@@ -150,6 +195,64 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(decision.decision, "manual_approval_required")
         self.assertIsNone(decision.rejection_reason)
+
+    def test_weekly_loss_limit_blocks_new_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[FakeAdapter()])
+            initialize_operational_schema(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO PORTFOLIO_SNAPSHOTS (
+                            created_at, broker, exchange, cash, portfolio_value,
+                            open_positions_count, day_pnl, week_pnl, month_pnl, notes
+                        ) VALUES (?, 'fake', 'Fake', 100000, 100000, 0, -100, -8000, -100, 'test')
+                        """,
+                        (utc_now_iso(),),
+                    )
+            decision = orchestrator.evaluate_recommendation(proposal(), context(), auto_execute=True)
+
+            self.assertEqual(decision.decision, "rejected")
+            self.assertIn("maximum_weekly_loss_exceeded", decision.rejection_reason)
+
+    def test_portfolio_exposure_limit_blocks_new_trades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[FakeAdapter()])
+            heavy_context = OrchestratorContext(
+                account=AccountContext(
+                    equity=100_000,
+                    daily_realized_pnl=0,
+                    open_positions=[Position(symbol="MSFT", qty=1, market_value=90_000)],
+                ),
+                auto_trade=AutoTradeConfig(enabled=True),
+                guardrails=GuardrailConfig(min_confidence_score=0.65),
+                now=MARKET_TIME,
+            )
+            decision = orchestrator.evaluate_recommendation(proposal(), heavy_context, auto_execute=True)
+
+            self.assertEqual(decision.decision, "rejected")
+            self.assertIn("maximum_concurrent_exposure_exceeded", decision.rejection_reason)
+
+    def test_approve_and_execute_style_call_blocks_duplicate_order_intent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            adapter = FakeAdapter()
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+            p = proposal()
+
+            first = orchestrator.evaluate_recommendation(p, context(), auto_execute=True)
+            second = orchestrator.evaluate_recommendation(p, context(), auto_execute=True)
+
+            self.assertEqual(first.decision, "approved")
+            self.assertEqual(second.decision, "rejected")
+            self.assertIn("duplicate_order_intent", second.rejection_reason)
+            self.assertEqual(len(adapter.orders), 1)
 
     def test_placeholder_adapters_are_not_configured(self):
         for adapter in [InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter()]:

@@ -480,3 +480,107 @@
 - Added Intelligence-to-Recommendations linking: monitored company names link to matching recommendation cards and open the selected card.
 - Added tests for Kraken live micro-order rejection and validation-mode submission.
 - Verified Python tests: 55/55 passing.
+
+## 2026-07-07 Autonomous Trading Readiness Sprint
+
+Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`; summary below.
+
+- **Broker execution is now orchestrator-only.** `approve_and_execute` (manual approval) now
+  calls `InvestmentOrchestrator.evaluate_recommendation` instead of the legacy
+  `ExecutionEngine` directly - it now gets due diligence, investment scoring, capital
+  allocation, and the `ORDER_INTENT_LOCKS` duplicate-order lock for free.
+- **Kraken safety defaults fixed.** `KRAKEN_SUBMIT_REAL_ORDERS` now defaults to validate/
+  dry-run mode when unset (previously defaulted to submitting real orders).
+- **Risk limits actually enforced.** Daily/weekly/monthly loss limits, a new max-drawdown
+  check, and portfolio-level exposure/concentration limits are now checked against real
+  `PORTFOLIO_SNAPSHOTS` history inside `InvestmentOrchestrator.evaluate_recommendation`
+  (previously the daily-loss check was fed a hardcoded `0.0` and the exposure/drawdown
+  checks did not exist).
+- **Continuous monitoring, not manual-only.** Kraken's stop-loss/take-profit monitor and a
+  new broker order/fill poller now run on background `IntervalWorker` loops (60s cadence)
+  started from `run_server`, independent of whether research scheduling is enabled.
+  Previously both only ran if something manually called `/monitor-managed-exits`.
+- **Resilience.** `ResearchScheduler` and the new `IntervalWorker` loops catch and log any
+  exception and keep running (a `research_failure`/`broker_failure` notification is fired),
+  instead of the background thread dying silently. Added a startup reconciliation pass
+  (`reconcile_on_startup`) that flags stuck order-intent locks left over from a prior crash.
+- **Trailing stops.** Added a governed `trailing_stop_pct` risk policy and high/low
+  water-mark tracking on `MANAGED_TRADE_EXITS`; `monitor_managed_exits` ratchets the
+  effective stop as price moves favorably when enabled.
+- **Due diligence is evidence-based, not floored.** Removed the hardcoded 0.70/0.75 score
+  floors in `calculate_investment_score`; macro/behavioural factors and due-diligence
+  statuses now reflect real backing data (a matching market theme, a same-day benchmark
+  trader research entry, or a crypto research score) or are honestly marked
+  `insufficient_data`/scored `0.0`.
+- **Live crypto knowledge engine.** `seed_crypto_universe` now fetches CoinGecko's actual
+  market-cap/AI/privacy-coin category endpoints (previously keyword-matched a single
+  market-cap page) and populates `CRYPTO_MASTER` (previously never populated, which
+  silently blocked every crypto proposal) and `CRYPTO_MARKET_DATA`, with genuine
+  technical/momentum/volatility/liquidity scores computed from live price data.
+  On-chain/sentiment/news remain explicitly `insufficient_data` - no fabricated scores.
+- **Crypto can now actually trade autonomously.** Added `propose_crypto_trades` (in
+  `agent.py`) - previously nothing in the codebase ever generated a crypto trade proposal,
+  so Kraken's entire autonomous-entry path was unreachable regardless of configuration.
+  While verifying this end to end (not just via unit tests), found and fixed three real
+  bugs that would have silently blocked every Kraken trade: the equity trading-hours
+  guardrail was wrongly applied to 24/7 crypto, `risk_percentage` was computed from the
+  stop-loss distance instead of capital-at-risk, and `paper_trading_only` incorrectly
+  rejected Kraken's genuinely non-paper account.
+- **Performance attribution.** Added `PERFORMANCE_ATTRIBUTION` table populated atomically
+  when a managed exit closes: entry/exit price, P&L, holding period, entry/exit reason,
+  and the investment-score reasoning that justified entry.
+- **Notifications.** Added `GET /notifications`, `POST /notifications/ack`, and best-effort
+  Expo push delivery (`POST /register-push-token`, a `PUSH_TOKENS` table, and a background
+  dispatcher) for high-priority events. Mobile push delivery is implemented server-side and
+  unit-tested, but not end-to-end verified - that requires a rebuilt app on a physical device.
+- **Security.** Hosted API startup now fails closed for trading/control actions: when
+  started on a non-loopback host with no `AI_TRADER_API_TOKEN`, the service enters
+  read-only mode and rejects all POST commands until the token is configured. Token
+  comparison uses `hmac.compare_digest`. Added a per-IP lockout after repeated auth failures.
+- **Mobile.** Added an in-app notification center with unread badge, a Risk Limits section
+  surfacing the policy the orchestrator enforces, and clarified that Stop Trading halts new
+  entries/approvals but does not disable already-running managed-exit protection.
+- **Consolidated duplicated logic.** Kraken pair-formatting/last-price parsing existed
+  independently in `api.py` and would have existed a third time in the new crypto proposal
+  code; moved the canonical implementation into `broker_adapters.py` and had all three call
+  sites use it.
+- Added 11 new tests (55 -> 66 passing) covering every behavior change above, including
+  regression tests for the three crypto guardrail bugs and the P&L sign-correctness fix.
+- **Explicitly out of scope this sprint:** the `api.py` god-file / broker-addition-touches-
+  many-files architecture findings (Amber, not safety-blocking - flagged as a fast-follow);
+  native mobile push client integration (`expo-notifications`) was not added, since it
+  requires a rebuild I cannot verify from this environment - the backend is ready for it.
+  No live-trading enablement switches (`KRAKEN_AUTO_TRADING`, `KRAKEN_LIVE_TRADING_APPROVED`,
+  `INVESTMENT_POLICIES.crypto_enabled`) were changed - that remains a deliberate Founder
+  action. The `.env` file's live keys were left untouched (rotation is a Founder action in
+  the Alpaca/OpenAI dashboards, not something this sprint could safely do on its own).
+- Verified Python tests: 66/66 passing.
+
+## 2026-07-07 Principal Review and Release Management Pass
+
+- Reviewed the Autonomous Trading Readiness Sprint as release manager.
+- Added formal governance review artefacts:
+  - `governance/ENGINEERING_REVIEW_REPORT.md`
+  - `governance/ARCHITECTURE_ASSESSMENT.md`
+  - `governance/SAFETY_ASSESSMENT.md`
+  - `governance/REMAINING_RISKS.md`
+  - `governance/FOUNDER_RELEASE_BRIEF.md`
+- Corrected the mobile Command Centre wording so broker-specific Enable/Disable Auto
+  Trading remains the normal broker control path, while the global buttons are clearly
+  labelled as Resume All Trading and Emergency Stop All.
+- Added a deployment hotfix after Render verification showed the hosted service could not
+  remain healthy without `AI_TRADER_API_TOKEN`: the API now starts in hosted read-only mode
+  and rejects POST trading/control commands until the token is set, preserving safety without
+  taking status/recommendation views offline.
+- Updated README and STATUS to match the broker-independent operating model.
+- Verification completed:
+  - Python compile check passed.
+  - Python unit test suite passed: 66/66.
+  - `git diff --check` passed.
+  - `npx expo-doctor` passed: 17/17 checks.
+- Deployment verification:
+  - GitHub push completed and Render served the new expanded `/status` payload.
+  - Render `/healthz` and `/status` returned HTTP 200 after deployment.
+  - `/notifications`, `/performance-attribution`, and an unauthenticated POST check were
+    unstable from external verification and require Render log review before declaring the
+    hosted backend fully green.

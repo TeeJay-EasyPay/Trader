@@ -1,47 +1,82 @@
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 import socket
 import sqlite3
 import sys
+import time
+from collections import defaultdict, deque
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .agent import AITradingAgent
+from .agent import AITradingAgent, propose_crypto_trades
 from .ai import OpenAIProposalAnalyzer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
 from .briefing import generate_daily_briefing
-from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter
+from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from .config import Settings, load_settings
-from .execution import ExecutionEngine
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
 from .intelligence import InvestmentIntelligenceDatabase
-from .models import OrderRequest, TradeProposal, utc_now_iso
+from .models import AccountContext, OrderRequest, Position, TradeProposal, utc_now_iso
 from .multi_broker import (
     all_broker_runtime,
     broker_auto_settings,
     broker_auto_trading_enabled,
     initialize_multi_broker_schema,
+    active_push_tokens,
     latest_broker_trades,
     latest_recommendation_set,
-    close_managed_exit,
+    list_notifications,
+    list_performance_attribution,
+    mark_notifications_read,
+    mark_push_sent,
+    close_managed_exit_and_record,
     open_managed_exits,
+    pending_push_notifications,
     record_broker_trade_history,
     record_notification,
     record_recommendation_set,
+    register_push_token,
+    send_expo_push,
     set_broker_auto_trading,
     today_runtime_counts,
     update_broker_runtime,
+    update_trailing_water_marks,
 )
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
-from .operational import display_value, initialize_operational_schema, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
-from .scheduler import ResearchScheduler
+from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
+from .scheduler import IntervalWorker, ResearchScheduler
+
+
+logger = logging.getLogger("ai_trader.api")
+
+
+def configure_logging(output_dir: Path) -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    root.addHandler(console)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(output_dir / "app.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError:
+        logger.warning("Could not open log file under %s; continuing with console logging only.", output_dir)
 
 
 CONTROL_SCHEMA = """
@@ -92,6 +127,167 @@ class LocalApiService:
         self._apply_env_broker_auto_defaults()
         self._initialize_control()
 
+    def reconcile_on_startup(self) -> dict[str, Any]:
+        stuck_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        stuck_locks = self._rows(
+            "SELECT * FROM ORDER_INTENT_LOCKS WHERE status = 'locked' AND created_at < ?",
+            (stuck_cutoff,),
+        )
+        open_exits = self._rows("SELECT * FROM MANAGED_TRADE_EXITS WHERE status = 'open'")
+        summary = {
+            "stuck_order_intents": len(stuck_locks),
+            "open_managed_exits": len(open_exits),
+        }
+        logger.info("Startup reconciliation: %s", summary)
+        if stuck_locks:
+            record_notification(
+                self.settings.db_path,
+                event_type="broker_failure",
+                broker=None,
+                symbol=None,
+                title="Stuck order submissions detected at startup",
+                message=(
+                    f"{len(stuck_locks)} order intent lock(s) never completed before the last restart. "
+                    "Review ORDER_INTENT_LOCKS for the affected broker/symbol."
+                ),
+                payload={"stuck_locks": [dict(row) for row in stuck_locks]},
+            )
+        return summary
+
+    def notifications(self, *, unread_only: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+        return list_notifications(self.settings.db_path, unread_only=unread_only, limit=limit)
+
+    def ack_notifications(self, body: dict[str, Any]) -> dict[str, Any]:
+        ids = body.get("notification_ids") or ([body["notification_id"]] if body.get("notification_id") else [])
+        try:
+            ids = [int(item) for item in ids]
+        except (TypeError, ValueError):
+            return {"status": "rejected", "message": "notification_ids must be a list of integers."}
+        updated = mark_notifications_read(self.settings.db_path, ids)
+        return {"status": "updated", "marked_read": updated}
+
+    def register_push_token_endpoint(self, body: dict[str, Any]) -> dict[str, Any]:
+        token = body.get("push_token")
+        if not token:
+            return {"status": "rejected", "message": "push_token is required."}
+        result = register_push_token(self.settings.db_path, str(token), platform=body.get("platform"))
+        return {"status": "registered", **result}
+
+    def dispatch_pending_push_notifications(self) -> dict[str, Any]:
+        pending = pending_push_notifications(self.settings.db_path)
+        if not pending:
+            return {"dispatched": 0}
+        tokens = active_push_tokens(self.settings.db_path)
+        if not tokens:
+            mark_push_sent(self.settings.db_path, [row["notification_id"] for row in pending])
+            return {"dispatched": 0, "reason": "no_registered_devices", "skipped": len(pending)}
+        for row in pending:
+            send_expo_push(tokens, title=row["title"], body=row["message"], data={"event_type": row["event_type"], "broker": row["broker"], "symbol": row["symbol"]})
+        mark_push_sent(self.settings.db_path, [row["notification_id"] for row in pending])
+        return {"dispatched": len(pending), "devices": len(tokens)}
+
+    def refresh_crypto_universe(self) -> dict[str, Any]:
+        result = seed_crypto_universe(self.settings.db_path, fetch_live=True)
+        update_broker_runtime(
+            self.settings.db_path,
+            "kraken",
+            research_status="running" if result["inserted"] else "idle",
+            due_diligence_status="completed" if result["inserted"] else "blocked",
+            current_stage="crypto_universe_refresh",
+            last_scan=utc_now_iso(),
+            next_scan=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
+            research_freshness="Fresh" if result["inserted"] else result["notes"],
+            details={"crypto_universe": result},
+        )
+        if not result["inserted"]:
+            record_notification(
+                self.settings.db_path,
+                event_type="research_failure",
+                broker="kraken",
+                symbol=None,
+                title="Crypto universe refresh returned no data",
+                message=result["notes"],
+                payload=result,
+            )
+        logger.info("Crypto universe refresh: %s", result)
+        crypto_analysis = self.run_crypto_analysis()
+        result["crypto_analysis"] = crypto_analysis
+        return result
+
+    def run_crypto_analysis(self, symbols: list[str] | None = None) -> dict[str, Any]:
+        started_at = utc_now_iso()
+        adapter = self.orchestrator.adapters.get("kraken")
+        if adapter is None or not getattr(adapter, "configured", False):
+            return {"status": "not_available", "message": "Kraken credentials are required for crypto analysis."}
+        if symbols is None:
+            rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT 30")
+            symbols = [row["symbol"] for row in rows]
+        if not symbols:
+            return {"status": "not_available", "message": "No active symbols in CRYPTO_MASTER yet."}
+        account = self._account_context_for_broker("kraken")
+        proposals = propose_crypto_trades(
+            self.settings.db_path,
+            adapter,
+            symbols,
+            account,
+            self.settings.guardrails,
+            self.audit,
+            min_confidence=self.settings.auto_trade.min_confidence,
+            requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
+            default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
+        )
+        auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No crypto proposals generated."}
+        update_broker_runtime(
+            self.settings.db_path,
+            "kraken",
+            research_status="idle",
+            due_diligence_status="completed",
+            current_stage="complete",
+            research_queue=symbols,
+            assets_reviewed_today=len(symbols),
+            research_cycles_today=1,
+            last_scan=utc_now_iso(),
+            next_scan=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
+            research_freshness="Fresh",
+            last_recommendation=proposals[-1].symbol if proposals else None,
+        )
+        record_notification(
+            self.settings.db_path,
+            event_type="research_completed",
+            broker="kraken",
+            symbol=None,
+            title="Crypto research completed",
+            message=f"Crypto due diligence completed for {len(symbols)} asset(s). {len(proposals)} recommendation(s) generated.",
+            payload={"symbols": symbols, "proposal_count": len(proposals)},
+        )
+        record_recommendation_set(
+            self.settings.db_path,
+            trigger_type="scheduled",
+            broker="kraken",
+            symbols=symbols,
+            proposal_ids=[p.proposal_id for p in proposals],
+            status="completed",
+            summary=f"{len(proposals)} crypto recommendation(s) generated.",
+        )
+        record_research_run(
+            self.settings.db_path,
+            started_at=started_at,
+            completed_at=utc_now_iso(),
+            status="completed",
+            trigger_type="scheduled",
+            markets_reviewed=["Kraken", "CoinGecko"],
+            companies_reviewed=0,
+            crypto_assets_reviewed=len(symbols),
+            benchmark_traders_reviewed=0,
+            recommendations_created=len(proposals),
+            trades_executed=len(auto_execution.get("result", [])) if isinstance(auto_execution.get("result"), list) else 0,
+            trades_rejected=len(auto_execution.get("skipped", [])) if isinstance(auto_execution, dict) else 0,
+            errors=[],
+            next_scheduled_run=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
+            summary=f"Crypto research completed with {len(proposals)} recommendation(s).",
+        )
+        return {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
+
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
@@ -118,11 +314,20 @@ class LocalApiService:
             return 200, {"html": DEVELOPER_DASHBOARD_HTML}
         if path == "/brokers":
             return 200, {"brokers": self.broker_panels()}
+        if path == "/performance-attribution":
+            return 200, {"performance_attribution": list_performance_attribution(self.settings.db_path)}
+        if path == "/notifications":
+            return 200, {"notifications": self.notifications(unread_only=_first(query, "unread_only") == "true")}
         return 404, {"error": "not_found", "path": path}
 
     def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if path == "/run-analysis":
             return 200, self.run_analysis(body)
+        if path == "/run-crypto-analysis":
+            symbols = body.get("symbols")
+            if isinstance(symbols, str):
+                symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
+            return 200, self.run_crypto_analysis(symbols)
         if path == "/start-trading":
             return 200, self.set_trading_state("running", "start-trading")
         if path == "/pause-trading":
@@ -139,6 +344,10 @@ class LocalApiService:
             return 200, self.set_broker_auto_trading(body)
         if path == "/monitor-managed-exits":
             return 200, self.monitor_managed_exits()
+        if path == "/notifications/ack":
+            return 200, self.ack_notifications(body)
+        if path == "/register-push-token":
+            return 200, self.register_push_token_endpoint(body)
         return 404, {"error": "not_found", "path": path}
 
     def status(self) -> dict[str, Any]:
@@ -524,7 +733,8 @@ class LocalApiService:
         if self.settings.openai_api_key:
             analyzer = OpenAIProposalAnalyzer(self.settings.openai_api_key, self.settings.openai_model, self.settings.guardrails)
         agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
-        account = broker.account_context()
+        daily_pnl = safe_float(latest_pnl_snapshot(self.settings.db_path, "alpaca").get("day_pnl")) or 0.0
+        account = broker.account_context(daily_realized_pnl=daily_pnl)
         proposals: list[TradeProposal] = []
         skipped_symbols: list[dict[str, str]] = []
         for symbol in symbols:
@@ -608,28 +818,72 @@ class LocalApiService:
         proposal_id = body.get("proposal_id")
         if not proposal_id:
             return {"status": "rejected", "message": "proposal_id is required."}
-        if not self.settings.has_alpaca_credentials:
-            return {"status": "not_available", "message": "Alpaca paper credentials are required for execution."}
         row = self._row(
-            "SELECT payload_json FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
+            "SELECT payload_json, created_at, ai_confidence FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
             (str(proposal_id),),
         )
         if not row:
             return {"status": "rejected", "message": "Proposal not found in SQLite."}
-        recommendation = self._row(
-            "SELECT created_at, ai_confidence FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
-            (str(proposal_id),),
-        )
-        if recommendation:
-            freshness = _recommendation_freshness(recommendation["created_at"], recommendation["ai_confidence"])
-            if freshness["status"] == "Expired":
-                return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}
+        freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+        if freshness["status"] == "Expired":
+            return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}
         payload = json.loads(row["payload_json"])
         proposal = TradeProposal.from_dict(payload["proposal"])
-        engine = ExecutionEngine(broker=self._broker(), audit=self.audit, guardrails=self.settings.guardrails)
-        result = engine.execute_proposals([proposal])
-        self.portfolio("alpaca")
-        return {"status": "submitted", "result": result, "amount_requested": body.get("amount")}
+        selected = self.orchestrator._select_adapter(proposal)
+        if selected is None:
+            return {"status": "rejected", "message": f"No configured broker supports asset type '{proposal.asset_type}'."}
+        broker_name = selected.name
+        if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
+            return {"status": "not_available", "message": "Alpaca paper credentials are required for execution."}
+        context = OrchestratorContext(
+            account=self._account_context_for_broker(broker_name),
+            auto_trade=self._manual_approval_auto_config(broker_name),
+            guardrails=self.settings.guardrails,
+        )
+        decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
+        if decision.decision == "approved":
+            self.portfolio(broker_name)
+        return {
+            "status": "submitted" if decision.decision == "approved" else decision.decision,
+            "result": decision.to_dict(),
+            "amount_requested": body.get("amount"),
+        }
+
+    def _account_context_for_broker(self, broker_name: str) -> AccountContext:
+        snapshot = latest_pnl_snapshot(self.settings.db_path, broker_name)
+        daily_pnl = safe_float(snapshot.get("day_pnl")) or 0.0
+        if broker_name == "alpaca":
+            return self._broker().account_context(daily_realized_pnl=daily_pnl)
+        adapter = self.orchestrator.adapters.get(broker_name)
+        equity = 0.0
+        if adapter is not None:
+            account = adapter.get_account()
+            balances = account.get("balances") if isinstance(account, dict) else None
+            equity = _sum_balances(balances) or 0.0
+        positions = [
+            Position(
+                symbol=str(item["symbol"]).upper(),
+                qty=float(item["quantity"]),
+                market_value=float(item["entry_price"]) * float(item["quantity"]),
+            )
+            for item in open_managed_exits(self.settings.db_path, broker_name)
+        ]
+        return AccountContext(equity=equity, daily_realized_pnl=daily_pnl, open_positions=positions, is_paper=False)
+
+    def _manual_approval_auto_config(self, broker: str) -> Any:
+        base = self._auto_config_for_broker(broker)
+        return type(base)(
+            enabled=True,
+            broker_enabled=dict(base.broker_enabled),
+            min_confidence=base.min_confidence,
+            min_philosophy_fit=base.min_philosophy_fit,
+            max_trade_amount=base.max_trade_amount,
+            default_stop_loss_pct=base.default_stop_loss_pct,
+            max_stop_loss_pct=base.max_stop_loss_pct,
+            crypto_max_trade_amount=base.crypto_max_trade_amount,
+            crypto_default_stop_loss_pct=base.crypto_default_stop_loss_pct,
+            crypto_max_stop_loss_pct=base.crypto_max_stop_loss_pct,
+        )
 
     def auto_execute_recommendations(self) -> dict[str, Any]:
         control = self._control_state()
@@ -719,9 +973,8 @@ class LocalApiService:
                     "message": f"Auto trading is disabled for {broker_name}.",
                 })
                 continue
-            broker = self._broker()
             context = OrchestratorContext(
-                account=broker.account_context(),
+                account=self._account_context_for_broker(broker_name),
                 auto_trade=self._auto_config_for_broker(broker_name),
                 guardrails=self.settings.guardrails,
             )
@@ -738,7 +991,7 @@ class LocalApiService:
                     message=f"{broker_name.title()} submitted {decision.symbol}.",
                     payload=decision.to_dict(),
                 )
-                self.portfolio("alpaca")
+                self.portfolio(broker_name)
             else:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -789,7 +1042,7 @@ class LocalApiService:
             if broker != "kraken" or adapter is None or not hasattr(adapter, "current_prices"):
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "skipped", "reason": "broker_monitor_not_available"})
                 continue
-            pair = _kraken_pair_for_symbol(item["symbol"])
+            pair = _kraken_pair(item["symbol"])
             prices = adapter.current_prices([pair])
             price = _kraken_last_price(prices, pair)
             if price is None:
@@ -798,6 +1051,20 @@ class LocalApiService:
             side = str(item["side"]).lower()
             stop_loss = safe_float(item["stop_loss"]) or 0
             take_profit = safe_float(item["take_profit"]) or 0
+            trailing_stop_pct = safe_float(item.get("trailing_stop_pct"))
+            if trailing_stop_pct:
+                high_water = max(safe_float(item.get("high_water_mark")) or price, price)
+                low_water = min(safe_float(item.get("low_water_mark")) or price, price)
+                if side == "buy":
+                    stop_loss = max(stop_loss, high_water * (1 - trailing_stop_pct))
+                else:
+                    stop_loss = min(stop_loss, low_water * (1 + trailing_stop_pct))
+                update_trailing_water_marks(
+                    self.settings.db_path,
+                    int(item["managed_exit_id"]),
+                    high_water_mark=high_water,
+                    low_water_mark=low_water,
+                )
             should_exit = False
             reason = None
             if side == "buy" and price <= stop_loss:
@@ -831,12 +1098,27 @@ class LocalApiService:
             )
             result = adapter.place_exit_order(order_request)
             if result.get("status") in {"accepted", "submitted"}:
-                close_managed_exit(
+                entry_payload = _json_loads_safe(item.get("payload_json")) or {}
+                proposal_id = entry_payload.get("proposal_id")
+                investment_score = latest_investment_score(self.settings.db_path, proposal_id) if proposal_id else None
+                close_managed_exit_and_record(
                     self.settings.db_path,
                     int(item["managed_exit_id"]),
+                    broker=broker,
+                    symbol=item["symbol"],
+                    asset_type="crypto",
+                    side=exit_side,
+                    quantity=float(item["quantity"]),
+                    price=price,
                     exit_order_id=str(result.get("id") or result.get("order_id") or ""),
                     exit_reason=reason or "exit_triggered",
-                    payload={"price": price, "order": result},
+                    order_payload={"price": price, "order": result},
+                    entry_price=safe_float(item.get("entry_price")),
+                    entry_side=side,
+                    opened_at=item.get("created_at"),
+                    proposal_id=proposal_id,
+                    entry_reason=entry_payload.get("entry_reason"),
+                    primary_factors=(investment_score or {}).get("reasoning"),
                 )
                 record_notification(
                     self.settings.db_path,
@@ -851,6 +1133,41 @@ class LocalApiService:
             else:
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_failed", "reason": result.get("reason"), "price": price})
         return {"status": "checked", "managed_exits": checked}
+
+    def poll_broker_activity(self) -> dict[str, Any]:
+        """Continuously reconciles broker-reported order/trade status into SQLite and
+        fires trade_filled/trade_closed notifications - this is what gives Alpaca (which
+        has no other fill-confirmation loop) and Kraken order-level monitoring, distinct
+        from the price-driven managed-exit check in monitor_managed_exits."""
+        results: dict[str, Any] = {}
+        for broker_name, adapter in self.orchestrator.adapters.items():
+            if not getattr(adapter, "configured", True):
+                continue
+            try:
+                orders = adapter.get_orders()
+                history = adapter.get_trade_history()
+            except Exception:
+                logger.exception("Failed to poll %s order/trade activity.", broker_name)
+                continue
+            new_rows = record_broker_trade_history(self.settings.db_path, broker_name, list(orders) + list(history))
+            terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
+            for row in new_rows:
+                status = str(row.get("status") or "").lower()
+                if status not in terminal_statuses:
+                    continue
+                event_type = "trade_filled" if status == "filled" else "trade_closed"
+                symbol = row.get("symbol") or row.get("pair") or "unknown"
+                record_notification(
+                    self.settings.db_path,
+                    event_type=event_type,
+                    broker=broker_name,
+                    symbol=symbol,
+                    title=event_type.replace("_", " ").title(),
+                    message=f"{broker_name.title()} order for {symbol} is now {status}.",
+                    payload=row,
+                )
+            results[broker_name] = {"orders": len(orders), "history": len(history), "new_records": len(new_rows)}
+        return results
 
     def broker_panels(self) -> list[dict[str, Any]]:
         panels = []
@@ -986,6 +1303,14 @@ class LocalApiService:
             details={"account_status": account.get("status") if isinstance(account, dict) else "connected"},
         )
         cash = _sum_balances(account.get("balances") if isinstance(account, dict) else None)
+        snapshot = record_portfolio_snapshot(
+            self.settings.db_path,
+            broker=broker,
+            exchange=_broker_label(broker),
+            account={"cash": cash, "equity": cash},
+            positions=positions,
+            notes="Broker panel refresh snapshot.",
+        )
         return {
             "broker": broker,
             "exchange": _broker_label(broker),
@@ -993,9 +1318,9 @@ class LocalApiService:
             "portfolio_value": cash if cash is not None else "Not available - broker returned no portfolio valuation",
             "cash_available": cash if cash is not None else "Not available - broker returned no balances",
             "buying_power": cash if cash is not None else "Not available - broker returned no buying power",
-            "todays_pnl": "Not available - broker P&L snapshots not available yet",
-            "week_pnl": "Not available - broker P&L snapshots not available yet",
-            "month_pnl": "Not available - broker P&L snapshots not available yet",
+            "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
+            "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
+            "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
             "open_positions": positions,
             "open_positions_summary": f"{len(positions)}",
             "recent_orders": orders[:10],
@@ -1192,6 +1517,14 @@ class LocalApiService:
 class ApiHandler(BaseHTTPRequestHandler):
     service: LocalApiService
     api_token: str | None = None
+    hosted_read_only: bool = False
+
+    _auth_failures: dict[str, deque] = defaultdict(deque)
+    _lockout_until: dict[str, float] = {}
+    _auth_lock = Lock()
+    _MAX_AUTH_FAILURES = 10
+    _AUTH_FAILURE_WINDOW_SECONDS = 60
+    _LOCKOUT_SECONDS = 300
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1209,6 +1542,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             if not self._authorized(parsed.path):
                 self._json(401, {"error": "unauthorized"})
+                return
+            if self.hosted_read_only:
+                self._json(
+                    403,
+                    {
+                        "error": "hosted_read_only",
+                        "message": (
+                            "Hosted API is running without AI_TRADER_API_TOKEN, so POST commands are disabled. "
+                            "Set AI_TRADER_API_TOKEN in Render to enable trading/control actions."
+                        ),
+                    },
+                )
                 return
             body = self._read_body()
             status, payload = self.service.post(parsed.path, body)
@@ -1234,14 +1579,46 @@ class ApiHandler(BaseHTTPRequestHandler):
             raise ValueError("POST body must be a JSON object")
         return data
 
+    def _client_ip(self) -> str:
+        address = getattr(self, "client_address", None)
+        return address[0] if address else "unknown"
+
+    def _is_locked_out(self, ip: str) -> bool:
+        with self._auth_lock:
+            until = self._lockout_until.get(ip)
+            if until is None:
+                return False
+            if until > time.time():
+                return True
+            del self._lockout_until[ip]
+            return False
+
+    def _record_auth_failure(self, ip: str) -> None:
+        now = time.time()
+        with self._auth_lock:
+            failures = self._auth_failures[ip]
+            failures.append(now)
+            while failures and now - failures[0] > self._AUTH_FAILURE_WINDOW_SECONDS:
+                failures.popleft()
+            if len(failures) >= self._MAX_AUTH_FAILURES:
+                self._lockout_until[ip] = now + self._LOCKOUT_SECONDS
+                failures.clear()
+                logger.warning("Locking out %s for %ss after repeated auth failures.", ip, self._LOCKOUT_SECONDS)
+
     def _authorized(self, path: str) -> bool:
         if path in {"/healthz"}:
             return True
+        ip = self._client_ip()
+        if ip != "unknown" and self._is_locked_out(ip):
+            return False
         if not self.api_token:
             return True
         auth = self.headers.get("Authorization", "")
         api_key = self.headers.get("X-API-Key", "")
-        return auth == f"Bearer {self.api_token}" or api_key == self.api_token
+        authorized = hmac.compare_digest(auth, f"Bearer {self.api_token}") or hmac.compare_digest(api_key, self.api_token)
+        if not authorized and ip != "unknown":
+            self._record_auth_failure(ip)
+        return authorized
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         if "html" in payload and len(payload) == 1:
@@ -1267,22 +1644,121 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None = None) -> None:
-    service = LocalApiService(load_settings())
+    settings = load_settings()
+    configure_logging(settings.output_dir)
+    hosted_read_only = False
+    if not api_token and host not in _LOOPBACK_HOSTS:
+        hosted_read_only = True
+        logger.warning(
+            "Starting hosted API on %s without AI_TRADER_API_TOKEN in read-only mode. "
+            "All POST trading/control commands will be rejected until the token is configured.",
+            host,
+        )
+    service = LocalApiService(settings)
     service.intelligence.seed_initial_data()
     service.benchmark.seed_initial_data()
     seed_crypto_universe(service.settings.db_path, fetch_live=False)
     service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
     service.benchmark.write_initial_brief(service.settings.output_dir)
+    service.reconcile_on_startup()
+
+    def _on_research_error(exc: Exception) -> None:
+        record_notification(
+            service.settings.db_path,
+            event_type="research_failure",
+            broker=None,
+            symbol=None,
+            title="Research cycle failed",
+            message=f"A scheduled research cycle raised an exception and was skipped: {exc}",
+            payload={"error": str(exc)},
+        )
+
+    def _on_exit_monitor_error(exc: Exception) -> None:
+        record_notification(
+            service.settings.db_path,
+            event_type="broker_failure",
+            broker=None,
+            symbol=None,
+            title="Position monitoring cycle failed",
+            message=f"A managed-exit monitoring cycle raised an exception and was skipped: {exc}",
+            payload={"error": str(exc)},
+        )
+
+    def _on_activity_poll_error(exc: Exception) -> None:
+        record_notification(
+            service.settings.db_path,
+            event_type="broker_failure",
+            broker=None,
+            symbol=None,
+            title="Order/trade activity poll failed",
+            message=f"A broker order/trade activity poll raised an exception and was skipped: {exc}",
+            payload={"error": str(exc)},
+        )
+
+    def _on_crypto_refresh_error(exc: Exception) -> None:
+        record_notification(
+            service.settings.db_path,
+            event_type="research_failure",
+            broker="kraken",
+            symbol=None,
+            title="Crypto universe refresh failed",
+            message=f"A crypto knowledge engine refresh raised an exception and was skipped: {exc}",
+            payload={"error": str(exc)},
+        )
+
     if service.settings.research_scheduler_enabled:
         ResearchScheduler(
             service,
             interval_minutes=service.settings.research_scheduler_interval_minutes,
+            on_error=_on_research_error,
         ).start_background(limit=service.settings.research_scheduler_limit)
+    else:
+        logger.warning("RESEARCH_SCHEDULER_ENABLED is false - continuous research will not run automatically.")
+
+    # Position/exit monitoring is a safety function, independent of whether research is
+    # scheduled, and always runs so stop-loss/take-profit protection is never dependent on
+    # a manual call to /monitor-managed-exits.
+    IntervalWorker(
+        service.monitor_managed_exits,
+        interval_seconds=60,
+        name="ai-trader-exit-monitor",
+        on_error=_on_exit_monitor_error,
+    ).start_background()
+
+    IntervalWorker(
+        service.poll_broker_activity,
+        interval_seconds=60,
+        name="ai-trader-order-monitor",
+        on_error=_on_activity_poll_error,
+    ).start_background()
+
+    # Crypto knowledge engine refresh - independent of research_scheduler_enabled since it's
+    # foundational data (market cap / AI / privacy category universes and scoring), not a
+    # decision-making cycle. Runs on the same cadence as equities research by default.
+    IntervalWorker(
+        service.refresh_crypto_universe,
+        interval_seconds=max(300, service.settings.research_scheduler_interval_minutes * 60),
+        name="ai-trader-crypto-refresh",
+        on_error=_on_crypto_refresh_error,
+    ).start_background()
+
+    # Push dispatch runs on a short cadence since it's just an outbound HTTP call for
+    # already-recorded high-priority notifications, not a broker/API poll.
+    IntervalWorker(
+        service.dispatch_pending_push_notifications,
+        interval_seconds=30,
+        name="ai-trader-push-dispatch",
+    ).start_background()
+
     ApiHandler.service = service
     ApiHandler.api_token = api_token
+    ApiHandler.hosted_read_only = hosted_read_only
     server = ThreadingHTTPServer((host, port), ApiHandler)
-    print(f"AI Trader local API listening on http://{host}:{port}")
+    logger.info("AI Trader local API listening on http://%s:%s", host, port)
     server.serve_forever()
 
 
@@ -1444,25 +1920,6 @@ def _sum_balances(balances: Any) -> float | None:
     return total if found else None
 
 
-def _kraken_pair_for_symbol(symbol: str, quote: str = "GBP") -> str:
-    base = symbol.upper().replace("/", "").replace("-", "")
-    if base.endswith(quote):
-        base = base[: -len(quote)]
-    if base == "BTC":
-        base = "XBT"
-    return f"{base}{quote}"
-
-
-def _kraken_last_price(prices: dict[str, Any], pair: str) -> float | None:
-    if not isinstance(prices, dict):
-        return None
-    payload = prices.get(pair) or next(iter(prices.values()), None)
-    if not isinstance(payload, dict):
-        return None
-    last = payload.get("c")
-    if isinstance(last, list) and last:
-        return safe_float(last[0])
-    return safe_float(last)
 
 
 def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1548,6 +2005,16 @@ def _guardrail_checks(validation_result: Any, payload_json: Any = None) -> list[
         for key in sorted(failures - known)
     )
     return checks
+
+
+def _json_loads_safe(payload_json: Any) -> dict[str, Any] | None:
+    if not payload_json:
+        return None
+    try:
+        data = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _proposal_side(payload_json: Any) -> str | None:

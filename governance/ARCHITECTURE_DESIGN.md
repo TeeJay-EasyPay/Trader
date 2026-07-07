@@ -202,4 +202,35 @@ Every recommendation now has a structured Investment Score:
 - Risk Score
 - Overall Confidence
 
+## Autonomous Trading Readiness Sprint Addendum
+
+Date: 2026-07-07
+Status: Orchestrator-only execution guarantee now covers every execution path
+
+"The Investment Orchestrator is the only autonomous component allowed to execute trades"
+previously had one exception: the manual "approve and execute" API path constructed a
+legacy `ExecutionEngine` directly, bypassing due diligence, investment scoring, capital
+allocation, and the duplicate-order-intent lock. That exception is now closed -
+`approve_and_execute` calls `InvestmentOrchestrator.evaluate_recommendation` exactly like
+the autonomous path, with a human's approval substituting for the auto-trading toggle
+rather than for the orchestrator's own checks. `ExecutionEngine` remains in the codebase
+only for the offline CLI demo path (`ai_trader.cli execute`), which is not a live/networked
+execution surface and does not touch the orchestrator's SQLite state.
+
+Continuous monitoring is now a first-class part of the architecture rather than an
+on-demand HTTP action: `run_server` starts background `IntervalWorker` loops (60-second
+cadence) for managed-exit monitoring, broker order/fill polling, and crypto knowledge-base
+refresh, alongside the existing hourly `ResearchScheduler`. All of these loops catch and
+log any exception and continue on their next cycle rather than terminating the thread -
+autonomous operation degrades to "skipped this cycle," never "silently stopped forever."
+
+Known remaining architectural debt, out of scope for this sprint: `api.py` is a large
+file mixing HTTP routing with business logic that in places duplicates decision logic the
+orchestrator already owns (e.g. confidence/freshness pre-checks before calling the
+orchestrator), and adding a new broker still requires touching several files (adapter,
+orchestrator broker-name branches, `multi_broker.py`'s broker list, `foundation.py`'s
+default broker policies, `api.py`'s adapter wiring). This is an Amber, not safety-blocking,
+finding and is recommended as a dedicated follow-up rather than being mixed into a sprint
+that also changed dozens of safety-critical behaviors.
+
 Crypto knowledge schema is present, but crypto execution remains disabled unless the Founder changes policy and broker settings.

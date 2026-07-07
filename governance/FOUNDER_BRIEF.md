@@ -33,3 +33,23 @@ The Investment Orchestrator is now the central execution authority. Brokers oper
 - Confirm broker-specific policy thresholds for each broker.
 - Confirm whether push notification delivery should use Expo notifications, email, or both.
 - Review several days of 24/7 research and paper decisions before expanding broker permissions.
+
+## 2026-07-07 Release Manager Update
+
+Codex completed an independent release review of the Autonomous Trading Readiness Sprint.
+
+Release position: approved for controlled Kraken micro-live validation, not unattended scale-up.
+
+New review artefacts:
+
+- `governance/ENGINEERING_REVIEW_REPORT.md`
+- `governance/ARCHITECTURE_ASSESSMENT.md`
+- `governance/SAFETY_ASSESSMENT.md`
+- `governance/REMAINING_RISKS.md`
+- `governance/FOUNDER_RELEASE_BRIEF.md`
+
+Verified locally:
+
+- Python compile check passed.
+- Python unit test suite passed: 66/66.
+- Expo project health check passed: 17/17.

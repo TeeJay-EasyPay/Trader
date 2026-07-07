@@ -27,6 +27,7 @@ from .multi_broker import (
     record_notification,
     record_seatbelt_event,
 )
+from .operational import latest_pnl_snapshot
 
 
 ORCHESTRATOR_SCHEMA = """
@@ -162,6 +163,25 @@ class InvestmentOrchestrator:
             failures.append("maximum_concurrent_positions_exceeded")
         if allocation["result"] != "approved":
             failures.append("capital_allocation_rejected")
+        pnl_snapshot = latest_pnl_snapshot(self.db_path, selected.name) if selected else {}
+        if context.account.equity > 0:
+            week_pnl = pnl_snapshot.get("week_pnl")
+            if week_pnl is not None and week_pnl <= -(context.account.equity * policy.max_weekly_loss_pct):
+                failures.append("maximum_weekly_loss_exceeded")
+            month_pnl = pnl_snapshot.get("month_pnl")
+            if month_pnl is not None and month_pnl <= -(context.account.equity * policy.max_monthly_loss_pct):
+                failures.append("maximum_monthly_loss_exceeded")
+            peak_equity = pnl_snapshot.get("peak_equity")
+            if peak_equity and peak_equity > 0:
+                drawdown_pct = (peak_equity - context.account.equity) / peak_equity
+                if drawdown_pct > policy.max_drawdown_pct:
+                    failures.append("maximum_drawdown_exceeded")
+            current_exposure = sum(abs(getattr(pos, "market_value", 0.0) or 0.0) for pos in context.account.open_positions)
+            prospective_exposure_pct = (current_exposure + allocation["approved_notional"]) / context.account.equity
+            if prospective_exposure_pct > policy.max_concurrent_exposure_pct:
+                failures.append("maximum_concurrent_exposure_exceeded")
+            if prospective_exposure_pct > policy.max_capital_allocation_pct:
+                failures.append("maximum_capital_allocation_exceeded")
         failures.extend(validate_investment_universe(self.db_path, p, policy))
         failures.extend(validation.failures)
         failures = list(dict.fromkeys(failures))
@@ -244,7 +264,8 @@ class InvestmentOrchestrator:
                         entry_price=p.entry_price,
                         stop_loss=p.stop_loss,
                         take_profit=p.take_profit,
-                        payload=order,
+                        payload={**order, "proposal_id": p.proposal_id, "entry_reason": p.plain_english_reasoning},
+                        trailing_stop_pct=policy.trailing_stop_pct if policy.trailing_stop_enabled else None,
                     )
                     record_notification(
                         self.db_path,

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib import request
 
 from .models import utc_now_iso
 from .operational import safe_float, safe_score
@@ -139,6 +140,35 @@ CREATE TABLE IF NOT EXISTS MANAGED_TRADE_EXITS (
     payload_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS PUSH_TOKENS (
+    token_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    push_token TEXT NOT NULL UNIQUE,
+    platform TEXT,
+    registered_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS PERFORMANCE_ATTRIBUTION (
+    attribution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    proposal_id TEXT,
+    broker TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    asset_type TEXT,
+    side TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL NOT NULL,
+    quantity REAL NOT NULL,
+    profit_loss REAL NOT NULL,
+    opened_at TEXT,
+    closed_at TEXT NOT NULL,
+    holding_period_seconds REAL,
+    entry_reason TEXT,
+    exit_reason TEXT,
+    primary_factors_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS MECHANICAL_SEATBELT_EVENTS (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -178,11 +208,28 @@ class BrokerRuntime:
         return asdict(self)
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for column, ddl_type in columns.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
 def initialize_multi_broker_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db_path)) as conn:
         with conn:
             conn.executescript(MULTI_BROKER_SCHEMA)
+            _ensure_columns(
+                conn,
+                "MANAGED_TRADE_EXITS",
+                {
+                    "trailing_stop_pct": "REAL",
+                    "high_water_mark": "REAL",
+                    "low_water_mark": "REAL",
+                },
+            )
+            _ensure_columns(conn, "NOTIFICATION_EVENTS", {"push_sent_at": "TEXT"})
             now = utc_now_iso()
             for broker in DEFAULT_BROKERS:
                 conn.execute(
@@ -394,9 +441,9 @@ def all_broker_runtime(db_path: Path) -> list[dict[str, Any]]:
     ]
 
 
-def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> int:
+def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
-    inserted = 0
+    newly_inserted: list[dict[str, Any]] = []
     with closing(sqlite3.connect(db_path)) as conn:
         with conn:
             for item in trades:
@@ -428,10 +475,10 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
                             json.dumps(item, sort_keys=True, default=str),
                         ),
                     )
-                    inserted += 1
+                    newly_inserted.append({**item, "status": status})
                 except sqlite3.IntegrityError:
                     continue
-    return inserted
+    return newly_inserted
 
 
 def latest_broker_trades(db_path: Path, broker: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -501,11 +548,11 @@ def record_notification(
     title: str,
     message: str,
     payload: dict[str, Any] | None = None,
-) -> None:
+) -> int:
     initialize_multi_broker_schema(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         with conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO NOTIFICATION_EVENTS (
                     created_at, event_type, broker, symbol, title, message,
@@ -514,6 +561,118 @@ def record_notification(
                 """,
                 (utc_now_iso(), event_type, broker, symbol, title, message, json.dumps(payload or {}, sort_keys=True, default=str)),
             )
+            return int(cursor.lastrowid)
+
+
+def list_notifications(db_path: Path, *, unread_only: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    sql = "SELECT * FROM NOTIFICATION_EVENTS"
+    if unread_only:
+        sql += " WHERE delivery_status = 'queued'"
+    sql += " ORDER BY notification_id DESC LIMIT ?"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, (limit,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def register_push_token(db_path: Path, push_token: str, *, platform: str | None = None) -> dict[str, Any]:
+    initialize_multi_broker_schema(db_path)
+    now = utc_now_iso()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO PUSH_TOKENS (push_token, platform, registered_at, last_seen_at, active)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(push_token) DO UPDATE SET last_seen_at = excluded.last_seen_at, active = 1, platform = excluded.platform
+                """,
+                (push_token, platform, now, now),
+            )
+    return {"push_token": push_token, "registered_at": now}
+
+
+def active_push_tokens(db_path: Path) -> list[str]:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute("SELECT push_token FROM PUSH_TOKENS WHERE active = 1").fetchall()
+    return [row[0] for row in rows]
+
+
+# High-priority events worth an immediate push, as opposed to quieter events (research
+# completed, new recommendation) that are fine to surface only in the in-app notification
+# center. Kept as a set here so the send-decision lives with the delivery mechanism, not
+# scattered across every call site that records a notification.
+PUSH_NOTIFIED_EVENT_TYPES = {
+    "stop_loss_triggered",
+    "take_profit_triggered",
+    "trade_exited",
+    "broker_failure",
+    "research_failure",
+}
+
+
+def pending_push_notifications(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    placeholders = ",".join("?" for _ in PUSH_NOTIFIED_EVENT_TYPES)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""
+            SELECT * FROM NOTIFICATION_EVENTS
+            WHERE push_sent_at IS NULL AND event_type IN ({placeholders})
+            ORDER BY notification_id ASC LIMIT ?
+            """,
+            (*PUSH_NOTIFIED_EVENT_TYPES, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_push_sent(db_path: Path, notification_ids: list[int]) -> None:
+    initialize_multi_broker_schema(db_path)
+    if not notification_ids:
+        return
+    now = utc_now_iso()
+    placeholders = ",".join("?" for _ in notification_ids)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                f"UPDATE NOTIFICATION_EVENTS SET push_sent_at = ? WHERE notification_id IN ({placeholders})",
+                (now, *notification_ids),
+            )
+
+
+def send_expo_push(tokens: list[str], *, title: str, body: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not tokens:
+        return {"sent": 0, "reason": "no_registered_devices"}
+    messages = [{"to": token, "title": title, "body": body, "data": data or {}} for token in tokens]
+    try:
+        payload = json.dumps(messages).encode("utf-8")
+        req = request.Request(
+            "https://exp.host/--/api/v2/push/send",
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return {"sent": len(tokens), "result": result}
+    except Exception as exc:
+        return {"sent": 0, "error": str(exc)}
+
+
+def mark_notifications_read(db_path: Path, notification_ids: list[int]) -> int:
+    initialize_multi_broker_schema(db_path)
+    if not notification_ids:
+        return 0
+    placeholders = ",".join("?" for _ in notification_ids)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            cursor = conn.execute(
+                f"UPDATE NOTIFICATION_EVENTS SET delivery_status = 'read' WHERE notification_id IN ({placeholders})",
+                tuple(notification_ids),
+            )
+            return cursor.rowcount
 
 
 def acquire_order_intent_lock(
@@ -577,6 +736,7 @@ def record_managed_trade_exit(
     stop_loss: float,
     take_profit: float,
     payload: dict[str, Any],
+    trailing_stop_pct: float | None = None,
 ) -> dict[str, Any]:
     initialize_multi_broker_schema(db_path)
     now = utc_now_iso()
@@ -587,8 +747,9 @@ def record_managed_trade_exit(
                 INSERT INTO MANAGED_TRADE_EXITS (
                     created_at, updated_at, broker, symbol, side, quantity,
                     entry_order_id, entry_price, stop_loss, take_profit,
-                    status, exit_order_id, exit_reason, last_checked_at, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL, ?)
+                    status, exit_order_id, exit_reason, last_checked_at, payload_json,
+                    trailing_stop_pct, high_water_mark, low_water_mark
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL, ?, ?, ?, ?)
                 """,
                 (
                     now,
@@ -602,10 +763,23 @@ def record_managed_trade_exit(
                     stop_loss,
                     take_profit,
                     json.dumps(payload, sort_keys=True, default=str),
+                    trailing_stop_pct,
+                    entry_price if trailing_stop_pct else None,
+                    entry_price if trailing_stop_pct else None,
                 ),
             )
             managed_exit_id = cursor.lastrowid
-    return {"managed_exit_id": managed_exit_id, "status": "open", "created_at": now}
+    return {"managed_exit_id": managed_exit_id, "status": "open", "created_at": now, "trailing_stop_pct": trailing_stop_pct}
+
+
+def update_trailing_water_marks(db_path: Path, managed_exit_id: int, *, high_water_mark: float | None, low_water_mark: float | None) -> None:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                "UPDATE MANAGED_TRADE_EXITS SET high_water_mark = ?, low_water_mark = ?, last_checked_at = ? WHERE managed_exit_id = ?",
+                (high_water_mark, low_water_mark, utc_now_iso(), managed_exit_id),
+            )
 
 
 def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[str, Any]]:
@@ -649,6 +823,130 @@ def close_managed_exit(
                     managed_exit_id,
                 ),
             )
+
+
+def close_managed_exit_and_record(
+    db_path: Path,
+    managed_exit_id: int,
+    *,
+    broker: str,
+    symbol: str,
+    asset_type: str,
+    side: str,
+    quantity: float,
+    price: float | None,
+    exit_order_id: str | None,
+    exit_reason: str,
+    order_payload: dict[str, Any] | None = None,
+    entry_price: float | None = None,
+    entry_side: str | None = None,
+    opened_at: str | None = None,
+    proposal_id: str | None = None,
+    entry_reason: str | None = None,
+    primary_factors: dict[str, Any] | None = None,
+) -> None:
+    initialize_multi_broker_schema(db_path)
+    now = utc_now_iso()
+    trade_payload = {"managed_exit_id": managed_exit_id, "reason": exit_reason, "order": order_payload or {}}
+    profit_loss = None
+    if entry_price is not None and price is not None:
+        # P&L sign must follow the ORIGINAL position direction, not the closing order's
+        # side (a "sell" exit closes a "buy" position, and inverting on the wrong side
+        # would label a stop-loss loss as a profit).
+        multiplier = 1 if (entry_side or side).lower() == "buy" else -1
+        profit_loss = (price - entry_price) * quantity * multiplier
+    holding_period_seconds = None
+    opened_dt = _parse_iso(opened_at) if opened_at else None
+    closed_dt = _parse_iso(now)
+    if opened_dt and closed_dt:
+        holding_period_seconds = (closed_dt - opened_dt).total_seconds()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE MANAGED_TRADE_EXITS
+                SET updated_at = ?, status = 'closed', exit_order_id = ?,
+                    exit_reason = ?, last_checked_at = ?, payload_json = ?
+                WHERE managed_exit_id = ?
+                """,
+                (now, exit_order_id, exit_reason, now, json.dumps(order_payload or {}, sort_keys=True, default=str), managed_exit_id),
+            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO BROKER_TRADE_HISTORY (
+                        broker, external_id, symbol, asset_type, side, quantity,
+                        price, notional, status, opened_at, closed_at, updated_at,
+                        payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?)
+                    """,
+                    (
+                        broker.lower(),
+                        exit_order_id,
+                        symbol.upper(),
+                        asset_type,
+                        side.lower(),
+                        quantity,
+                        price,
+                        (price or 0.0) * quantity,
+                        now,
+                        now,
+                        now,
+                        json.dumps(trade_payload, sort_keys=True, default=str),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                pass
+            if entry_price is not None and price is not None:
+                conn.execute(
+                    """
+                    INSERT INTO PERFORMANCE_ATTRIBUTION (
+                        created_at, proposal_id, broker, symbol, asset_type, side,
+                        entry_price, exit_price, quantity, profit_loss, opened_at,
+                        closed_at, holding_period_seconds, entry_reason, exit_reason,
+                        primary_factors_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now,
+                        proposal_id,
+                        broker.lower(),
+                        symbol.upper(),
+                        asset_type,
+                        side.lower(),
+                        entry_price,
+                        price,
+                        quantity,
+                        profit_loss,
+                        opened_at,
+                        now,
+                        holding_period_seconds,
+                        entry_reason,
+                        exit_reason,
+                        json.dumps(primary_factors or {}, sort_keys=True, default=str),
+                    ),
+                )
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def list_performance_attribution(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    initialize_multi_broker_schema(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM PERFORMANCE_ATTRIBUTION ORDER BY attribution_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def record_seatbelt_event(

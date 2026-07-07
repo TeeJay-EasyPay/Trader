@@ -275,7 +275,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "type": order_request.side.lower(),
             "ordertype": "market",
             "volume": _format_decimal(check["volume"]),
-            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", True) else "true",
+            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
         }
         userref = _userref(order_request.client_order_id)
         if userref is not None:
@@ -314,7 +314,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "type": order_request.side.lower(),
             "ordertype": "market",
             "volume": _format_decimal(order_request.quantity),
-            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", True) else "true",
+            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
         }
         userref = _userref(order_request.client_order_id)
         if userref is not None:
@@ -490,6 +490,24 @@ def _kraken_pair(symbol: str, quote_currency: str = "GBP") -> str:
     if base == "BTC":
         base = "XBT"
     return f"{base}{quote_currency.upper()}"
+
+
+def _kraken_last_price(prices: dict[str, Any], pair: str) -> float | None:
+    if not isinstance(prices, dict):
+        return None
+    payload = prices.get(pair) or next(iter(prices.values()), None)
+    if not isinstance(payload, dict):
+        return None
+    last = payload.get("c")
+    if isinstance(last, list) and last:
+        try:
+            return float(last[0])
+        except (TypeError, ValueError):
+            return None
+    try:
+        return float(last) if last is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _balance_amount(balances: dict[str, Any], keys: tuple[str, ...]) -> float | None:

@@ -33,6 +33,7 @@ export default function App() {
   const [selectedExchange, setSelectedExchange] = useState('All');
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
   const [targetRecommendationId, setTargetRecommendationId] = useState(null);
+  const [notifications, setNotifications] = useState([]);
 
   const request = useCallback(async (path, options) => {
     const headers = {
@@ -61,7 +62,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies] = await Promise.all([
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies, nextNotifications] = await Promise.all([
         request('/status'),
         request('/portfolio'),
         request('/founder-brief'),
@@ -69,10 +70,12 @@ export default function App() {
         request(`/benchmark-daily-brief?date=${todayIso()}`),
         request('/intelligence/themes'),
         request('/intelligence/companies'),
+        request('/notifications').catch(() => ({ notifications: [] })),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
       setBrief(nextBrief);
+      setNotifications(nextNotifications.notifications || []);
       const nextRecommendationItems = sortByConfidence(nextRecommendations.recommendations || []);
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);
@@ -143,10 +146,12 @@ export default function App() {
           status={status}
           portfolio={portfolio}
           brief={brief}
+          notifications={notifications}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
           onCommand={command}
+          onAckNotifications={(ids) => command('/notifications/ack', { notification_ids: ids })}
         />
       );
     }
@@ -178,7 +183,7 @@ export default function App() {
         }}
       />
     );
-  }, [amounts, benchmark, brief, companies, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
+  }, [amounts, benchmark, brief, companies, notifications, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -214,15 +219,60 @@ export default function App() {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, selectedExchange, setSelectedExchange, onRefresh, onCommand }) {
+function CommandCentre({ status, portfolio, brief, notifications, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
   const positions = portfolio?.open_positions || [];
   const recentTransactions = combinedTransactions(status, portfolio, selectedExchange);
   const recommendationSummary = status?.recommendation_summary || {};
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
   const brokerPanels = status?.brokers || [];
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
+  const policy = status?.trading_policy || {};
+  const unreadNotifications = (notifications || []).filter((item) => item.delivery_status === 'queued');
   return (
     <View>
+      <Section title={`Notifications${unreadNotifications.length ? ` (${unreadNotifications.length} unread)` : ''}`}>
+        {!notifications || !notifications.length ? (
+          <Empty />
+        ) : (
+          <View>
+            {notifications.slice(0, 15).map((item) => (
+              <View key={item.notification_id} style={styles.compactRow}>
+                <Text style={styles.cardTitle}>
+                  {item.delivery_status === 'queued' ? '● ' : ''}
+                  {notAvailable(item.title)}
+                </Text>
+                <Text style={styles.bodyText}>{notAvailable(item.message)}</Text>
+                <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
+              </View>
+            ))}
+            {unreadNotifications.length ? (
+              <View style={styles.buttonGrid}>
+                <Button
+                  label="Mark all read"
+                  tone="neutral"
+                  onPress={() => onAckNotifications(unreadNotifications.map((item) => item.notification_id))}
+                />
+              </View>
+            ) : null}
+          </View>
+        )}
+      </Section>
+      <Section title="Risk Limits">
+        <Text style={styles.bodyText}>
+          These are the Founder-approved limits the Investment Orchestrator enforces before any autonomous trade.
+        </Text>
+        <Metric label="Max Daily Loss" value={formatPercent(policy.max_daily_loss_pct)} />
+        <Metric label="Max Weekly Loss" value={formatPercent(policy.max_weekly_loss_pct)} />
+        <Metric label="Max Monthly Loss" value={formatPercent(policy.max_monthly_loss_pct)} />
+        <Metric label="Max Drawdown" value={formatPercent(policy.max_drawdown_pct)} />
+        <Metric label="Max Position Size" value={formatPercent(policy.max_position_size_pct)} />
+        <Metric label="Max Capital Allocation" value={formatPercent(policy.max_capital_allocation_pct)} />
+        <Metric label="Max Concurrent Exposure" value={formatPercent(policy.max_concurrent_exposure_pct)} />
+        <Metric label="Max Concurrent Positions" value={policy.max_concurrent_positions} />
+        <Metric label="Min Confidence Required" value={formatPercent(policy.min_ai_confidence)} />
+        <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
+        <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
+      </Section>
       <Section title="Executive Summary">
         {!executiveSummary.length ? (
           <Empty />
@@ -304,10 +354,15 @@ function CommandCentre({ status, portfolio, brief, selectedExchange, setSelected
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
-        <Button label="Start Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
-        <Button label="Stop Trading" onPress={() => onCommand('/stop-trading')} tone="danger" />
+        <Button label="Resume All Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
+        <Button label="Emergency Stop All" onPress={() => onCommand('/stop-trading')} tone="danger" />
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
       </View>
+      <Text style={styles.smallText}>
+        Emergency Stop All halts new autonomous entries and manual approvals across every broker. It does not disable
+        stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
+        automatically regardless of trading state.
+      </Text>
       <Section title={`${selectedExchange === 'All' ? 'Alpaca' : selectedExchange} Trade History`}>
         {!recentTransactions.length ? (
           <Empty />

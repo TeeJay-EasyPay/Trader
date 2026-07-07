@@ -118,6 +118,12 @@ API endpoints:
 - `POST /stop-trading`
 - `POST /auto-execute-recommendations`
 - `POST /approve-and-execute`
+- `POST /run-crypto-analysis`
+- `POST /monitor-managed-exits`
+- `GET /performance-attribution`
+- `GET /notifications`
+- `POST /notifications/ack`
+- `POST /register-push-token`
 
 Browse SQLite without SQL:
 
@@ -154,7 +160,8 @@ Auto execution:
 
 Mobile controls:
 
-- Trading controls are simplified to Start Trading and Stop Trading.
+- Broker cards expose broker-specific Enable Auto Trading / Disable Auto Trading controls.
+- The global control row is now reserved for Resume All Trading and Emergency Stop All; it is an all-broker safety switch, not the normal way to enable an individual broker.
 - The Recommendations screen has Refresh, Run New Analysis, and Auto Execute 85%+ controls.
 - Market Intelligence shows theme definitions, drivers, and risks so related themes are easier to understand.
 - Market Intelligence also shows monitored companies so sectors/themes can be connected back to the recommendation cards.
@@ -210,6 +217,12 @@ POST /resume-trading
 POST /stop-trading
 POST /auto-execute-recommendations
 POST /approve-and-execute
+POST /run-crypto-analysis
+POST /monitor-managed-exits
+GET /performance-attribution
+GET /notifications
+POST /notifications/ack
+POST /register-push-token
 ```
 
 ## Sprint 4: Investment Orchestrator
@@ -401,7 +414,7 @@ Kraken controlled live micro-trading:
 
 - `KRAKEN_AUTO_TRADING=true` enables Kraken as a broker-specific autonomous entry candidate.
 - `KRAKEN_LIVE_TRADING_APPROVED=true` is a separate Founder approval switch required before Kraken can submit real orders.
-- `KRAKEN_SUBMIT_REAL_ORDERS=false` keeps Kraken AddOrder in validation mode; set it to `true` only when the Founder wants real spot orders.
+- `KRAKEN_SUBMIT_REAL_ORDERS=false` keeps Kraken AddOrder in validation mode; set it to `true` only when the Founder wants real spot orders. This is also the default when the variable is unset - an unset value never submits a real order.
 - `KRAKEN_MAX_ORDER_GBP=5` caps one Kraken order.
 - `KRAKEN_MIN_ORDER_GBP=1` prevents invalid tiny orders.
 - `KRAKEN_MAX_OPEN_TRADES=1` limits simultaneous Kraken entries.
@@ -422,6 +435,22 @@ Mechanical live-execution seatbelts:
 - notification events are queued for trade accepted, stop loss, take profit, and exit submission.
 
 Disabling Kraken auto trading stops new entries. Existing managed exits remain eligible for protective exit submission.
+
+## Autonomous Trading Readiness Sprint
+
+This sprint made continuous autonomous operation actually continuous, not manual-demand-only, and closed the gaps identified in the Go-Live Readiness Review. Full detail: `governance/IMPLEMENTATION_LOG.md` and `STATUS.md`.
+
+- The Investment Orchestrator is now the only execution path, including manual approvals (`POST /approve-and-execute`) - no code calls a broker adapter's `place_order`/`place_bracket_order` outside of it.
+- `POST /monitor-managed-exits` and broker order/fill polling now also run automatically every 60 seconds from `run-api`/`serve-api`, independent of manual calls or `RESEARCH_SCHEDULER_ENABLED`.
+- Daily, weekly, and monthly loss limits, a maximum drawdown check, and portfolio-level exposure limits are enforced from real portfolio snapshot history before every autonomous or manually-approved trade.
+- A background research/monitoring loop that raises an exception now logs it, fires a notification, and keeps running on its next scheduled cycle - it does not stop permanently.
+- Trailing stops are supported for Kraken managed exits, governed by `RISK_POLICIES.trailing_stop_enabled` and `RISK_POLICIES.trailing_stop_pct` (no hardcoded distance).
+- Due diligence and investment scoring no longer floor macro/behavioural factors when there is no real data behind them - a symbol without a matching market theme, benchmark research entry, or crypto research score is honestly marked `insufficient_data` and scored `0.0`, not waved through.
+- The crypto knowledge engine fetches CoinGecko's live market-cap, AI, and privacy/security category data on a schedule, populates `CRYPTO_MASTER` (previously empty, which silently blocked every crypto trade), and computes real technical/momentum/volatility/liquidity scores. On-chain, sentiment, and news data are not available without a paid provider and are left `insufficient_data` rather than fabricated.
+- Kraken can now generate its own trade proposals from that research (`POST /run-crypto-analysis`) and route them through the same orchestrator, guardrail, and auto-execute path as equities - previously nothing in the codebase ever produced a crypto trade proposal.
+- Every closed managed exit records a `PERFORMANCE_ATTRIBUTION` row: entry/exit price, P&L, holding period, and the reasoning that justified entry, queryable at `GET /performance-attribution`.
+- `GET /notifications` / `POST /notifications/ack` back an in-app notification center; `POST /register-push-token` plus a background dispatcher deliver high-priority events (stop-loss, take-profit, broker/research failures) through Expo's push service. The backend is ready; the mobile client does not yet register a device token (needs `expo-notifications` added and a rebuilt app to verify end-to-end).
+- On a non-loopback host (e.g. Render), if `AI_TRADER_API_TOKEN` is missing the API starts in hosted read-only mode: GET status/recommendation screens stay available, but all POST trading/control commands are rejected until the token is configured. Token checks use constant-time comparison and a source IP is locked out after repeated auth failures.
 
 ## Install On Honor Magic V3
 

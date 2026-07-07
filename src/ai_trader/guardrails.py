@@ -16,7 +16,7 @@ def validate_trade_proposal(
     p = proposal.normalized()
     failures: list[str] = []
 
-    if config.paper_trading_only and not account.is_paper:
+    if config.paper_trading_only and p.asset_type != "crypto" and not account.is_paper:
         failures.append("paper_trading_only_failed")
 
     if p.side not in {"buy", "sell"}:
@@ -75,7 +75,7 @@ def validate_trade_proposal(
         if p.take_profit >= p.entry_price:
             failures.append("sell_take_profit_must_be_below_entry")
 
-    if not is_us_equity_trading_hours(now):
+    if p.asset_type not in {"crypto"} and not is_us_equity_trading_hours(now):
         failures.append("outside_regular_trading_hours")
 
     return ValidationResult(passed=not failures, failures=failures)

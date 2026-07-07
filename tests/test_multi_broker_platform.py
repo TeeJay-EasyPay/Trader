@@ -14,9 +14,12 @@ from ai_trader.broker_adapters import KrakenAdapter
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest
 from ai_trader.multi_broker import (
     broker_auto_trading_enabled,
+    close_managed_exit_and_record,
     initialize_multi_broker_schema,
     latest_recommendation_set,
+    list_performance_attribution,
     record_crypto_research_score,
+    record_managed_trade_exit,
     record_recommendation_set,
     set_broker_auto_trading,
 )
@@ -163,6 +166,109 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertEqual(adapter.submitted_orders[0]["validate"], "true")
         finally:
             restore_env(previous)
+
+    def test_kraken_defaults_to_validate_mode_when_submit_real_orders_unset(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_AUTO_TRADING",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_MIN_ORDER_GBP",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP"
+            os.environ.pop("KRAKEN_SUBMIT_REAL_ORDERS", None)
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_order(OrderRequest("BTC", "buy", 0.00005, "crypto", "KRAKEN", 90, 120, notional_amount=2, client_order_id="unset-env"))
+
+            self.assertEqual(result["status"], "accepted")
+            self.assertEqual(
+                adapter.submitted_orders[0]["validate"],
+                "true",
+                "An unset KRAKEN_SUBMIT_REAL_ORDERS must default to validate/dry-run mode, not real order submission.",
+            )
+        finally:
+            restore_env(previous)
+
+    def test_closing_a_buy_position_at_a_lower_price_records_a_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path,
+                broker="kraken",
+                symbol="BTC",
+                side="buy",
+                quantity=0.1,
+                entry_order_id="entry-1",
+                entry_price=50_000.0,
+                stop_loss=49_000.0,
+                take_profit=52_000.0,
+                payload={},
+            )
+            close_managed_exit_and_record(
+                db_path,
+                entry["managed_exit_id"],
+                broker="kraken",
+                symbol="BTC",
+                asset_type="crypto",
+                side="sell",
+                quantity=0.1,
+                price=40_000.0,
+                exit_order_id="exit-1",
+                exit_reason="stop_loss_triggered",
+                entry_price=50_000.0,
+                entry_side="buy",
+                opened_at=entry["created_at"],
+            )
+            rows = list_performance_attribution(db_path)
+
+            self.assertEqual(len(rows), 1)
+            self.assertLess(rows[0]["profit_loss"], 0, "A stop-loss exit below entry price must record a loss, not a gain.")
+
+    def test_closing_a_sell_position_at_a_lower_price_records_a_gain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path,
+                broker="kraken",
+                symbol="BTC",
+                side="sell",
+                quantity=0.1,
+                entry_order_id="entry-2",
+                entry_price=50_000.0,
+                stop_loss=51_000.0,
+                take_profit=48_000.0,
+                payload={},
+            )
+            close_managed_exit_and_record(
+                db_path,
+                entry["managed_exit_id"],
+                broker="kraken",
+                symbol="BTC",
+                asset_type="crypto",
+                side="buy",
+                quantity=0.1,
+                price=48_000.0,
+                exit_order_id="exit-2",
+                exit_reason="take_profit_triggered",
+                entry_price=50_000.0,
+                entry_side="sell",
+                opened_at=entry["created_at"],
+            )
+            rows = list_performance_attribution(db_path)
+
+            self.assertEqual(len(rows), 1)
+            self.assertGreater(rows[0]["profit_loss"], 0, "A short position closed below entry at take-profit must record a gain.")
 
 
 class FakeKrakenAdapter(KrakenAdapter):

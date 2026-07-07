@@ -1,8 +1,47 @@
 # AI Trading Assistant V1 Status
 
-Date: 2026-07-02
+Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07)
+
+## 2026-07-07 Autonomous Trading Readiness Sprint - Post-Sprint Status
+
+Implemented against the Go-Live Readiness Review. Full change list in
+`governance/IMPLEMENTATION_LOG.md`. Rated against what's enforced in code and verified in
+this session, not against what's merely documented.
+
+| Category | Status | Why |
+|---|---|---|
+| Broker integrations | Green | Orchestrator-only execution (manual approval routed through it too); Kraken validate-mode default fixed; Kraken pair/price logic de-duplicated into one implementation. |
+| Research engine | Green | Due-diligence floors removed; live CoinGecko-backed crypto knowledge engine; equities research unchanged (still Alpaca/OpenAI-backed). |
+| Trading engine | Green | Continuous order/exit monitoring (60s loops, not manual-only); trailing stops; crypto proposal generation implemented and verified end-to-end (previously did not exist at all). |
+| Risk management | Green | Daily/weekly/monthly loss, drawdown, and portfolio exposure limits enforced from real snapshot history; per-broker account context (previously Kraken sizing used Alpaca's paper equity). |
+| Operational resilience | Green | Scheduler and monitoring loops survive exceptions and notify instead of dying silently; startup reconciliation; atomic exit bookkeeping. |
+| Mobile | Amber | Risk Limits section, in-app notification center, broker-specific auto-trading controls, and clearer all-broker Emergency Stop copy added. Native push (`expo-notifications`) was not added to the client - backend is ready (`/register-push-token`, Expo push dispatch), but the client integration needs a rebuild this environment can't verify. |
+| Security | Green | Hosted API without `AI_TRADER_API_TOKEN` now starts read-only and rejects POST trading/control commands; token comparison is constant-time; per-IP lockout added. `.env`'s live keys were left untouched - Founder action, not something this sprint could safely do. |
+| Architecture | Amber (unchanged, out of scope) | The `api.py` god-file / broker-addition-touches-many-files findings remain - deliberately not tackled alongside dozens of behavior changes in one sprint. Recommended fast-follow. |
+
+**Verified this session:** all 66 unit tests pass (55 pre-existing + 11 new); the full
+crypto research -> due diligence -> proposal -> orchestrator -> order -> stop-loss exit ->
+performance-attribution pipeline was exercised end-to-end with a fake broker adapter (no
+real network/broker calls) and confirmed working, including catching and fixing three real
+bugs (crypto trading-hours guardrail, risk-percentage miscalculation, paper-trading-only
+misapplied to Kraken) that would otherwise have silently kept Kraken from ever trading.
+
+**Not verified / Founder action required:**
+- Live Alpaca/Kraken/OpenAI network calls (deliberately not exercised - real API quota and,
+  for Kraken, real-money risk).
+- Mobile push delivery end-to-end (needs a rebuilt app on a physical device).
+- Render environment configuration (`AI_TRADER_API_TOKEN` actually being set in the live
+  service) - not verifiable from the repo.
+- Render post-deploy route stability is partial: `/healthz` and `/status` return 200 on the
+  hosted service after the push, but `/notifications`, `/performance-attribution`, and a
+  no-token POST check were not stable from external verification and need Render log review.
+- Rotating the live keys found in the root `.env` file (present on disk, not committed to
+  git - rotate in the Alpaca/OpenAI dashboards as a precaution).
+- Enabling any live-trading switch (`KRAKEN_AUTO_TRADING`, `KRAKEN_LIVE_TRADING_APPROVED`,
+  `INVESTMENT_POLICIES.crypto_enabled`) - this sprint made the system safe to enable, not
+  enabled; flipping those switches is a deliberate Founder decision.
 
 ## Working
 
@@ -43,7 +82,7 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Paper-only auto execution added for eligible recommendations at or above 85% confidence.
 - Mobile recommendations screen now supports Refresh, Run New Analysis, and Auto Execute 85%+.
 - Command Centre now shows richer recent transaction and recommendation summary data.
-- Mobile controls simplified to Start Trading and Stop Trading.
+- Mobile broker cards now carry the normal Enable Auto Trading / Disable Auto Trading controls; the global row is an all-broker Resume/Emergency Stop safety switch.
 - Market Intelligence now shows theme definitions, drivers, and risks.
 - Expo OTA update published to the `preview` branch.
 - Investment Orchestrator layer added between AI recommendations and broker execution.
@@ -228,7 +267,7 @@ Sprint 3.2 keeps the trading engine, execution engine, knowledge engine, mobile 
 - Mobile app updates:
   - Recommendations screen has Refresh, Run New Analysis, and Auto Execute 85%+.
   - Trading Command Centre shows recent transactions and recommendation counts.
-  - Pause/Resume/Stop button cluster replaced by Start Trading and Stop Trading.
+  - Pause/Resume/Stop button cluster replaced by broker-specific controls plus an all-broker emergency stop.
   - Market Intelligence shows theme definitions, key drivers, and key risks.
 - Tests: 14/14 passing inside `.venv`.
 
