@@ -19,6 +19,8 @@ Knowledge must be stored append-only where practical so historical context is no
 
 Benchmark investor behaviour may inform research and recommendations but must not override governance or risk policy.
 
+Benchmark learning may use public information about successful traders and investors where available. It must be treated as a discipline and pattern-recognition input, not as automatic copy-trading.
+
 ## Company Learning
 
 Company profiles, daily updates, financial snapshots, themes, and watchlist history should be retained.
@@ -38,6 +40,12 @@ Macro conclusions should be evidence based and included in due diligence.
 ## Technical Learning
 
 Technical analysis may improve timing, stop placement, and trade quality but cannot justify trades that fail policy.
+
+## Daily Trading Learning Update
+
+Trader should produce a daily learning update that reviews completed trades, profit/loss, guardrail rejections, benchmark trader observations, and proposed improvements for Founder approval.
+
+This update may recommend better trading technique, but it must never automatically modify strategy, governance, guardrails, broker permissions, or execution code.
 
 ## Due Diligence
 

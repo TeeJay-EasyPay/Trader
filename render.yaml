@@ -60,6 +60,8 @@ services:
         value: "false"
       - key: KRAKEN_SUBMIT_REAL_ORDERS
         value: "false"
+      - key: KRAKEN_TRADING_ALLOCATION_GBP
+        value: "100"
       - key: KRAKEN_MAX_ORDER_GBP
         value: "5"
       - key: KRAKEN_MIN_ORDER_GBP

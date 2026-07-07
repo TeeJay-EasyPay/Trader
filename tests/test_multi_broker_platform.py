@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.api import LocalApiService
+from ai_trader.api import LocalApiService, _kraken_balance_summary, _kraken_trading_allocation_gbp
 from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest
@@ -200,6 +200,22 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_balance_summary_separates_total_balance_from_trading_allocation(self):
+        previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
+        try:
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            adapter = FakeKrakenAdapter()
+            adapter.prices = {"XBTGBP": {"c": ["40000"]}}
+
+            summary = _kraken_balance_summary({"ZGBP": "5000", "XXBT": "0.1"}, adapter)
+
+            self.assertEqual(summary["gbp_cash"], 5000.0)
+            self.assertEqual(summary["trading_allocation_gbp"], 100.0)
+            self.assertEqual(summary["total_estimated_gbp"], 9000.0)
+            self.assertEqual(_kraken_trading_allocation_gbp({"ZGBP": "50"}), 50.0)
+        finally:
+            restore_env(previous)
+
     def test_closing_a_buy_position_at_a_lower_price_records_a_loss(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
@@ -275,6 +291,7 @@ class FakeKrakenAdapter(KrakenAdapter):
     def __init__(self):
         super().__init__()
         self.submitted_orders = []
+        self.prices = {}
 
     def get_orders(self):
         return []
@@ -287,6 +304,9 @@ class FakeKrakenAdapter(KrakenAdapter):
             self.submitted_orders.append(payload)
             return {"result": {"txid": ["TST-ORDER"]}}
         return {"result": {}}
+
+    def current_prices(self, symbols):
+        return self.prices
 
 
 def restore_env(previous):

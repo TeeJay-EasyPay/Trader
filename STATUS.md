@@ -43,6 +43,18 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
   `INVESTMENT_POLICIES.crypto_enabled`) - this sprint made the system safe to enable, not
   enabled; flipping those switches is a deliberate Founder decision.
 
+## 2026-07-07 Trading Learning and Kraken Allocation Follow-Up
+
+- Kraken portfolio display now separates full exchange visibility from AI Trader's governed trading pot:
+  - `Total Estimated Balance` estimates the whole Kraken balance in GBP where prices are available.
+  - `GBP Cash` shows cash returned by Kraken.
+  - `AI Trading Allocation` is capped by `KRAKEN_TRADING_ALLOCATION_GBP` and defaults to GBP 100.
+- Kraken account context and risk sizing now use the trading allocation, not the full exchange balance.
+- Command Centre trade history is now visually collapsible. Tapping a trade opens entry, exit, quantity, P&L, reasons, and broker payload; tapping again closes it.
+- `GET /daily-learning-update` added for a daily plain-English review of closed trades, wins/losses, guardrail rejections, benchmark/successful-trader learning, and Founder-approved improvement recommendations.
+- Intelligence screen now shows the Daily Trading Learning Update so the Founder can see what AI Trader learned the previous day without opening the database.
+- Mobile app now reads performance attribution and broker trade history so Kraken/crypto trades can surface entry, exit, and P&L detail when available.
+
 ## Working
 
 - Python runtime installed and verified: Python 3.12.10.

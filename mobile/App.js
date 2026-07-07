@@ -34,6 +34,8 @@ export default function App() {
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
   const [targetRecommendationId, setTargetRecommendationId] = useState(null);
   const [notifications, setNotifications] = useState([]);
+  const [performanceAttribution, setPerformanceAttribution] = useState([]);
+  const [dailyLearning, setDailyLearning] = useState(null);
 
   const request = useCallback(async (path, options) => {
     const headers = {
@@ -65,7 +67,7 @@ export default function App() {
     setLoading(true);
     try {
       const optional = (path, fallback) => request(path).catch(() => fallback);
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies, nextNotifications] = await Promise.all([
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning] = await Promise.all([
         request('/status'),
         optional('/portfolio', {
           portfolio_value: 'Not available',
@@ -79,11 +81,15 @@ export default function App() {
         optional('/intelligence/themes', { themes: [] }),
         optional('/intelligence/companies', { companies: [] }),
         optional('/notifications', { notifications: [] }),
+        optional('/performance-attribution', { performance_attribution: [] }),
+        optional('/daily-learning-update', null),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
       setBrief(nextBrief);
       setNotifications(nextNotifications.notifications || []);
+      setPerformanceAttribution(nextPerformance.performance_attribution || []);
+      setDailyLearning(nextLearning);
       const nextRecommendationItems = sortByConfidence(nextRecommendations.recommendations || []);
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);
@@ -155,6 +161,7 @@ export default function App() {
           portfolio={portfolio}
           brief={brief}
           notifications={notifications}
+          performanceAttribution={performanceAttribution}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
@@ -167,6 +174,7 @@ export default function App() {
       return (
         <Recommendations
           recommendations={recommendations}
+          dailyLearning={dailyLearning}
           amounts={amounts}
           setAmounts={setAmounts}
           onApprove={approve}
@@ -191,7 +199,7 @@ export default function App() {
         }}
       />
     );
-  }, [amounts, benchmark, brief, companies, notifications, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
+  }, [amounts, benchmark, brief, companies, dailyLearning, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -227,9 +235,9 @@ export default function App() {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, notifications, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
+function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
   const positions = portfolio?.open_positions || [];
-  const recentTransactions = combinedTransactions(status, portfolio, selectedExchange);
+  const recentTransactions = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution);
   const recommendationSummary = status?.recommendation_summary || {};
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
   const brokerPanels = status?.brokers || [];
@@ -348,6 +356,14 @@ function CommandCentre({ status, portfolio, brief, notifications, selectedExchan
               <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
               <Metric label="Month P&L" value={moneyOrText(broker.month_pnl)} />
               <Metric label="Trades Today" value={broker.trades_today} />
+              {broker.balance_summary ? (
+                <>
+                  <Metric label="Total Estimated Balance" value={moneyOrText(broker.balance_summary.total_estimated_gbp)} />
+                  <Metric label="GBP Cash" value={moneyOrText(broker.balance_summary.gbp_cash)} />
+                  <Metric label="AI Trading Allocation" value={moneyOrText(broker.balance_summary.trading_allocation_gbp)} />
+                  <TextBlock label="Balance Note" value={broker.balance_summary.valuation_note} />
+                </>
+              ) : null}
               <Metric label="Research Status" value={broker.research_status} />
               <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
               <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
@@ -371,18 +387,7 @@ function CommandCentre({ status, portfolio, brief, notifications, selectedExchan
         stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
         automatically regardless of trading state.
       </Text>
-      <Section title={`${selectedExchange === 'All' ? 'Alpaca' : selectedExchange} Trade History`}>
-        {!recentTransactions.length ? (
-          <Empty />
-        ) : (
-          recentTransactions.map((item, index) => (
-            <View key={`${item.created_at}-transaction-${index}`} style={styles.compactRow}>
-              <Text style={styles.bodyText}>{describeTransaction(item)}</Text>
-              <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
-            </View>
-          ))
-        )}
-      </Section>
+      <TradeHistorySection title={`${selectedExchange === 'All' ? 'All Brokers' : selectedExchange} Trade History`} trades={recentTransactions} />
       <Section title="Analysis Activity">
         {analysisActivity(status).length === 0 ? (
           <Empty />
@@ -403,6 +408,54 @@ function CommandCentre({ status, portfolio, brief, notifications, selectedExchan
       <Section title="Founder Brief">
         <Text style={styles.bodyText}>{notAvailable(brief?.report_markdown)}</Text>
       </Section>
+    </View>
+  );
+}
+
+function TradeHistorySection({ title, trades }) {
+  const [expanded, setExpanded] = useState({});
+  return (
+    <Section title={title}>
+      {!trades.length ? (
+        <Empty />
+      ) : (
+        trades.map((item, index) => {
+          const key = tradeKey(item, index);
+          const open = !!expanded[key];
+          return (
+            <View key={key} style={styles.compactRow}>
+              <TouchableOpacity onPress={() => setExpanded((prev) => ({ ...prev, [key]: !open }))}>
+                <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
+                <Text style={styles.smallText}>{formatDateTime(item.created_at || item.closed_at || item.updated_at || item.opened_at)}</Text>
+              </TouchableOpacity>
+              {open ? <TradeDetail item={item} /> : null}
+            </View>
+          );
+        })
+      )}
+    </Section>
+  );
+}
+
+function TradeDetail({ item }) {
+  const raw = item.raw || item.payload || {};
+  return (
+    <View>
+      <Metric label="Broker" value={item.broker} />
+      <Metric label="Symbol" value={item.symbol} />
+      <Metric label="Side" value={item.side} />
+      <Metric label="Status" value={item.status || item.event_type} />
+      <Metric label="Quantity" value={item.quantity || item.position_size || item.qty} />
+      <Metric label="Entry" value={moneyOrText(item.entry_price || item.entry)} />
+      <Metric label="Exit" value={moneyOrText(item.exit_price || item.exit)} />
+      <Metric label="Price" value={moneyOrText(item.price)} />
+      <Metric label="P&L" value={moneyOrText(item.profit_loss || item.realised_pnl)} />
+      <Metric label="Opened" value={formatDateTime(item.opened_at)} />
+      <Metric label="Closed" value={formatDateTime(item.closed_at)} />
+      <TextBlock label="Entry Reason" value={item.entry_reason} />
+      <TextBlock label="Exit Reason" value={item.exit_reason} />
+      <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
+      <TextBlock label="Broker Payload" value={formatJsonText(raw)} />
     </View>
   );
 }
@@ -556,7 +609,7 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
   );
 }
 
-function MarketIntelligence({ benchmark, themes, companies, status, recommendations, onOpenRecommendation }) {
+function MarketIntelligence({ benchmark, themes, companies, status, recommendations, dailyLearning, onOpenRecommendation }) {
   const items = benchmark?.items || [];
   return (
     <View>
@@ -571,6 +624,23 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
         <Metric label="Markets Currently Open" value={marketsOpenText(status)} />
         <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
         <TextBlock label="What AI Learned Since Last Brief" value={latestLearningText(status, benchmark)} />
+      </Section>
+      <Section title="Daily Trading Learning Update">
+        {!dailyLearning ? (
+          <Empty />
+        ) : (
+          <View>
+            <Metric label="Learning Date" value={dailyLearning.date} />
+            <TextBlock label="Summary" value={dailyLearning.summary} />
+            <Metric label="Closed Trades" value={dailyLearning.trade_outcomes?.closed_trades} />
+            <Metric label="Win Rate" value={formatPercent(dailyLearning.trade_outcomes?.win_rate)} />
+            <Metric label="Total P&L" value={moneyOrText(dailyLearning.trade_outcomes?.total_profit_loss)} />
+            <TextBlock label="Trade Lessons" value={formatList(dailyLearning.trade_lessons)} />
+            <TextBlock label="Successful Trader / Benchmark Lessons" value={formatList(dailyLearning.benchmark_learning)} />
+            <TextBlock label="Recommendations For Founder" value={formatList(dailyLearning.recommendations_for_founder)} />
+            <Text style={styles.smallText}>{notAvailable(dailyLearning.note)}</Text>
+          </View>
+        )}
       </Section>
       <Section title="Alpaca Intelligence">
         <Metric label="Research Running" value={status?.research_status} />
@@ -809,9 +879,30 @@ function shortApiBase() {
   return API_BASE.replace(/^https?:\/\//, '');
 }
 
-function combinedTransactions(status, portfolio, selectedExchange = 'All') {
+function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = []) {
+  const attribution = (performanceAttribution || [])
+    .filter((item) => selectedExchange === 'All' || String(item.broker || '').toLowerCase() === selectedExchange.toLowerCase())
+    .map((item) => ({
+      ...item,
+      event_type: 'performance_attribution',
+      status: 'closed',
+      created_at: item.closed_at || item.created_at,
+      raw: parseMaybeJson(item.primary_factors_json),
+    }));
   if (selectedExchange === 'Kraken' || selectedExchange === 'Coinbase') {
-    return [];
+    const broker = String(selectedExchange).toLowerCase();
+    const panel = (status?.brokers || []).find((item) => String(item.broker || '').toLowerCase() === broker);
+    const brokerTrades = (panel?.trade_history || []).map((item) => ({
+      ...item,
+      broker,
+      event_type: 'broker_trade',
+      created_at: item.closed_at || item.opened_at || item.updated_at,
+      raw: parseMaybeJson(item.payload_json) || item,
+    }));
+    return [...attribution, ...brokerTrades]
+      .filter((item) => item.created_at || item.symbol || item.event_type)
+      .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
+      .slice(0, 20);
   }
   const auditRows = (status?.recent_transactions || []).filter((item) => (
     item.event_type === 'execution_approved' || item.event_type === 'execution_rejected'
@@ -834,10 +925,10 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All') {
     created_at: item.submitted_at || item.updated_at || item.created_at,
     raw: item,
   }));
-  return [...auditRows, ...fills, ...orders]
+  return [...attribution, ...auditRows, ...fills, ...orders]
     .filter((item) => item.created_at || item.symbol || item.event_type)
     .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
-    .slice(0, 12);
+    .slice(0, 20);
 }
 
 function describeLatestTrade(value) {
@@ -1075,6 +1166,32 @@ function uniqueValues(items) {
   return [...new Set(items.map((item) => String(item)).filter(Boolean))];
 }
 
+function tradeKey(item, index) {
+  return String(item.attribution_id || item.trade_history_id || item.external_id || item.proposal_id || `${item.created_at}-${item.symbol}-${index}`);
+}
+
+function parseMaybeJson(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  try {
+    return JSON.parse(String(value));
+  } catch (error) {
+    return null;
+  }
+}
+
+function formatJsonText(value) {
+  const parsed = parseMaybeJson(value);
+  if (!parsed) {
+    return typeof value === 'string' ? value : null;
+  }
+  return JSON.stringify(parsed, null, 2);
+}
+
 function groupRecommendations(items) {
   return items.reduce((groups, item) => {
     const broker = item.suggested_broker || item.exchange || 'Unassigned';
@@ -1126,6 +1243,8 @@ function friendlyEvent(eventType) {
     engine_control: 'Trading control changed',
     broker_fill: 'Broker fill',
     broker_order: 'Broker order',
+    broker_trade: 'Broker trade',
+    performance_attribution: 'Closed trade',
   };
   return labels[eventType] || notAvailable(eventType);
 }
@@ -1133,11 +1252,14 @@ function friendlyEvent(eventType) {
 function describeTransaction(item) {
   const symbol = item.symbol ? ` ${item.symbol}` : '';
   const side = item.side ? ` ${item.side.toUpperCase()}` : '';
-  const size = item.position_size ? ` for ${item.position_size} shares` : '';
+  const sizeValue = item.position_size || item.quantity || item.qty;
+  const size = sizeValue ? ` for ${sizeValue}` : '';
   const status = item.status ? ` (${item.status})` : '';
-  const price = item.price ? ` at ${money(item.price)}` : '';
+  const priceValue = item.exit_price || item.price || item.entry_price;
+  const price = priceValue ? ` at ${money(priceValue)}` : '';
+  const pnl = item.profit_loss !== undefined && item.profit_loss !== null ? ` P&L ${money(item.profit_loss)}` : '';
   const confidence = item.ai_confidence ? ` at ${formatPercent(item.ai_confidence)} confidence` : '';
-  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${confidence}${status}.`;
+  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${pnl}${confidence}${status}.`;
 }
 
 function yesNo(value) {

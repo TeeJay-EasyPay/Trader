@@ -584,3 +584,23 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - `/notifications`, `/performance-attribution`, and an unauthenticated POST check were
     unstable from external verification and require Render log review before declaring the
     hosted backend fully green.
+
+## 2026-07-07 Trading Learning and Kraken Allocation Follow-Up
+
+- Added `KRAKEN_TRADING_ALLOCATION_GBP` with a default of GBP 100 to local, cloud, and Render configuration.
+- Updated Kraken account context so trading/risk sizing uses the AI trading allocation instead of the full Kraken account balance.
+- Updated Kraken broker panels to separate:
+  - full estimated account balance,
+  - GBP cash,
+  - AI trading allocation,
+  - valuation notes for unpriced assets.
+- Added `GET /daily-learning-update`, combining closed trade attribution, orchestrator decisions, portfolio snapshots, and public benchmark trader learning into one Founder-facing daily update.
+- Added mobile Intelligence screen rendering for the Daily Trading Learning Update.
+- Added mobile collapsible trade history rows so trade detail is available on tap without overwhelming the Command Centre.
+- Added Kraken/Coinbase broker trade-history rows and `PERFORMANCE_ATTRIBUTION` rows into the Command Centre trade history feed.
+- Added tests for Kraken balance/allocation separation and the daily learning update.
+- Verification completed:
+  - Python compile check passed.
+  - Python unit test suite passed: 69/69.
+  - `git diff --check` passed.
+  - `npx expo-doctor` passed: 17/17 checks.

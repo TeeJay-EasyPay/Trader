@@ -52,6 +52,34 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(status["counts"]["market_themes"], 10)
             self.assertEqual(status["counts"]["benchmark_traders"], 4)
 
+    def test_daily_learning_update_includes_trade_and_benchmark_lessons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            BenchmarkIntelligenceDatabase(settings.db_path).seed_initial_data()
+            yesterday = "2026-07-06"
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO PERFORMANCE_ATTRIBUTION (
+                            created_at, proposal_id, broker, symbol, asset_type, side,
+                            entry_price, exit_price, quantity, profit_loss, opened_at,
+                            closed_at, holding_period_seconds, entry_reason, exit_reason,
+                            primary_factors_json
+                        ) VALUES (?, 'p1', 'kraken', 'BTC', 'crypto', 'sell', 100, 110, 1, 10, ?, ?, 60, 'trend', 'take_profit_triggered', '{}')
+                        """,
+                        (f"{yesterday}T12:00:00+00:00", f"{yesterday}T11:59:00+00:00", f"{yesterday}T12:00:00+00:00"),
+                    )
+
+            status, payload = service.get("/daily-learning-update", {"date": [yesterday]})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["trade_outcomes"]["closed_trades"], 1)
+            self.assertEqual(payload["trade_outcomes"]["total_profit_loss"], 10.0)
+            self.assertTrue(payload["benchmark_learning"])
+            self.assertIn("Founder approval", " ".join(payload["recommendations_for_founder"]))
+
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

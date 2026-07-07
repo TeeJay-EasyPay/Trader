@@ -121,6 +121,7 @@ API endpoints:
 - `POST /run-crypto-analysis`
 - `POST /monitor-managed-exits`
 - `GET /performance-attribution`
+- `GET /daily-learning-update`
 - `GET /notifications`
 - `POST /notifications/ack`
 - `POST /register-push-token`
@@ -220,6 +221,7 @@ POST /approve-and-execute
 POST /run-crypto-analysis
 POST /monitor-managed-exits
 GET /performance-attribution
+GET /daily-learning-update
 GET /notifications
 POST /notifications/ack
 POST /register-push-token
@@ -415,6 +417,7 @@ Kraken controlled live micro-trading:
 - `KRAKEN_AUTO_TRADING=true` enables Kraken as a broker-specific autonomous entry candidate.
 - `KRAKEN_LIVE_TRADING_APPROVED=true` is a separate Founder approval switch required before Kraken can submit real orders.
 - `KRAKEN_SUBMIT_REAL_ORDERS=false` keeps Kraken AddOrder in validation mode; set it to `true` only when the Founder wants real spot orders. This is also the default when the variable is unset - an unset value never submits a real order.
+- `KRAKEN_TRADING_ALLOCATION_GBP=100` is the AI Trader pot. The app may display the full Kraken account balance for visibility, but risk sizing and Kraken buying power are capped to this allocation and never the whole exchange account.
 - `KRAKEN_MAX_ORDER_GBP=5` caps one Kraken order.
 - `KRAKEN_MIN_ORDER_GBP=1` prevents invalid tiny orders.
 - `KRAKEN_MAX_OPEN_TRADES=1` limits simultaneous Kraken entries.
@@ -449,6 +452,8 @@ This sprint made continuous autonomous operation actually continuous, not manual
 - The crypto knowledge engine fetches CoinGecko's live market-cap, AI, and privacy/security category data on a schedule, populates `CRYPTO_MASTER` (previously empty, which silently blocked every crypto trade), and computes real technical/momentum/volatility/liquidity scores. On-chain, sentiment, and news data are not available without a paid provider and are left `insufficient_data` rather than fabricated.
 - Kraken can now generate its own trade proposals from that research (`POST /run-crypto-analysis`) and route them through the same orchestrator, guardrail, and auto-execute path as equities - previously nothing in the codebase ever produced a crypto trade proposal.
 - Every closed managed exit records a `PERFORMANCE_ATTRIBUTION` row: entry/exit price, P&L, holding period, and the reasoning that justified entry, queryable at `GET /performance-attribution`.
+- `GET /daily-learning-update` summarises yesterday's closed trades, wins/losses, guardrail rejections, benchmark trader observations, and recommendations for Founder approval. It learns from AI Trader's own outcomes and public benchmark/successful-trader observations where available, but it does not copy trades or change guardrails automatically.
+- The mobile Command Centre shows trade history as collapsed rows. Tap a trade to see entry, exit, quantity, P&L, reasons, and broker payload; tap it again to collapse.
 - `GET /notifications` / `POST /notifications/ack` back an in-app notification center; `POST /register-push-token` plus a background dispatcher deliver high-priority events (stop-loss, take-profit, broker/research failures) through Expo's push service. The backend is ready; the mobile client does not yet register a device token (needs `expo-notifications` added and a rebuilt app to verify end-to-end).
 - On a non-loopback host (e.g. Render), if `AI_TRADER_API_TOKEN` is missing the API starts in hosted read-only mode: GET status/recommendation screens stay available, but all POST trading/control commands are rejected until the token is configured. Token checks use constant-time comparison and a source IP is locked out after repeated auth failures.
 

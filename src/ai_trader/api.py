@@ -3,11 +3,12 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 import socket
 import sqlite3
 import sys
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -316,6 +317,8 @@ class LocalApiService:
             return 200, {"brokers": self.broker_panels()}
         if path == "/performance-attribution":
             return 200, {"performance_attribution": list_performance_attribution(self.settings.db_path)}
+        if path == "/daily-learning-update":
+            return 200, self.daily_learning_update(_first(query, "date"))
         if path == "/notifications":
             return 200, {"notifications": self.notifications(unread_only=_first(query, "unread_only") == "true")}
         return 404, {"error": "not_found", "path": path}
@@ -859,7 +862,10 @@ class LocalApiService:
         if adapter is not None:
             account = adapter.get_account()
             balances = account.get("balances") if isinstance(account, dict) else None
-            equity = _sum_balances(balances) or 0.0
+            if broker_name == "kraken":
+                equity = _kraken_trading_allocation_gbp(balances)
+            else:
+                equity = _sum_balances(balances) or 0.0
         positions = [
             Position(
                 symbol=str(item["symbol"]).upper(),
@@ -869,6 +875,79 @@ class LocalApiService:
             for item in open_managed_exits(self.settings.db_path, broker_name)
         ]
         return AccountContext(equity=equity, daily_realized_pnl=daily_pnl, open_positions=positions, is_paper=False)
+
+    def daily_learning_update(self, learning_date: str | None = None) -> dict[str, Any]:
+        if not learning_date:
+            learning_date = (date.today() - timedelta(days=1)).isoformat()
+        start = f"{learning_date}T00:00:00"
+        end = f"{learning_date}T23:59:59"
+        attribution = [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT * FROM PERFORMANCE_ATTRIBUTION
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY attribution_id DESC
+                """,
+                (start, end),
+            )
+        ]
+        decisions = [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT * FROM ORCHESTRATOR_DECISIONS
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY decision_id DESC
+                LIMIT 50
+                """,
+                (start, end),
+            )
+        ]
+        snapshots = [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT broker, exchange, created_at, portfolio_value, day_pnl, week_pnl, month_pnl
+                FROM PORTFOLIO_SNAPSHOTS
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY created_at DESC
+                """,
+                (start, end),
+            )
+        ]
+        benchmark = self.benchmark_daily_brief(learning_date)
+        total_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+        wins = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+        losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+        rejected = [row for row in decisions if row.get("decision") == "rejected"]
+        approved = [row for row in decisions if row.get("decision") == "approved"]
+        trade_lessons = _trade_learning_lessons(attribution, rejected, snapshots)
+        benchmark_lessons = _benchmark_learning_lessons(benchmark.get("items") or [])
+        recommendations = _learning_recommendations(attribution, rejected, benchmark.get("items") or [])
+        return {
+            "date": learning_date,
+            "summary": (
+                f"Reviewed {len(attribution)} closed trade outcome(s), {len(approved)} approved decision(s), "
+                f"{len(rejected)} rejected decision(s), and {len(benchmark.get('items') or [])} benchmark learning note(s)."
+            ),
+            "trade_outcomes": {
+                "closed_trades": len(attribution),
+                "wins": len(wins),
+                "losses": len(losses),
+                "win_rate": (len(wins) / len(attribution)) if attribution else None,
+                "total_profit_loss": round(total_pnl, 4),
+                "largest_gain": max((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
+                "largest_loss": min((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
+            },
+            "trade_lessons": trade_lessons,
+            "benchmark_learning": benchmark_lessons,
+            "recommendations_for_founder": recommendations,
+            "closed_trades": attribution,
+            "recent_rejections": rejected[:10],
+            "benchmark_items": benchmark.get("items") or [],
+            "note": "Learning updates propose improvements only. They do not change strategy, guardrails, or execution logic automatically.",
+        }
 
     def _manual_approval_auto_config(self, broker: str) -> Any:
         base = self._auto_config_for_broker(broker)
@@ -1303,11 +1382,18 @@ class LocalApiService:
             details={"account_status": account.get("status") if isinstance(account, dict) else "connected"},
         )
         cash = _sum_balances(account.get("balances") if isinstance(account, dict) else None)
+        balance_summary = None
+        if broker == "kraken":
+            balance_summary = _kraken_balance_summary(account.get("balances") if isinstance(account, dict) else None, adapter)
+            cash = balance_summary.get("gbp_cash")
+            equity = balance_summary.get("total_estimated_gbp")
+        else:
+            equity = cash
         snapshot = record_portfolio_snapshot(
             self.settings.db_path,
             broker=broker,
             exchange=_broker_label(broker),
-            account={"cash": cash, "equity": cash},
+            account={"cash": cash, "equity": equity},
             positions=positions,
             notes="Broker panel refresh snapshot.",
         )
@@ -1315,9 +1401,13 @@ class LocalApiService:
             "broker": broker,
             "exchange": _broker_label(broker),
             "connection_status": "Connected",
-            "portfolio_value": cash if cash is not None else "Not available - broker returned no portfolio valuation",
+            "portfolio_value": equity if equity is not None else "Not available - broker returned no portfolio valuation",
             "cash_available": cash if cash is not None else "Not available - broker returned no balances",
-            "buying_power": cash if cash is not None else "Not available - broker returned no buying power",
+            "buying_power": (
+                balance_summary.get("trading_allocation_gbp")
+                if balance_summary
+                else cash if cash is not None else "Not available - broker returned no buying power"
+            ),
             "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
             "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
             "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
@@ -1325,6 +1415,7 @@ class LocalApiService:
             "open_positions_summary": f"{len(positions)}",
             "recent_orders": orders[:10],
             "recent_activities": history[:10],
+            "balance_summary": balance_summary,
             "source": _broker_label(broker),
         }
 
@@ -1918,6 +2009,159 @@ def _sum_balances(balances: Any) -> float | None:
         total += amount
         found = True
     return total if found else None
+
+
+def _kraken_trading_allocation_gbp(balances: Any) -> float:
+    allocation = _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0)
+    summary_cash = _kraken_gbp_cash(balances)
+    if summary_cash is None:
+        return allocation
+    return max(0.0, min(allocation, summary_cash))
+
+
+def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
+    raw = balances if isinstance(balances, dict) else {}
+    gbp_cash = _kraken_gbp_cash(raw)
+    total = gbp_cash or 0.0
+    converted_assets: list[dict[str, Any]] = []
+    unpriced_assets: list[dict[str, Any]] = []
+    for asset, value in raw.items():
+        qty = safe_float(value)
+        if qty is None or qty == 0:
+            continue
+        normalized = _kraken_asset_symbol(asset)
+        if normalized == "GBP":
+            continue
+        if normalized in {"USD", "EUR", "USDT", "USDC"}:
+            unpriced_assets.append({"asset": asset, "normalized_asset": normalized, "quantity": qty, "reason": "fiat_or_stablecoin_not_converted_to_gbp"})
+            continue
+        pair = _kraken_pair(normalized)
+        price = None
+        try:
+            price = _kraken_last_price(adapter.current_prices([pair]), pair)
+        except Exception:
+            price = None
+        if price is None:
+            unpriced_assets.append({"asset": asset, "normalized_asset": normalized, "quantity": qty, "reason": "gbp_price_unavailable"})
+            continue
+        value_gbp = qty * price
+        total += value_gbp
+        converted_assets.append({
+            "asset": asset,
+            "normalized_asset": normalized,
+            "quantity": qty,
+            "pair": pair,
+            "price_gbp": price,
+            "value_gbp": value_gbp,
+        })
+    trading_allocation = _kraken_trading_allocation_gbp(raw)
+    return {
+        "total_estimated_gbp": round(total, 2),
+        "gbp_cash": round(gbp_cash, 2) if gbp_cash is not None else None,
+        "trading_allocation_gbp": round(trading_allocation, 2),
+        "raw_balances": raw,
+        "converted_assets": converted_assets,
+        "unpriced_assets": unpriced_assets,
+        "valuation_note": (
+            "Portfolio value converts supported crypto balances to GBP using Kraken ticker prices. "
+            "Trading allocation is capped separately by KRAKEN_TRADING_ALLOCATION_GBP."
+        ),
+    }
+
+
+def _kraken_gbp_cash(balances: Any) -> float | None:
+    if not isinstance(balances, dict):
+        return None
+    total = 0.0
+    found = False
+    for key in ("GBP", "ZGBP"):
+        amount = safe_float(balances.get(key))
+        if amount is not None:
+            total += amount
+            found = True
+    return total if found else None
+
+
+def _kraken_asset_symbol(asset: str) -> str:
+    normalized = str(asset or "").upper()
+    aliases = {
+        "XXBT": "BTC",
+        "XBT": "BTC",
+        "XETH": "ETH",
+        "ZGBP": "GBP",
+        "ZUSD": "USD",
+        "ZEUR": "EUR",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized.startswith("X") and len(normalized) > 3:
+        return normalized[1:]
+    if normalized.startswith("Z") and len(normalized) > 3:
+        return normalized[1:]
+    return normalized
+
+
+def _float_env(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _trade_learning_lessons(attribution: list[dict[str, Any]], rejected: list[dict[str, Any]], snapshots: list[dict[str, Any]]) -> list[str]:
+    lessons: list[str] = []
+    if attribution:
+        wins = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+        losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+        if wins:
+            lessons.append(f"{len(wins)} closed trade(s) were profitable; compare their entry reasons against future recommendations before increasing size.")
+        if losses:
+            exit_reasons = Counter(str(row.get("exit_reason") or "unknown") for row in losses)
+            lessons.append(f"{len(losses)} closed trade(s) lost money; loss reasons observed: {dict(exit_reasons)}.")
+    else:
+        lessons.append("No closed trade outcomes were recorded for this date, so technique learning is limited to decisions, rejections, portfolio movement, and benchmark observations.")
+    if rejected:
+        reasons = Counter(str(row.get("rejection_reason") or "unknown") for row in rejected)
+        lessons.append(f"Guardrail/orchestrator rejections clustered around: {dict(reasons)}.")
+    if snapshots:
+        latest_by_broker: dict[str, dict[str, Any]] = {}
+        for row in snapshots:
+            latest_by_broker.setdefault(str(row.get("broker") or "unknown"), row)
+        for broker, row in latest_by_broker.items():
+            day_pnl = safe_float(row.get("day_pnl"))
+            week_pnl = safe_float(row.get("week_pnl"))
+            if day_pnl is not None or week_pnl is not None:
+                lessons.append(f"{broker.title()} snapshot showed day P&L {day_pnl if day_pnl is not None else 'N/A'} and week P&L {week_pnl if week_pnl is not None else 'N/A'}.")
+    return lessons
+
+
+def _benchmark_learning_lessons(items: list[dict[str, Any]]) -> list[str]:
+    lessons = []
+    for item in items[:6]:
+        trader = item.get("trader_name") or "Benchmark trader"
+        interpretation = item.get("ai_interpretation")
+        risk = item.get("risk_lesson")
+        market = item.get("market_lesson")
+        summary = "; ".join(part for part in [interpretation, risk, market] if part)
+        if summary:
+            lessons.append(f"{trader}: {summary}")
+    if not lessons:
+        lessons.append("No benchmark trader learning rows were available for this date.")
+    return lessons
+
+
+def _learning_recommendations(attribution: list[dict[str, Any]], rejected: list[dict[str, Any]], benchmark_items: list[dict[str, Any]]) -> list[str]:
+    recommendations = [
+        "Do not change strategy or guardrails automatically; Founder approval is required.",
+    ]
+    if rejected:
+        recommendations.append("Review repeated rejection reasons before lowering confidence, risk, or freshness thresholds.")
+    losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+    if losses:
+        recommendations.append("Compare losing trades against stop distance, trend score, and entry timing before allowing larger position sizes.")
+    if benchmark_items:
+        recommendations.append("Use benchmark trader observations as discipline checks, not as automatic copy-trade signals.")
+    return recommendations
 
 
 
