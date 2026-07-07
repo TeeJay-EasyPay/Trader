@@ -415,9 +415,10 @@ class LocalApiService:
         latest_morning = self._latest_daily_brief("morning")
         latest_evening = self._latest_daily_brief("evening")
         research_run = latest_research_run(self.settings.db_path)
-        executive_summary = self.executive_summary()
         policy = load_trading_policy(self.settings.db_path, auto_trade=self.settings.auto_trade, guardrails=self.settings.guardrails)
         brokers = self.broker_panels()
+        executive_summary = self.executive_summary(brokers)
+        founder_summary = self.founder_executive_summary(brokers, executive_summary)
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -439,6 +440,7 @@ class LocalApiService:
             "paper_or_sandbox_mode": self.settings.guardrails.paper_trading_only,
             "trading_policy": policy.to_dict(),
             "executive_summary": executive_summary,
+            "founder_executive_summary": founder_summary,
             "last_orchestrator_decision": latest_decision,
             "morning_brief": latest_morning,
             "evening_brief": latest_evening,
@@ -473,6 +475,7 @@ class LocalApiService:
             positions = broker.get_positions()
             orders = broker.get_orders(status="all", limit=10)
             activities = broker.get_activities("FILL")
+            record_broker_trade_history(self.settings.db_path, "alpaca", list(orders) + list(activities))
             snapshot = record_portfolio_snapshot(
                 self.settings.db_path,
                 broker="alpaca",
@@ -487,6 +490,7 @@ class LocalApiService:
                 "exchange": "Alpaca",
                 "portfolio_value": display_value(snapshot["portfolio_value"], "Alpaca returned no portfolio value"),
                 "cash_available": display_value(snapshot["cash"], "Alpaca returned no cash balance"),
+                "estimated_in_positions": _estimated_in_positions(snapshot["portfolio_value"], snapshot["cash"]),
                 "buying_power": display_value(snapshot["buying_power"], "Alpaca returned no buying power"),
                 "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
                 "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
@@ -541,10 +545,11 @@ class LocalApiService:
         except ValueError:
             parsed_date = date.today()
             report_date = parsed_date.isoformat()
+        report_context = self._refresh_report_sources(broker)
         if report_type in {"morning", "evening"}:
-            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type)
+            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type, report_context)
         else:
-            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type)
+            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type, report_context)
             if persist and broker == "all":
                 self.audit.record_briefing(report_date, markdown, {"report_type": report_type, "broker": broker})
         path = self._write_trading_report(report_date, broker, report_type, markdown) if persist else None
@@ -611,7 +616,7 @@ class LocalApiService:
 <body>
   <main>
     <h1>{escaped_title}</h1>
-    <div class="meta">Generated: {html.escape(row['created_at'])}<br>Saved file: {escaped_path}</div>
+    <div class="meta">Generated: {html.escape(_human_time(row['created_at']))}<br>Saved file: {escaped_path}</div>
     <p><strong>Summary:</strong> {escaped_summary}</p>
     <pre>{escaped_markdown}</pre>
   </main>
@@ -619,7 +624,18 @@ class LocalApiService:
 </html>"""
         return 200, {"html": page}
 
-    def _broker_learning_report_markdown(self, report_date: date, broker: str, report_type: str) -> str:
+    def _refresh_report_sources(self, broker: str) -> dict[str, Any]:
+        brokers = ["alpaca", "kraken", "coinbase"] if broker == "all" else [broker]
+        refreshed: dict[str, Any] = {}
+        for name in brokers:
+            try:
+                refreshed[name] = self.portfolio(name)
+            except Exception as exc:
+                logger.exception("Failed to refresh %s before report generation.", name)
+                refreshed[name] = {"broker": name, "error": str(exc)}
+        return refreshed
+
+    def _broker_learning_report_markdown(self, report_date: date, broker: str, report_type: str, report_context: dict[str, Any] | None = None) -> str:
         period = _report_period(report_date, report_type)
         start = period["start"]
         end = period["end"]
@@ -629,7 +645,7 @@ class LocalApiService:
             dict(row)
             for row in self._rows(
                 f"""
-                SELECT broker, exchange, created_at, portfolio_value, day_pnl, week_pnl, month_pnl
+                SELECT broker, exchange, created_at, portfolio_value, cash, buying_power, day_pnl, week_pnl, month_pnl, open_positions_count
                 FROM PORTFOLIO_SNAPSHOTS
                 WHERE created_at >= ? AND created_at <= ?{broker_filter}
                 ORDER BY created_at ASC
@@ -685,15 +701,22 @@ class LocalApiService:
         balance_summary = _balance_summary_by_broker(snapshots)
         performance_lines = _performance_summary_lines(balance_summary, attribution, broker_trades, reconstructed)
         likely_causes = _report_likely_causes(snapshots, attribution, decisions, broker_trades, reconstructed)
+        report_context = report_context or {}
+        open_position_lines = _current_open_position_lines(report_context, broker)
+        plain_english = _plain_english_report_answer(balance_summary, attribution, broker_trades, reconstructed, report_context, broker)
         markdown = f"""# AI Trader {report_type.title()} Trading Report
 
 Report Date: {report_date.isoformat()}
 Period: {period["label"]}
-Window Start: {start}
-Window End: {end}
+Window Start: {_human_time(start)}
+Window End: {_human_time(end)}
 Broker: {broker.title() if broker != "all" else "All brokers"}
 
-## Executive Answer
+## Plain English Executive Answer
+
+{_list_or_none(plain_english)}
+
+## Evidence Summary
 
 - Start/end balance snapshots reviewed: {len(balance_summary)} broker(s).
 - Closed trade P&L recorded in attribution: {_money_text(total_closed_pnl)}.
@@ -708,6 +731,10 @@ Broker: {broker.title() if broker != "all" else "All brokers"}
 ## Start And End Balances
 
 {_balance_summary_lines(balance_summary)}
+
+## What You Currently Own Or Have Open
+
+{open_position_lines}
 
 ## Performance Over The Period
 
@@ -1545,6 +1572,7 @@ This report explains available evidence. It does not automatically change strate
                 "connection_status": portfolio.get("connection_status") or runtime.get("connection_status"),
                 "portfolio_value": portfolio.get("portfolio_value"),
                 "cash_available": portfolio.get("cash_available"),
+                "estimated_in_positions": _estimated_in_positions(portfolio.get("portfolio_value"), portfolio.get("cash_available")),
                 "buying_power": portfolio.get("buying_power"),
                 "open_positions": portfolio.get("open_positions_summary"),
                 "todays_pnl": portfolio.get("todays_pnl"),
@@ -1579,22 +1607,73 @@ This report explains available evidence. It does not automatically change strate
     def _active_broker_names(self) -> list[str]:
         return [name for name, adapter in self.orchestrator.adapters.items() if adapter.get_supported_assets()]
 
-    def executive_summary(self) -> list[dict[str, Any]]:
-        alpaca = self._latest_snapshot_summary("alpaca", "Alpaca")
-        summaries = [alpaca or {"broker": "Alpaca", "status": "Not configured" if not self.settings.has_alpaca_credentials else "Not available - no portfolio snapshots yet"}]
-        for broker in ["kraken", "coinbase", "binance", "interactive_brokers"]:
-            portfolio = self._exchange_portfolio(broker)
+    def executive_summary(self, panels: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        if panels is None:
+            panels = self.broker_panels()
+        summaries: list[dict[str, Any]] = []
+        for panel in panels:
+            broker_key = str(panel.get("broker") or "").lower()
             summaries.append({
-                "broker": _broker_label(broker),
-                "portfolio_balance": portfolio.get("portfolio_value"),
-                "cash_balance": portfolio.get("cash_available"),
-                "last_day_pnl": portfolio.get("todays_pnl"),
-                "last_week_pnl": portfolio.get("week_pnl"),
-                "last_month_pnl": portfolio.get("month_pnl"),
-                "open_positions": portfolio.get("open_positions_summary"),
-                "status": portfolio.get("connection_status") or portfolio.get("source"),
+                "broker": panel.get("label") or _broker_label(broker_key),
+                "broker_key": broker_key,
+                "portfolio_balance": panel.get("portfolio_value"),
+                "cash_balance": panel.get("cash_available"),
+                "estimated_in_positions": panel.get("estimated_in_positions"),
+                "last_day_pnl": panel.get("todays_pnl"),
+                "last_week_pnl": panel.get("week_pnl"),
+                "last_month_pnl": panel.get("month_pnl"),
+                "amount_traded_today": panel.get("trades_today"),
+                "month_start_portfolio_balance": panel.get("month_start_value"),
+                "open_positions": panel.get("open_positions"),
+                "status": panel.get("connection_status") or panel.get("source"),
             })
         return summaries
+
+    def founder_executive_summary(self, panels: list[dict[str, Any]], executive_summary: list[dict[str, Any]]) -> dict[str, Any]:
+        broker_lines = []
+        for item in executive_summary:
+            portfolio_value = safe_float(item.get("portfolio_balance"))
+            cash = safe_float(item.get("cash_balance"))
+            invested = safe_float(item.get("estimated_in_positions"))
+            positions = item.get("open_positions")
+            line = f"{item.get('broker')}: "
+            if portfolio_value is None and cash is None:
+                line += f"{item.get('status') or 'no account values available'}."
+            else:
+                line += f"account about {_money_text(portfolio_value)}, cash {_money_text(cash)}"
+                if invested is not None:
+                    line += f", about {_money_text(invested)} currently tied up in open positions"
+                line += f", open positions {positions if positions not in (None, '') else 'not available'}."
+            broker_lines.append(line)
+        latest_trade = self._latest_broker_trade_any()
+        trade_line = "No broker fill has been recorded yet."
+        if latest_trade:
+            trade_line = (
+                f"Latest recorded broker fill/order is {str(latest_trade.get('side') or '').upper()} "
+                f"{latest_trade.get('symbol') or 'unknown'} for {latest_trade.get('quantity') or 'unknown'} "
+                f"at {_money_text(latest_trade.get('price'))}, status {latest_trade.get('status') or 'unknown'}."
+            )
+        learning_line = self._plain_learning_status()
+        headline = "AI Trader is connected and monitoring broker data." if panels else "AI Trader has not received broker data yet."
+        return {
+            "headline": headline,
+            "plain_english": broker_lines + [trade_line, learning_line],
+            "latest_trade": latest_trade,
+        }
+
+    def _latest_broker_trade_any(self) -> dict[str, Any] | None:
+        row = self._row("SELECT * FROM BROKER_TRADE_HISTORY ORDER BY COALESCE(closed_at, opened_at, updated_at) DESC, trade_history_id DESC LIMIT 1")
+        return dict(row) if row else None
+
+    def _plain_learning_status(self) -> str:
+        today = date.today().isoformat()
+        closed_count = self._scalar(
+            "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE COALESCE(closed_at, created_at) LIKE ?",
+            (f"{today}%",),
+        ) or 0
+        if closed_count:
+            return f"Learning today is based on {closed_count} closed trade outcome(s), plus benchmark and guardrail observations."
+        return "Learning today is limited: no fully closed trade outcome has been recorded yet, so the app should not claim the strategy improved or failed until open positions are reconciled."
 
     def _latest_snapshot_summary(self, broker: str, label: str) -> dict[str, Any] | None:
         row = self._row("SELECT * FROM PORTFOLIO_SNAPSHOTS WHERE broker = ? ORDER BY snapshot_id DESC LIMIT 1", (broker,))
@@ -1604,6 +1683,7 @@ This report explains available evidence. It does not automatically change strate
             "broker": label,
             "portfolio_balance": display_value(row["portfolio_value"], "no portfolio snapshot value"),
             "cash_balance": display_value(row["cash"], "no cash snapshot value"),
+            "estimated_in_positions": _estimated_in_positions(row["portfolio_value"], row["cash"]),
             "last_day_pnl": display_value(row["day_pnl"], "no prior snapshot"),
             "last_week_pnl": display_value(row["week_pnl"], "no prior weekly snapshot"),
             "last_month_pnl": display_value(row["month_pnl"], "no month-start snapshot"),
@@ -1687,6 +1767,7 @@ This report explains available evidence. It does not automatically change strate
             "connection_status": "Connected",
             "portfolio_value": equity if equity is not None else "Not available - broker returned no portfolio valuation",
             "cash_available": cash if cash is not None else "Not available - broker returned no balances",
+            "estimated_in_positions": _estimated_in_positions(equity, cash),
             "buying_power": (
                 balance_summary.get("trading_allocation_gbp")
                 if balance_summary
@@ -1695,6 +1776,7 @@ This report explains available evidence. It does not automatically change strate
             "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
             "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
             "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
+            "month_start_value": display_value(snapshot["month_start_value"], "no month-start snapshot yet"),
             "open_positions": positions,
             "open_positions_summary": f"{len(positions)}",
             "recent_orders": orders[:10],
@@ -1713,10 +1795,12 @@ This report explains available evidence. It does not automatically change strate
             "connection_status": row.get("status"),
             "portfolio_value": row.get("portfolio_balance"),
             "cash_available": row.get("cash_balance"),
+            "estimated_in_positions": _estimated_in_positions(row.get("portfolio_balance"), row.get("cash_balance")),
             "buying_power": None,
             "todays_pnl": row.get("last_day_pnl"),
             "week_pnl": row.get("last_week_pnl"),
             "month_pnl": row.get("last_month_pnl"),
+            "month_start_value": row.get("month_start_portfolio_balance"),
             "open_positions_summary": row.get("open_positions"),
             "source": "Alpaca Paper Trading",
         }
@@ -2171,6 +2255,31 @@ def _money_text(value: Any) -> str:
     return f"{number:,.2f}"
 
 
+def _estimated_in_positions(portfolio_value: Any, cash: Any) -> float | None:
+    portfolio_number = safe_float(portfolio_value)
+    cash_number = safe_float(cash)
+    if portfolio_number is None or cash_number is None:
+        return None
+    return portfolio_number - cash_number
+
+
+def _human_time(value: Any) -> str:
+    if not value:
+        return "Not available"
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    return parsed.strftime("%d %b %Y, %H:%M UTC")
+
+
 def _first_markdown_bullet(markdown: str) -> str | None:
     for line in markdown.splitlines():
         stripped = line.strip()
@@ -2225,12 +2334,18 @@ def _balance_summary_by_broker(snapshots: list[dict[str, Any]]) -> dict[str, dic
         end = ordered[-1]
         start_balance = safe_float(start.get("portfolio_value"))
         end_balance = safe_float(end.get("portfolio_value"))
+        start_cash = safe_float(start.get("cash"))
+        end_cash = safe_float(end.get("cash"))
         balance_change = None if start_balance is None or end_balance is None else end_balance - start_balance
         summary[broker] = {
             "start": start,
             "end": end,
             "start_balance": start_balance,
             "end_balance": end_balance,
+            "start_cash": start_cash,
+            "end_cash": end_cash,
+            "start_in_positions": _estimated_in_positions(start_balance, start_cash),
+            "end_in_positions": _estimated_in_positions(end_balance, end_cash),
             "balance_change": balance_change,
             "snapshot_count": len(ordered),
         }
@@ -2243,8 +2358,9 @@ def _balance_summary_lines(summary: dict[str, dict[str, Any]]) -> str:
     lines = []
     for broker, item in summary.items():
         lines.append(
-            f"- {broker.title()}: start {_money_text(item.get('start_balance'))} at {item['start'].get('created_at')}; "
-            f"end {_money_text(item.get('end_balance'))} at {item['end'].get('created_at')}; "
+            f"- {broker.title()}: start {_money_text(item.get('start_balance'))} at {_human_time(item['start'].get('created_at'))}; "
+            f"end {_money_text(item.get('end_balance'))} at {_human_time(item['end'].get('created_at'))}; "
+            f"cash {_money_text(item.get('end_cash'))}; estimated in positions {_money_text(item.get('end_in_positions'))}; "
             f"balance change {_money_text(item.get('balance_change'))}; snapshots {item.get('snapshot_count')}."
         )
     return "\n".join(lines)
@@ -2330,6 +2446,95 @@ def _report_likely_causes(
     return causes
 
 
+def _plain_english_report_answer(
+    balance_summary: dict[str, dict[str, Any]],
+    attribution: list[dict[str, Any]],
+    broker_trades: list[dict[str, Any]],
+    reconstructed: dict[str, Any],
+    report_context: dict[str, Any],
+    broker: str,
+) -> list[str]:
+    lines: list[str] = []
+    if balance_summary:
+        for name, item in balance_summary.items():
+            change = safe_float(item.get("balance_change"))
+            direction = "up" if (change or 0) > 0 else "down" if (change or 0) < 0 else "flat"
+            lines.append(
+                f"{name.title()} is {direction} by {_money_text(change)} over this report window. "
+                f"Latest account value is {_money_text(item.get('end_balance'))}, cash is {_money_text(item.get('end_cash'))}, "
+                f"and about {_money_text(item.get('end_in_positions'))} appears to be tied up in open positions."
+            )
+    else:
+        lines.append("No portfolio snapshots were found for this report window, so the app cannot prove start-to-end performance from stored balances.")
+
+    realised = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+    reconstructed_realised = safe_float(reconstructed.get("realized_pnl")) or 0.0
+    if attribution:
+        lines.append(f"Closed trade attribution says realised P&L was {_money_text(realised)} across {len(attribution)} closed trade(s).")
+    elif reconstructed.get("matched_trades"):
+        lines.append(f"Broker fills could be matched into realised P&L of {_money_text(reconstructed_realised)} across {len(reconstructed.get('matched_trades') or [])} round trip(s).")
+    elif broker_trades:
+        lines.append("Broker rows were found, but no complete buy/sell round trip was found in this window, so any gain or loss is probably still open/unrealised or from activity outside this window.")
+    else:
+        lines.append("No broker fills/orders were found in this report window. If the account moved, it was probably existing open-position value changing rather than a new closed trade today.")
+
+    latest = _latest_context_trade(report_context, broker)
+    if latest:
+        lines.append(
+            f"Latest visible broker activity: {str(latest.get('side') or latest.get('type') or '').upper()} "
+            f"{latest.get('symbol') or latest.get('pair') or 'unknown'} for {latest.get('qty') or latest.get('quantity') or 'unknown'} "
+            f"at {_money_text(latest.get('price') or latest.get('filled_avg_price'))}."
+        )
+    lines.append("Learning note: AI Trader should only claim trading-skill improvement from completed trades with entry, exit, and P&L. Open positions are useful evidence, but they are not final lessons yet.")
+    return lines
+
+
+def _current_open_position_lines(report_context: dict[str, Any], broker: str) -> str:
+    contexts = report_context if broker == "all" else {broker: report_context.get(broker)}
+    lines: list[str] = []
+    for broker_name, payload in contexts.items():
+        if not isinstance(payload, dict):
+            continue
+        positions = payload.get("open_positions") or []
+        portfolio_value = payload.get("portfolio_value")
+        cash = payload.get("cash_available")
+        invested = _estimated_in_positions(portfolio_value, cash)
+        if invested is not None:
+            lines.append(f"- {_broker_label(broker_name)}: estimated {_money_text(invested)} currently tied up outside cash.")
+        if positions:
+            for position in positions[:20]:
+                if not isinstance(position, dict):
+                    continue
+                symbol = position.get("symbol") or position.get("asset") or position.get("pair") or "unknown"
+                qty = position.get("qty") or position.get("quantity") or position.get("vol") or "N/A"
+                market_value = position.get("market_value") or position.get("value") or position.get("notional")
+                unrealized = position.get("unrealized_pl") or position.get("unrealised_pnl")
+                lines.append(f"  - {symbol}: qty {qty}, value {_money_text(market_value)}, unrealised P&L {_money_text(unrealized)}.")
+        elif invested is not None and abs(invested) > 0.01:
+            lines.append(f"  - Broker did not return position detail, but portfolio minus cash implies open holdings worth about {_money_text(invested)}.")
+    return "\n".join(lines) if lines else "- No open position detail was available from broker refresh."
+
+
+def _latest_context_trade(report_context: dict[str, Any], broker: str) -> dict[str, Any] | None:
+    contexts = report_context if broker == "all" else {broker: report_context.get(broker)}
+    latest_items: list[dict[str, Any]] = []
+    for payload in contexts.values():
+        if not isinstance(payload, dict):
+            continue
+        latest = payload.get("latest_trade")
+        if isinstance(latest, dict):
+            latest_items.append(latest)
+        for key in ["recent_activities", "recent_orders"]:
+            for item in payload.get(key) or []:
+                if isinstance(item, dict):
+                    latest_items.append(item)
+    latest_items.sort(
+        key=lambda item: item.get("transaction_time") or item.get("submitted_at") or item.get("updated_at") or item.get("created_at") or "",
+        reverse=True,
+    )
+    return latest_items[0] if latest_items else None
+
+
 def _report_trade_lines(attribution: list[dict[str, Any]]) -> str:
     if not attribution:
         return "- No closed trade attribution rows recorded for this report window."
@@ -2337,7 +2542,7 @@ def _report_trade_lines(attribution: list[dict[str, Any]]) -> str:
     for index, row in enumerate(attribution, start=1):
         lines.append(
             f"- Trade {index}: {row.get('broker', 'unknown')} {row.get('symbol', 'unknown')} {row.get('side', '')}; "
-            f"opened {row.get('opened_at') or 'N/A'}; closed {row.get('closed_at') or row.get('created_at') or 'N/A'}; "
+            f"opened {_human_time(row.get('opened_at'))}; closed {_human_time(row.get('closed_at') or row.get('created_at'))}; "
             f"entry {_money_text(row.get('entry_price'))}, exit {_money_text(row.get('exit_price'))}, "
             f"qty {row.get('quantity') or 'N/A'}, P&L {_money_text(row.get('profit_loss'))}, "
             f"entry reason {row.get('entry_reason') or 'N/A'}, exit reason {row.get('exit_reason') or 'N/A'}."
@@ -2358,8 +2563,8 @@ def _report_broker_trade_lines(broker_trades: list[dict[str, Any]]) -> str:
         price = _broker_trade_price(row)
         lines.append(
             f"- Row {index}: {row.get('broker', 'unknown')} {symbol or 'N/A'} {side or ''}; "
-            f"status {row.get('status') or 'N/A'}; opened {row.get('opened_at') or 'N/A'}; "
-            f"closed {row.get('closed_at') or 'N/A'}; updated {row.get('updated_at') or 'N/A'}; event time {event_time or 'N/A'}; "
+            f"status {row.get('status') or 'N/A'}; opened {_human_time(row.get('opened_at'))}; "
+            f"closed {_human_time(row.get('closed_at'))}; updated {_human_time(row.get('updated_at'))}; event time {_human_time(event_time)}; "
             f"qty {quantity if quantity is not None else 'N/A'}; price {_money_text(price)}; notional {_money_text(row.get('notional') or parsed.get('net_amount'))}; "
             f"raw type {parsed.get('type') or parsed.get('activity_type') or 'N/A'}."
         )
@@ -2434,8 +2639,8 @@ def _reconstructed_trade_lines(reconstructed: dict[str, Any]) -> str:
             result = "made" if (safe_float(row.get("profit_loss")) or 0.0) >= 0 else "lost"
             lines.append(
                 f"- Matched trade {index}: {row.get('broker', 'unknown')} {row.get('symbol')} "
-                f"{row.get('entry_side')}->{row.get('exit_side')}; opened {row.get('entry_time') or 'N/A'}; "
-                f"closed {row.get('exit_time') or 'N/A'}; qty {row.get('quantity')}; "
+                f"{row.get('entry_side')}->{row.get('exit_side')}; opened {_human_time(row.get('entry_time'))}; "
+                f"closed {_human_time(row.get('exit_time'))}; qty {row.get('quantity')}; "
                 f"entry {_money_text(row.get('entry_price'))}; exit {_money_text(row.get('exit_price'))}; "
                 f"{result} {_money_text(abs(safe_float(row.get('profit_loss')) or 0.0))}; P&L {_money_text(row.get('profit_loss'))}; "
                 f"reason: {row.get('reason')}."
@@ -2447,7 +2652,7 @@ def _reconstructed_trade_lines(reconstructed: dict[str, Any]) -> str:
         for row in open_lots:
             lines.append(
                 f"  - {row.get('broker', 'unknown')} {row.get('symbol')} {row.get('side')}; "
-                f"time {row.get('time') or 'N/A'}; qty {row.get('quantity')}; price {_money_text(row.get('price'))}; "
+                f"time {_human_time(row.get('time'))}; qty {row.get('quantity')}; price {_money_text(row.get('price'))}; "
                 f"reason: {row.get('reason')}"
             )
     return "\n".join(lines)

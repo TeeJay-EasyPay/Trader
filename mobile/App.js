@@ -270,6 +270,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   const recentTransactions = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution);
   const recommendationSummary = status?.recommendation_summary || {};
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
+  const founderSummary = status?.founder_executive_summary || null;
   const brokerPanels = status?.brokers || [];
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   const policy = status?.trading_policy || {};
@@ -320,6 +321,14 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
       </Section>
       <Section title="Executive Summary">
+        {founderSummary ? (
+          <View style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{notAvailable(founderSummary.headline)}</Text>
+            {(founderSummary.plain_english || []).map((line, index) => (
+              <Text key={`${line}-${index}`} style={styles.bodyText}>- {line}</Text>
+            ))}
+          </View>
+        ) : null}
         {!executiveSummary.length ? (
           <Empty />
         ) : (
@@ -328,6 +337,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Text style={styles.cardTitle}>{notAvailable(item.broker)}</Text>
               <Metric label="Balance" value={moneyOrText(item.portfolio_balance)} />
               <Metric label="Cash" value={moneyOrText(item.cash_balance)} />
+              <Metric label="Estimated In Positions" value={moneyOrText(item.estimated_in_positions)} />
               <Metric label="Day P&L" value={moneyOrText(item.last_day_pnl)} />
               <Metric label="Week P&L" value={moneyOrText(item.last_week_pnl)} />
               <Metric label="Month P&L" value={moneyOrText(item.last_month_pnl)} />
@@ -359,6 +369,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
         <Metric label="Portfolio Value" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'portfolio')} />
         <Metric label="Cash Available" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'cash')} />
+        <Metric label="Estimated In Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'invested')} />
         <Metric label="Today's P&L" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'dayPnl')} />
         <Metric label="Open Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'positions') || (positions.length ? `${positions.length}` : 'Not available')} />
         <Metric label="Active Recommendations" value={recommendationSummary.active} />
@@ -394,6 +405,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Metric label="Connection Status" value={broker.connection_status} />
               <Metric label="Portfolio" value={moneyOrText(broker.portfolio_value)} />
               <Metric label="Cash" value={moneyOrText(broker.cash_available)} />
+              <Metric label="Estimated In Positions" value={moneyOrText(broker.estimated_in_positions)} />
               <Metric label="Buying Power" value={moneyOrText(broker.buying_power)} />
               <Metric label="Open Positions" value={broker.open_positions} />
               <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
@@ -1194,14 +1206,36 @@ function selectedPortfolioValue(selectedExchange, summary, portfolio, field) {
     }
     if (field === 'portfolio') return moneyOrText(summary.portfolio_balance);
     if (field === 'cash') return moneyOrText(summary.cash_balance);
+    if (field === 'invested') return moneyOrText(summary.estimated_in_positions ?? estimateInvested(summary.portfolio_balance, summary.cash_balance));
     if (field === 'dayPnl') return moneyOrText(summary.last_day_pnl);
     if (field === 'positions') return summary.open_positions;
   }
   if (field === 'portfolio') return moneyOrText(portfolio?.portfolio_value);
   if (field === 'cash') return moneyOrText(portfolio?.cash_available);
+  if (field === 'invested') return moneyOrText(portfolio?.estimated_in_positions ?? estimateInvested(portfolio?.portfolio_value, portfolio?.cash_available));
   if (field === 'dayPnl') return moneyOrText(portfolio?.todays_pnl);
   if (field === 'positions') return portfolio?.open_positions_summary;
   return null;
+}
+
+function estimateInvested(portfolioValue, cashValue) {
+  const portfolioNumber = numberValue(portfolioValue);
+  const cashNumber = numberValue(cashValue);
+  if (portfolioNumber === null || cashNumber === null) {
+    return null;
+  }
+  return portfolioNumber - cashNumber;
+}
+
+function numberValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const parsed = Number(value.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function marketsOpenText(status) {
