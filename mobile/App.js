@@ -150,6 +150,25 @@ export default function App() {
     }
   };
 
+  const reportCommand = async (body = {}) => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({
+        type: body.type || 'daily',
+        date: body.date || todayIso(),
+        broker: body.broker || 'all',
+      }).toString();
+      const result = await request(`/trading-report?${query}`);
+      setLatestReport(result);
+      Alert.alert('Report ready', commandMessage('/trading-report', result));
+      await refresh();
+    } catch (error) {
+      Alert.alert('Report failed', String(error.message || error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const approve = async (proposalId) => {
     await command('/approve-and-execute', {
       proposal_id: proposalId,
@@ -171,6 +190,7 @@ export default function App() {
           setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
           onCommand={command}
+          onReport={reportCommand}
           onAckNotifications={(ids) => command('/notifications/ack', { notification_ids: ids })}
         />
       );
@@ -241,7 +261,7 @@ export default function App() {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onRefresh, onCommand, onAckNotifications }) {
+function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onRefresh, onCommand, onReport, onAckNotifications }) {
   const positions = portfolio?.open_positions || [];
   const recentTransactions = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution);
   const recommendationSummary = status?.recommendation_summary || {};
@@ -349,10 +369,10 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
       </Section>
       <Section title="Reports">
         <View style={styles.buttonGrid}>
-          <Button label="Today Report" onPress={() => onCommand('/generate-report', { type: 'daily', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} />
-          <Button label="Yesterday Report" onPress={() => onCommand('/generate-report', { type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
-          <Button label="Morning Report" onPress={() => onCommand('/generate-report', { type: 'morning', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
-          <Button label="Evening Report" onPress={() => onCommand('/generate-report', { type: 'evening', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+          <Button label="Today Report" onPress={() => onReport({ type: 'daily', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} />
+          <Button label="Yesterday Report" onPress={() => onReport({ type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
+          <Button label="Morning Report" onPress={() => onReport({ type: 'morning', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+          <Button label="Evening Report" onPress={() => onReport({ type: 'evening', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
         </View>
         <Text style={styles.smallText}>
           Reports explain P&L movement using broker snapshots, closed trades, orders, guardrail rejections, and learning notes.
@@ -387,7 +407,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
               <View style={styles.buttonGrid}>
                 <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
-                <Button label={`Daily Report (${label})`} onPress={() => onCommand('/generate-report', { type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
+                <Button label={`Daily Report (${label})`} onPress={() => onReport({ type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
                 <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
                 <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
               </View>
@@ -915,7 +935,7 @@ function commandMessage(path, result) {
   if (path === '/broker-auto-trading') {
     return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.`;
   }
-  if (path === '/generate-report') {
+  if (path === '/generate-report' || path === '/trading-report') {
     return `${notAvailable(result.report_type)} report generated for ${notAvailable(result.broker)} on ${notAvailable(result.date)}.\n\n${notAvailable(result.summary)}`;
   }
   return result.message || result.status || 'Done';
