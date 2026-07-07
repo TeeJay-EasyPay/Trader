@@ -70,6 +70,7 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
 - Generated reports are now saved under the output folder's `reports/` directory, stored in SQLite table `TRADING_REPORTS`, and served in the browser at `/reports/{report_id}`.
 - The mobile app opens the report browser page automatically and provides an `Open Report` button on the generated report panel.
 - Reports explain P&L movement using broker snapshots, closed performance attribution, broker trade history, guardrail/orchestrator rejections, and learning recommendations.
+- Reports now include a fuller trade-performance structure for daily, morning, evening, weekly, and monthly windows: start/end balance, period performance, all closed trades with entry/exit/times/P&L, broker trade rows, why money was won or lost, lessons learned, and Founder-approved improvement recommendations.
 - Verified Python tests: 70/70.
 - Verified Expo Doctor: 17/17.
 

@@ -24,7 +24,7 @@ from .ai import OpenAIProposalAnalyzer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
-from .briefing import generate_daily_briefing, generate_session_brief
+from .briefing import generate_daily_briefing
 from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from .config import Settings, load_settings
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
@@ -542,15 +542,9 @@ class LocalApiService:
             parsed_date = date.today()
             report_date = parsed_date.isoformat()
         if report_type in {"morning", "evening"}:
-            session_markdown = generate_session_brief(
-                db_path=self.settings.db_path,
-                output_dir=self.settings.output_dir,
-                brief_type=report_type,
-                briefing_date=parsed_date,
-            )
-            markdown = f"{session_markdown}\n\n{self._broker_learning_report_markdown(report_date, broker, report_type)}"
+            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type)
         else:
-            markdown = self._broker_learning_report_markdown(report_date, broker, report_type)
+            markdown = self._broker_learning_report_markdown(parsed_date, broker, report_type)
             if persist and broker == "all":
                 self.audit.record_briefing(report_date, markdown, {"report_type": report_type, "broker": broker})
         path = self._write_trading_report(report_date, broker, report_type, markdown) if persist else None
@@ -625,9 +619,10 @@ class LocalApiService:
 </html>"""
         return 200, {"html": page}
 
-    def _broker_learning_report_markdown(self, report_date: str, broker: str, report_type: str) -> str:
-        start = f"{report_date}T00:00:00"
-        end = f"{report_date}T23:59:59"
+    def _broker_learning_report_markdown(self, report_date: date, broker: str, report_type: str) -> str:
+        period = _report_period(report_date, report_type)
+        start = period["start"]
+        end = period["end"]
         broker_filter = "" if broker == "all" else " AND LOWER(broker) = LOWER(?)"
         broker_params: tuple[Any, ...] = () if broker == "all" else (broker,)
         snapshots = [
@@ -647,8 +642,8 @@ class LocalApiService:
             for row in self._rows(
                 f"""
                 SELECT * FROM PERFORMANCE_ATTRIBUTION
-                WHERE created_at >= ? AND created_at <= ?{broker_filter}
-                ORDER BY attribution_id DESC
+                WHERE COALESCE(closed_at, created_at) >= ? AND COALESCE(closed_at, created_at) <= ?{broker_filter}
+                ORDER BY COALESCE(closed_at, created_at) ASC, attribution_id ASC
                 """,
                 (start, end, *broker_params),
             )
@@ -671,14 +666,13 @@ class LocalApiService:
             for row in self._rows(
                 f"""
                 SELECT * FROM BROKER_TRADE_HISTORY
-                WHERE updated_at >= ? AND updated_at <= ?{broker_filter}
-                ORDER BY trade_history_id DESC
-                LIMIT 30
+                WHERE COALESCE(closed_at, opened_at, updated_at) >= ? AND COALESCE(closed_at, opened_at, updated_at) <= ?{broker_filter}
+                ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC, trade_history_id ASC
                 """,
                 (start, end, *broker_params),
             )
         ]
-        learning = self.daily_learning_update(report_date)
+        learning = self.daily_learning_update(report_date.isoformat())
         if broker != "all":
             learning = {
                 **learning,
@@ -687,47 +681,53 @@ class LocalApiService:
         total_closed_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
         losing_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
         winning_trades = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
-        latest_snapshots = _latest_snapshot_by_broker(snapshots)
-        pnl_lines = []
-        for name, row in latest_snapshots.items():
-            pnl_lines.append(
-                f"- {name.title()}: day P&L {_money_text(row.get('day_pnl'))}, "
-                f"week P&L {_money_text(row.get('week_pnl'))}, portfolio {_money_text(row.get('portfolio_value'))}"
-            )
+        balance_summary = _balance_summary_by_broker(snapshots)
+        performance_lines = _performance_summary_lines(balance_summary, attribution, broker_trades)
         likely_causes = _report_likely_causes(snapshots, attribution, decisions, broker_trades)
         markdown = f"""# AI Trader {report_type.title()} Trading Report
 
-Date: {report_date}
+Report Date: {report_date.isoformat()}
+Period: {period["label"]}
+Window Start: {start}
+Window End: {end}
 Broker: {broker.title() if broker != "all" else "All brokers"}
 
 ## Executive Answer
 
-- Latest broker snapshot movement: {len(latest_snapshots)} broker snapshot(s) reviewed.
+- Start/end balance snapshots reviewed: {len(balance_summary)} broker(s).
 - Closed trade P&L recorded in attribution: {_money_text(total_closed_pnl)}.
 - Closed winners: {len(winning_trades)}.
 - Closed losers: {len(losing_trades)}.
 - Orchestrator decisions reviewed: {len(decisions)}.
 - Broker trade-history rows reviewed: {len(broker_trades)}.
 
-## P&L Snapshot
+## Start And End Balances
 
-{_list_or_none(pnl_lines)}
+{_balance_summary_lines(balance_summary)}
+
+## Performance Over The Period
+
+{_list_or_none(performance_lines)}
 
 ## Why Performance Moved
 
 {_list_or_none(likely_causes)}
 
-## Closed Trade Detail
+## All Closed Trades With Entry, Exit, Times, And P&L
 
 {_report_trade_lines(attribution)}
+
+## Broker Trade / Order Rows
+
+{_report_broker_trade_lines(broker_trades)}
 
 ## Guardrail And Orchestrator Rejections
 
 {_report_decision_lines(decisions)}
 
-## What AI Trader Learned
+## Lessons Learned
 
-{_list_or_none(learning.get("trade_lessons") or [])}
+{_list_or_none(_period_lessons(attribution, decisions, snapshots, broker_trades, learning.get("trade_lessons") or []))}
 
 ## Successful Trader / Benchmark Learning
 
@@ -735,7 +735,7 @@ Broker: {broker.title() if broker != "all" else "All brokers"}
 
 ## Recommendations For Founder Approval
 
-{_list_or_none(learning.get("recommendations_for_founder") or [])}
+{_list_or_none(_period_recommendations(attribution, decisions, learning.get("recommendations_for_founder") or []))}
 
 ## Important Note
 
@@ -2171,12 +2171,100 @@ def _first_markdown_bullet(markdown: str) -> str | None:
     return None
 
 
-def _latest_snapshot_by_broker(snapshots: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
+def _report_period(report_date: date, report_type: str) -> dict[str, str]:
+    report_type = report_type.lower()
+    if report_type == "morning":
+        start_date = report_date - timedelta(days=1)
+        start_dt = datetime(start_date.year, start_date.month, start_date.day, 16, 0, tzinfo=timezone.utc)
+        end_dt = datetime(report_date.year, report_date.month, report_date.day, 9, 0, tzinfo=timezone.utc)
+        label = "Morning report window: prior market close through 09:00 UTC"
+    elif report_type == "evening":
+        start_dt = datetime(report_date.year, report_date.month, report_date.day, 9, 0, tzinfo=timezone.utc)
+        end_dt = datetime(report_date.year, report_date.month, report_date.day, 23, 59, 59, tzinfo=timezone.utc)
+        label = "Evening report window: 09:00 UTC through end of day"
+    elif report_type == "weekly":
+        start_date = report_date - timedelta(days=report_date.weekday())
+        end_date = start_date + timedelta(days=6)
+        start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
+        end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+        label = f"Weekly report window: ISO week starting {start_date.isoformat()}"
+    elif report_type == "monthly":
+        start_date = report_date.replace(day=1)
+        if start_date.month == 12:
+            next_month = start_date.replace(year=start_date.year + 1, month=1)
+        else:
+            next_month = start_date.replace(month=start_date.month + 1)
+        end_date = next_month - timedelta(days=1)
+        start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc)
+        end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+        label = f"Monthly report window: {start_date.strftime('%B %Y')}"
+    else:
+        start_dt = datetime(report_date.year, report_date.month, report_date.day, tzinfo=timezone.utc)
+        end_dt = datetime(report_date.year, report_date.month, report_date.day, 23, 59, 59, tzinfo=timezone.utc)
+        label = "Daily report window: full calendar day UTC"
+    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "label": label}
+
+
+def _balance_summary_by_broker(snapshots: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in snapshots:
         broker = str(row.get("broker") or row.get("exchange") or "unknown")
-        latest[broker] = row
-    return latest
+        grouped[broker].append(row)
+    summary: dict[str, dict[str, Any]] = {}
+    for broker, rows in grouped.items():
+        ordered = sorted(rows, key=lambda item: item.get("created_at") or "")
+        start = ordered[0]
+        end = ordered[-1]
+        start_balance = safe_float(start.get("portfolio_value"))
+        end_balance = safe_float(end.get("portfolio_value"))
+        balance_change = None if start_balance is None or end_balance is None else end_balance - start_balance
+        summary[broker] = {
+            "start": start,
+            "end": end,
+            "start_balance": start_balance,
+            "end_balance": end_balance,
+            "balance_change": balance_change,
+            "snapshot_count": len(ordered),
+        }
+    return summary
+
+
+def _balance_summary_lines(summary: dict[str, dict[str, Any]]) -> str:
+    if not summary:
+        return "- No start/end portfolio snapshots were available for this period."
+    lines = []
+    for broker, item in summary.items():
+        lines.append(
+            f"- {broker.title()}: start {_money_text(item.get('start_balance'))} at {item['start'].get('created_at')}; "
+            f"end {_money_text(item.get('end_balance'))} at {item['end'].get('created_at')}; "
+            f"balance change {_money_text(item.get('balance_change'))}; snapshots {item.get('snapshot_count')}."
+        )
+    return "\n".join(lines)
+
+
+def _performance_summary_lines(
+    balance_summary: dict[str, dict[str, Any]],
+    attribution: list[dict[str, Any]],
+    broker_trades: list[dict[str, Any]],
+) -> list[str]:
+    lines = []
+    total_closed_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+    total_balance_change = sum(
+        safe_float(item.get("balance_change")) or 0.0
+        for item in balance_summary.values()
+        if safe_float(item.get("balance_change")) is not None
+    )
+    lines.append(f"Closed-trade realised/attributed P&L: {_money_text(total_closed_pnl)}.")
+    if balance_summary:
+        lines.append(f"Start-to-end portfolio balance movement across available broker snapshots: {_money_text(total_balance_change)}.")
+    else:
+        lines.append("Start-to-end portfolio balance movement is unavailable because no period snapshots were recorded.")
+    lines.append(f"Closed trade count with full attribution: {len(attribution)}.")
+    lines.append(f"Broker trade/order rows reviewed: {len(broker_trades)}.")
+    if balance_summary and attribution:
+        difference = total_balance_change - total_closed_pnl
+        lines.append(f"Difference between balance movement and closed-trade attribution: {_money_text(difference)}. This can include open/unrealised P&L, deposits/withdrawals, fees, FX, or broker valuation movement.")
+    return lines
 
 
 def _report_likely_causes(
@@ -2186,17 +2274,26 @@ def _report_likely_causes(
     broker_trades: list[dict[str, Any]],
 ) -> list[str]:
     causes: list[str] = []
-    latest_snapshots = _latest_snapshot_by_broker(snapshots)
-    for broker, row in latest_snapshots.items():
-        day_pnl = safe_float(row.get("day_pnl"))
-        if day_pnl is not None and day_pnl < 0:
-            causes.append(f"{broker.title()} latest day P&L snapshot is negative at {_money_text(day_pnl)}.")
-        elif day_pnl is not None and day_pnl > 0:
-            causes.append(f"{broker.title()} latest day P&L snapshot is positive at {_money_text(day_pnl)}.")
+    balance_summary = _balance_summary_by_broker(snapshots)
+    for broker, item in balance_summary.items():
+        change = safe_float(item.get("balance_change"))
+        latest_day_pnl = safe_float(item["end"].get("day_pnl"))
+        if change is not None and change < 0:
+            causes.append(f"{broker.title()} start-to-end balance fell by {_money_text(change)} over the report window.")
+        elif change is not None and change > 0:
+            causes.append(f"{broker.title()} start-to-end balance rose by {_money_text(change)} over the report window.")
+        if latest_day_pnl is not None and latest_day_pnl < 0:
+            causes.append(f"{broker.title()} latest broker day P&L snapshot is negative at {_money_text(latest_day_pnl)}.")
+        elif latest_day_pnl is not None and latest_day_pnl > 0:
+            causes.append(f"{broker.title()} latest broker day P&L snapshot is positive at {_money_text(latest_day_pnl)}.")
     closed_losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+    closed_wins = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
     if closed_losses:
         symbols = Counter(str(row.get("symbol") or "unknown") for row in closed_losses)
         causes.append(f"Closed losing trades contributed {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in closed_losses))}; symbols involved: {dict(symbols)}.")
+    if closed_wins:
+        symbols = Counter(str(row.get("symbol") or "unknown") for row in closed_wins)
+        causes.append(f"Closed winning trades contributed {_money_text(sum(safe_float(row.get('profit_loss')) or 0.0 for row in closed_wins))}; symbols involved: {dict(symbols)}.")
     if not attribution and broker_trades:
         causes.append("Broker trade/order rows exist, but no closed performance-attribution rows were recorded yet; part of the movement may be open/unrealised P&L.")
     if not attribution and not broker_trades:
@@ -2210,14 +2307,29 @@ def _report_likely_causes(
 
 def _report_trade_lines(attribution: list[dict[str, Any]]) -> str:
     if not attribution:
-        return "- No closed trade attribution rows recorded for this date."
+        return "- No closed trade attribution rows recorded for this report window."
     lines = []
-    for row in attribution[:20]:
+    for index, row in enumerate(attribution, start=1):
         lines.append(
-            f"- {row.get('broker', 'unknown')} {row.get('symbol', 'unknown')} {row.get('side', '')}: "
+            f"- Trade {index}: {row.get('broker', 'unknown')} {row.get('symbol', 'unknown')} {row.get('side', '')}; "
+            f"opened {row.get('opened_at') or 'N/A'}; closed {row.get('closed_at') or row.get('created_at') or 'N/A'}; "
             f"entry {_money_text(row.get('entry_price'))}, exit {_money_text(row.get('exit_price'))}, "
             f"qty {row.get('quantity') or 'N/A'}, P&L {_money_text(row.get('profit_loss'))}, "
-            f"exit reason {row.get('exit_reason') or 'N/A'}"
+            f"entry reason {row.get('entry_reason') or 'N/A'}, exit reason {row.get('exit_reason') or 'N/A'}."
+        )
+    return "\n".join(lines)
+
+
+def _report_broker_trade_lines(broker_trades: list[dict[str, Any]]) -> str:
+    if not broker_trades:
+        return "- No broker trade/order rows recorded for this report window."
+    lines = []
+    for index, row in enumerate(broker_trades, start=1):
+        lines.append(
+            f"- Row {index}: {row.get('broker', 'unknown')} {row.get('symbol') or 'N/A'} {row.get('side') or ''}; "
+            f"status {row.get('status') or 'N/A'}; opened {row.get('opened_at') or 'N/A'}; "
+            f"closed {row.get('closed_at') or 'N/A'}; updated {row.get('updated_at') or 'N/A'}; "
+            f"qty {row.get('quantity') or 'N/A'}; price {_money_text(row.get('price'))}; notional {_money_text(row.get('notional'))}."
         )
     return "\n".join(lines)
 
@@ -2230,6 +2342,59 @@ def _report_decision_lines(decisions: list[dict[str, Any]]) -> str:
         f"- {row.get('symbol', 'unknown')} via {row.get('selected_broker') or 'unknown'}: {row.get('rejection_reason') or 'rejected'}"
         for row in rejected[:20]
     )
+
+
+def _period_lessons(
+    attribution: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    snapshots: list[dict[str, Any]],
+    broker_trades: list[dict[str, Any]],
+    base_lessons: list[str],
+) -> list[str]:
+    lessons = list(base_lessons)
+    losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+    wins = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
+    if losses:
+        exit_reasons = Counter(str(row.get("exit_reason") or "unknown") for row in losses)
+        lessons.append(f"Loss-making closed trades should be reviewed by exit reason before the next trading cycle: {dict(exit_reasons)}.")
+        lessons.append("For the next trades, require the entry thesis to explain why the setup is stronger than the losing trades in this report window.")
+    if wins:
+        entry_reasons = Counter(str(row.get("entry_reason") or "unknown") for row in wins)
+        lessons.append(f"Winning closed trades shared these entry reasons: {dict(entry_reasons)}. Future trades should explicitly compare against these patterns.")
+    if not attribution and broker_trades:
+        lessons.append("Broker activity exists without closed attribution; improve reconciliation before drawing firm conclusions about realised strategy quality.")
+    if snapshots and not attribution:
+        lessons.append("Balance movement without closed attribution suggests open-position/unrealised P&L or valuation movement; avoid changing strategy until open trades are reconciled.")
+    rejected = [row for row in decisions if row.get("decision") == "rejected"]
+    if rejected:
+        reasons = Counter(str(row.get("rejection_reason") or "unknown") for row in rejected)
+        lessons.append(f"Rejected recommendations show what the system avoided: {dict(reasons)}.")
+    return _dedupe_lines(lessons)
+
+
+def _period_recommendations(attribution: list[dict[str, Any]], decisions: list[dict[str, Any]], base_recommendations: list[str]) -> list[str]:
+    recommendations = list(base_recommendations)
+    losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
+    if losses:
+        recommendations.append("Before approving larger size, review each losing trade's entry timing, stop distance, and whether the exit matched the planned stop/take-profit.")
+        recommendations.append("Keep or reduce position size until the next report shows that losses are smaller than winners over the same period.")
+    if not attribution:
+        recommendations.append("Do not infer profitability from broker balance movement alone; wait for closed-trade attribution or inspect open positions.")
+    rejected = [row for row in decisions if row.get("decision") == "rejected"]
+    if rejected:
+        recommendations.append("Do not loosen guardrails purely to increase trade count; repeated rejection reasons should be reviewed by the Founder first.")
+    return _dedupe_lines(recommendations)
+
+
+def _dedupe_lines(items: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for item in items:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:

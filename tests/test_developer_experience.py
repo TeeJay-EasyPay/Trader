@@ -93,7 +93,17 @@ class DeveloperExperienceTests(unittest.TestCase):
                             created_at, broker, exchange, portfolio_value, cash,
                             buying_power, day_pnl, week_pnl, month_pnl,
                             open_positions_count, notes
-                        ) VALUES (?, 'alpaca', 'Alpaca', 99000, 10000, 40000, -1000, -2000, -2000, 1, 'test')
+                        ) VALUES (?, 'alpaca', 'Alpaca', 100000, 10000, 40000, 0, 0, 0, 1, 'start')
+                        """,
+                        (f"{report_date}T09:00:00+00:00",),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO PORTFOLIO_SNAPSHOTS (
+                            created_at, broker, exchange, portfolio_value, cash,
+                            buying_power, day_pnl, week_pnl, month_pnl,
+                            open_positions_count, notes
+                        ) VALUES (?, 'alpaca', 'Alpaca', 99000, 10000, 40000, -1000, -2000, -2000, 1, 'end')
                         """,
                         (f"{report_date}T15:00:00+00:00",),
                     )
@@ -113,9 +123,15 @@ class DeveloperExperienceTests(unittest.TestCase):
 
             self.assertEqual(status, 200)
             self.assertEqual(payload["status"], "generated")
+            self.assertIn("Start And End Balances", payload["report_markdown"])
+            self.assertIn("Performance Over The Period", payload["report_markdown"])
             self.assertIn("negative", payload["report_markdown"])
             self.assertIn("NVDA", payload["report_markdown"])
-            self.assertIn("What AI Trader Learned", payload["report_markdown"])
+            self.assertIn("opened 2026-07-07T15:00:00+00:00", payload["report_markdown"])
+            self.assertIn("closed 2026-07-07T16:00:00+00:00", payload["report_markdown"])
+            self.assertIn("P&L -100.00", payload["report_markdown"])
+            self.assertIn("Lessons Learned", payload["report_markdown"])
+            self.assertIn("Recommendations For Founder Approval", payload["report_markdown"])
             self.assertTrue(Path(payload["path"]).exists())
             self.assertIsNotNone(payload["report_id"])
             self.assertEqual(payload["report_url"], f"/reports/{payload['report_id']}")
@@ -128,6 +144,12 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(page_status, 200)
             self.assertIn("html", page_payload)
             self.assertIn("AI Trader Daily Report", page_payload["html"])
+
+            weekly_status, weekly_payload = service.get("/trading-report", {"date": [report_date], "broker": ["alpaca"], "type": ["weekly"]})
+
+            self.assertEqual(weekly_status, 200)
+            self.assertIn("Weekly report window", weekly_payload["report_markdown"])
+            self.assertIn("Start And End Balances", weekly_payload["report_markdown"])
 
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:

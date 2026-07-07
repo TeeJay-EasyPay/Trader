@@ -632,6 +632,16 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Generated report Markdown files now live under the backend output folder's `reports/` directory.
 - Added browser report pages at `/reports/{report_id}`.
 - Updated the mobile app to open the report browser URL automatically and show an `Open Report` button.
+- Expanded report detail for daily, morning, evening, weekly, and monthly windows:
+  - report window start/end,
+  - start and end balances,
+  - period performance summary,
+  - every closed trade with opened/closed times, entry, exit, quantity, and P&L,
+  - broker trade/order rows,
+  - explanation of why money was won or lost,
+  - lessons learned,
+  - Founder-approved recommendations.
+- Added Weekly Report and Monthly Report buttons to the mobile Reports section.
 - Added a regression test proving a negative P&L day and losing closed trade are explained in the generated report.
 - Verification completed:
   - Python compile check passed.

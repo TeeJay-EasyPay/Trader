@@ -377,6 +377,8 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
           <Button label="Yesterday Report" onPress={() => onReport({ type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
           <Button label="Morning Report" onPress={() => onReport({ type: 'morning', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
           <Button label="Evening Report" onPress={() => onReport({ type: 'evening', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+          <Button label="Weekly Report" onPress={() => onReport({ type: 'weekly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
+          <Button label="Monthly Report" onPress={() => onReport({ type: 'monthly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
         </View>
         <Text style={styles.smallText}>
           Reports explain P&L movement using broker snapshots, closed trades, orders, guardrail rejections, and learning notes.
