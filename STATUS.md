@@ -54,6 +54,11 @@ misapplied to Kraken) that would otherwise have silently kept Kraken from ever t
 - `GET /daily-learning-update` added for a daily plain-English review of closed trades, wins/losses, guardrail rejections, benchmark/successful-trader learning, and Founder-approved improvement recommendations.
 - Intelligence screen now shows the Daily Trading Learning Update so the Founder can see what AI Trader learned the previous day without opening the database.
 - Mobile app now reads performance attribution and broker trade history so Kraken/crypto trades can surface entry, exit, and P&L detail when available.
+- Backend commit pushed: `79df559`.
+- Mobile OTA updates published for runtime `1.0.1`:
+  - `preview` update group: `854ca353-8bd3-4590-8153-dd7b1d4a0c7d`.
+  - `hosted-preview` update group: `3388fe5e-18ee-4a19-8ee8-11b1049a4fbb`.
+- Hosted checks after push: `/healthz`, `/status`, and `/recommendations` returned 200; `/daily-learning-update` and `/performance-attribution` were not reachable from this environment and need Render log review if they remain unavailable after deployment settles.
 
 ## Working
 

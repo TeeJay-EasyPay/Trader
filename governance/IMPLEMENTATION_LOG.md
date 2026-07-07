@@ -604,3 +604,12 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - Python unit test suite passed: 69/69.
   - `git diff --check` passed.
   - `npx expo-doctor` passed: 17/17 checks.
+- Committed and pushed backend/mobile changes as `79df559`.
+- Published EAS OTA updates for runtime `1.0.1`:
+  - `preview`: update group `854ca353-8bd3-4590-8153-dd7b1d4a0c7d`.
+  - `hosted-preview`: update group `3388fe5e-18ee-4a19-8ee8-11b1049a4fbb`.
+- Hosted verification after push:
+  - `/healthz` returned 200.
+  - `/status` returned 200.
+  - `/recommendations` returned 200.
+  - `/daily-learning-update` and `/performance-attribution` were not reachable from this environment; this matches the previously observed hosted instability around attribution endpoints and should be checked in Render logs if it persists.
