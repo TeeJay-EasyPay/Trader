@@ -3120,17 +3120,16 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
         raw_balance_rows.append({"asset": asset, "normalized_asset": normalized, "quantity": qty})
         if normalized == "GBP":
             continue
-        if normalized in {"USD", "EUR", "USDT", "USDC"}:
-            unpriced_assets.append({"asset": asset, "normalized_asset": normalized, "quantity": qty, "reason": "fiat_or_stablecoin_not_converted_to_gbp"})
-            continue
-        pair = _kraken_pair(normalized)
-        price = None
-        try:
-            price = _kraken_last_price(adapter.current_prices([pair]), pair)
-        except Exception:
-            price = None
+        price_result = _kraken_asset_gbp_price(adapter, normalized)
+        price = price_result.get("price_gbp")
         if price is None:
-            unpriced_assets.append({"asset": asset, "normalized_asset": normalized, "quantity": qty, "reason": "gbp_price_unavailable"})
+            unpriced_assets.append({
+                "asset": asset,
+                "normalized_asset": normalized,
+                "quantity": qty,
+                "reason": price_result.get("reason") or "gbp_price_unavailable",
+                "pairs_tried": price_result.get("pairs_tried") or [],
+            })
             continue
         value_gbp = qty * price
         total += value_gbp
@@ -3138,7 +3137,8 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
             "asset": asset,
             "normalized_asset": normalized,
             "quantity": qty,
-            "pair": pair,
+            "pair": price_result.get("pair"),
+            "pricing_route": price_result.get("pricing_route"),
             "price_gbp": price,
             "value_gbp": value_gbp,
         })
@@ -3171,6 +3171,64 @@ def _kraken_gbp_cash(balances: Any) -> float | None:
             total += amount
             found = True
     return total if found else None
+
+
+def _kraken_asset_gbp_price(adapter: Any, normalized: str) -> dict[str, Any]:
+    normalized = str(normalized or "").upper()
+    if normalized == "GBP":
+        return {"price_gbp": 1.0, "pair": "GBP", "pricing_route": "cash"}
+    pairs_tried: list[str] = []
+    direct_pair = _kraken_pair(normalized, "GBP")
+    direct = _kraken_pair_price(adapter, direct_pair)
+    pairs_tried.append(direct_pair)
+    if direct is not None:
+        return {"price_gbp": direct, "pair": direct_pair, "pricing_route": "direct_gbp", "pairs_tried": pairs_tried}
+    if normalized in {"USD", "USDT", "USDC"}:
+        usd_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried)
+        if usd_to_gbp is not None:
+            return {"price_gbp": usd_to_gbp, "pair": "USDGBP", "pricing_route": "usd_to_gbp", "pairs_tried": pairs_tried}
+    if normalized == "EUR":
+        eur_pair = _kraken_pair("EUR", "GBP")
+        eur_to_gbp = _kraken_pair_price(adapter, eur_pair)
+        pairs_tried.append(eur_pair)
+        if eur_to_gbp is not None:
+            return {"price_gbp": eur_to_gbp, "pair": eur_pair, "pricing_route": "eur_to_gbp", "pairs_tried": pairs_tried}
+    for quote in ["USD", "USDT", "USDC"]:
+        asset_pair = _kraken_pair(normalized, quote)
+        asset_to_quote = _kraken_pair_price(adapter, asset_pair)
+        pairs_tried.append(asset_pair)
+        if asset_to_quote is None:
+            continue
+        quote_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried)
+        if quote_to_gbp is None:
+            continue
+        return {
+            "price_gbp": asset_to_quote * quote_to_gbp,
+            "pair": asset_pair,
+            "pricing_route": f"{quote.lower()}_bridge_to_gbp",
+            "pairs_tried": pairs_tried,
+        }
+    return {"price_gbp": None, "reason": "no_direct_or_bridge_gbp_price", "pairs_tried": pairs_tried}
+
+
+def _kraken_usd_to_gbp(adapter: Any, pairs_tried: list[str]) -> float | None:
+    for pair in ["USDGBP", "USDTGBP", "USDCGBP"]:
+        price = _kraken_pair_price(adapter, pair)
+        pairs_tried.append(pair)
+        if price is not None:
+            return price
+    inverse = _kraken_pair_price(adapter, "GBPUSD")
+    pairs_tried.append("GBPUSD")
+    if inverse:
+        return 1 / inverse
+    return None
+
+
+def _kraken_pair_price(adapter: Any, pair: str) -> float | None:
+    try:
+        return _kraken_last_price(adapter.current_prices([pair]), pair)
+    except Exception:
+        return None
 
 
 def _kraken_asset_symbol(asset: str) -> str:

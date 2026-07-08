@@ -219,6 +219,24 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_balance_summary_bridges_usd_pairs_to_gbp(self):
+        previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
+        try:
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            adapter = FakeKrakenAdapter()
+            adapter.prices = {
+                "QNTUSD": {"c": ["40"]},
+                "USDGBP": {"c": ["0.8"]},
+            }
+
+            summary = _kraken_balance_summary({"QNT": "2"}, adapter)
+
+            self.assertEqual(summary["total_estimated_gbp"], 64.0)
+            self.assertEqual(summary["converted_assets"][0]["pricing_route"], "usd_bridge_to_gbp")
+            self.assertEqual(summary["converted_assets"][0]["pair"], "QNTUSD")
+        finally:
+            restore_env(previous)
+
     def test_closing_a_buy_position_at_a_lower_price_records_a_loss(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
@@ -309,7 +327,7 @@ class FakeKrakenAdapter(KrakenAdapter):
         return {"result": {}}
 
     def current_prices(self, symbols):
-        return self.prices
+        return {symbol: self.prices[symbol] for symbol in symbols if symbol in self.prices}
 
 
 def restore_env(previous):
