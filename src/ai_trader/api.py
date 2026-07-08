@@ -132,6 +132,8 @@ GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
 class LocalApiService:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.hosted_read_only = False
+        self.api_token_configured = bool(os.getenv("AI_TRADER_API_TOKEN"))
         self.audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
         self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
@@ -1767,12 +1769,26 @@ This report explains available evidence. It does not automatically change strate
         }
 
     def connection_readiness(self, panels: list[dict[str, Any]]) -> dict[str, Any]:
+        control_ready = not self.hosted_read_only
+        control_status = "unlocked" if control_ready else "locked"
+        if control_ready and not self.api_token_configured:
+            control_status = "local token not required"
         checks = [
             {
                 "component": "Render API",
                 "status": "connected",
                 "ready": True,
                 "detail": "The mobile app reached the hosted API and received this status response.",
+            },
+            {
+                "component": "Control Actions",
+                "status": control_status,
+                "ready": control_ready,
+                "detail": (
+                    "POST trading/control commands are enabled for this API."
+                    if control_ready
+                    else "Hosted POST trading/control commands are locked until AI_TRADER_API_TOKEN is configured in Render."
+                ),
             },
             {
                 "component": "OpenAI",
@@ -1806,7 +1822,7 @@ This report explains available evidence. It does not automatically change strate
         trade_ready = all(
             item["ready"]
             for item in checks
-            if item["component"] in {"Render API", "OpenAI", "Alpaca", "Kraken"}
+            if item["component"] in {"Render API", "Control Actions", "OpenAI", "Alpaca", "Kraken"}
         )
         return {
             "overall_status": "ready" if trade_ready else "attention_needed",
@@ -2277,6 +2293,8 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
             host,
         )
     service = LocalApiService(settings)
+    service.hosted_read_only = hosted_read_only
+    service.api_token_configured = bool(api_token)
     service.intelligence.seed_initial_data()
     service.benchmark.seed_initial_data()
     seed_crypto_universe(service.settings.db_path, fetch_live=False)

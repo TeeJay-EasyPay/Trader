@@ -281,6 +281,20 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload["status"], "ok")
 
+    def test_connection_readiness_shows_hosted_control_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            service.hosted_read_only = True
+            service.api_token_configured = False
+
+            readiness = service.connection_readiness([])
+            control = next(item for item in readiness["checks"] if item["component"] == "Control Actions")
+
+            self.assertFalse(readiness["trade_ready"])
+            self.assertEqual(control["status"], "locked")
+            self.assertFalse(control["ready"])
+            self.assertIn("AI_TRADER_API_TOKEN", control["detail"])
+
     def test_api_token_authorization_accepts_bearer_or_api_key(self):
         class Headers:
             def __init__(self, values):
