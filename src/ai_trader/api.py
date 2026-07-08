@@ -421,6 +421,7 @@ class LocalApiService:
         brokers = self.broker_panels()
         executive_summary = self.executive_summary(brokers)
         founder_summary = self.founder_executive_summary(brokers, executive_summary)
+        readiness = self.connection_readiness(brokers)
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -447,6 +448,7 @@ class LocalApiService:
             "morning_brief": latest_morning,
             "evening_brief": latest_evening,
             "cloud_api_health": "Available",
+            "connection_readiness": readiness,
             "latest_activity": [dict(row) for row in last_activity],
             "recent_transactions": [dict(row) for row in recent_transactions],
             "recommendation_summary": {
@@ -1751,6 +1753,55 @@ This report explains available evidence. It does not automatically change strate
             "headline": headline,
             "plain_english": broker_lines + [trade_line, learning_line],
             "latest_trade": latest_trade,
+        }
+
+    def connection_readiness(self, panels: list[dict[str, Any]]) -> dict[str, Any]:
+        checks = [
+            {
+                "component": "Render API",
+                "status": "connected",
+                "ready": True,
+                "detail": "The mobile app reached the hosted API and received this status response.",
+            },
+            {
+                "component": "OpenAI",
+                "status": "configured" if self.settings.openai_api_key else "missing",
+                "ready": bool(self.settings.openai_api_key),
+                "detail": "Ask AI Trader and AI proposal analysis can use OpenAI." if self.settings.openai_api_key else "OPENAI_API_KEY is not configured for this deployment.",
+            },
+        ]
+        for broker in panels:
+            key = str(broker.get("broker") or "").lower()
+            if key not in {"alpaca", "kraken", "coinbase", "binance", "interactive_brokers"}:
+                continue
+            connected = str(broker.get("connection_status") or "").lower() == "connected"
+            auto_enabled = bool(broker.get("auto_trading_enabled"))
+            detail = broker.get("source") or broker.get("connection_status") or "No broker detail returned."
+            if key == "kraken" and broker.get("balance_summary"):
+                summary = broker["balance_summary"]
+                detail = (
+                    f"Total estimated GBP {summary.get('total_estimated_gbp')}; "
+                    f"GBP cash {summary.get('gbp_cash')}; "
+                    f"AI trading allocation {summary.get('trading_allocation_gbp')}. "
+                    f"{summary.get('valuation_note')}"
+                )
+            checks.append({
+                "component": broker.get("label") or _broker_label(key),
+                "status": "connected" if connected else str(broker.get("connection_status") or "not connected"),
+                "ready": connected,
+                "auto_trading_enabled": auto_enabled,
+                "detail": detail,
+            })
+        trade_ready = all(
+            item["ready"]
+            for item in checks
+            if item["component"] in {"Render API", "OpenAI", "Alpaca", "Kraken"}
+        )
+        return {
+            "overall_status": "ready" if trade_ready else "attention_needed",
+            "trade_ready": trade_ready,
+            "checks": checks,
+            "note": "Readiness confirms connections and configuration visibility only. Every trade still requires orchestrator and guardrail validation.",
         }
 
     def _latest_broker_trade_any(self) -> dict[str, Any] | None:
@@ -3058,6 +3109,7 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
     raw = balances if isinstance(balances, dict) else {}
     gbp_cash = _kraken_gbp_cash(raw)
     total = gbp_cash or 0.0
+    raw_balance_rows: list[dict[str, Any]] = []
     converted_assets: list[dict[str, Any]] = []
     unpriced_assets: list[dict[str, Any]] = []
     for asset, value in raw.items():
@@ -3065,6 +3117,7 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
         if qty is None or qty == 0:
             continue
         normalized = _kraken_asset_symbol(asset)
+        raw_balance_rows.append({"asset": asset, "normalized_asset": normalized, "quantity": qty})
         if normalized == "GBP":
             continue
         if normalized in {"USD", "EUR", "USDT", "USDC"}:
@@ -3095,10 +3148,13 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
         "gbp_cash": round(gbp_cash, 2) if gbp_cash is not None else None,
         "trading_allocation_gbp": round(trading_allocation, 2),
         "raw_balances": raw,
+        "raw_balance_rows": raw_balance_rows,
         "converted_assets": converted_assets,
         "unpriced_assets": unpriced_assets,
         "valuation_note": (
-            "Portfolio value converts supported crypto balances to GBP using Kraken ticker prices. "
+            "Portfolio value is GBP cash plus supported crypto balances converted to GBP using Kraken ticker prices. "
+            "Fiat/stablecoin balances and assets without a GBP price are shown below but excluded from the estimated total. "
+            "Kraken Pro may also show assets outside this API balance view, such as earn/staked/funding balances. "
             "Trading allocation is capped separately by KRAKEN_TRADING_ALLOCATION_GBP."
         ),
     }

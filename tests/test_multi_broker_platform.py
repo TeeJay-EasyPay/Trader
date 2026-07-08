@@ -207,11 +207,14 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             adapter = FakeKrakenAdapter()
             adapter.prices = {"XBTGBP": {"c": ["40000"]}}
 
-            summary = _kraken_balance_summary({"ZGBP": "5000", "XXBT": "0.1"}, adapter)
+            summary = _kraken_balance_summary({"ZGBP": "5000", "XXBT": "0.1", "USDT": "250"}, adapter)
 
             self.assertEqual(summary["gbp_cash"], 5000.0)
             self.assertEqual(summary["trading_allocation_gbp"], 100.0)
             self.assertEqual(summary["total_estimated_gbp"], 9000.0)
+            self.assertEqual(len(summary["raw_balance_rows"]), 3)
+            self.assertEqual(summary["unpriced_assets"][0]["normalized_asset"], "USDT")
+            self.assertIn("excluded from the estimated total", summary["valuation_note"])
             self.assertEqual(_kraken_trading_allocation_gbp({"ZGBP": "50"}), 50.0)
         finally:
             restore_env(previous)

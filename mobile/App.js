@@ -337,6 +337,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
         <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
       </Section>
+      <ConnectionReadinessCard readiness={status?.connection_readiness} />
       <Section title="Executive Summary">
         {founderSummary ? (
           <View style={styles.compactRow}>
@@ -420,10 +421,10 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
             <View key={`${broker.broker}-panel`} style={styles.compactRow}>
               <Text style={styles.cardTitle}>{label}</Text>
               <Metric label="Connection Status" value={broker.connection_status} />
-              <Metric label="Portfolio" value={moneyOrText(broker.portfolio_value)} />
-              <Metric label="Cash" value={moneyOrText(broker.cash_available)} />
-              <Metric label="Estimated In Positions" value={moneyOrText(broker.estimated_in_positions)} />
-              <Metric label="Buying Power" value={moneyOrText(broker.buying_power)} />
+              <Metric label="Portfolio" value={brokerMoney(broker, broker.portfolio_value)} />
+              <Metric label="Cash" value={brokerMoney(broker, broker.cash_available)} />
+              <Metric label="Estimated In Positions" value={brokerMoney(broker, broker.estimated_in_positions)} />
+              <Metric label="Buying Power" value={brokerMoney(broker, broker.buying_power)} />
               <Metric label="Open Positions" value={broker.open_positions} />
               <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
               <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
@@ -431,9 +432,12 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Metric label="Trades Today" value={broker.trades_today} />
               {broker.balance_summary ? (
                 <>
-                  <Metric label="Total Estimated Balance" value={moneyOrText(broker.balance_summary.total_estimated_gbp)} />
-                  <Metric label="GBP Cash" value={moneyOrText(broker.balance_summary.gbp_cash)} />
-                  <Metric label="AI Trading Allocation" value={moneyOrText(broker.balance_summary.trading_allocation_gbp)} />
+                  <Metric label="Total Estimated Balance" value={gbpOrText(broker.balance_summary.total_estimated_gbp)} />
+                  <Metric label="GBP Cash" value={gbpOrText(broker.balance_summary.gbp_cash)} />
+                  <Metric label="AI Trading Allocation" value={gbpOrText(broker.balance_summary.trading_allocation_gbp)} />
+                  <TextBlock label="Converted Assets" value={formatKrakenAssets(broker.balance_summary.converted_assets, true)} />
+                  <TextBlock label="Unpriced / Excluded Assets" value={formatKrakenAssets(broker.balance_summary.unpriced_assets, false)} />
+                  <TextBlock label="Raw Kraken Balances Seen By API" value={formatRawKrakenBalances(broker.balance_summary.raw_balance_rows)} />
                   <TextBlock label="Balance Note" value={broker.balance_summary.valuation_note} />
                 </>
               ) : null}
@@ -547,6 +551,27 @@ function TradeDetail({ item }) {
       <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
       <TextBlock label="Broker Payload" value={formatJsonText(raw)} />
     </View>
+  );
+}
+
+function ConnectionReadinessCard({ readiness }) {
+  const checks = readiness?.checks || [];
+  return (
+    <Section title="Connection & Trading Readiness">
+      <Metric label="Overall" value={readiness?.trade_ready ? 'Ready - connections visible' : 'Attention needed'} />
+      <Text style={styles.smallText}>{notAvailable(readiness?.note)}</Text>
+      {!checks.length ? (
+        <Empty />
+      ) : (
+        checks.map((item) => (
+          <View key={item.component} style={styles.compactRow}>
+            <Metric label={item.component} value={`${item.ready ? 'OK' : 'Check'} - ${notAvailable(item.status)}`} />
+            {item.auto_trading_enabled !== undefined ? <Metric label="Auto Trading" value={item.auto_trading_enabled ? 'Enabled' : 'Disabled'} /> : null}
+            <Text style={styles.smallText}>{notAvailable(item.detail)}</Text>
+          </View>
+        ))
+      )}
+    </Section>
   );
 }
 
@@ -964,11 +989,48 @@ function money(value) {
   return `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
+function gbp(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  return `£${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
 function moneyOrText(value) {
   if (typeof value === 'string' && value.startsWith('Not available')) {
     return value;
   }
   return money(value);
+}
+
+function gbpOrText(value) {
+  if (typeof value === 'string' && value.startsWith('Not available')) {
+    return value;
+  }
+  return gbp(value);
+}
+
+function brokerMoney(broker, value) {
+  return String(broker?.broker || '').toLowerCase() === 'kraken' ? gbpOrText(value) : moneyOrText(value);
+}
+
+function formatKrakenAssets(items, converted) {
+  if (!items || !items.length) {
+    return converted ? 'No priced crypto assets converted.' : 'No excluded assets reported.';
+  }
+  return items.map((item) => {
+    if (converted) {
+      return `- ${item.normalized_asset || item.asset}: ${item.quantity} via ${item.pair}, value ${gbpOrText(item.value_gbp)}`;
+    }
+    return `- ${item.normalized_asset || item.asset}: ${item.quantity}, reason ${item.reason || 'not valued'}`;
+  }).join('\n');
+}
+
+function formatRawKrakenBalances(items) {
+  if (!items || !items.length) {
+    return 'No non-zero Kraken balances were returned by the API.';
+  }
+  return items.map((item) => `- ${item.normalized_asset || item.asset}: ${item.quantity} (${item.asset})`).join('\n');
 }
 
 function todayIso() {
