@@ -340,6 +340,8 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             failures.append("asset_type_not_crypto")
         if order_request.side.lower() not in {"buy", "sell"}:
             failures.append("invalid_side")
+        if order_request.side.lower() == "sell" and _bool_env("KRAKEN_BUY_ONLY_ENTRIES", True):
+            failures.append("kraken_entry_sells_disabled")
         pair = order_request.broker_pair or _kraken_pair(order_request.symbol, order_request.quote_currency)
         allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
         if pair not in allowed_pairs:
@@ -352,6 +354,9 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         max_notional = _float_env("KRAKEN_MAX_ORDER_GBP", 5.0)
         if notional > max_notional:
             failures.append("max_order_amount_exceeded")
+        allocation = _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0)
+        if notional > allocation:
+            failures.append("kraken_trading_allocation_exceeded")
         min_notional = _float_env("KRAKEN_MIN_ORDER_GBP", 1.0)
         if notional < min_notional:
             failures.append("min_order_amount_not_met")

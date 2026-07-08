@@ -137,6 +137,62 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_live_order_rejects_notional_above_trading_allocation(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_AUTO_TRADING",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_TRADING_ALLOCATION_GBP",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "500"
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_order(OrderRequest("BTC", "buy", 0.01, "crypto", "KRAKEN", 90, 120, notional_amount=101, client_order_id="over-allocation"))
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("kraken_trading_allocation_exceeded", result["seatbelt_failures"])
+            self.assertFalse(adapter.submitted_orders)
+        finally:
+            restore_env(previous)
+
+    def test_kraken_entry_sell_orders_are_blocked_to_protect_existing_coins(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_AUTO_TRADING",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_MIN_ORDER_GBP",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_BUY_ONLY_ENTRIES",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP"
+            os.environ.pop("KRAKEN_BUY_ONLY_ENTRIES", None)
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_order(OrderRequest("BTC", "sell", 0.00005, "crypto", "KRAKEN", 90, 120, notional_amount=2, client_order_id="sell-existing"))
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("kraken_entry_sells_disabled", result["seatbelt_failures"])
+            self.assertFalse(adapter.submitted_orders)
+        finally:
+            restore_env(previous)
+
     def test_kraken_live_micro_order_submits_when_all_seatbelts_pass(self):
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_API_KEY",
