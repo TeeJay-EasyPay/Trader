@@ -8,6 +8,8 @@ data/*.sqlite3
 data/proposals.json
 data/founder_briefing_*.md
 .env
+mobile/.env
+mobile/.env.local
 .codex-remote-attachments/
 mobile/node_modules/
 mobile/inspect-output/
