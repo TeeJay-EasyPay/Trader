@@ -84,7 +84,7 @@ class OpenAIReadOnlyExplainer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=45) as response:
+        with urlopen(request, timeout=15) as response:
             raw = json.loads(response.read().decode("utf-8"))
         return _extract_response_text(raw).strip()
 

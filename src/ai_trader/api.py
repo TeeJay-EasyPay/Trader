@@ -559,7 +559,18 @@ class LocalApiService:
                 "evidence": context,
             }
         explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_model)
-        answer = explainer.answer(question, context)
+        try:
+            answer = explainer.answer(question, context)
+        except Exception as exc:
+            logger.exception("Ask AI Trader OpenAI explanation failed; returning deterministic fallback.")
+            return {
+                "status": "openai_failed",
+                "answer": _deterministic_ai_trader_answer(question, context),
+                "read_only": True,
+                "model": self.settings.openai_model,
+                "note": f"OpenAI explanation failed, so this answer used the local evidence summary only. Reason: {exc}",
+                "evidence": context,
+            }
         return {
             "status": "answered",
             "answer": answer or _deterministic_ai_trader_answer(question, context),

@@ -289,11 +289,13 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
   const founderSummary = status?.founder_executive_summary || null;
   const brokerPanels = status?.brokers || [];
+  const readiness = status?.connection_readiness || localConnectionReadiness(status, brokerPanels);
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   const policy = status?.trading_policy || {};
   const unreadNotifications = (notifications || []).filter((item) => item.delivery_status === 'queued');
   return (
     <View>
+      <ConnectionReadinessCard readiness={readiness} />
       <Section title={`Notifications${unreadNotifications.length ? ` (${unreadNotifications.length} unread)` : ''}`}>
         {!notifications || !notifications.length ? (
           <Empty />
@@ -337,7 +339,6 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
         <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
       </Section>
-      <ConnectionReadinessCard readiness={status?.connection_readiness} />
       <Section title="Executive Summary">
         {founderSummary ? (
           <View style={styles.compactRow}>
@@ -573,6 +574,33 @@ function ConnectionReadinessCard({ readiness }) {
       )}
     </Section>
   );
+}
+
+function localConnectionReadiness(status, brokerPanels) {
+  const panels = brokerPanels || [];
+  const checks = [
+    {
+      component: 'Render API',
+      status: status ? 'connected' : 'not connected',
+      ready: !!status,
+      detail: status ? 'The app received a status response from the hosted API.' : 'No hosted API status response is available yet.',
+    },
+  ];
+  panels.forEach((broker) => {
+    const connected = String(broker.connection_status || '').toLowerCase() === 'connected';
+    checks.push({
+      component: broker.label || broker.broker || 'Broker',
+      status: broker.connection_status || 'not connected',
+      ready: connected,
+      auto_trading_enabled: !!broker.auto_trading_enabled,
+      detail: broker.source || broker.connection_status || 'No broker detail returned.',
+    });
+  });
+  return {
+    trade_ready: checks.length > 1 && checks.every((item) => item.ready),
+    checks,
+    note: 'Local readiness summary. Every trade still requires orchestrator and guardrail validation.',
+  };
 }
 
 function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation }) {
@@ -851,16 +879,24 @@ function AskAiTrader({ messages, setMessages, request, loading, setLoading }) {
     setQuestion('');
     setMessages((prev) => [...prev, { role: 'user', text: finalQuestion }]);
     setLoading(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
     try {
       const result = await request('/ask-ai-trader', {
         method: 'POST',
         body: JSON.stringify({ question: finalQuestion }),
+        signal: controller.signal,
       });
       const note = result.note ? `\n\n${result.note}` : '';
       setMessages((prev) => [...prev, { role: 'assistant', text: `${notAvailable(result.answer)}${note}` }]);
     } catch (error) {
-      setMessages((prev) => [...prev, { role: 'assistant', text: `I could not answer that yet: ${String(error.message || error)}` }]);
+      const message = String(error.message || error);
+      const friendly = message.includes('AbortError') || message.includes('aborted')
+        ? 'The Ask request timed out before the backend replied. Render or OpenAI may still be waking up. Try again in a moment, or ask a shorter question.'
+        : `I could not answer that yet: ${message}`;
+      setMessages((prev) => [...prev, { role: 'assistant', text: friendly }]);
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   };

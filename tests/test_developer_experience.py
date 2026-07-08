@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -225,6 +226,35 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIn("cannot place or approve trades", payload["answer"])
             self.assertIn("Latest alpaca snapshot", payload["answer"])
             self.assertIn("estimated in positions", payload["answer"])
+
+    def test_ask_ai_trader_falls_back_when_openai_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            settings = Settings(
+                alpaca_api_key=settings.alpaca_api_key,
+                alpaca_secret_key=settings.alpaca_secret_key,
+                alpaca_paper_base_url=settings.alpaca_paper_base_url,
+                alpaca_data_base_url=settings.alpaca_data_base_url,
+                openai_api_key="test-key",
+                openai_model=settings.openai_model,
+                db_path=settings.db_path,
+                output_dir=settings.output_dir,
+                trading_log_path=settings.trading_log_path,
+                guardrails=settings.guardrails,
+                auto_trade=settings.auto_trade,
+                research_scheduler_enabled=settings.research_scheduler_enabled,
+                research_scheduler_interval_minutes=settings.research_scheduler_interval_minutes,
+                research_scheduler_limit=settings.research_scheduler_limit,
+            )
+            service = LocalApiService(settings)
+            with patch("ai_trader.api.OpenAIReadOnlyExplainer.answer", side_effect=RuntimeError("simulated timeout")):
+                status, payload = service.post("/ask-ai-trader", {"question": "Are you ready to trade?"})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["status"], "openai_failed")
+            self.assertTrue(payload["read_only"])
+            self.assertIn("cannot place or approve trades", payload["answer"])
+            self.assertIn("simulated timeout", payload["note"])
 
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
