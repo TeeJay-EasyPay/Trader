@@ -235,8 +235,6 @@ export default function App() {
           messages={askMessages}
           setMessages={setAskMessages}
           request={request}
-          loading={loading}
-          setLoading={setLoading}
         />
       );
     }
@@ -922,35 +920,44 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
   );
 }
 
-function AskAiTrader({ messages, setMessages, request, loading, setLoading }) {
+function AskAiTrader({ messages, setMessages, request }) {
   const [question, setQuestion] = useState('');
+  const [askLoading, setAskLoading] = useState(false);
+  const [askStatus, setAskStatus] = useState('Ready');
   const ask = async (text) => {
     const finalQuestion = String(text || question || '').trim();
-    if (!finalQuestion) {
+    if (!finalQuestion || askLoading) {
       return;
     }
     setQuestion('');
     setMessages((prev) => [...prev, { role: 'user', text: finalQuestion }]);
-    setLoading(true);
+    setAskLoading(true);
+    setAskStatus('Thinking...');
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeoutMs = 25000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const result = await request('/ask-ai-trader', {
-        method: 'POST',
-        body: JSON.stringify({ question: finalQuestion }),
-        signal: controller.signal,
-      });
+      const result = await withTimeout(
+        request('/ask-ai-trader', {
+          method: 'POST',
+          body: JSON.stringify({ question: finalQuestion }),
+          signal: controller.signal,
+        }),
+        timeoutMs + 2000
+      );
       const note = result.note ? `\n\n${result.note}` : '';
       setMessages((prev) => [...prev, { role: 'assistant', text: `${notAvailable(result.answer)}${note}` }]);
+      setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
     } catch (error) {
       const message = String(error.message || error);
-      const friendly = message.includes('AbortError') || message.includes('aborted')
+      const friendly = message.includes('AbortError') || message.includes('aborted') || message.includes('timed out')
         ? 'The Ask request timed out before the backend replied. Render or OpenAI may still be waking up. Try again in a moment, or ask a shorter question.'
         : `I could not answer that yet: ${message}`;
       setMessages((prev) => [...prev, { role: 'assistant', text: friendly }]);
+      setAskStatus('Ask failed or timed out.');
     } finally {
       clearTimeout(timeout);
-      setLoading(false);
+      setAskLoading(false);
     }
   };
   const suggestions = [
@@ -966,9 +973,10 @@ function AskAiTrader({ messages, setMessages, request, loading, setLoading }) {
         <Text style={styles.bodyText}>
           Ask for a plain-English explanation of AI Trader data. This chat is read-only and cannot place trades, approve trades, enable auto trading, or change guardrails.
         </Text>
+        <Metric label="Ask Status" value={askStatus} />
         <View style={styles.buttonGrid}>
           {suggestions.map((item) => (
-            <Button key={item} label={item} tone="neutral" onPress={() => ask(item)} disabled={loading} />
+            <Button key={item} label={item} tone="neutral" onPress={() => ask(item)} disabled={askLoading} />
           ))}
         </View>
         <TextInput
@@ -978,15 +986,19 @@ function AskAiTrader({ messages, setMessages, request, loading, setLoading }) {
           value={question}
           onChangeText={setQuestion}
         />
-        <Button label={loading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={loading || !question.trim()} />
+        <Button label={askLoading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={askLoading || !question.trim()} />
       </Section>
       <Section title="Conversation">
-        {messages.map((item, index) => (
-          <View key={`${item.role}-${index}`} style={item.role === 'user' ? styles.chatUser : styles.chatAssistant}>
-            <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
-            <Text style={styles.bodyText}>{item.text}</Text>
-          </View>
-        ))}
+        {messages.length ? (
+          messages.map((item, index) => (
+            <View key={`${item.role}-${index}`} style={item.role === 'user' ? styles.chatUser : styles.chatAssistant}>
+              <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
+              <Text style={styles.bodyText}>{notAvailable(item.text)}</Text>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.bodyText}>Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned.</Text>
+        )}
       </Section>
     </View>
   );
@@ -1145,6 +1157,14 @@ function bodyPreview(text) {
     return 'The response body was empty.';
   }
   return `Response started with: ${trimmed.slice(0, 80)}`;
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
 async function loadCachedRecommendations() {
