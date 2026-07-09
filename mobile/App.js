@@ -930,7 +930,7 @@ function AskAiTrader({ messages, setMessages, request }) {
       return;
     }
     setQuestion('');
-    setMessages((prev) => [...prev, { role: 'user', text: finalQuestion }]);
+    setMessages((prev) => [...prev, { role: 'user', text: normalizeChatText(finalQuestion) }]);
     setAskLoading(true);
     setAskStatus('Thinking...');
     const controller = new AbortController();
@@ -945,15 +945,16 @@ function AskAiTrader({ messages, setMessages, request }) {
         }),
         timeoutMs + 2000
       );
-      const note = result.note ? `\n\n${result.note}` : '';
-      setMessages((prev) => [...prev, { role: 'assistant', text: `${notAvailable(result.answer)}${note}` }]);
+      const answerText = normalizeChatText(result.answer);
+      const note = result.note ? `\n\n${normalizeChatText(result.note)}` : '';
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) }]);
       setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
     } catch (error) {
       const message = String(error.message || error);
       const friendly = message.includes('AbortError') || message.includes('aborted') || message.includes('timed out')
         ? 'The Ask request timed out before the backend replied. Render or OpenAI may still be waking up. Try again in a moment, or ask a shorter question.'
         : `I could not answer that yet: ${message}`;
-      setMessages((prev) => [...prev, { role: 'assistant', text: friendly }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(friendly) }]);
       setAskStatus('Ask failed or timed out.');
     } finally {
       clearTimeout(timeout);
@@ -991,9 +992,10 @@ function AskAiTrader({ messages, setMessages, request }) {
       <Section title="Conversation">
         {messages.length ? (
           messages.map((item, index) => (
-            <View key={`${item.role}-${index}`} style={item.role === 'user' ? styles.chatUser : styles.chatAssistant}>
+            <View key={`${item.role}-${index}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
               <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
-              <Text style={styles.bodyText}>{notAvailable(item.text)}</Text>
+              <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
+              <Text style={styles.smallText}>{chatMessageText(item.text).length} characters</Text>
             </View>
           ))
         ) : (
@@ -1165,6 +1167,23 @@ function withTimeout(promise, timeoutMs) {
     timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`)), timeoutMs);
   });
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
+
+function normalizeChatText(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+function chatMessageText(value) {
+  const text = normalizeChatText(value);
+  return text || 'No message text was returned. Try asking again, or check Render logs for the /ask-ai-trader response.';
 }
 
 async function loadCachedRecommendations() {
@@ -1835,24 +1854,19 @@ const styles = StyleSheet.create({
     minHeight: 92,
     textAlignVertical: 'top',
   },
-  chatUser: {
-    alignSelf: 'flex-end',
-    maxWidth: '92%',
-    backgroundColor: '#e7f0ff',
+  chatBubble: {
+    width: '100%',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#b9d3ff',
     padding: 10,
     marginBottom: 10,
   },
+  chatUser: {
+    backgroundColor: '#e7f0ff',
+    borderColor: '#b9d3ff',
+  },
   chatAssistant: {
-    alignSelf: 'flex-start',
-    maxWidth: '96%',
     backgroundColor: '#ffffff',
-    borderRadius: 8,
-    borderWidth: 1,
     borderColor: '#dde1e7',
-    padding: 10,
-    marginBottom: 10,
   },
 });
