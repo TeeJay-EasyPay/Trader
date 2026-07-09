@@ -583,9 +583,14 @@ class LocalApiService:
         }
 
     def _ask_ai_context(self) -> dict[str, Any]:
+        broker_panels = self.broker_panels()
         return {
             "generated_at": utc_now_iso(),
             "safety_boundary": "Read-only explanation. No trading, approvals, broker controls, or guardrail changes are available to this endpoint.",
+            "openai_configured": bool(self.settings.openai_api_key),
+            "trading_state": self._control_state(),
+            "broker_auto_trading": broker_auto_settings(self.settings.db_path),
+            "broker_panels": broker_panels,
             "latest_portfolio_snapshots": [
                 dict(row) for row in self._rows(
                     """
@@ -629,7 +634,7 @@ class LocalApiService:
                     """
                 )
             ],
-            "latest_recommendations": self.recommendations(limit=10),
+            "latest_recommendations": self.recommendations(limit=20),
             "latest_orchestrator_decisions": [
                 dict(row) for row in self._rows(
                     """
@@ -2779,8 +2784,52 @@ def _deterministic_ai_trader_answer(question: str, context: dict[str, Any]) -> s
         lines.append("No recent broker trades are stored in the evidence bundle.")
     if learning.get("summary"):
         lines.append(f"Learning summary: {learning.get('summary')}")
-    lines.append("For a fuller answer, configure OPENAI_API_KEY on the AI Trader deployment so the Ask screen can explain this evidence conversationally.")
+    if "kraken" in question.lower() and "trade" in question.lower():
+        lines.extend(_kraken_trade_status_lines(context))
+    if context.get("openai_configured"):
+        lines.append("OpenAI is configured, but this response used the local evidence summary because the OpenAI explanation was unavailable or timed out.")
+    else:
+        lines.append("For a fuller answer, configure OPENAI_API_KEY on the AI Trader deployment so the Ask screen can explain this evidence conversationally.")
     return "\n\n".join(lines)
+
+
+def _kraken_trade_status_lines(context: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    panels = context.get("broker_panels") or []
+    kraken = next((item for item in panels if str(item.get("broker") or "").lower() == "kraken"), None)
+    if kraken:
+        permissions = kraken.get("trading_permissions") or {}
+        lines.append(
+            "Kraken trading status: "
+            f"auto trading {'enabled' if permissions.get('auto_trading_enabled') else 'disabled'}, "
+            f"broker trading {'enabled' if permissions.get('trading_enabled') else 'disabled'}, "
+            f"live approval {'yes' if permissions.get('live_trading_approved') else 'no'}, "
+            f"real-order submission {'yes' if permissions.get('submit_real_orders') else 'no'}, "
+            f"can submit real orders now {'yes' if permissions.get('can_submit_real_orders') else 'no'}."
+        )
+        lines.append(
+            f"Kraken seatbelts: allocation {_money_text(permissions.get('trading_allocation_gbp'))}, "
+            f"max order {_money_text(permissions.get('max_order_gbp'))}, "
+            f"max open trades {permissions.get('max_open_trades')}, "
+            f"allowed pairs {', '.join(permissions.get('allowed_pairs') or []) or 'not listed'}."
+        )
+    recommendations = [
+        item for item in (context.get("latest_recommendations") or [])
+        if str(item.get("broker") or item.get("suggested_broker") or "").lower() == "kraken"
+        or str(item.get("asset_type") or "").lower() == "crypto"
+    ]
+    active = [item for item in recommendations if str(item.get("freshness_status") or "").lower() != "expired"]
+    eligible = [item for item in active if item.get("auto_trade_eligible")]
+    if eligible:
+        symbols = ", ".join(str(item.get("symbol") or "unknown") for item in eligible[:5])
+        lines.append(f"I can see {len(eligible)} active crypto/Kraken recommendation(s) marked auto-trade eligible: {symbols}.")
+    elif active:
+        reasons = Counter(str(item.get("auto_trade_reason") or item.get("status") or "not eligible") for item in active)
+        lines.append(f"I can see active crypto/Kraken recommendations, but none are marked auto-trade eligible yet. Reasons seen: {dict(reasons)}.")
+    else:
+        lines.append("I cannot see an active fresh Kraken recommendation in the latest evidence. Auto trading will wait until research produces one that passes confidence, freshness, and guardrails.")
+    lines.append("So zero Kraken trades today can be normal if no fresh eligible recommendation has passed the orchestrator yet, even though Kraken auto trading is enabled.")
+    return lines
 
 
 def _current_open_position_lines(report_context: dict[str, Any], broker: str) -> str:

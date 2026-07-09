@@ -255,6 +255,8 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(payload["status"], "openai_failed")
             self.assertTrue(payload["read_only"])
             self.assertIn("cannot place or approve trades", payload["answer"])
+            self.assertIn("OpenAI is configured", payload["answer"])
+            self.assertNotIn("configure OPENAI_API_KEY", payload["answer"])
             self.assertIn("simulated timeout", payload["note"])
 
     def test_database_browser_lists_and_searches_tables_read_only(self):

@@ -991,11 +991,14 @@ function AskAiTrader({ messages, setMessages, request }) {
       </Section>
       <Section title="Conversation">
         {messages.length ? (
-          messages.map((item, index) => (
-            <View key={`${item.role}-${index}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
-              <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
-              <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
-              <Text style={styles.smallText}>{chatMessageText(item.text).length} characters</Text>
+          chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
+            <View key={`turn-${turnIndex}`} style={styles.chatTurn}>
+              {turn.map((item, messageIndex) => (
+                <View key={`${item.role}-${turnIndex}-${messageIndex}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
+                  <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
+                  <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
+                </View>
+              ))}
             </View>
           ))
         ) : (
@@ -1184,6 +1187,22 @@ function normalizeChatText(value) {
 function chatMessageText(value) {
   const text = normalizeChatText(value);
   return text || 'No message text was returned. Try asking again, or check Render logs for the /ask-ai-trader response.';
+}
+
+function chatTurnsNewestFirst(messages) {
+  const turns = [];
+  let current = [];
+  (messages || []).forEach((message) => {
+    if (message.role === 'user' && current.length) {
+      turns.push(current);
+      current = [];
+    }
+    current.push(message);
+  });
+  if (current.length) {
+    turns.push(current);
+  }
+  return turns.reverse();
 }
 
 async function loadCachedRecommendations() {
@@ -1853,6 +1872,9 @@ const styles = StyleSheet.create({
   multilineInput: {
     minHeight: 92,
     textAlignVertical: 'top',
+  },
+  chatTurn: {
+    marginBottom: 8,
   },
   chatBubble: {
     width: '100%',
