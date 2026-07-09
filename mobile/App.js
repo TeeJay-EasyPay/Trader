@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
+const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
 const SCREENS = ['Command', 'Recommendations', 'Intelligence', 'Ask'];
@@ -66,6 +67,13 @@ export default function App() {
       }
     }
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(
+          `${json.message || json.error || 'unauthorized'}. Mobile command token is ${
+            API_TOKEN ? `loaded (${API_TOKEN_MASK})` : 'missing'
+          }. It must exactly match AI_TRADER_API_TOKEN in Render.`
+        );
+      }
       throw new Error(json.message || json.error || `Request failed: ${response.status}`);
     }
     return json;
@@ -289,7 +297,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
   const founderSummary = status?.founder_executive_summary || null;
   const brokerPanels = status?.brokers || [];
-  const readiness = status?.connection_readiness || localConnectionReadiness(status, brokerPanels);
+  const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, brokerPanels));
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   const policy = status?.trading_policy || {};
   const unreadNotifications = (notifications || []).filter((item) => item.delivery_status === 'queued');
@@ -600,6 +608,25 @@ function localConnectionReadiness(status, brokerPanels) {
     trade_ready: checks.length > 1 && checks.every((item) => item.ready),
     checks,
     note: 'Local readiness summary. Every trade still requires orchestrator and guardrail validation.',
+  };
+}
+
+function withMobileTokenReadiness(readiness) {
+  const checks = readiness?.checks || [];
+  const hasMobileToken = checks.some((item) => item.component === 'Mobile Command Token');
+  const mobileTokenCheck = {
+    component: 'Mobile Command Token',
+    status: API_TOKEN ? 'configured' : 'missing',
+    ready: !!API_TOKEN,
+    detail: API_TOKEN
+      ? `The installed app has a command token loaded (${API_TOKEN_MASK}). It must match AI_TRADER_API_TOKEN in Render.`
+      : 'The installed app does not have EXPO_PUBLIC_AI_TRADER_API_TOKEN loaded, so protected hosted API calls will be unauthorized.',
+  };
+  const nextChecks = hasMobileToken ? checks : [mobileTokenCheck, ...checks];
+  return {
+    ...(readiness || {}),
+    checks: nextChecks,
+    trade_ready: !!readiness?.trade_ready && !!API_TOKEN,
   };
 }
 
