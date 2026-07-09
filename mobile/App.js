@@ -453,6 +453,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Metric label="Research Status" value={broker.research_status} />
               <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
               <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
+              <TradingPermissions permissions={broker.trading_permissions} />
               <View style={styles.buttonGrid}>
                 <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
                 <Button label={`Daily Report (${label})`} onPress={() => onReport({ type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
@@ -511,6 +512,31 @@ function ReportPanel({ report }) {
       ) : null}
       <TextBlock label="Report" value={report.report_markdown} />
       {report.path ? <Text style={styles.smallText}>Saved: {report.path}</Text> : null}
+    </View>
+  );
+}
+
+function TradingPermissions({ permissions }) {
+  if (!permissions) {
+    return null;
+  }
+  return (
+    <View style={styles.textBlock}>
+      <Text style={styles.cardTitle}>Trading Permissions & Seatbelts</Text>
+      <Metric label="Trading Status" value={permissions.status} />
+      <Metric label="Auto Trading" value={enabledDisabled(permissions.auto_trading_enabled)} />
+      <Metric label="Broker Trading Enabled" value={yesNo(permissions.trading_enabled)} />
+      <Metric label="Live Trading Approved" value={yesNo(permissions.live_trading_approved)} />
+      <Metric label="Submit Real Orders" value={yesNo(permissions.submit_real_orders)} />
+      <Metric label="Can Submit Real Orders Now" value={yesNo(permissions.can_submit_real_orders)} />
+      {permissions.paper_only !== undefined ? <Metric label="Paper Only" value={yesNo(permissions.paper_only)} /> : null}
+      {permissions.trading_allocation_gbp !== undefined ? <Metric label="Trading Allocation" value={gbpOrText(permissions.trading_allocation_gbp)} /> : null}
+      {permissions.max_order_gbp !== undefined ? <Metric label="Max Order" value={gbpOrText(permissions.max_order_gbp)} /> : null}
+      {permissions.min_order_gbp !== undefined ? <Metric label="Min Order" value={gbpOrText(permissions.min_order_gbp)} /> : null}
+      {permissions.max_open_trades !== undefined ? <Metric label="Max Open Trades" value={permissions.max_open_trades} /> : null}
+      {permissions.buy_only_entries !== undefined ? <Metric label="Buy-only Entries" value={enabledDisabled(permissions.buy_only_entries)} /> : null}
+      <Metric label="Allowed Pairs / Symbols" value={formatListInline(permissions.allowed_pairs)} />
+      {permissions.notes?.length ? <TextBlock label="Notes" value={permissions.notes.map((item) => `- ${item}`).join('\n')} /> : null}
     </View>
   );
 }
@@ -1592,6 +1618,13 @@ function yesNo(value) {
     return null;
   }
   return value ? 'Yes' : 'No';
+}
+
+function enabledDisabled(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value ? 'Enabled' : 'Disabled';
 }
 
 function notAvailable(value) {

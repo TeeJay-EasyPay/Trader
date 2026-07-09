@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import tempfile
@@ -294,6 +295,51 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(control["status"], "locked")
             self.assertFalse(control["ready"])
             self.assertIn("AI_TRADER_API_TOKEN", control["detail"])
+
+    def test_broker_panels_expose_kraken_trading_permissions(self):
+        previous = {
+            key: os.environ.get(key)
+            for key in [
+                "KRAKEN_TRADING_ENABLED",
+                "KRAKEN_LIVE_TRADING_APPROVED",
+                "KRAKEN_SUBMIT_REAL_ORDERS",
+                "KRAKEN_TRADING_ALLOCATION_GBP",
+                "KRAKEN_MAX_ORDER_GBP",
+                "KRAKEN_MIN_ORDER_GBP",
+                "KRAKEN_MAX_OPEN_TRADES",
+                "KRAKEN_BUY_ONLY_ENTRIES",
+                "KRAKEN_ALLOWED_PAIRS",
+            ]
+        }
+        try:
+            os.environ["KRAKEN_TRADING_ENABLED"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "false"
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            os.environ["KRAKEN_MAX_OPEN_TRADES"] = "1"
+            os.environ["KRAKEN_BUY_ONLY_ENTRIES"] = "true"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP,ETHGBP,SOLGBP"
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+
+                kraken = next(item for item in service.broker_panels() if item["broker"] == "kraken")
+                permissions = kraken["trading_permissions"]
+
+                self.assertEqual(permissions["trading_allocation_gbp"], 100.0)
+                self.assertEqual(permissions["max_order_gbp"], 5.0)
+                self.assertEqual(permissions["max_open_trades"], 1)
+                self.assertTrue(permissions["buy_only_entries"])
+                self.assertEqual(permissions["allowed_pairs"], ["XBTGBP", "ETHGBP", "SOLGBP"])
+                self.assertFalse(permissions["can_submit_real_orders"])
+                self.assertIn("dry-run", permissions["status"])
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_api_token_authorization_accepts_bearer_or_api_key(self):
         class Headers:

@@ -1673,6 +1673,7 @@ This report explains available evidence. It does not automatically change strate
             runtime = {**update_broker_runtime(self.settings.db_path, broker).to_dict()}
             portfolio = self._exchange_portfolio(broker) if broker != "alpaca" else self._alpaca_panel_portfolio()
             counts = today_runtime_counts(self.settings.db_path, broker)
+            auto_enabled = settings.get(broker, False)
             panels.append({
                 "broker": broker,
                 "label": _broker_label(broker),
@@ -1688,7 +1689,8 @@ This report explains available evidence. It does not automatically change strate
                 "trades_today": counts["trades_today"],
                 "research_status": runtime.get("research_status"),
                 "due_diligence_status": runtime.get("due_diligence_status"),
-                "auto_trading_enabled": settings.get(broker, False),
+                "auto_trading_enabled": auto_enabled,
+                "trading_permissions": self._broker_trading_permissions(broker, auto_enabled),
                 "current_asset": runtime.get("current_asset"),
                 "current_stage": runtime.get("current_stage"),
                 "research_queue": runtime.get("research_queue"),
@@ -1703,6 +1705,84 @@ This report explains available evidence. It does not automatically change strate
                 "source": portfolio.get("source"),
             })
         return panels
+
+    def _broker_trading_permissions(self, broker: str, auto_enabled: bool) -> dict[str, Any]:
+        key = broker.lower()
+        if key == "kraken":
+            live_approved = _bool_env("KRAKEN_LIVE_TRADING_APPROVED", False)
+            submit_real_orders = _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False)
+            trading_enabled = _bool_env("KRAKEN_TRADING_ENABLED", False)
+            allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
+            max_open_trades = _int_env("KRAKEN_MAX_OPEN_TRADES", 1)
+            buy_only_entries = _bool_env("KRAKEN_BUY_ONLY_ENTRIES", True)
+            can_submit_real_orders = bool(auto_enabled and trading_enabled and live_approved and submit_real_orders)
+            return {
+                "broker": key,
+                "status": "Real Kraken orders enabled" if can_submit_real_orders else "Real Kraken orders blocked or dry-run only",
+                "auto_trading_enabled": auto_enabled,
+                "trading_enabled": trading_enabled,
+                "live_trading_approved": live_approved,
+                "submit_real_orders": submit_real_orders,
+                "can_submit_real_orders": can_submit_real_orders,
+                "trading_allocation_gbp": _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0),
+                "max_order_gbp": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
+                "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
+                "max_open_trades": max_open_trades,
+                "buy_only_entries": buy_only_entries,
+                "allowed_pairs": allowed_pairs,
+                "notes": [
+                    "New Kraken entries are capped by trading allocation, max order size, allowed pairs, and open-trade limit.",
+                    "Existing managed exits remain monitored even when new auto trading is disabled.",
+                    "Real orders require Auto Trading, KRAKEN_TRADING_ENABLED, KRAKEN_LIVE_TRADING_APPROVED, and KRAKEN_SUBMIT_REAL_ORDERS.",
+                ],
+            }
+        if key == "alpaca":
+            paper_only = _bool_env("PAPER_TRADING_ONLY", True)
+            return {
+                "broker": key,
+                "status": "Alpaca paper trading enabled" if self.settings.has_alpaca_credentials else "Alpaca credentials missing",
+                "auto_trading_enabled": auto_enabled,
+                "trading_enabled": self.settings.has_alpaca_credentials,
+                "live_trading_approved": False,
+                "submit_real_orders": False,
+                "can_submit_real_orders": False,
+                "paper_only": paper_only,
+                "max_order_gbp": _float_env("MAX_AUTO_TRADE_AMOUNT", 25.0),
+                "max_open_trades": self.settings.guardrails.max_open_positions,
+                "allowed_pairs": [],
+                "notes": [
+                    "Alpaca is configured as paper trading only in Version 1.",
+                    "Paper orders still require orchestrator and guardrail validation before submission.",
+                ],
+            }
+        env_prefixes = {
+            "coinbase": "COINBASE",
+            "binance": "BINANCE",
+            "interactive_brokers": "IBKR",
+        }
+        prefix = env_prefixes.get(key, key.upper())
+        trading_enabled = _bool_env(f"{prefix}_TRADING_ENABLED", False)
+        live_approved = _bool_env(f"{prefix}_LIVE_TRADING_APPROVED", False)
+        submit_real_orders = _bool_env(f"{prefix}_SUBMIT_REAL_ORDERS", False)
+        can_submit_real_orders = bool(auto_enabled and trading_enabled and live_approved and submit_real_orders)
+        return {
+            "broker": key,
+            "status": "Real orders enabled" if can_submit_real_orders else "Not configured or real orders blocked",
+            "auto_trading_enabled": auto_enabled,
+            "trading_enabled": trading_enabled,
+            "live_trading_approved": live_approved,
+            "submit_real_orders": submit_real_orders,
+            "can_submit_real_orders": can_submit_real_orders,
+            "trading_allocation_gbp": _float_env(f"{prefix}_TRADING_ALLOCATION_GBP", 0.0),
+            "max_order_gbp": _float_env(f"{prefix}_MAX_ORDER_GBP", 0.0),
+            "min_order_gbp": _float_env(f"{prefix}_MIN_ORDER_GBP", 0.0),
+            "max_open_trades": _int_env(f"{prefix}_MAX_OPEN_TRADES", 0),
+            "buy_only_entries": _bool_env(f"{prefix}_BUY_ONLY_ENTRIES", True),
+            "allowed_pairs": _csv_env(f"{prefix}_ALLOWED_PAIRS", ""),
+            "notes": [
+                f"{_broker_label(key)} will use this same permissions shape when the adapter is configured.",
+            ],
+        }
 
     def _adapters(self):
         adapters = []
@@ -3284,6 +3364,25 @@ def _float_env(key: str, default: float) -> float:
         return float(os.getenv(key, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _int_env(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool_env(key: str, default: bool) -> bool:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(key: str, default: str) -> list[str]:
+    value = os.getenv(key, default)
+    return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
 def _trade_learning_lessons(attribution: list[dict[str, Any]], rejected: list[dict[str, Any]], snapshots: list[dict[str, Any]]) -> list[str]:
