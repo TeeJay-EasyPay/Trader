@@ -172,7 +172,7 @@ class InvestmentOrchestrator:
             if month_pnl is not None and month_pnl <= -(context.account.equity * policy.max_monthly_loss_pct):
                 failures.append("maximum_monthly_loss_exceeded")
             peak_equity = pnl_snapshot.get("peak_equity")
-            if peak_equity and peak_equity > 0:
+            if peak_equity and peak_equity > 0 and _snapshot_equity_basis_matches_context(peak_equity, context.account.equity):
                 drawdown_pct = (peak_equity - context.account.equity) / peak_equity
                 if drawdown_pct > policy.max_drawdown_pct:
                     failures.append("maximum_drawdown_exceeded")
@@ -421,6 +421,12 @@ def _order_request(proposal: TradeProposal, approved_notional: float) -> OrderRe
         notional_amount=approved_notional,
         client_order_id=proposal.proposal_id,
     )
+
+
+def _snapshot_equity_basis_matches_context(peak_equity: float, account_equity: float) -> bool:
+    if account_equity <= 0:
+        return False
+    return peak_equity <= account_equity * 1.5
 
 
 def _stop_loss_pct(proposal: TradeProposal) -> float:

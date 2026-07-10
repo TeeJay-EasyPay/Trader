@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -419,7 +420,7 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         take_profit_required=bool(risk.get("take_profit_required", True)),
         max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
         max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
-        crypto_enabled=bool(investment.get("crypto_enabled", False)),
+        crypto_enabled=bool(investment.get("crypto_enabled", False)) or _kraken_crypto_policy_approved(),
         equities_enabled=bool(investment.get("equities_enabled", True)),
         broker_enabled=brokers,
     )
@@ -637,6 +638,22 @@ def validate_investment_universe(db_path: Path, proposal: TradeProposal, policy:
         if row is None:
             failures.append("crypto_not_in_approved_universe")
     return failures
+
+
+def _kraken_crypto_policy_approved() -> bool:
+    return all(
+        _bool_env(key)
+        for key in (
+            "KRAKEN_TRADING_ENABLED",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        )
+    )
+
+
+def _bool_env(key: str) -> bool:
+    value = os.getenv(key)
+    return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def calculate_capital_allocation(

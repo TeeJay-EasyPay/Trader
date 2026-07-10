@@ -9,9 +9,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.api import LocalApiService, _kraken_balance_summary, _kraken_trading_allocation_gbp
+from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
-from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest
+from ai_trader.foundation import load_trading_policy
+from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
 from ai_trader.multi_broker import (
     broker_auto_trading_enabled,
     close_managed_exit_and_record,
@@ -116,7 +118,7 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             os.environ["KRAKEN_API_KEY"] = "key"
             os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
             os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP,ETHGBP"
-            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "false"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
             with tempfile.TemporaryDirectory() as tmp:
                 service = LocalApiService(settings_for(tmp))
                 adapter = FakeKrakenAdapter()
@@ -136,6 +138,116 @@ class MultiBrokerPlatformTests(unittest.TestCase):
                     score_count = conn.execute("SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES").fetchone()[0]
                 self.assertEqual(master_count, 2)
                 self.assertEqual(score_count, 2)
+        finally:
+            restore_env(previous)
+
+    def test_kraken_live_switches_enable_crypto_policy(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_TRADING_ENABLED",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        ]}
+        try:
+            os.environ["KRAKEN_TRADING_ENABLED"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+            with tempfile.TemporaryDirectory() as tmp:
+                settings = settings_for(tmp)
+
+                policy = load_trading_policy(settings.db_path, auto_trade=settings.auto_trade, guardrails=settings.guardrails)
+
+                self.assertTrue(policy.crypto_enabled)
+        finally:
+            restore_env(previous)
+
+    def test_kraken_allocation_basis_does_not_trip_full_account_drawdown(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_TRADING_ENABLED",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_TRADING_ALLOCATION_GBP",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_MIN_ORDER_GBP",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_TRADING_ENABLED"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP"
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            with tempfile.TemporaryDirectory() as tmp:
+                settings = settings_for(tmp)
+                service = LocalApiService(settings)
+                adapter = FakeKrakenAdapter()
+                service.orchestrator.adapters["kraken"] = adapter
+                record_crypto_research_score(
+                    settings.db_path,
+                    symbol="BTC",
+                    category="Founder approved Kraken pairs",
+                    source="test",
+                    metrics={
+                        "technical_trend_score": 0.9,
+                        "momentum_score": 0.9,
+                        "risk_score": 0.9,
+                        "sentiment": 0.9,
+                        "liquidity": 0.9,
+                    },
+                )
+                with closing(sqlite3.connect(settings.db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO PORTFOLIO_SNAPSHOTS (
+                                created_at, broker, exchange, account_currency, cash,
+                                portfolio_value, buying_power, open_positions_count,
+                                day_pnl, week_pnl, month_pnl, notes
+                            ) VALUES (?, 'kraken', 'Kraken', 'GBP', 100, 4000, 100, 9, NULL, NULL, NULL, 'test')
+                            """,
+                            ("2026-07-10T10:00:00+00:00",),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at)
+                            VALUES ('BTC', 'Bitcoin', 'Founder approved Kraken pairs', 'test', 1, ?, ?)
+                            """,
+                            ("2026-07-10T10:00:00+00:00", "2026-07-10T10:00:00+00:00"),
+                        )
+                proposal = TradeProposal(
+                    symbol="BTC",
+                    side="buy",
+                    entry_price=50000,
+                    stop_loss=49000,
+                    take_profit=52000,
+                    position_size=0.0001,
+                    risk_percentage=0.001,
+                    confidence_score=0.9,
+                    news_summary="Crypto research reviewed.",
+                    market_sentiment_summary="Positive.",
+                    technical_summary="Positive trend.",
+                    plain_english_reasoning="Test Kraken trade.",
+                    ai_guardrails_passed=True,
+                    asset_type="crypto",
+                    exchange="KRAKEN",
+                    philosophy_fit=0.9,
+                )
+                AuditDatabase(settings.db_path, settings.trading_log_path).record_trade_event(
+                    "agent_proposal",
+                    proposal,
+                    validation=ValidationResult(passed=True),
+                )
+
+                result = service.approve_and_execute({"proposal_id": proposal.proposal_id, "amount": "5"})
+
+                reason = result.get("result", {}).get("rejection_reason") or ""
+                self.assertNotIn("maximum_drawdown_exceeded", reason)
+                self.assertNotIn("crypto_disabled_by_policy", reason)
         finally:
             restore_env(previous)
 

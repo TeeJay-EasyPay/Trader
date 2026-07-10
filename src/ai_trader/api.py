@@ -11,6 +11,7 @@ import sys
 import time
 from collections import Counter, defaultdict, deque
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
@@ -1360,14 +1361,29 @@ This report explains available evidence. It does not automatically change strate
             auto_trade=self._manual_approval_auto_config(broker_name),
             guardrails=self.settings.guardrails,
         )
+        proposal = self._proposal_with_manual_amount(proposal, body.get("amount"), account_equity=context.account.equity)
         decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
         if decision.decision == "approved":
             self.portfolio(broker_name)
         return {
             "status": "submitted" if decision.decision == "approved" else decision.decision,
+            "message": decision.notes or decision.rejection_reason or decision.decision,
             "result": decision.to_dict(),
             "amount_requested": body.get("amount"),
         }
+
+    def _proposal_with_manual_amount(self, proposal: TradeProposal, amount: Any, *, account_equity: float) -> TradeProposal:
+        requested = safe_float(amount)
+        if requested is None or requested <= 0 or proposal.entry_price <= 0:
+            return proposal
+        quantity = requested / proposal.entry_price
+        risk_amount = quantity * abs(proposal.entry_price - proposal.stop_loss)
+        risk_percentage = risk_amount / account_equity if account_equity > 0 else proposal.risk_percentage
+        return replace(
+            proposal,
+            position_size=quantity,
+            risk_percentage=risk_percentage,
+        ).normalized()
 
     def _account_context_for_broker(self, broker_name: str) -> AccountContext:
         snapshot = latest_pnl_snapshot(self.settings.db_path, broker_name)

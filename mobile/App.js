@@ -1264,6 +1264,14 @@ function commandMessage(path, result) {
     }
     return result.message || 'No recommendations were eligible.';
   }
+  if (path === '/approve-and-execute') {
+    const decision = result.result?.decision || result.status;
+    const reason = result.result?.rejection_reason || result.message || result.result?.notes;
+    if (decision === 'approved' || result.status === 'submitted') {
+      return result.message || 'Trade submitted.';
+    }
+    return reason ? `${decision}\n${reason}` : decision || 'Manual approval finished.';
+  }
   if (path === '/broker-auto-trading') {
     return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.`;
   }
