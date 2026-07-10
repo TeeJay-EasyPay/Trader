@@ -83,7 +83,10 @@ export default function App() {
     setLoading(true);
     try {
       const optional = (path, fallback) => request(path).catch(() => fallback);
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendations, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning] = await Promise.all([
+      const recommendationRequest = request('/recommendations')
+        .then((payload) => ({ ok: true, payload }))
+        .catch(() => ({ ok: false, payload: { recommendations: [] } }));
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning] = await Promise.all([
         request('/status'),
         optional('/portfolio', {
           portfolio_value: 'Not available',
@@ -92,7 +95,7 @@ export default function App() {
           executive_summary: [],
         }),
         optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
-        optional('/recommendations', { recommendations: [] }),
+        recommendationRequest,
         optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
         optional('/intelligence/themes', { themes: [] }),
         optional('/intelligence/companies', { companies: [] }),
@@ -106,13 +109,16 @@ export default function App() {
       setNotifications(nextNotifications.notifications || []);
       setPerformanceAttribution(nextPerformance.performance_attribution || []);
       setDailyLearning(nextLearning);
-      const nextRecommendationItems = sortByConfidence(nextRecommendations.recommendations || []);
+      const nextRecommendationItems = sortByConfidence(nextRecommendationsResult.payload.recommendations || []);
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);
         await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
-      } else {
+      } else if (!nextRecommendationsResult.ok) {
         const cached = await loadCachedRecommendations();
         setRecommendations(cached.length ? cached : []);
+      } else {
+        setRecommendations([]);
+        await AsyncStorage.removeItem(RECOMMENDATION_CACHE_KEY);
       }
       setBenchmark(nextBenchmark);
       setThemes(nextThemes.themes || []);
@@ -798,7 +804,7 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Auto Trade Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Auto Trade Reason" value={enriched.auto_trade_reason} />
       <TextBlock label="Exit Plan" value={exitPlan(item)} />
-      <TextBlock label="Auto Trade Uses" value="The suggested position size. The amount box is only for manual approval notes; guardrails still control execution." />
+      <TextBlock label="Manual Trade Amount" value="For manual approval, the amount box sets the requested trade notional. Guardrails, broker caps, and allocation limits still control execution." />
       <TextInput
         style={styles.input}
         keyboardType="decimal-pad"
