@@ -1261,6 +1261,13 @@ This report explains available evidence. It does not automatically change strate
         broker_name = selected.name
         if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
             return {"status": "not_available", "message": "Alpaca paper credentials are required for execution."}
+        managed_capacity = self._broker_managed_trade_capacity(broker_name)
+        if not managed_capacity["can_open"]:
+            return {
+                "status": "blocked",
+                "message": managed_capacity["message"],
+                "managed_trade_capacity": managed_capacity,
+            }
         context = OrchestratorContext(
             account=self._account_context_for_broker(broker_name),
             auto_trade=self._manual_approval_auto_config(broker_name),
@@ -1473,6 +1480,17 @@ This report explains available evidence. It does not automatically change strate
                     "confidence": confidence,
                     "reason": f"{broker_name}_auto_trading_disabled",
                     "message": f"Auto trading is disabled for {broker_name}.",
+                })
+                continue
+            managed_capacity = self._broker_managed_trade_capacity(broker_name)
+            if not managed_capacity["can_open"]:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "ai_managed_open_trade_limit_reached",
+                    "message": managed_capacity["message"],
+                    "managed_trade_capacity": managed_capacity,
                 })
                 continue
             context = OrchestratorContext(
@@ -1719,8 +1737,9 @@ This report explains available evidence. It does not automatically change strate
             trading_enabled = _bool_env("KRAKEN_TRADING_ENABLED", False)
             allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
             max_open_trades = _int_env("KRAKEN_MAX_OPEN_TRADES", 1)
+            ai_managed_open_trades = self._ai_managed_open_trade_count(key)
             buy_only_entries = _bool_env("KRAKEN_BUY_ONLY_ENTRIES", True)
-            can_submit_real_orders = bool(auto_enabled and trading_enabled and live_approved and submit_real_orders)
+            can_submit_real_orders = bool(auto_enabled and trading_enabled and live_approved and submit_real_orders and ai_managed_open_trades < max_open_trades)
             return {
                 "broker": key,
                 "status": "Real Kraken orders enabled" if can_submit_real_orders else "Real Kraken orders blocked or dry-run only",
@@ -1733,10 +1752,13 @@ This report explains available evidence. It does not automatically change strate
                 "max_order_gbp": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
                 "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
                 "max_open_trades": max_open_trades,
+                "ai_managed_open_trades": ai_managed_open_trades,
+                "remaining_ai_trade_slots": max(0, max_open_trades - ai_managed_open_trades),
                 "buy_only_entries": buy_only_entries,
                 "allowed_pairs": allowed_pairs,
                 "notes": [
-                    "New Kraken entries are capped by trading allocation, max order size, allowed pairs, and open-trade limit.",
+                    "New Kraken entries are capped by trading allocation, max order size, allowed pairs, and AI Trader-managed open-trade limit.",
+                    "Existing Kraken holdings are reported separately and do not count against the AI Trader-managed open-trade limit.",
                     "Existing managed exits remain monitored even when new auto trading is disabled.",
                     "Real orders require Auto Trading, KRAKEN_TRADING_ENABLED, KRAKEN_LIVE_TRADING_APPROVED, and KRAKEN_SUBMIT_REAL_ORDERS.",
                 ],
@@ -1787,6 +1809,42 @@ This report explains available evidence. It does not automatically change strate
             "notes": [
                 f"{_broker_label(key)} will use this same permissions shape when the adapter is configured.",
             ],
+        }
+
+    def _ai_managed_open_trade_count(self, broker: str) -> int:
+        return len(open_managed_exits(self.settings.db_path, broker))
+
+    def _broker_managed_trade_capacity(self, broker: str) -> dict[str, Any]:
+        key = broker.lower()
+        if key != "kraken":
+            return {
+                "broker": key,
+                "can_open": True,
+                "ai_managed_open_trades": self._ai_managed_open_trade_count(key),
+                "max_ai_managed_open_trades": None,
+                "remaining_ai_trade_slots": None,
+                "message": "No broker-specific AI-managed trade slot limit applies.",
+            }
+        max_trades = _int_env("KRAKEN_MAX_OPEN_TRADES", 1)
+        open_trades = self._ai_managed_open_trade_count(key)
+        remaining = max(0, max_trades - open_trades)
+        can_open = open_trades < max_trades
+        message = (
+            f"AI Trader has {open_trades} managed Kraken trade(s) open out of {max_trades}; {remaining} new slot(s) remain. "
+            "Existing/manual Kraken holdings are not counted."
+        )
+        if not can_open:
+            message = (
+                f"AI Trader already has {open_trades} managed Kraken trade(s) open, meeting the limit of {max_trades}. "
+                "It will not open another managed Kraken trade until one exits. Existing/manual Kraken holdings are not counted."
+            )
+        return {
+            "broker": key,
+            "can_open": can_open,
+            "ai_managed_open_trades": open_trades,
+            "max_ai_managed_open_trades": max_trades,
+            "remaining_ai_trade_slots": remaining,
+            "message": message,
         }
 
     def _adapters(self):

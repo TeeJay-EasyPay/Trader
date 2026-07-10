@@ -223,6 +223,83 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_existing_broker_orders_do_not_count_as_ai_managed_slots(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_AUTO_TRADING",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_MIN_ORDER_GBP",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+            "KRAKEN_MAX_OPEN_TRADES",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "false"
+            os.environ["KRAKEN_MAX_OPEN_TRADES"] = "2"
+            adapter = FakeKrakenAdapter()
+            adapter.orders = [{"symbol": f"OLD{i}", "status": "open"} for i in range(9)]
+
+            result = adapter.place_order(OrderRequest("BTC", "buy", 0.00005, "crypto", "KRAKEN", 90, 120, notional_amount=2, client_order_id="micro"))
+
+            self.assertEqual(result["status"], "accepted")
+            self.assertNotIn("max_open_kraken_trades_exceeded", result.get("seatbelt_failures", []))
+        finally:
+            restore_env(previous)
+
+    def test_kraken_managed_trade_capacity_counts_only_ai_managed_exits(self):
+        previous = {"KRAKEN_MAX_OPEN_TRADES": os.environ.get("KRAKEN_MAX_OPEN_TRADES")}
+        try:
+            os.environ["KRAKEN_MAX_OPEN_TRADES"] = "2"
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                record_managed_trade_exit(
+                    service.settings.db_path,
+                    broker="kraken",
+                    symbol="BTC",
+                    side="buy",
+                    quantity=0.001,
+                    entry_order_id="ai-1",
+                    entry_price=100,
+                    stop_loss=95,
+                    take_profit=110,
+                    payload={},
+                )
+
+                capacity = service._broker_managed_trade_capacity("kraken")
+
+                self.assertTrue(capacity["can_open"])
+                self.assertEqual(capacity["ai_managed_open_trades"], 1)
+                self.assertEqual(capacity["remaining_ai_trade_slots"], 1)
+
+                record_managed_trade_exit(
+                    service.settings.db_path,
+                    broker="kraken",
+                    symbol="ETH",
+                    side="buy",
+                    quantity=0.01,
+                    entry_order_id="ai-2",
+                    entry_price=100,
+                    stop_loss=95,
+                    take_profit=110,
+                    payload={},
+                )
+                capacity = service._broker_managed_trade_capacity("kraken")
+
+                self.assertFalse(capacity["can_open"])
+                self.assertEqual(capacity["ai_managed_open_trades"], 2)
+                self.assertEqual(capacity["remaining_ai_trade_slots"], 0)
+        finally:
+            restore_env(previous)
+
     def test_kraken_defaults_to_validate_mode_when_submit_real_orders_unset(self):
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_API_KEY",
@@ -369,9 +446,10 @@ class FakeKrakenAdapter(KrakenAdapter):
         super().__init__()
         self.submitted_orders = []
         self.prices = {}
+        self.orders = []
 
     def get_orders(self):
-        return []
+        return self.orders
 
     def get_account(self):
         return {"status": "connected", "balances": {"ZGBP": "100"}}

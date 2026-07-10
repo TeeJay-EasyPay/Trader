@@ -532,6 +532,8 @@ function TradingPermissions({ permissions }) {
       {permissions.max_order_gbp !== undefined ? <Metric label="Max Order" value={gbpOrText(permissions.max_order_gbp)} /> : null}
       {permissions.min_order_gbp !== undefined ? <Metric label="Min Order" value={gbpOrText(permissions.min_order_gbp)} /> : null}
       {permissions.max_open_trades !== undefined ? <Metric label="Max Open Trades" value={permissions.max_open_trades} /> : null}
+      {permissions.ai_managed_open_trades !== undefined ? <Metric label="AI-Managed Open Trades" value={permissions.ai_managed_open_trades} /> : null}
+      {permissions.remaining_ai_trade_slots !== undefined ? <Metric label="Remaining AI Trade Slots" value={permissions.remaining_ai_trade_slots} /> : null}
       {permissions.buy_only_entries !== undefined ? <Metric label="Buy-only Entries" value={enabledDisabled(permissions.buy_only_entries)} /> : null}
       <Metric label="Allowed Pairs / Symbols" value={formatListInline(permissions.allowed_pairs)} />
       {permissions.notes?.length ? <TextBlock label="Notes" value={permissions.notes.map((item) => `- ${item}`).join('\n')} /> : null}

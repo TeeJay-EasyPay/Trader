@@ -360,9 +360,6 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         min_notional = _float_env("KRAKEN_MIN_ORDER_GBP", 1.0)
         if notional < min_notional:
             failures.append("min_order_amount_not_met")
-        open_orders = self.get_orders()
-        if len(open_orders) >= _int_env("KRAKEN_MAX_OPEN_TRADES", 1):
-            failures.append("max_open_kraken_trades_exceeded")
         if order_request.side.lower() == "buy":
             balances = self.get_account().get("balances", {})
             gbp_balance = _balance_amount(balances, ("ZGBP", "GBP"))
