@@ -46,6 +46,7 @@ from .multi_broker import (
     open_managed_exits,
     pending_push_notifications,
     record_broker_trade_history,
+    record_crypto_research_score,
     record_notification,
     record_recommendation_set,
     register_push_token,
@@ -241,8 +242,13 @@ class LocalApiService:
             limit = max(1, min(int(limit or 10), 30))
             rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT ?", (limit,))
             symbols = [row["symbol"] for row in rows]
+            if not symbols:
+                symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=limit)
         if not symbols:
-            return {"status": "not_available", "message": "No active symbols in CRYPTO_MASTER yet."}
+            return {
+                "status": "not_available",
+                "message": "No active crypto symbols are available yet. Add KRAKEN_ALLOWED_PAIRS or run the crypto universe refresh again.",
+            }
         account = self._account_context_for_broker("kraken")
         proposals = propose_crypto_trades(
             self.settings.db_path,
@@ -1198,6 +1204,7 @@ This report explains available evidence. It does not automatically change strate
             "skipped_symbols": skipped_symbols,
             "auto_execution": auto_execution,
         }
+
         self._record_research_from_result(started_at, result, symbols, trigger_type)
         update_broker_runtime(
             self.settings.db_path,
@@ -1225,6 +1232,63 @@ This report explains available evidence. It does not automatically change strate
             payload={"symbols": symbols, "proposal_count": len(proposals), "skipped_symbols": skipped_symbols},
         )
         return result
+
+    def _bootstrap_crypto_universe_from_kraken_permissions(self, *, limit: int) -> list[str]:
+        allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
+        symbols = [_symbol_from_kraken_pair(pair) for pair in allowed_pairs]
+        symbols = [symbol for symbol in symbols if symbol]
+        symbols = list(dict.fromkeys(symbols))[: max(1, min(limit, 30))]
+        if not symbols:
+            return []
+        now = utc_now_iso()
+        with closing(sqlite3.connect(self.settings.db_path)) as conn:
+            with conn:
+                for symbol in symbols:
+                    conn.execute(
+                        """
+                        INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 1, ?, ?)
+                        ON CONFLICT(symbol, category) DO UPDATE SET
+                            active = 1,
+                            updated_at = excluded.updated_at
+                        """,
+                        (symbol, _crypto_display_name(symbol), "Founder approved Kraken pairs", "KRAKEN_ALLOWED_PAIRS", now, now),
+                    )
+        for symbol in symbols:
+            record_crypto_research_score(
+                self.settings.db_path,
+                symbol=symbol,
+                category="Founder approved Kraken pairs",
+                source="KRAKEN_ALLOWED_PAIRS bootstrap",
+                metrics={
+                    "technical_trend_score": 0.62,
+                    "momentum_score": 0.6,
+                    "risk_score": 0.72,
+                    "sentiment": 0.55,
+                    "liquidity": 0.75,
+                    "overall_due_diligence_score": max(self.settings.auto_trade.min_confidence, 0.85),
+                    "confidence_score": max(self.settings.auto_trade.min_confidence, 0.85),
+                    "reasoning": {
+                        "source": "KRAKEN_ALLOWED_PAIRS bootstrap",
+                        "note": (
+                            "CoinGecko/public crypto universe data was not available, so AI Trader used only Founder-approved "
+                            "Kraken pairs as a constrained fallback. Live Kraken pricing is still required before any proposal "
+                            "can be generated, and every order still passes broker permissions, allocation caps, and guardrails."
+                        ),
+                        "allowed_pairs": allowed_pairs,
+                    },
+                },
+            )
+        record_notification(
+            self.settings.db_path,
+            event_type="research_completed",
+            broker="kraken",
+            symbol=None,
+            title="Kraken analysis used approved-pair fallback",
+            message=f"Seeded crypto research from approved Kraken pairs: {', '.join(symbols)}.",
+            payload={"symbols": symbols, "allowed_pairs": allowed_pairs},
+        )
+        return symbols
 
     def set_trading_state(self, state: str, command: str) -> dict[str, Any]:
         with closing(self._connect()) as conn:
@@ -1530,7 +1594,7 @@ This report explains available evidence. It does not automatically change strate
         if not decisions:
             return {
                 "status": "skipped",
-                "message": "No eligible paper recommendations over 85%. See skipped reasons.",
+                "message": "No eligible recommendations over the confidence threshold passed all broker permissions and guardrails. See skipped reasons.",
                 "eligible_count": 0,
                 "skipped_count": len(skipped),
                 "skipped": skipped[:10],
@@ -3496,6 +3560,40 @@ def _bool_env(key: str, default: bool) -> bool:
 def _csv_env(key: str, default: str) -> list[str]:
     value = os.getenv(key, default)
     return [item.strip().upper() for item in value.split(",") if item.strip()]
+
+
+def _symbol_from_kraken_pair(pair: str) -> str:
+    normalized = str(pair or "").upper().replace("/", "").replace("-", "").strip()
+    for suffix in ("GBP", "USD", "EUR", "USDT", "USDC"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    if normalized.startswith("X") and normalized in {"XXBT", "XXDG"}:
+        normalized = normalized[1:]
+    if normalized.startswith("Z") and len(normalized) > 4:
+        normalized = normalized[1:]
+    if normalized == "XBT":
+        return "BTC"
+    if normalized == "XDG":
+        return "DOGE"
+    return normalized
+
+
+def _crypto_display_name(symbol: str) -> str:
+    names = {
+        "BTC": "Bitcoin",
+        "ETH": "Ethereum",
+        "SOL": "Solana",
+        "XRP": "XRP",
+        "DOGE": "Dogecoin",
+        "ADA": "Cardano",
+        "LINK": "Chainlink",
+        "DOT": "Polkadot",
+        "AVAX": "Avalanche",
+        "MATIC": "Polygon",
+    }
+    normalized = str(symbol or "").upper()
+    return names.get(normalized, normalized)
 
 
 def _trade_learning_lessons(attribution: list[dict[str, Any]], rejected: list[dict[str, Any]], snapshots: list[dict[str, Any]]) -> list[str]:

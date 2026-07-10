@@ -105,6 +105,40 @@ class MultiBrokerPlatformTests(unittest.TestCase):
                 count = conn.execute("SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES").fetchone()[0]
             self.assertEqual(count, 1)
 
+    def test_kraken_analysis_bootstraps_empty_crypto_universe_from_allowed_pairs(self):
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP,ETHGBP"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "false"
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {
+                    "XBTGBP": {"c": ["50000.0"]},
+                    "ETHGBP": {"c": ["3000.0"]},
+                }
+                service.orchestrator.adapters["kraken"] = adapter
+
+                result = service.run_crypto_analysis(limit=10)
+
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["symbols"], ["BTC", "ETH"])
+                self.assertGreaterEqual(len(result["proposals"]), 1)
+                with closing(sqlite3.connect(service.settings.db_path)) as conn:
+                    master_count = conn.execute("SELECT COUNT(*) FROM CRYPTO_MASTER").fetchone()[0]
+                    score_count = conn.execute("SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES").fetchone()[0]
+                self.assertEqual(master_count, 2)
+                self.assertEqual(score_count, 2)
+        finally:
+            restore_env(previous)
+
     def test_legacy_auto_paper_trading_enables_only_alpaca_for_compatibility(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = LocalApiService(settings_for(tmp, AutoTradeConfig(enabled=True)))
