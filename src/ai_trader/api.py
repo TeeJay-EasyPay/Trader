@@ -232,13 +232,14 @@ class LocalApiService:
         result["crypto_analysis"] = crypto_analysis
         return result
 
-    def run_crypto_analysis(self, symbols: list[str] | None = None) -> dict[str, Any]:
+    def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
         adapter = self.orchestrator.adapters.get("kraken")
         if adapter is None or not getattr(adapter, "configured", False):
             return {"status": "not_available", "message": "Kraken credentials are required for crypto analysis."}
         if symbols is None:
-            rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT 30")
+            limit = max(1, min(int(limit or 10), 30))
+            rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT ?", (limit,))
             symbols = [row["symbol"] for row in rows]
         if not symbols:
             return {"status": "not_available", "message": "No active symbols in CRYPTO_MASTER yet."}
@@ -356,7 +357,7 @@ class LocalApiService:
             symbols = body.get("symbols")
             if isinstance(symbols, str):
                 symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
-            return 200, self.run_crypto_analysis(symbols)
+            return 200, self.run_crypto_analysis(symbols, limit=_int_or_default(body.get("limit"), 10))
         if path == "/start-trading":
             return 200, self.set_trading_state("running", "start-trading")
         if path == "/pause-trading":
@@ -1127,6 +1128,11 @@ This report explains available evidence. It does not automatically change strate
         started_at = utc_now_iso()
         trigger_type = str(body.get("trigger_type") or "manual")
         broker_name = str(body.get("broker") or "alpaca").lower()
+        if broker_name == "kraken":
+            symbols = body.get("symbols")
+            if isinstance(symbols, str):
+                symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
+            return self.run_crypto_analysis(symbols, limit=_int_or_default(body.get("limit"), 10))
         update_broker_runtime(
             self.settings.db_path,
             broker_name,

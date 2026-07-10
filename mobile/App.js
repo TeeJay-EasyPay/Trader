@@ -158,6 +158,8 @@ export default function App() {
         'Command failed',
         message === 'not_found'
           ? `The phone app has newer buttons than the backend currently running.\n\nAPI: ${API_BASE}`
+          : message === 'Network request failed'
+            ? `The phone could not keep a connection to the hosted API while the command was running. Render may be waking up, redeploying, or the analysis took too long.\n\nTry Refresh first, then run the smaller broker-specific analysis again.\n\nAPI: ${API_BASE}`
           : message
       );
     } finally {
@@ -222,7 +224,12 @@ export default function App() {
           setAmounts={setAmounts}
           onApprove={approve}
           onRefresh={refresh}
-          onRunAnalysis={() => command('/run-analysis', { limit: 30 })}
+          onRunAnalysis={(broker = 'kraken') => {
+            if (String(broker).toLowerCase() === 'kraken') {
+              return command('/run-crypto-analysis', { broker: 'kraken', limit: 10 });
+            }
+            return command('/run-analysis', { broker: 'alpaca', limit: 10 });
+          }}
           onAutoExecute={() => command('/auto-execute-recommendations')}
           targetRecommendationId={targetRecommendationId}
           clearTargetRecommendation={() => setTargetRecommendationId(null)}
@@ -681,7 +688,8 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
         </Text>
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />
-          <Button label="Run New Analysis" onPress={onRunAnalysis} />
+          <Button label="Run Kraken Analysis" onPress={() => onRunAnalysis('kraken')} />
+          <Button label="Run Stock Analysis" onPress={() => onRunAnalysis('alpaca')} tone="neutral" />
         </View>
       </Section>
     );
@@ -718,7 +726,8 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
       </Section>
       <View style={styles.buttonGrid}>
         <Button label="Refresh" onPress={onRefresh} tone="neutral" />
-        <Button label="Run New Analysis" onPress={onRunAnalysis} />
+        <Button label="Run Kraken Analysis" onPress={() => onRunAnalysis('kraken')} />
+        <Button label="Run Stock Analysis" onPress={() => onRunAnalysis('alpaca')} tone="neutral" />
         <Button label="Auto Execute 85%+" onPress={onAutoExecute} tone="warn" />
       </View>
       {Object.entries(groupRecommendations(filterRecommendations(recommendations, brokerFilter, confidenceFilter, assetTypeFilter, statusFilter))).map(([broker, items]) => (
