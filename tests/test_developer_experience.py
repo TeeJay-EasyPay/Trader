@@ -631,6 +631,32 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(result["status"], "blocked")
             self.assertIn("expired", result["message"].lower())
 
+    def test_manual_approval_recovers_latest_symbol_when_cached_proposal_id_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            proposal = TradeProposal(
+                symbol="RIO",
+                side="buy",
+                entry_price=100,
+                stop_loss=99,
+                take_profit=103,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.9,
+                news_summary="Public news context.",
+                market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Test recommendation.",
+                ai_guardrails_passed=True,
+            )
+            audit.record_trade_event("agent_proposal", proposal, validation=ValidationResult(passed=True))
+
+            result = LocalApiService(settings).approve_and_execute({"proposal_id": "cached-missing-id", "symbol": "RIO"})
+
+            self.assertNotIn("Proposal not found", result["message"])
+            self.assertIn(result["status"], {"not_available", "rejected"})
+
     def test_auto_execute_explains_guardrail_skips(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = settings_for(tmp)

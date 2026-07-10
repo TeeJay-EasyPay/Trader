@@ -1319,7 +1319,24 @@ This report explains available evidence. It does not automatically change strate
             (str(proposal_id),),
         )
         if not row:
-            return {"status": "rejected", "message": "Proposal not found in SQLite."}
+            symbol = str(body.get("symbol") or "").upper().strip()
+            if symbol:
+                row = self._row(
+                    """
+                    SELECT payload_json, created_at, ai_confidence, proposal_id
+                    FROM trade_audit
+                    WHERE UPPER(symbol) = UPPER(?) AND event_type = 'agent_proposal'
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                    """,
+                    (symbol,),
+                )
+                if row:
+                    proposal_id = row["proposal_id"]
+            if not row:
+                return {
+                    "status": "rejected",
+                    "message": "Proposal not found in SQLite. Refresh recommendations, then try the latest card again.",
+                }
         freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
         if freshness["status"] == "Expired":
             return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}

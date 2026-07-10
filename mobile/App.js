@@ -189,9 +189,10 @@ export default function App() {
     }
   };
 
-  const approve = async (proposalId) => {
+  const approve = async (proposalId, symbol = null) => {
     await command('/approve-and-execute', {
       proposal_id: proposalId,
+      symbol,
       amount: amounts[proposalId] || null,
     });
   };
@@ -744,7 +745,7 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
                     item={item}
                     amount={amounts[item.proposal_id] || ''}
                     setAmount={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
-                    onApprove={() => onApprove(item.proposal_id)}
+                    onApprove={() => onApprove(item.proposal_id, item.ticker)}
                   />
                 )}
               </View>
@@ -1239,6 +1240,15 @@ function commandMessage(path, result) {
       return `Analysis completed across ${symbolCount} companies. No safe trade recommendations were generated.${skippedText}`;
     }
     return `Analysis completed across ${symbolCount} companies. ${proposalCount} recommendation(s) generated.${skippedText}`;
+  }
+  if (path === '/run-crypto-analysis') {
+    const proposalCount = result.proposals?.length || 0;
+    const symbolCount = result.symbols?.length || 0;
+    const autoMessage = result.auto_execution?.message ? `\n\nAuto execution: ${result.auto_execution.message}` : '';
+    if (proposalCount === 0) {
+      return `Kraken analysis completed across ${symbolCount} approved crypto asset(s). No trade recommendations were generated.${autoMessage}`;
+    }
+    return `Kraken analysis completed across ${symbolCount} approved crypto asset(s). ${proposalCount} recommendation(s) generated.${autoMessage}`;
   }
   if (path === '/auto-execute-recommendations') {
     const eligibleCount = result.eligible_count || 0;
