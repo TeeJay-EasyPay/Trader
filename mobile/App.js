@@ -611,6 +611,7 @@ function TradeDetail({ item, onForceExit }) {
   const normalized = normalizeTradeRow(item);
   const tradeMoney = (value) => historyMoneyOrText(normalized.broker, value);
   const isOpen = isOpenTrade(normalized);
+  const [showTechnicalData, setShowTechnicalData] = useState(false);
   return (
     <View>
       <Metric label="Broker" value={normalized.broker} />
@@ -619,18 +620,25 @@ function TradeDetail({ item, onForceExit }) {
       <Metric label="Status" value={isOpen ? 'Holding / unsold' : (normalized.status || item.event_type)} />
       <Metric label="Quantity" value={normalized.quantity} />
       <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
-      <Metric label="Target Price" value={tradeMoney(normalized.targetPrice)} />
-      <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice)} />
-      <Metric label="Stop Loss" value={tradeMoney(normalized.stopLoss)} />
+      <Metric label="Target Price" value={tradeMoney(normalized.targetPrice) || unavailableReason(normalized, 'target')} />
+      <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice) || unavailableReason(normalized, 'current')} />
+      <Metric label="Stop Loss" value={tradeMoney(normalized.stopLoss) || unavailableReason(normalized, 'stop')} />
       <Metric label="Exit Price" value={isOpen ? 'Unsold' : tradeMoney(normalized.exitPrice)} />
       <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
       <Metric label="Entry Date & Time" value={formatDateTime(normalized.openedAt)} />
       <Metric label="Exit Date & Time" value={isOpen ? 'Unsold' : formatDateTime(normalized.closedAt)} />
       <Metric label="Time Held" value={formatHoldingDuration(normalized.openedAt, normalized.closedAt, isOpen)} />
-      <TextBlock label="Entry Reason" value={normalized.entryReason} />
-      <TextBlock label="Exit Reason" value={normalized.exitReason} />
+      <TextBlock label="Entry Reason" value={normalized.entryReason || unavailableReason(normalized, 'entryReason')} />
+      <TextBlock label="Exit Reason" value={normalized.exitReason || unavailableReason(normalized, 'exitReason')} />
       <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
-      <TextBlock label="Technical Broker Data" value={formatJsonText(raw)} />
+      <View style={styles.buttonGrid}>
+        <Button
+          label={showTechnicalData ? 'Hide Technical Data' : 'Show Technical Data'}
+          tone="neutral"
+          onPress={() => setShowTechnicalData((value) => !value)}
+        />
+      </View>
+      {showTechnicalData ? <TextBlock label="Technical Broker Data" value={formatJsonText(raw)} /> : null}
       {isOpen && normalized.managedExitId ? (
         <View style={styles.buttonGrid}>
           <Button label="Exit Trade Now" tone="danger" onPress={() => onForceExit?.(item)} />
@@ -1775,7 +1783,7 @@ function tradeHistorySummary(status, trades, selectedExchange) {
     selected === 'all' || brokerKey(broker.broker || broker.label) === selected
   ));
   const normalized = (trades || []).map(normalizeTradeRow);
-  const todaysClosed = normalized.filter((item) => isToday(item.closedAt || item.eventTime) && terminalTradeStatus(item.status));
+  const todaysClosed = normalized.filter((item) => isToday(item.closedAt || item.eventTime) && terminalTradeStatus(item.status) && !isOpenTrade(item));
   const realisedPnl = todaysClosed
     .map((item) => numeric(item.profitLoss))
     .filter((value) => value !== null)
@@ -1797,11 +1805,13 @@ function tradeHistorySummary(status, trades, selectedExchange) {
 
 function normalizeTradeRow(item) {
   const raw = item?.raw || item?.payload || parseMaybeJson(item?.payload_json) || {};
-  const side = firstValue(item?.side, raw.side, raw.order_side, raw.type);
+  const descr = raw.descr || {};
+  const side = firstValue(item?.side, raw.side, raw.order_side, raw.type, descr.type);
   const status = firstValue(item?.status, raw.status, raw.order_status);
   const price = firstNumber(
     item?.price,
     raw.price,
+    raw.price2,
     raw.execution_price,
     raw.average_price,
     raw.filled_avg_price,
@@ -1815,16 +1825,16 @@ function normalizeTradeRow(item) {
   return {
     managedExitId: firstNumber(item?.managed_exit_id, raw.managed_exit_id),
     broker: titleCaseBroker(firstValue(item?.broker, raw.broker)),
-    symbol: firstValue(item?.symbol, raw.symbol, raw.pair, raw.asset_pair, raw.instrument),
+    symbol: firstValue(item?.symbol, raw.symbol, raw.pair, raw.asset_pair, raw.instrument, descr.pair),
     side,
     status,
-    quantity: firstNumber(item?.position_size, item?.quantity, item?.qty, raw.quantity, raw.qty, raw.vol, raw.volume),
+    quantity: firstNumber(item?.position_size, item?.quantity, item?.qty, raw.quantity, raw.qty, raw.vol_exec, raw.vol, raw.volume),
     price,
     entryPrice,
     exitPrice,
     targetPrice: firstNumber(item?.take_profit, item?.target_price, raw.take_profit, raw.target_price),
     stopLoss: firstNumber(item?.stop_loss, raw.stop_loss),
-    currentPrice: firstNumber(item?.current_price, raw.current_price),
+    currentPrice: firstNumber(item?.current_price, raw.current_price, raw.last_price),
     profitLoss: firstNumber(item?.profit_loss, item?.pnl, item?.realized_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
     openedAt,
     closedAt,
@@ -1845,7 +1855,29 @@ function isOpenTrade(item) {
   if (isBuy(item?.side) && status === 'filled' && !item?.closedAt && !item?.exitPrice) {
     return true;
   }
+  if (isBuy(item?.side) && status === 'closed' && !item?.exitPrice) {
+    return true;
+  }
   return false;
+}
+
+function unavailableReason(item, field) {
+  if (item?.managedExitId) {
+    return 'Not recorded yet';
+  }
+  if (field === 'target' || field === 'stop') {
+    return 'Only available for AI-managed trades';
+  }
+  if (field === 'current') {
+    return 'Live price not returned by broker yet';
+  }
+  if (field === 'entryReason') {
+    return 'Raw broker row - AI reason is stored only on linked AI-managed trades';
+  }
+  if (field === 'exitReason') {
+    return isOpenTrade(item) ? 'Unsold' : 'No exit reason recorded by broker';
+  }
+  return 'Not recorded';
 }
 
 function firstValue(...values) {
@@ -1929,11 +1961,12 @@ function describeTransaction(item) {
   const sizeValue = normalized.quantity;
   const size = sizeValue ? ` for ${sizeValue}` : '';
   const status = normalized.status ? ` (${normalized.status})` : '';
+  const displayStatus = isOpenTrade(normalized) ? ' (holding/unsold)' : status;
   const priceValue = normalized.exitPrice || normalized.price || normalized.entryPrice;
   const price = priceValue ? ` at ${historyMoneyOrText(normalized.broker, priceValue)}` : '';
   const pnl = normalized.profitLoss !== undefined && normalized.profitLoss !== null ? ` P&L ${historyMoneyOrText(normalized.broker, normalized.profitLoss)}` : '';
   const confidence = item.ai_confidence ? ` at ${formatPercent(item.ai_confidence)} confidence` : '';
-  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${pnl}${confidence}${status}.`;
+  return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${pnl}${confidence}${displayStatus}.`;
 }
 
 function yesNo(value) {

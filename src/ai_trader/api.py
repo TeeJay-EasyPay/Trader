@@ -1897,11 +1897,30 @@ This report explains available evidence. It does not automatically change strate
                 "research_freshness": runtime.get("research_freshness"),
                 "last_recommendation": runtime.get("last_recommendation"),
                 "last_trade_submitted": runtime.get("last_trade_submitted"),
-                "trade_history": latest_broker_trades(self.settings.db_path, broker, limit=10),
+                "trade_history": self._broker_trade_rows(broker),
                 "managed_exits": self._managed_exit_rows(broker),
                 "source": portfolio.get("source"),
             })
         return panels
+
+    def _broker_trade_rows(self, broker: str) -> list[dict[str, Any]]:
+        rows = latest_broker_trades(self.settings.db_path, broker, limit=10)
+        if broker != "kraken":
+            return rows
+        adapter = self.orchestrator.adapters.get("kraken")
+        if adapter is None or not hasattr(adapter, "current_prices"):
+            return rows
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            pair = _broker_trade_symbol(item)
+            if pair:
+                try:
+                    item["current_price"] = _kraken_last_price(adapter.current_prices([pair]), pair)
+                except Exception as exc:
+                    item["current_price_error"] = str(exc)
+            enriched.append(item)
+        return enriched
 
     def _managed_exit_rows(self, broker: str) -> list[dict[str, Any]]:
         rows = open_managed_exits(self.settings.db_path, broker)
