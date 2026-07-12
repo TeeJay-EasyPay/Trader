@@ -381,6 +381,8 @@ class LocalApiService:
             return 200, self.set_broker_auto_trading(body)
         if path == "/monitor-managed-exits":
             return 200, self.monitor_managed_exits()
+        if path == "/force-managed-exit":
+            return 200, self.force_managed_exit(body)
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/ask-ai-trader":
@@ -1757,6 +1759,74 @@ This report explains available evidence. It does not automatically change strate
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_failed", "reason": result.get("reason"), "price": price})
         return {"status": "checked", "managed_exits": checked}
 
+    def force_managed_exit(self, body: dict[str, Any]) -> dict[str, Any]:
+        managed_exit_id = _int_or_default(body.get("managed_exit_id"), 0)
+        if managed_exit_id <= 0:
+            return {"status": "rejected", "message": "managed_exit_id is required."}
+        matches = [item for item in open_managed_exits(self.settings.db_path) if int(item["managed_exit_id"]) == managed_exit_id]
+        if not matches:
+            return {"status": "rejected", "message": "Open AI-managed trade was not found. Personal/manual holdings are not force-exited by this command."}
+        item = matches[0]
+        broker = item["broker"]
+        adapter = self.orchestrator.adapters.get(broker)
+        if broker != "kraken" or adapter is None or not hasattr(adapter, "current_prices"):
+            return {"status": "rejected", "message": "Force exit is currently available only for AI-managed Kraken trades."}
+        pair = _kraken_pair(item["symbol"])
+        price = _kraken_last_price(adapter.current_prices([pair]), pair)
+        if price is None:
+            return {"status": "rejected", "message": "Current Kraken price is not available, so AI Trader cannot calculate a controlled exit order."}
+        entry_side = str(item["side"]).lower()
+        exit_side = "sell" if entry_side == "buy" else "buy"
+        quantity = float(item["quantity"])
+        order_request = OrderRequest(
+            symbol=item["symbol"],
+            side=exit_side,
+            quantity=quantity,
+            asset_type="crypto",
+            exchange="KRAKEN",
+            stop_loss=0,
+            take_profit=0,
+            notional_amount=price * quantity,
+            client_order_id=f"manual-exit-{managed_exit_id}",
+            quote_currency="GBP",
+            broker_pair=pair,
+        )
+        result = adapter.place_exit_order(order_request)
+        if result.get("status") not in {"accepted", "submitted"}:
+            return {"status": "rejected", "message": f"Kraken exit order was not accepted: {result.get('reason') or result.get('status')}", "order": result}
+        entry_payload = _json_loads_safe(item.get("payload_json")) or {}
+        proposal_id = entry_payload.get("proposal_id")
+        investment_score = latest_investment_score(self.settings.db_path, proposal_id) if proposal_id else None
+        close_managed_exit_and_record(
+            self.settings.db_path,
+            managed_exit_id,
+            broker=broker,
+            symbol=item["symbol"],
+            asset_type="crypto",
+            side=exit_side,
+            quantity=quantity,
+            price=price,
+            exit_order_id=str(result.get("id") or result.get("order_id") or ""),
+            exit_reason="founder_forced_exit",
+            order_payload={"price": price, "order": result, "forced_by": "founder"},
+            entry_price=safe_float(item.get("entry_price")),
+            entry_side=entry_side,
+            opened_at=item.get("created_at"),
+            proposal_id=proposal_id,
+            entry_reason=entry_payload.get("entry_reason"),
+            primary_factors=(investment_score or {}).get("reasoning"),
+        )
+        record_notification(
+            self.settings.db_path,
+            event_type="founder_forced_exit",
+            broker=broker,
+            symbol=item["symbol"],
+            title="Founder Forced Exit",
+            message=f"Kraken {item['symbol']} exit submitted at {price}.",
+            payload={"managed_exit": dict(item), "order": result, "price": price},
+        )
+        return {"status": "submitted", "message": f"Exit submitted for {item['symbol']} at approximately {price}.", "order": result}
+
     def poll_broker_activity(self) -> dict[str, Any]:
         """Continuously reconciles broker-reported order/trade status into SQLite and
         fires trade_filled/trade_closed notifications - this is what gives Alpaca (which
@@ -1828,9 +1898,29 @@ This report explains available evidence. It does not automatically change strate
                 "last_recommendation": runtime.get("last_recommendation"),
                 "last_trade_submitted": runtime.get("last_trade_submitted"),
                 "trade_history": latest_broker_trades(self.settings.db_path, broker, limit=10),
+                "managed_exits": self._managed_exit_rows(broker),
                 "source": portfolio.get("source"),
             })
         return panels
+
+    def _managed_exit_rows(self, broker: str) -> list[dict[str, Any]]:
+        rows = open_managed_exits(self.settings.db_path, broker)
+        if broker != "kraken":
+            return rows
+        adapter = self.orchestrator.adapters.get("kraken")
+        if adapter is None or not hasattr(adapter, "current_prices"):
+            return rows
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            pair = _kraken_pair(item["symbol"])
+            try:
+                item["current_price"] = _kraken_last_price(adapter.current_prices([pair]), pair)
+                item["broker_pair"] = pair
+            except Exception as exc:
+                item["current_price_error"] = str(exc)
+            enriched.append(item)
+        return enriched
 
     def _broker_trading_permissions(self, broker: str, auto_enabled: bool) -> dict[str, Any]:
         key = broker.lower()

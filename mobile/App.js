@@ -251,6 +251,7 @@ export default function App() {
           performanceAttribution={performanceAttribution}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
+          onCommand={command}
         />
       );
     }
@@ -548,7 +549,7 @@ function TradingPermissions({ permissions }) {
   );
 }
 
-function TradeHistorySection({ title, trades }) {
+function TradeHistorySection({ title, trades, onForceExit }) {
   const [expanded, setExpanded] = useState({});
   return (
     <Section title={title}>
@@ -564,7 +565,7 @@ function TradeHistorySection({ title, trades }) {
                 <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
                 <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
               </TouchableOpacity>
-              {open ? <TradeDetail item={item} /> : null}
+              {open ? <TradeDetail item={item} onForceExit={onForceExit} /> : null}
             </View>
           );
         })
@@ -573,7 +574,7 @@ function TradeHistorySection({ title, trades }) {
   );
 }
 
-function TradeHistoryScreen({ status, portfolio, performanceAttribution, selectedExchange, setSelectedExchange }) {
+function TradeHistoryScreen({ status, portfolio, performanceAttribution, selectedExchange, setSelectedExchange, onCommand }) {
   const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
   const summary = tradeHistorySummary(status, trades, selectedExchange);
   return (
@@ -599,32 +600,42 @@ function TradeHistoryScreen({ status, portfolio, performanceAttribution, selecte
       <TradeHistorySection
         title={`${selectedExchange === 'All' ? 'All Brokers' : selectedExchange} Individual Trade History`}
         trades={trades}
+        onForceExit={(item) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(item).managedExitId })}
       />
     </View>
   );
 }
 
-function TradeDetail({ item }) {
+function TradeDetail({ item, onForceExit }) {
   const raw = item.raw || item.payload || {};
   const normalized = normalizeTradeRow(item);
   const tradeMoney = (value) => historyMoneyOrText(normalized.broker, value);
+  const isOpen = isOpenTrade(normalized);
   return (
     <View>
       <Metric label="Broker" value={normalized.broker} />
       <Metric label="Symbol" value={normalized.symbol} />
       <Metric label="Side" value={normalized.side} />
-      <Metric label="Status" value={normalized.status || item.event_type} />
+      <Metric label="Status" value={isOpen ? 'Holding / unsold' : (normalized.status || item.event_type)} />
       <Metric label="Quantity" value={normalized.quantity} />
       <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
-      <Metric label="Exit Price" value={tradeMoney(normalized.exitPrice)} />
-      <Metric label="P&L" value={tradeMoney(normalized.profitLoss)} />
-      <Metric label="Opened" value={formatDateTime(normalized.openedAt)} />
-      <Metric label="Closed" value={formatDateTime(normalized.closedAt)} />
-      <Metric label="Time Held" value={formatDuration(normalized.openedAt, normalized.closedAt)} />
+      <Metric label="Target Price" value={tradeMoney(normalized.targetPrice)} />
+      <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice)} />
+      <Metric label="Stop Loss" value={tradeMoney(normalized.stopLoss)} />
+      <Metric label="Exit Price" value={isOpen ? 'Unsold' : tradeMoney(normalized.exitPrice)} />
+      <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
+      <Metric label="Entry Date & Time" value={formatDateTime(normalized.openedAt)} />
+      <Metric label="Exit Date & Time" value={isOpen ? 'Unsold' : formatDateTime(normalized.closedAt)} />
+      <Metric label="Time Held" value={formatHoldingDuration(normalized.openedAt, normalized.closedAt, isOpen)} />
       <TextBlock label="Entry Reason" value={normalized.entryReason} />
       <TextBlock label="Exit Reason" value={normalized.exitReason} />
       <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
-      <TextBlock label="Broker Payload" value={formatJsonText(raw)} />
+      <TextBlock label="Technical Broker Data" value={formatJsonText(raw)} />
+      {isOpen && normalized.managedExitId ? (
+        <View style={styles.buttonGrid}>
+          <Button label="Exit Trade Now" tone="danger" onPress={() => onForceExit?.(item)} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1351,6 +1362,16 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
       created_at: item.closed_at || item.opened_at || item.updated_at,
       raw: parseMaybeJson(item.payload_json) || item,
     })));
+  const managedExits = (status?.brokers || [])
+    .filter((panel) => selected === 'all' || brokerKey(panel.broker || panel.label) === selected)
+    .flatMap((panel) => (panel.managed_exits || []).map((item) => ({
+      ...item,
+      broker: item.broker || panel.broker,
+      event_type: 'managed_open_trade',
+      status: item.status || 'open',
+      created_at: item.created_at || item.updated_at,
+      raw: parseMaybeJson(item.payload_json) || item,
+    })));
   const auditRows = (status?.recent_transactions || []).filter((item) => (
     item.event_type === 'execution_approved' || item.event_type === 'execution_rejected'
   ) && (selected === 'all' || brokerKey(item.broker) === selected));
@@ -1375,7 +1396,7 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
     raw: item,
   }));
   const alpacaRows = selected === 'all' || selected === 'alpaca' ? [...fills, ...orders] : [];
-  return [...attribution, ...brokerTrades, ...auditRows, ...alpacaRows]
+  return [...managedExits, ...attribution, ...brokerTrades, ...auditRows, ...alpacaRows]
     .filter((item) => item.created_at || item.symbol || item.event_type)
     .sort((a, b) => dateMs(normalizeTradeRow(b).eventTime) - dateMs(normalizeTradeRow(a).eventTime))
     .slice(0, limit);
@@ -1412,6 +1433,12 @@ function sortByConfidence(items) {
 }
 
 function dateMs(value) {
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()))) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 1000000000) {
+      return number > 1000000000000 ? number : number * 1000;
+    }
+  }
   const ms = Date.parse(value || '');
   return Number.isFinite(ms) ? ms : 0;
 }
@@ -1420,7 +1447,8 @@ function formatDateTime(value) {
   if (!value) {
     return null;
   }
-  const date = new Date(value);
+  const epochMs = dateMs(value);
+  const date = epochMs ? new Date(epochMs) : new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
@@ -1716,6 +1744,7 @@ function friendlyEvent(eventType) {
     broker_fill: 'Broker fill',
     broker_order: 'Broker order',
     broker_trade: 'Broker trade',
+    managed_open_trade: 'AI-managed open trade',
     performance_attribution: 'Closed trade',
   };
   return labels[eventType] || notAvailable(eventType);
@@ -1780,10 +1809,11 @@ function normalizeTradeRow(item) {
   );
   const entryPrice = firstNumber(item?.entry_price, item?.entry, raw.entry_price, raw.entryPrice, isBuy(side) ? price : null);
   const exitPrice = firstNumber(item?.exit_price, item?.exit, raw.exit_price, raw.exitPrice, isSell(side) ? price : null);
-  const openedAt = firstValue(item?.opened_at, item?.entry_time, raw.opened_at, raw.entry_time, raw.submitted_at);
-  const closedAt = firstValue(item?.closed_at, item?.exit_time, raw.closed_at, raw.exit_time, terminalTradeStatus(status) ? item?.created_at : null);
-  const eventTime = firstValue(item?.created_at, item?.updated_at, item?.closed_at, item?.opened_at, raw.transaction_time, raw.date, raw.created_at, raw.updated_at);
+  const openedAt = firstValue(item?.opened_at, item?.entry_time, raw.opened_at, raw.opentm, raw.entry_time, raw.submitted_at, raw.time);
+  const closedAt = firstValue(item?.closed_at, item?.exit_time, raw.closed_at, raw.closetm, raw.exit_time);
+  const eventTime = firstValue(item?.created_at, item?.updated_at, item?.closed_at, item?.opened_at, raw.transaction_time, raw.time, raw.date, raw.created_at, raw.updated_at);
   return {
+    managedExitId: firstNumber(item?.managed_exit_id, raw.managed_exit_id),
     broker: titleCaseBroker(firstValue(item?.broker, raw.broker)),
     symbol: firstValue(item?.symbol, raw.symbol, raw.pair, raw.asset_pair, raw.instrument),
     side,
@@ -1792,6 +1822,9 @@ function normalizeTradeRow(item) {
     price,
     entryPrice,
     exitPrice,
+    targetPrice: firstNumber(item?.take_profit, item?.target_price, raw.take_profit, raw.target_price),
+    stopLoss: firstNumber(item?.stop_loss, raw.stop_loss),
+    currentPrice: firstNumber(item?.current_price, raw.current_price),
     profitLoss: firstNumber(item?.profit_loss, item?.pnl, item?.realized_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
     openedAt,
     closedAt,
@@ -1799,6 +1832,20 @@ function normalizeTradeRow(item) {
     entryReason: firstValue(item?.entry_reason, item?.ai_reasoning, raw.entry_reason, raw.reasoning),
     exitReason: firstValue(item?.exit_reason, item?.lessons_learned, raw.exit_reason, raw.reason),
   };
+}
+
+function isOpenTrade(item) {
+  const status = String(item?.status || '').toLowerCase();
+  if (status === 'open') {
+    return true;
+  }
+  if (item?.managedExitId && !item?.closedAt) {
+    return true;
+  }
+  if (isBuy(item?.side) && status === 'filled' && !item?.closedAt && !item?.exitPrice) {
+    return true;
+  }
+  return false;
 }
 
 function firstValue(...values) {
@@ -1833,7 +1880,7 @@ function isSell(side) {
 
 function terminalTradeStatus(status) {
   const text = String(status || '').toLowerCase();
-  return ['closed', 'filled', 'sold', 'cancelled', 'canceled'].includes(text);
+  return ['closed', 'sold', 'cancelled', 'canceled'].includes(text);
 }
 
 function isToday(value) {
@@ -1862,6 +1909,17 @@ function formatDuration(start, end) {
     return `${hours.toFixed(1)} hours`;
   }
   return `${(hours / 24).toFixed(1)} days`;
+}
+
+function formatHoldingDuration(start, end, isOpen) {
+  if (isOpen) {
+    const startMs = dateMs(start);
+    if (!startMs) {
+      return null;
+    }
+    return `${formatDuration(start, new Date().toISOString()) || '0 min'} so far`;
+  }
+  return formatDuration(start, end);
 }
 
 function describeTransaction(item) {
