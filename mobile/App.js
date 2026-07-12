@@ -19,7 +19,7 @@ const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
-const SCREENS = ['Command', 'Recommendations', 'Intelligence', 'Ask'];
+const SCREENS = ['Command', 'Trade History', 'Recommendations', 'Intelligence', 'Ask'];
 
 export default function App() {
   const [screen, setScreen] = useState('Command');
@@ -243,6 +243,17 @@ export default function App() {
         />
       );
     }
+    if (screen === 'Trade History') {
+      return (
+        <TradeHistoryScreen
+          status={status}
+          portfolio={portfolio}
+          performanceAttribution={performanceAttribution}
+          selectedExchange={selectedExchange}
+          setSelectedExchange={setSelectedExchange}
+        />
+      );
+    }
     if (screen === 'Ask') {
       return (
         <AskAiTrader
@@ -266,7 +277,7 @@ export default function App() {
         }}
       />
     );
-  }, [amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId]);
+  }, [amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -304,7 +315,6 @@ export default function App() {
 
 function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onRefresh, onCommand, onReport, onAckNotifications }) {
   const positions = portfolio?.open_positions || [];
-  const recentTransactions = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution);
   const recommendationSummary = status?.recommendation_summary || {};
   const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
   const founderSummary = status?.founder_executive_summary || null;
@@ -312,11 +322,11 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, brokerPanels));
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   const policy = status?.trading_policy || {};
-  const unreadNotifications = (notifications || []).filter((item) => item.delivery_status === 'queued');
   return (
     <View>
       <ConnectionReadinessCard readiness={readiness} />
-      <Section title={`Notifications${unreadNotifications.length ? ` (${unreadNotifications.length} unread)` : ''}`}>
+      {false && (
+      <Section title={`Notifications${notifications?.length ? ` (${notifications.length} unread)` : ''}`}>
         {!notifications || !notifications.length ? (
           <Empty />
         ) : (
@@ -331,18 +341,19 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
                 <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
               </View>
             ))}
-            {unreadNotifications.length ? (
+            {false ? (
               <View style={styles.buttonGrid}>
                 <Button
                   label="Mark all read"
                   tone="neutral"
-                  onPress={() => onAckNotifications(unreadNotifications.map((item) => item.notification_id))}
+                  onPress={() => onAckNotifications([])}
                 />
               </View>
             ) : null}
           </View>
         )}
       </Section>
+      )}
       <Section title="Risk Limits">
         <Text style={styles.bodyText}>
           These are the Founder-approved limits the Investment Orchestrator enforces before any autonomous trade.
@@ -367,25 +378,8 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               <Text key={`${line}-${index}`} style={styles.bodyText}>- {line}</Text>
             ))}
           </View>
-        ) : null}
-        {!executiveSummary.length ? (
-          <Empty />
         ) : (
-          executiveSummary.map((item) => (
-            <View key={item.broker} style={styles.compactRow}>
-              <Text style={styles.cardTitle}>{notAvailable(item.broker)}</Text>
-              <Metric label="Balance" value={moneyOrText(item.portfolio_balance)} />
-              <Metric label="Cash" value={moneyOrText(item.cash_balance)} />
-              <Metric label="Estimated In Positions" value={moneyOrText(item.estimated_in_positions)} />
-              <Metric label="Day P&L" value={moneyOrText(item.last_day_pnl)} />
-              <Metric label="Week P&L" value={moneyOrText(item.last_week_pnl)} />
-              <Metric label="Month P&L" value={moneyOrText(item.last_month_pnl)} />
-              <Metric label="Traded Today" value={moneyOrText(item.amount_traded_today)} />
-              <Metric label="Month Start" value={moneyOrText(item.month_start_portfolio_balance)} />
-              <Metric label="Open Positions" value={item.open_positions} />
-              <Metric label="Status" value={item.status} />
-            </View>
-          ))
+          <Empty />
         )}
       </Section>
       <Section title="Exchange Filter">
@@ -487,7 +481,6 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
         stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
         automatically regardless of trading state.
       </Text>
-      <TradeHistorySection title={`${selectedExchange === 'All' ? 'All Brokers' : selectedExchange} Trade History`} trades={recentTransactions} />
       <Section title="Analysis Activity">
         {analysisActivity(status).length === 0 ? (
           <Empty />
@@ -569,7 +562,7 @@ function TradeHistorySection({ title, trades }) {
             <View key={key} style={styles.compactRow}>
               <TouchableOpacity onPress={() => setExpanded((prev) => ({ ...prev, [key]: !open }))}>
                 <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
-                <Text style={styles.smallText}>{formatDateTime(item.created_at || item.closed_at || item.updated_at || item.opened_at)}</Text>
+                <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
               </TouchableOpacity>
               {open ? <TradeDetail item={item} /> : null}
             </View>
@@ -580,23 +573,56 @@ function TradeHistorySection({ title, trades }) {
   );
 }
 
-function TradeDetail({ item }) {
-  const raw = item.raw || item.payload || {};
+function TradeHistoryScreen({ status, portfolio, performanceAttribution, selectedExchange, setSelectedExchange }) {
+  const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
+  const summary = tradeHistorySummary(status, trades, selectedExchange);
   return (
     <View>
-      <Metric label="Broker" value={item.broker} />
-      <Metric label="Symbol" value={item.symbol} />
-      <Metric label="Side" value={item.side} />
-      <Metric label="Status" value={item.status || item.event_type} />
-      <Metric label="Quantity" value={item.quantity || item.position_size || item.qty} />
-      <Metric label="Entry" value={moneyOrText(item.entry_price || item.entry)} />
-      <Metric label="Exit" value={moneyOrText(item.exit_price || item.exit)} />
-      <Metric label="Price" value={moneyOrText(item.price)} />
-      <Metric label="P&L" value={moneyOrText(item.profit_loss || item.realised_pnl)} />
-      <Metric label="Opened" value={formatDateTime(item.opened_at)} />
-      <Metric label="Closed" value={formatDateTime(item.closed_at)} />
-      <TextBlock label="Entry Reason" value={item.entry_reason} />
-      <TextBlock label="Exit Reason" value={item.exit_reason} />
+      <Section title="Trade History">
+        <View style={styles.buttonGrid}>
+          {tradeHistoryBrokers(status).map((item) => (
+            <Button
+              key={`history-${item}`}
+              label={item}
+              tone={selectedExchange === item ? 'primary' : 'neutral'}
+              onPress={() => setSelectedExchange(item)}
+            />
+          ))}
+        </View>
+        <View style={styles.compactRow}>
+          <Metric label="Daily P&L" value={historyMoneyOrText(selectedExchange, summary.dailyPnl)} />
+          <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
+          <Metric label="Open Positions" value={summary.openPositions} />
+          <Metric label="Rows Shown" value={trades.length} />
+        </View>
+      </Section>
+      <TradeHistorySection
+        title={`${selectedExchange === 'All' ? 'All Brokers' : selectedExchange} Individual Trade History`}
+        trades={trades}
+      />
+    </View>
+  );
+}
+
+function TradeDetail({ item }) {
+  const raw = item.raw || item.payload || {};
+  const normalized = normalizeTradeRow(item);
+  const tradeMoney = (value) => historyMoneyOrText(normalized.broker, value);
+  return (
+    <View>
+      <Metric label="Broker" value={normalized.broker} />
+      <Metric label="Symbol" value={normalized.symbol} />
+      <Metric label="Side" value={normalized.side} />
+      <Metric label="Status" value={normalized.status || item.event_type} />
+      <Metric label="Quantity" value={normalized.quantity} />
+      <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
+      <Metric label="Exit Price" value={tradeMoney(normalized.exitPrice)} />
+      <Metric label="P&L" value={tradeMoney(normalized.profitLoss)} />
+      <Metric label="Opened" value={formatDateTime(normalized.openedAt)} />
+      <Metric label="Closed" value={formatDateTime(normalized.closedAt)} />
+      <Metric label="Time Held" value={formatDuration(normalized.openedAt, normalized.closedAt)} />
+      <TextBlock label="Entry Reason" value={normalized.entryReason} />
+      <TextBlock label="Exit Reason" value={normalized.exitReason} />
       <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
       <TextBlock label="Broker Payload" value={formatJsonText(raw)} />
     </View>
@@ -1138,6 +1164,10 @@ function brokerMoney(broker, value) {
   return String(broker?.broker || '').toLowerCase() === 'kraken' ? gbpOrText(value) : moneyOrText(value);
 }
 
+function historyMoneyOrText(selectedExchange, value) {
+  return brokerKey(selectedExchange) === 'kraken' ? gbpOrText(value) : moneyOrText(value);
+}
+
 function formatKrakenAssets(items, converted) {
   if (!items || !items.length) {
     return converted ? 'No priced crypto assets converted.' : 'No excluded assets reported.';
@@ -1301,9 +1331,10 @@ function absoluteApiUrl(path) {
   return `${API_BASE}${String(path).startsWith('/') ? '' : '/'}${path}`;
 }
 
-function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = []) {
+function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
+  const selected = brokerKey(selectedExchange);
   const attribution = (performanceAttribution || [])
-    .filter((item) => selectedExchange === 'All' || String(item.broker || '').toLowerCase() === selectedExchange.toLowerCase())
+    .filter((item) => selected === 'all' || brokerKey(item.broker) === selected)
     .map((item) => ({
       ...item,
       event_type: 'performance_attribution',
@@ -1311,26 +1342,21 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
       created_at: item.closed_at || item.created_at,
       raw: parseMaybeJson(item.primary_factors_json),
     }));
-  if (selectedExchange === 'Kraken' || selectedExchange === 'Coinbase') {
-    const broker = String(selectedExchange).toLowerCase();
-    const panel = (status?.brokers || []).find((item) => String(item.broker || '').toLowerCase() === broker);
-    const brokerTrades = (panel?.trade_history || []).map((item) => ({
+  const brokerTrades = (status?.brokers || [])
+    .filter((panel) => selected === 'all' || brokerKey(panel.broker || panel.label) === selected)
+    .flatMap((panel) => (panel.trade_history || []).map((item) => ({
       ...item,
-      broker,
+      broker: item.broker || panel.broker,
       event_type: 'broker_trade',
       created_at: item.closed_at || item.opened_at || item.updated_at,
       raw: parseMaybeJson(item.payload_json) || item,
-    }));
-    return [...attribution, ...brokerTrades]
-      .filter((item) => item.created_at || item.symbol || item.event_type)
-      .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
-      .slice(0, 20);
-  }
+    })));
   const auditRows = (status?.recent_transactions || []).filter((item) => (
     item.event_type === 'execution_approved' || item.event_type === 'execution_rejected'
-  ));
+  ) && (selected === 'all' || brokerKey(item.broker) === selected));
   const fills = (portfolio?.recent_activities || []).map((item) => ({
     event_type: 'broker_fill',
+    broker: 'alpaca',
     symbol: item.symbol,
     side: item.side,
     position_size: item.qty,
@@ -1340,6 +1366,7 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
   }));
   const orders = (portfolio?.recent_orders || []).map((item) => ({
     event_type: 'broker_order',
+    broker: 'alpaca',
     symbol: item.symbol,
     side: item.side,
     position_size: item.qty,
@@ -1347,10 +1374,11 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
     created_at: item.submitted_at || item.updated_at || item.created_at,
     raw: item,
   }));
-  return [...attribution, ...auditRows, ...fills, ...orders]
+  const alpacaRows = selected === 'all' || selected === 'alpaca' ? [...fills, ...orders] : [];
+  return [...attribution, ...brokerTrades, ...auditRows, ...alpacaRows]
     .filter((item) => item.created_at || item.symbol || item.event_type)
-    .sort((a, b) => dateMs(b.created_at) - dateMs(a.created_at))
-    .slice(0, 20);
+    .sort((a, b) => dateMs(normalizeTradeRow(b).eventTime) - dateMs(normalizeTradeRow(a).eventTime))
+    .slice(0, limit);
 }
 
 function describeLatestTrade(value) {
@@ -1693,15 +1721,159 @@ function friendlyEvent(eventType) {
   return labels[eventType] || notAvailable(eventType);
 }
 
+function tradeHistoryBrokers(status) {
+  const names = (status?.brokers || [])
+    .map((broker) => broker.label || broker.broker)
+    .filter(Boolean);
+  return ['All', ...Array.from(new Set(names.map((item) => titleCaseBroker(item))))];
+}
+
+function titleCaseBroker(value) {
+  const text = String(value || '').replaceAll('_', ' ');
+  if (!text) {
+    return 'Unknown';
+  }
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function brokerKey(value) {
+  return String(value || 'All').toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function tradeHistorySummary(status, trades, selectedExchange) {
+  const selected = brokerKey(selectedExchange);
+  const brokerPanels = (status?.brokers || []).filter((broker) => (
+    selected === 'all' || brokerKey(broker.broker || broker.label) === selected
+  ));
+  const normalized = (trades || []).map(normalizeTradeRow);
+  const todaysClosed = normalized.filter((item) => isToday(item.closedAt || item.eventTime) && terminalTradeStatus(item.status));
+  const realisedPnl = todaysClosed
+    .map((item) => numeric(item.profitLoss))
+    .filter((value) => value !== null)
+    .reduce((sum, value) => sum + value, 0);
+  const brokerDayPnl = brokerPanels
+    .map((broker) => numeric(broker.todays_pnl))
+    .filter((value) => value !== null)
+    .reduce((sum, value) => sum + value, 0);
+  const openPositions = brokerPanels
+    .map((broker) => Number(broker.open_positions || 0))
+    .filter(Number.isFinite)
+    .reduce((sum, value) => sum + value, 0);
+  return {
+    dailyPnl: todaysClosed.some((item) => numeric(item.profitLoss) !== null) ? realisedPnl : brokerDayPnl,
+    completedTradesToday: todaysClosed.length,
+    openPositions,
+  };
+}
+
+function normalizeTradeRow(item) {
+  const raw = item?.raw || item?.payload || parseMaybeJson(item?.payload_json) || {};
+  const side = firstValue(item?.side, raw.side, raw.order_side, raw.type);
+  const status = firstValue(item?.status, raw.status, raw.order_status);
+  const price = firstNumber(
+    item?.price,
+    raw.price,
+    raw.execution_price,
+    raw.average_price,
+    raw.filled_avg_price,
+    raw.avg_price
+  );
+  const entryPrice = firstNumber(item?.entry_price, item?.entry, raw.entry_price, raw.entryPrice, isBuy(side) ? price : null);
+  const exitPrice = firstNumber(item?.exit_price, item?.exit, raw.exit_price, raw.exitPrice, isSell(side) ? price : null);
+  const openedAt = firstValue(item?.opened_at, item?.entry_time, raw.opened_at, raw.entry_time, raw.submitted_at);
+  const closedAt = firstValue(item?.closed_at, item?.exit_time, raw.closed_at, raw.exit_time, terminalTradeStatus(status) ? item?.created_at : null);
+  const eventTime = firstValue(item?.created_at, item?.updated_at, item?.closed_at, item?.opened_at, raw.transaction_time, raw.date, raw.created_at, raw.updated_at);
+  return {
+    broker: titleCaseBroker(firstValue(item?.broker, raw.broker)),
+    symbol: firstValue(item?.symbol, raw.symbol, raw.pair, raw.asset_pair, raw.instrument),
+    side,
+    status,
+    quantity: firstNumber(item?.position_size, item?.quantity, item?.qty, raw.quantity, raw.qty, raw.vol, raw.volume),
+    price,
+    entryPrice,
+    exitPrice,
+    profitLoss: firstNumber(item?.profit_loss, item?.pnl, item?.realized_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
+    openedAt,
+    closedAt,
+    eventTime,
+    entryReason: firstValue(item?.entry_reason, item?.ai_reasoning, raw.entry_reason, raw.reasoning),
+    exitReason: firstValue(item?.exit_reason, item?.lessons_learned, raw.exit_reason, raw.reason),
+  };
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== '');
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const parsed = numeric(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function numeric(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const number = Number(String(value).replace(/[,$£]/g, ''));
+  return Number.isFinite(number) ? number : null;
+}
+
+function isBuy(side) {
+  return String(side || '').toLowerCase() === 'buy';
+}
+
+function isSell(side) {
+  return String(side || '').toLowerCase() === 'sell';
+}
+
+function terminalTradeStatus(status) {
+  const text = String(status || '').toLowerCase();
+  return ['closed', 'filled', 'sold', 'cancelled', 'canceled'].includes(text);
+}
+
+function isToday(value) {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const today = new Date();
+  return date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+}
+
+function formatDuration(start, end) {
+  const startMs = dateMs(start);
+  const endMs = dateMs(end);
+  if (!startMs || !endMs || endMs < startMs) {
+    return null;
+  }
+  const minutes = Math.round((endMs - startMs) / 60000);
+  if (minutes < 60) {
+    return `${minutes} min`;
+  }
+  const hours = minutes / 60;
+  if (hours < 48) {
+    return `${hours.toFixed(1)} hours`;
+  }
+  return `${(hours / 24).toFixed(1)} days`;
+}
+
 function describeTransaction(item) {
-  const symbol = item.symbol ? ` ${item.symbol}` : '';
-  const side = item.side ? ` ${item.side.toUpperCase()}` : '';
-  const sizeValue = item.position_size || item.quantity || item.qty;
+  const normalized = normalizeTradeRow(item);
+  const symbol = normalized.symbol ? ` ${normalized.symbol}` : '';
+  const side = normalized.side ? ` ${String(normalized.side).toUpperCase()}` : '';
+  const sizeValue = normalized.quantity;
   const size = sizeValue ? ` for ${sizeValue}` : '';
-  const status = item.status ? ` (${item.status})` : '';
-  const priceValue = item.exit_price || item.price || item.entry_price;
-  const price = priceValue ? ` at ${money(priceValue)}` : '';
-  const pnl = item.profit_loss !== undefined && item.profit_loss !== null ? ` P&L ${money(item.profit_loss)}` : '';
+  const status = normalized.status ? ` (${normalized.status})` : '';
+  const priceValue = normalized.exitPrice || normalized.price || normalized.entryPrice;
+  const price = priceValue ? ` at ${historyMoneyOrText(normalized.broker, priceValue)}` : '';
+  const pnl = normalized.profitLoss !== undefined && normalized.profitLoss !== null ? ` P&L ${historyMoneyOrText(normalized.broker, normalized.profitLoss)}` : '';
   const confidence = item.ai_confidence ? ` at ${formatPercent(item.ai_confidence)} confidence` : '';
   return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${pnl}${confidence}${status}.`;
 }
