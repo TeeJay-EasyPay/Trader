@@ -22,6 +22,7 @@ from ai_trader.db_browser import ReadOnlyDatabaseBrowser
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
+from ai_trader.multi_broker import set_broker_auto_trading
 from ai_trader.scheduler import IntervalWorker, ResearchScheduler
 
 
@@ -523,6 +524,41 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(recommendations[0]["freshness_status"], "Expired")
             self.assertIsNotNone(recommendations[0]["expires_at"])
             self.assertFalse(recommendations[0]["auto_trade_eligible"])
+
+    def test_kraken_recommendations_use_broker_auto_trading_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = replace(
+                settings_for(tmp),
+                auto_trade=AutoTradeConfig(enabled=False, broker_enabled={"kraken": True}),
+            )
+            set_broker_auto_trading(settings.db_path, "kraken", True)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            proposal = TradeProposal(
+                symbol="SOL",
+                side="buy",
+                entry_price=100,
+                stop_loss=98,
+                take_profit=104,
+                position_size=0.05,
+                risk_percentage=0.01,
+                confidence_score=0.9,
+                news_summary="Crypto news context.",
+                market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning="Kraken recommendation.",
+                ai_guardrails_passed=True,
+                asset_type="crypto",
+                exchange="KRAKEN",
+                philosophy_fit=0.9,
+            )
+            audit.record_trade_event("agent_proposal", proposal, validation=ValidationResult(passed=True))
+
+            recommendation = next(item for item in LocalApiService(settings).recommendations() if item["symbol"] == "SOL")
+
+            self.assertEqual(recommendation["symbol"], "SOL")
+            self.assertEqual(recommendation["suggested_broker"], "kraken")
+            self.assertTrue(recommendation["auto_trade_eligible"])
+            self.assertNotIn("AUTO_PAPER_TRADING is false", recommendation["auto_trade_reason"])
 
     def test_recommendations_keep_history_ordered_by_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:

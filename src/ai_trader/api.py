@@ -920,6 +920,16 @@ This report explains available evidence. It does not automatically change strate
             confidence = safe_score(row["ai_confidence"]) or 0.0
             philosophy_fit = safe_score(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
             decision = self._latest_orchestrator_decision(row["proposal_id"])
+            proposal_broker = self._proposal_broker(row["payload_json"])
+            broker_auto_enabled = (
+                broker_auto_trading_enabled(
+                    self.settings.db_path,
+                    proposal_broker,
+                    self.settings.auto_trade.broker_enabled.get(proposal_broker, False),
+                )
+                if proposal_broker
+                else self.settings.auto_trade.enabled
+            )
             due_diligence = latest_due_diligence(self.settings.db_path, row["proposal_id"])
             investment_score = latest_investment_score(self.settings.db_path, row["proposal_id"])
             auto_trade_eligible = (
@@ -928,11 +938,12 @@ This report explains available evidence. It does not automatically change strate
                 and confidence >= self.settings.auto_trade.min_confidence
                 and philosophy_fit >= self.settings.auto_trade.min_philosophy_fit
                 and not already_executed
-                and self.settings.auto_trade.enabled
+                and broker_auto_enabled
             )
             recommendations.append(
                 {
                     "proposal_id": row["proposal_id"],
+                    "symbol": row["symbol"],
                     "company": row["company_name"],
                     "ticker": row["symbol"],
                     "sector": row["sector"],
@@ -940,7 +951,7 @@ This report explains available evidence. It does not automatically change strate
                     "confidence": confidence if confidence else None,
                     "investment_score": _score_payload(investment_score, confidence, philosophy_fit),
                     "asset_available": None if decision is None else bool(decision["asset_available"]),
-                    "suggested_broker": None if decision is None else decision["selected_broker"],
+                    "suggested_broker": decision["selected_broker"] if decision is not None else proposal_broker,
                     "exchange": _proposal_exchange(row["payload_json"]),
                     "asset_type": _proposal_asset_type(row["payload_json"]),
                     "market_open": None if decision is None else bool(decision["market_open"]),
@@ -964,7 +975,8 @@ This report explains available evidence. It does not automatically change strate
                     "auto_trade_reason": _auto_trade_reason(
                         confidence=confidence,
                         philosophy_fit=philosophy_fit,
-                        auto_enabled=self.settings.auto_trade.enabled,
+                        auto_enabled=broker_auto_enabled,
+                        auto_label=f"{proposal_broker} auto trading" if proposal_broker else "AUTO_PAPER_TRADING",
                         min_confidence=self.settings.auto_trade.min_confidence,
                         min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
                         freshness_status=freshness["status"],
@@ -2469,6 +2481,23 @@ This report explains available evidence. It does not automatically change strate
             )
         )
 
+    def _proposal_broker(self, payload_json: Any) -> str | None:
+        proposal_payload = _proposal_payload(payload_json)
+        if not proposal_payload:
+            return None
+        try:
+            proposal = TradeProposal.from_dict(proposal_payload)
+        except Exception:
+            return None
+        selected = self.orchestrator._select_adapter(proposal)
+        if selected:
+            return selected.name
+        if proposal.asset_type.lower() == "crypto" and proposal.exchange.upper() == "KRAKEN":
+            return "kraken"
+        if proposal.exchange.upper() in {"NYSE", "NASDAQ", "AMEX"}:
+            return "alpaca"
+        return None
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.settings.db_path)
         conn.row_factory = sqlite3.Row
@@ -3433,6 +3462,7 @@ def _auto_trade_reason(
     confidence: float,
     philosophy_fit: float,
     auto_enabled: bool,
+    auto_label: str,
     min_confidence: float,
     min_philosophy_fit: float,
     freshness_status: str,
@@ -3441,7 +3471,7 @@ def _auto_trade_reason(
     guardrail_failures: list[str] | None = None,
 ) -> str:
     if not auto_enabled:
-        return "AUTO_PAPER_TRADING is false; manual approval is required."
+        return f"{auto_label} is disabled; manual approval is required."
     if already_executed:
         return "Already executed."
     if freshness_status == "Expired":
