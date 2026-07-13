@@ -486,49 +486,8 @@ class LocalApiService:
                 "executive_summary": self.executive_summary(),
             }
         try:
-            broker = self._broker()
-            account = broker.get_account()
-            positions = broker.get_positions()
-            orders = broker.get_orders(status="all", limit=10)
-            activities = broker.get_activities("FILL")
-            record_broker_trade_history(self.settings.db_path, "alpaca", list(orders) + list(activities))
-            snapshot = record_portfolio_snapshot(
-                self.settings.db_path,
-                broker="alpaca",
-                exchange="Alpaca",
-                account=account,
-                positions=positions,
-                notes="Dashboard refresh snapshot.",
-            )
-            latest_trade = _latest_trade(orders, activities)
-            return {
-                "broker": "alpaca",
-                "exchange": "Alpaca",
-                "portfolio_value": display_value(snapshot["portfolio_value"], "Alpaca returned no portfolio value"),
-                "cash_available": display_value(snapshot["cash"], "Alpaca returned no cash balance"),
-                "estimated_in_positions": _estimated_in_positions(snapshot["portfolio_value"], snapshot["cash"]),
-                "buying_power": display_value(snapshot["buying_power"], "Alpaca returned no buying power"),
-                "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
-                "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
-                "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
-                "month_start_value": display_value(snapshot["month_start_value"], "no month-start snapshot yet"),
-                "amount_traded_today": _amount_traded_today(activities),
-                "latest_trade": latest_trade or "Not available - no Alpaca fills or orders returned",
-                "open_positions": [
-                    {
-                        "symbol": row.get("symbol"),
-                        "qty": safe_float(row.get("qty")),
-                        "market_value": safe_float(row.get("market_value")),
-                        "unrealized_pl": safe_float(row.get("unrealized_pl")),
-                    }
-                    for row in positions
-                ],
-                "open_positions_summary": f"{len(positions)}" if positions else "Not available - Alpaca returned no open positions",
-                "recent_orders": orders[:10] if isinstance(orders, list) else [],
-                "recent_activities": activities[:10] if isinstance(activities, list) else [],
-                "executive_summary": self.executive_summary(),
-                "source": "Alpaca Paper Trading",
-            }
+            portfolio = self._live_alpaca_portfolio()
+            return {**portfolio, "executive_summary": self.executive_summary()}
         except Exception as exc:
             return {
                 "portfolio_value": f"Not available - {exc}",
@@ -2313,20 +2272,68 @@ This report explains available evidence. It does not automatically change strate
     def _alpaca_panel_portfolio(self) -> dict[str, Any]:
         if not self.settings.has_alpaca_credentials:
             return self._unconfigured_exchange_portfolio("alpaca")
-        row = self._latest_snapshot_summary("alpaca", "Alpaca")
-        if not row:
-            return {"connection_status": "Connected", "source": "Alpaca Paper Trading"}
+        try:
+            return self._live_alpaca_portfolio()
+        except Exception as exc:
+            row = self._latest_snapshot_summary("alpaca", "Alpaca")
+            if not row:
+                return {"connection_status": "Connected", "source": f"Alpaca Paper Trading - live refresh failed: {exc}"}
+            return {
+                "connection_status": row.get("status") or "Connected",
+                "portfolio_value": row.get("portfolio_balance"),
+                "cash_available": row.get("cash_balance"),
+                "estimated_in_positions": _estimated_in_positions(row.get("portfolio_balance"), row.get("cash_balance")),
+                "buying_power": row.get("buying_power"),
+                "todays_pnl": row.get("last_day_pnl"),
+                "week_pnl": row.get("last_week_pnl"),
+                "month_pnl": row.get("last_month_pnl"),
+                "month_start_value": row.get("month_start_portfolio_balance"),
+                "open_positions_summary": row.get("open_positions"),
+                "source": f"Alpaca Paper Trading - cached snapshot because live refresh failed: {exc}",
+            }
+
+    def _live_alpaca_portfolio(self) -> dict[str, Any]:
+        broker = self._broker()
+        account = broker.get_account()
+        positions = broker.get_positions()
+        orders = broker.get_orders(status="all", limit=10)
+        activities = broker.get_activities("FILL")
+        record_broker_trade_history(self.settings.db_path, "alpaca", list(orders) + list(activities))
+        snapshot = record_portfolio_snapshot(
+            self.settings.db_path,
+            broker="alpaca",
+            exchange="Alpaca",
+            account=account,
+            positions=positions,
+            notes="Dashboard refresh snapshot.",
+        )
+        latest_trade = _latest_trade(orders, activities)
         return {
-            "connection_status": row.get("status"),
-            "portfolio_value": row.get("portfolio_balance"),
-            "cash_available": row.get("cash_balance"),
-            "estimated_in_positions": _estimated_in_positions(row.get("portfolio_balance"), row.get("cash_balance")),
-            "buying_power": None,
-            "todays_pnl": row.get("last_day_pnl"),
-            "week_pnl": row.get("last_week_pnl"),
-            "month_pnl": row.get("last_month_pnl"),
-            "month_start_value": row.get("month_start_portfolio_balance"),
-            "open_positions_summary": row.get("open_positions"),
+            "broker": "alpaca",
+            "exchange": "Alpaca",
+            "connection_status": "Connected",
+            "portfolio_value": display_value(snapshot["portfolio_value"], "Alpaca returned no portfolio value"),
+            "cash_available": display_value(snapshot["cash"], "Alpaca returned no cash balance"),
+            "estimated_in_positions": _estimated_in_positions(snapshot["portfolio_value"], snapshot["cash"]),
+            "buying_power": display_value(snapshot["buying_power"], "Alpaca returned no buying power"),
+            "todays_pnl": display_value(snapshot["day_pnl"], "no prior snapshot yet"),
+            "week_pnl": display_value(snapshot["week_pnl"], "no prior weekly snapshot yet"),
+            "month_pnl": display_value(snapshot["month_pnl"], "no month-start snapshot yet"),
+            "month_start_value": display_value(snapshot["month_start_value"], "no month-start snapshot yet"),
+            "amount_traded_today": _amount_traded_today(activities),
+            "latest_trade": latest_trade or "Not available - no Alpaca fills or orders returned",
+            "open_positions": [
+                {
+                    "symbol": row.get("symbol"),
+                    "qty": safe_float(row.get("qty")),
+                    "market_value": safe_float(row.get("market_value")),
+                    "unrealized_pl": safe_float(row.get("unrealized_pl")),
+                }
+                for row in positions
+            ],
+            "open_positions_summary": f"{len(positions)}" if positions else "0",
+            "recent_orders": orders[:10] if isinstance(orders, list) else [],
+            "recent_activities": activities[:10] if isinstance(activities, list) else [],
             "source": "Alpaca Paper Trading",
         }
 

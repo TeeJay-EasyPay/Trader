@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -342,6 +343,40 @@ class DeveloperExperienceTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_broker_panels_use_live_alpaca_portfolio_when_connected(self):
+        class FakeAlpaca:
+            def get_account(self):
+                return {
+                    "currency": "USD",
+                    "cash": "90000",
+                    "portfolio_value": "100000",
+                    "equity": "100000",
+                    "buying_power": "180000",
+                }
+
+            def get_positions(self):
+                return [{"symbol": "AAPL", "qty": "2", "market_value": "10000", "unrealized_pl": "50"}]
+
+            def get_orders(self, status="all", limit=10):
+                return []
+
+            def get_activities(self, activity_type):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = replace(settings_for(tmp), alpaca_api_key="key", alpaca_secret_key="secret")
+            service = LocalApiService(settings)
+            service._broker = lambda: FakeAlpaca()
+
+            alpaca = next(item for item in service.broker_panels() if item["broker"] == "alpaca")
+
+            self.assertEqual(alpaca["connection_status"], "Connected")
+            self.assertEqual(alpaca["portfolio_value"], 100000.0)
+            self.assertEqual(alpaca["cash_available"], 90000.0)
+            self.assertEqual(alpaca["buying_power"], 180000.0)
+            self.assertEqual(alpaca["estimated_in_positions"], 10000.0)
+            self.assertEqual(alpaca["open_positions"], "1")
 
     def test_api_token_authorization_accepts_bearer_or_api_key(self):
         class Headers:
