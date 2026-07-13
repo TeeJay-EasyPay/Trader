@@ -54,6 +54,7 @@ class Settings:
     research_scheduler_enabled: bool = False
     research_scheduler_interval_minutes: int = 60
     research_scheduler_limit: int = 30
+    auto_execution_interval_seconds: int = 60
 
     @property
     def has_alpaca_credentials(self) -> bool:
@@ -101,4 +102,5 @@ def load_settings() -> Settings:
         research_scheduler_enabled=_bool_env("RESEARCH_SCHEDULER_ENABLED", False),
         research_scheduler_interval_minutes=_int_env("RESEARCH_SCHEDULER_INTERVAL_MINUTES", 60),
         research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
+        auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
     )

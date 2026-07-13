@@ -559,6 +559,7 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(recommendation["suggested_broker"], "kraken")
             self.assertTrue(recommendation["auto_trade_eligible"])
             self.assertNotIn("AUTO_PAPER_TRADING is false", recommendation["auto_trade_reason"])
+            self.assertEqual(recommendation["auto_trade_reason"], "Eligible for broker auto-trade.")
 
     def test_recommendations_keep_history_ordered_by_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:

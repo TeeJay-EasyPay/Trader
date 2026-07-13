@@ -2726,6 +2726,17 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
             payload={"error": str(exc)},
         )
 
+    def _on_auto_execution_error(exc: Exception) -> None:
+        record_notification(
+            service.settings.db_path,
+            event_type="broker_failure",
+            broker=None,
+            symbol=None,
+            title="Auto execution cycle failed",
+            message=f"An autonomous execution cycle raised an exception and was skipped: {exc}",
+            payload={"error": str(exc)},
+        )
+
     def _on_crypto_refresh_error(exc: Exception) -> None:
         record_notification(
             service.settings.db_path,
@@ -2761,6 +2772,16 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
         interval_seconds=60,
         name="ai-trader-order-monitor",
         on_error=_on_activity_poll_error,
+    ).start_background()
+
+    # Auto execution is intentionally separate from research. Research creates fresh
+    # proposals; this worker repeatedly asks the deterministic execution engine whether
+    # any proposal is currently eligible under broker permissions and guardrails.
+    IntervalWorker(
+        service.auto_execute_recommendations,
+        interval_seconds=max(30, service.settings.auto_execution_interval_seconds),
+        name="ai-trader-auto-executor",
+        on_error=_on_auto_execution_error,
     ).start_background()
 
     # Crypto knowledge engine refresh - independent of research_scheduler_enabled since it's
@@ -3484,7 +3505,7 @@ def _auto_trade_reason(
         if guardrail_failures:
             return f"Execution guardrails failed: {_format_guardrail_failures(guardrail_failures)}."
         return "Execution guardrails did not pass, so auto-trade is blocked."
-    return "Eligible for paper auto-trade."
+    return "Eligible for broker auto-trade."
 
 
 def _proposal_payload(payload_json: Any) -> dict[str, Any]:
