@@ -18,7 +18,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from threading import Lock
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from .agent import AITradingAgent, propose_crypto_trades
 from .ai import OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer
@@ -106,6 +108,14 @@ CREATE TABLE IF NOT EXISTS TRADING_REPORTS (
 """
 
 AUTO_TRADE_CONFIDENCE_THRESHOLD = 0.85
+
+BROKER_AUTO_TRADING_ENV_VARS = {
+    "alpaca": "ALPACA_AUTO_TRADING",
+    "kraken": "KRAKEN_AUTO_TRADING",
+    "coinbase": "COINBASE_AUTO_TRADING",
+    "binance": "BINANCE_AUTO_TRADING",
+    "interactive_brokers": "IBKR_AUTO_TRADING",
+}
 
 GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
     ("paper_trading_only_failed", "Paper trading account confirmed", "all"),
@@ -1615,12 +1625,94 @@ This report explains available evidence. It does not automatically change strate
             "skipped": skipped[:10],
         }
 
+    def _render_api_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self.settings.render_api_key or not self.settings.render_service_id:
+            return {
+                "status": "skipped",
+                "configured": False,
+                "message": "RENDER_API_KEY and RENDER_SERVICE_ID are required to persist this setting in Render.",
+            }
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        request = urllib_request.Request(
+            f"https://api.render.com/v1{path}",
+            data=data,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.settings.render_api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=20) as response:
+                raw = response.read().decode("utf-8")
+                payload = json.loads(raw) if raw else {}
+                return {"status": "ok", "configured": True, "http_status": response.status, "payload": payload}
+        except urllib_error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                payload = {"raw": raw}
+            return {"status": "failed", "configured": True, "http_status": exc.code, "message": str(exc), "payload": payload}
+        except Exception as exc:  # noqa: BLE001 - Render sync failure should not block the local broker toggle
+            return {"status": "failed", "configured": True, "message": str(exc)}
+
+    def _sync_broker_auto_trading_to_render(self, broker: str, enabled: bool) -> dict[str, Any]:
+        env_var = BROKER_AUTO_TRADING_ENV_VARS.get(broker)
+        if not env_var:
+            return {"status": "skipped", "configured": False, "message": f"No Render env var mapping exists for broker {broker}."}
+        service_id = self.settings.render_service_id
+        if not self.settings.render_api_key or not service_id:
+            return {
+                "status": "skipped",
+                "configured": False,
+                "env_var": env_var,
+                "message": "Render sync skipped. Set RENDER_API_KEY and RENDER_SERVICE_ID in Render to persist broker auto-trading toggles across deploys.",
+            }
+
+        encoded_service_id = quote(service_id, safe="")
+        encoded_env_var = quote(env_var, safe="")
+        update = self._render_api_json(
+            "PUT",
+            f"/services/{encoded_service_id}/env-vars/{encoded_env_var}",
+            {"value": "true" if enabled else "false"},
+        )
+        if update.get("status") != "ok":
+            return {"status": "failed", "configured": True, "env_var": env_var, "update": update, "message": f"Render env var {env_var} was not updated."}
+
+        deploy = self._render_api_json(
+            "POST",
+            f"/services/{encoded_service_id}/deploys",
+            {"deployMode": "deploy_only"},
+        )
+        if deploy.get("status") != "ok":
+            return {
+                "status": "env_updated_deploy_failed",
+                "configured": True,
+                "env_var": env_var,
+                "value": enabled,
+                "update": update,
+                "deploy": deploy,
+                "message": f"Render env var {env_var} was updated, but deployment was not triggered.",
+            }
+
+        return {
+            "status": "synced",
+            "configured": True,
+            "env_var": env_var,
+            "value": enabled,
+            "deploy_http_status": deploy.get("http_status"),
+            "message": f"Render env var {env_var} was updated and a deploy was triggered.",
+        }
+
     def set_broker_auto_trading(self, body: dict[str, Any]) -> dict[str, Any]:
         broker = str(body.get("broker") or "").lower()
         if not broker:
             return {"status": "rejected", "message": "broker is required."}
         enabled = bool(body.get("enabled"))
         result = set_broker_auto_trading(self.settings.db_path, broker, enabled)
+        render_sync = self._sync_broker_auto_trading_to_render(broker, enabled)
         update_broker_runtime(
             self.settings.db_path,
             broker,
@@ -1628,7 +1720,16 @@ This report explains available evidence. It does not automatically change strate
             current_stage="auto_trading_enabled" if enabled else "auto_trading_disabled",
             research_freshness="Fresh" if enabled else None,
         )
-        return {"status": "updated", **result}
+        record_notification(
+            self.settings.db_path,
+            event_type="render_env_sync",
+            broker=broker,
+            symbol=None,
+            title=f"{broker.title()} Render auto-trading sync",
+            message=render_sync.get("message") or render_sync.get("status") or "Render sync checked.",
+            payload={"broker": broker, "enabled": enabled, "render_sync": render_sync},
+        )
+        return {"status": "updated", **result, "render_sync": render_sync}
 
     def monitor_managed_exits(self) -> dict[str, Any]:
         checked = []

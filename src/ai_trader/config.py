@@ -50,6 +50,8 @@ class Settings:
     output_dir: Path
     trading_log_path: Path
     guardrails: GuardrailConfig
+    render_api_key: str | None = None
+    render_service_id: str | None = None
     auto_trade: AutoTradeConfig = field(default_factory=AutoTradeConfig)
     research_scheduler_enabled: bool = False
     research_scheduler_interval_minutes: int = 60
@@ -73,6 +75,8 @@ def load_settings() -> Settings:
         db_path=Path(os.getenv("AI_TRADER_DB_PATH", "data/audit.sqlite3")),
         output_dir=Path(os.getenv("AI_TRADER_OUTPUT_DIR", "data")),
         trading_log_path=Path(os.getenv("AI_TRADER_TRADING_LOG_PATH", "governance/TRADING_LOG.md")),
+        render_api_key=os.getenv("RENDER_API_KEY") or os.getenv("RENDER_API_TOKEN"),
+        render_service_id=os.getenv("RENDER_SERVICE_ID"),
         guardrails=GuardrailConfig(
             max_risk_per_trade_pct=_float_env("MAX_RISK_PER_TRADE_PCT", 0.01),
             max_daily_loss_pct=_float_env("MAX_DAILY_LOSS_PCT", 0.03),

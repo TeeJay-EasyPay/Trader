@@ -1328,7 +1328,9 @@ function commandMessage(path, result) {
     return reason ? `${decision}\n${reason}` : decision || 'Manual approval finished.';
   }
   if (path === '/broker-auto-trading') {
-    return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.`;
+    const sync = result.render_sync;
+    const syncMessage = sync?.message ? `\n\nRender sync: ${sync.message}` : '';
+    return `${notAvailable(result.broker)} auto trading ${result.auto_trading_enabled ? 'enabled' : 'disabled'}.${syncMessage}`;
   }
   if (path === '/generate-report' || path === '/trading-report') {
     return `${notAvailable(result.report_type)} report generated for ${notAvailable(result.broker)} on ${notAvailable(result.date)}.\n\n${notAvailable(result.summary)}`;

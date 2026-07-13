@@ -4,7 +4,9 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -65,6 +67,21 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertEqual(result["status"], "updated")
             self.assertTrue(status["broker_auto_trading"]["kraken"])
             self.assertFalse(status["broker_auto_trading"]["alpaca"])
+
+    def test_api_persists_broker_auto_trading_to_render_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = replace(settings_for(tmp), render_api_key="render-key", render_service_id="srv-test")
+            service = LocalApiService(settings)
+
+            with patch.object(LocalApiService, "_render_api_json", return_value={"status": "ok", "http_status": 200}) as render_api:
+                result = service.set_broker_auto_trading({"broker": "alpaca", "enabled": True})
+
+            self.assertEqual(result["render_sync"]["status"], "synced")
+            self.assertEqual(result["render_sync"]["env_var"], "ALPACA_AUTO_TRADING")
+            render_api.assert_has_calls([
+                call("PUT", "/services/srv-test/env-vars/ALPACA_AUTO_TRADING", {"value": "true"}),
+                call("POST", "/services/srv-test/deploys", {"deployMode": "deploy_only"}),
+            ])
 
     def test_latest_recommendation_set_is_persisted(self):
         with tempfile.TemporaryDirectory() as tmp:
