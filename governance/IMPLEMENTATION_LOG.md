@@ -651,3 +651,120 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - Python unit test suite passed: 70/70.
   - `git diff --check` passed.
   - `npx expo-doctor` passed: 17/17 checks.
+## 2026-07-17 World-Class Trading Intelligence Transformation
+
+- Added `src/ai_trader/trading_intelligence.py` as the new evidence layer before recommendation persistence.
+- Added SQLite schema for:
+  - `STRATEGY_REGISTRY`
+  - `MARKET_REGIME_SNAPSHOTS`
+  - `TRADE_SIGNALS`
+  - `TRADING_COMMITTEE_REVIEWS`
+  - `PROBABILITY_ESTIMATES`
+  - `TRADE_LIFECYCLE`
+  - `CONFIDENCE_CALIBRATION`
+  - `STRATEGY_LAB_RUNS`
+- Seeded formal deterministic strategy definitions for:
+  - conservative AI-assisted equity setup,
+  - crypto trend-following 2R,
+  - paper validation 2R.
+- Updated stock and crypto proposal generation so recommendations are only persisted after Trading Intelligence creates:
+  - strategy,
+  - regime,
+  - signal evidence,
+  - trade setup,
+  - portfolio fit,
+  - trading committee review,
+  - probability estimate,
+  - strongest argument for,
+  - strongest argument against.
+- Updated the audit payload to store the full intelligence packet with each recommendation.
+- Updated the Investment Orchestrator to append lifecycle stages after approved, submitted, and rejected outcomes.
+- Updated `/recommendations` to expose strategy, market regime, committee, probability, signals, lifecycle, and bull/bear arguments.
+- Updated the mobile Recommendations screen to show the new evidence without changing execution authority.
+- Added regression tests in `tests/test_trading_intelligence.py`.
+- Documentation added:
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_ARCHITECTURE.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_IMPLEMENTATION_REPORT.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_DATABASE_CHANGES.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_TESTING_REPORT.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_FOUNDER_BRIEFING.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_KNOWN_LIMITATIONS.md`
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_ROADMAP.md`
+- Verification:
+  - Focused Trading Intelligence tests passed: 4/4.
+  - Full Python unit test suite passed: 90/90.
+  - `npx tsc --noEmit` is not available because the Expo mobile app does not include TypeScript; no dependency changes were made.
+
+## 2026-07-17 World-Class Trading Intelligence Phase 2
+
+- Extended `src/ai_trader/trading_intelligence.py` from evidence recording into evidence discovery.
+- Added deterministic market-intelligence metrics from available candles:
+  - trend score,
+  - momentum score,
+  - moving-average position,
+  - volatility,
+  - ATR percentage,
+  - relative strength proxy,
+  - volume trend,
+  - price structure,
+  - breakout/breakdown state,
+  - mean-reversion state,
+  - support,
+  - resistance,
+  - contradictory evidence.
+- Updated regime inference to use market-intelligence metrics and store contradictory evidence.
+- Updated signal scoring so signals are independently calculated rather than copied from proposal confidence.
+- Expanded strategy registry with:
+  - Trend Following,
+  - Momentum,
+  - Pullback,
+  - Breakout,
+  - Mean Reversion,
+  - Range Trading,
+  - Volatility Expansion,
+  - Swing Continuation,
+  - Crypto Infrastructure Trend,
+  - Institutional Accumulation,
+  - Quality Growth,
+  - Value Pullback.
+- Expanded Trading Committee into deterministic independent reviewers with member votes, questions, disagreements, and outcomes.
+- Enhanced probability estimation with strategy history, regime history, signal history, small-sample penalty, volatility penalty, calibration evidence, and confidence intervals.
+- Added `HISTORICAL_CANDLES`, `STRATEGY_BACKTEST_RESULTS`, and `PERFORMANCE_INTELLIGENCE` tables.
+- Added `record_historical_candle`, `run_strategy_backtest`, `calculate_calibration_metrics`, and `calculate_performance_metrics`.
+- Extended `TRADE_LIFECYCLE` with fees, slippage, R-multiple, MAE, MFE, and holding-time fields using additive SQLite migration.
+- Fixed `/recommendations` intelligence merging so normalized committee/probability rows do not hide richer strategy, regime, and market-intelligence payloads.
+- Fixed a SQLite lock path in calibration refresh by calculating metrics outside the write transaction.
+- Added Phase 2 documentation:
+  - `architecture/WORLD_CLASS_TRADING_INTELLIGENCE_PHASE_2.md`.
+- Verification:
+  - `py_compile` passed for Trading Intelligence and API modules.
+  - Focused Trading Intelligence tests passed: 10/10.
+  - Full Python unit test suite passed: 96/96.
+
+## 2026-07-17 Institutional Intelligence & Founder Experience Phase 3
+
+- Added long-term architectural principle:
+  - Does it help AI Trader make a better investment decision?
+  - Does it help the Founder make a better decision?
+  - Does it help AI Trader learn to make better decisions in the future?
+- Updated strategy selection to score multiple candidate strategies against available evidence instead of relying on a fixed default.
+- Strategy records now include selection reason, candidate scores, rejected strategies, production-readiness status, and validation status.
+- Added Strategy Lab walk-forward validation with train/test windows, out-of-sample results, cost/slippage assumptions, benchmark comparison, and bias-control notes.
+- Added richer portfolio intelligence fields for exposure, prospective exposure, largest position, proposed risk contribution, diversification, capital efficiency, liquidity-data availability, and risk-budget notes.
+- Added a `founder_experience` payload to `/status` for executive dashboard, portfolio command, market intelligence centre, and learning lab screens.
+- Reframed the mobile app into five Founder screens:
+  - Dashboard
+  - Recommendations
+  - Portfolio
+  - Market
+  - Learning
+- Added dark executive shell with white decision cards and plain-English status pills.
+- Moved trade-history and broker-panel workflows under Portfolio.
+- Moved strategy rankings, institutional tests, signal rankings, lessons, and Ask AI Trader under Learning.
+- Added documentation:
+  - `architecture/INSTITUTIONAL_INTELLIGENCE_PHASE_3.md`
+  - `architecture/FOUNDER_EXPERIENCE_PHASE_3_MOCKUPS.md`
+  - `governance/FOUNDER_BRIEFING_PHASE_3.md`
+- Verification:
+  - `py_compile` passed for Trading Intelligence and API modules.
+  - Focused Trading Intelligence tests passed: 13/13.

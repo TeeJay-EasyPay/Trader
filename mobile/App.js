@@ -19,10 +19,10 @@ const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
-const SCREENS = ['Command', 'Trade History', 'Recommendations', 'Intelligence', 'Ask'];
+const SCREENS = ['Dashboard', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
 
 export default function App() {
-  const [screen, setScreen] = useState('Command');
+  const [screen, setScreen] = useState('Dashboard');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState(null);
   const [portfolio, setPortfolio] = useState(null);
@@ -204,21 +204,16 @@ export default function App() {
   };
 
   const content = useMemo(() => {
-    if (screen === 'Command') {
+    if (screen === 'Dashboard') {
       return (
-        <CommandCentre
+        <ExecutiveDashboard
           status={status}
           portfolio={portfolio}
           brief={brief}
-          notifications={notifications}
-          performanceAttribution={performanceAttribution}
           latestReport={latestReport}
-          selectedExchange={selectedExchange}
-          setSelectedExchange={setSelectedExchange}
           onRefresh={refresh}
           onCommand={command}
           onReport={reportCommand}
-          onAckNotifications={(ids) => command('/notifications/ack', { notification_ids: ids })}
         />
       );
     }
@@ -243,28 +238,22 @@ export default function App() {
         />
       );
     }
-    if (screen === 'Trade History') {
+    if (screen === 'Portfolio') {
       return (
-        <TradeHistoryScreen
+        <PortfolioCommandCentre
           status={status}
           portfolio={portfolio}
           performanceAttribution={performanceAttribution}
+          latestReport={latestReport}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
           onCommand={command}
+          onReport={reportCommand}
         />
       );
     }
-    if (screen === 'Ask') {
+    if (screen === 'Market') {
       return (
-        <AskAiTrader
-          messages={askMessages}
-          setMessages={setAskMessages}
-          request={request}
-        />
-      );
-    }
-    return (
       <MarketIntelligence
         benchmark={benchmark}
         themes={themes}
@@ -276,6 +265,16 @@ export default function App() {
           setTargetRecommendationId(proposalId);
           setScreen('Recommendations');
         }}
+      />
+      );
+    }
+    return (
+      <LearningStrategyLab
+        status={status}
+        dailyLearning={dailyLearning}
+        messages={askMessages}
+        setMessages={setAskMessages}
+        request={request}
       />
     );
   }, [amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
@@ -311,6 +310,136 @@ export default function App() {
         {content}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport }) {
+  const executive = status?.founder_experience?.executive_dashboard || {};
+  const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
+  return (
+    <View>
+      <Section title="Executive Summary">
+        <StatusPill label={notAvailable(executive.portfolio_health)} tone={riskTone(executive.portfolio_risk)} />
+        <Text style={styles.cardTitle}>{notAvailable(executive.headline)}</Text>
+        <TextBlock label="What changed overnight" value={formatList(executive.good_morning)} />
+        <TextBlock label="What I recommend" value={executive.what_to_do} />
+        <TextBlock label="What to worry about" value={executive.what_to_worry_about} />
+      </Section>
+      <Section title="CEO Dashboard">
+        <Metric label="Overall Portfolio Health" value={executive.portfolio_health} />
+        <Metric label="Overall AI Confidence" value={executive.overall_ai_confidence} />
+        <Metric label="Current Market Regime" value={executive.current_market_regime} />
+        <Metric label="Today's Recommendation Count" value={executive.todays_recommendation_count} />
+        <Metric label="Portfolio Risk" value={executive.portfolio_risk} />
+        <Metric label="Portfolio Diversification" value={executive.portfolio_diversification} />
+        <Metric label="Open Positions" value={executive.open_positions} />
+        <Metric label="Capital Deployed" value={moneyOrText(executive.capital_deployed)} />
+        <Metric label="Cash Available" value={moneyOrText(executive.cash_available)} />
+        <Metric label="Learning Progress" value={executive.learning_progress} />
+        <Metric label="Prediction Accuracy" value={formatPercent(executive.prediction_accuracy)} />
+        <Metric label="Best Strategy" value={executive.current_best_strategy} />
+        <Metric label="Weakest Strategy" value={executive.current_weakest_strategy} />
+        <Metric label="Committee Confidence" value={executive.committee_confidence} />
+      </Section>
+      <ConnectionReadinessCard readiness={readiness} />
+      <Section title="Founder Actions">
+        <View style={styles.buttonGrid}>
+          <Button label="Refresh" onPress={onRefresh} tone="neutral" />
+          <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 10 })} />
+          <Button label="Today Report" onPress={() => onReport({ type: 'daily', date: todayIso(), broker: 'all' })} tone="neutral" />
+          <Button label="Emergency Stop All" tone="danger" onPress={() => onCommand('/stop-trading')} />
+        </View>
+        {latestReport ? <ReportPanel report={latestReport} /> : null}
+      </Section>
+    </View>
+  );
+}
+
+function PortfolioCommandCentre({ status, portfolio, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
+  const portfolioCommand = status?.founder_experience?.portfolio_command || {};
+  const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
+  const summary = tradeHistorySummary(status, trades, selectedExchange);
+  const brokerPanels = status?.brokers || [];
+  return (
+    <View>
+      <Section title="Portfolio Command Centre">
+        <Text style={styles.bodyText}>This screen answers: where is capital, where is risk, and what needs attention?</Text>
+        <Metric label="Portfolio Allocation" value={moneyOrText(portfolioCommand.portfolio_allocation?.total)} />
+        <Metric label="Capital Deployed" value={moneyOrText(portfolioCommand.portfolio_allocation?.deployed)} />
+        <Metric label="Cash" value={moneyOrText(portfolioCommand.portfolio_allocation?.cash)} />
+        <Metric label="Deployed %" value={formatPercent(portfolioCommand.portfolio_allocation?.deployed_pct)} />
+        <Metric label="Diversification" value={portfolioCommand.diversification} />
+        <Metric label="Portfolio Risk" value={portfolioCommand.portfolio_risk} />
+        <Metric label="Expected Portfolio Return" value={portfolioCommand.expected_portfolio_return} />
+        <TextBlock label="Positions Requiring Attention" value={formatList(portfolioCommand.positions_requiring_attention)} />
+        <TextBlock label="Rebalancing Suggestions" value={formatList(portfolioCommand.rebalancing_suggestions)} />
+      </Section>
+      <Section title="Exposure Checks">
+        <Metric label="Sector Exposure" value={portfolioCommand.sector_exposure} />
+        <Metric label="Country Exposure" value={portfolioCommand.country_exposure} />
+        <Metric label="Currency Exposure" value={portfolioCommand.currency_exposure} />
+        <Metric label="Correlation" value={portfolioCommand.correlation} />
+      </Section>
+      <Section title="Trade History">
+        <View style={styles.buttonGrid}>
+          {tradeHistoryBrokers(status).map((item) => (
+            <Button key={`history-${item}`} label={item} tone={selectedExchange === item ? 'primary' : 'neutral'} onPress={() => setSelectedExchange(item)} />
+          ))}
+        </View>
+        <Metric label="Daily P&L" value={moneyOrText(summary.dailyPnl)} />
+        <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
+        <Metric label="Open Positions" value={summary.openPositions} />
+        {trades.slice(0, 20).map((item, index) => (
+          <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+        ))}
+      </Section>
+      <Section title="Broker Panels">
+        {brokerPanels.length ? brokerPanels.map((broker) => (
+          <BrokerPanel key={`${broker.broker}-portfolio`} broker={broker} onCommand={onCommand} onReport={onReport} />
+        )) : <Empty />}
+      </Section>
+      {latestReport ? <ReportPanel report={latestReport} /> : null}
+    </View>
+  );
+}
+
+function BrokerPanel({ broker, onCommand, onReport }) {
+  const label = broker.label || notAvailable(broker.broker);
+  return (
+    <View style={styles.compactRow}>
+      <Text style={styles.cardTitle}>{label}</Text>
+      <Metric label="Connection Status" value={broker.connection_status} />
+      <Metric label="Portfolio" value={brokerMoney(broker, broker.portfolio_value)} />
+      <Metric label="Cash" value={brokerMoney(broker, broker.cash_available)} />
+      <Metric label="Estimated In Positions" value={brokerMoney(broker, broker.estimated_in_positions)} />
+      <Metric label="Buying Power" value={brokerMoney(broker, broker.buying_power)} />
+      <Metric label="Open Positions" value={broker.open_positions} />
+      <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
+      <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
+      <Metric label="Month P&L" value={moneyOrText(broker.month_pnl)} />
+      <Metric label="Trades Today" value={broker.trades_today} />
+      {broker.balance_summary ? (
+        <>
+          <Metric label="Total Estimated Balance" value={gbpOrText(broker.balance_summary.total_estimated_gbp)} />
+          <Metric label="GBP Cash" value={gbpOrText(broker.balance_summary.gbp_cash)} />
+          <Metric label="AI Trading Allocation" value={gbpOrText(broker.balance_summary.trading_allocation_gbp)} />
+          <TextBlock label="Converted Assets" value={formatKrakenAssets(broker.balance_summary.converted_assets, true)} />
+          <TextBlock label="Unpriced / Excluded Assets" value={formatKrakenAssets(broker.balance_summary.unpriced_assets, false)} />
+          <TextBlock label="Raw Kraken Balances Seen By API" value={formatRawKrakenBalances(broker.balance_summary.raw_balance_rows)} />
+          <TextBlock label="Balance Note" value={broker.balance_summary.valuation_note} />
+        </>
+      ) : null}
+      <Metric label="Research Status" value={broker.research_status} />
+      <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
+      <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
+      <TradingPermissions permissions={broker.trading_permissions} />
+      <View style={styles.buttonGrid}>
+        <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
+        <Button label={`Daily Report (${label})`} onPress={() => onReport({ type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
+        <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
+        <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
+      </View>
+    </View>
   );
 }
 
@@ -825,6 +954,16 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Market Open" value={yesNo(item.market_open)} />
       <Metric label="Auto Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Rejection Reason" value={item.orchestrator_rejection_reason || enriched.auto_trade_reason} />
+      <Metric label="Strategy" value={item.strategy_name || item.strategy_id} />
+      <Metric label="Market Regime" value={marketRegimeText(item.market_regime)} />
+      <Metric label="Probability Of Success" value={formatPercent(item.probability_of_success)} />
+      <Metric label="Expected Return" value={rMultiple(item.expected_return_r)} />
+      <Metric label="Calibration" value={item.calibration_status} />
+      <TextBlock label="Committee View" value={committeeSummary(item.committee)} />
+      <TextBlock label="Strongest Argument For" value={item.strongest_argument_for} />
+      <TextBlock label="Strongest Argument Against" value={item.strongest_argument_against} />
+      <TextBlock label="Signal Evidence" value={signalSummary(item.signals)} />
+      <TextBlock label="Lifecycle" value={lifecycleSummary(item.trade_lifecycle)} />
       <Metric label="Confidence" value={formatPercent(item.confidence)} />
       <Metric label="Investment Score" value={formatPercent(item.investment_score?.overall_confidence)} />
       <Metric label="Fundamental Score" value={formatPercent(item.investment_score?.fundamental_score)} />
@@ -867,9 +1006,25 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
 }
 
 function MarketIntelligence({ benchmark, themes, companies, status, recommendations, dailyLearning, onOpenRecommendation }) {
+  const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const items = benchmark?.items || [];
   return (
     <View>
+      <Section title="Market Intelligence Centre">
+        <Text style={styles.bodyText}>This screen answers: what kind of market are we in, what matters now, and where should AI Trader focus?</Text>
+        <StatusPill label={notAvailable(marketCentre.market_health)} tone={riskTone(marketCentre.market_health)} />
+        <Metric label="Current Market Regime" value={marketCentre.current_market_regime} />
+        <Metric label="Volatility" value={marketCentre.volatility} />
+        <Metric label="Momentum" value={marketCentre.momentum} />
+        <Metric label="Market Breadth" value={marketCentre.breadth} />
+        <Metric label="Fear / Greed" value={marketCentre.fear_greed} />
+        <Metric label="Crypto Health" value={marketCentre.crypto_health} />
+        <TextBlock label="Sector Rotation" value={formatList(marketCentre.sector_rotation)} />
+        <TextBlock label="Major Themes" value={formatList(marketCentre.major_themes)} />
+        <TextBlock label="Important News" value={formatList(marketCentre.important_news)} />
+        <TextBlock label="Upcoming Risks" value={formatList(marketCentre.upcoming_risks)} />
+        <TextBlock label="Watch List" value={formatList(marketCentre.watch_list)} />
+      </Section>
       <Section title="24/7 Research Status">
         <Metric label="Research Status" value={status?.research_status} />
         <Metric label="Last Research Run" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
@@ -979,6 +1134,62 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
           ))
         )}
       </Section>
+    </View>
+  );
+}
+
+function LearningStrategyLab({ status, dailyLearning, messages, setMessages, request }) {
+  const lab = status?.founder_experience?.learning_lab || {};
+  const strategyRows = lab.strategy_rankings || [];
+  const signalRows = lab.signal_rankings || [];
+  return (
+    <View>
+      <Section title="Learning & Strategy Lab">
+        <Text style={styles.bodyText}>This screen answers: is AI Trader learning, which strategies are working, and what needs Founder approval before behaviour changes?</Text>
+        <StatusPill label={notAvailable(lab.learning_progress)} tone={riskTone(lab.learning_progress)} />
+        <Metric label="Prediction Accuracy" value={formatPercent(lab.prediction_accuracy)} />
+        <Metric label="Calibration" value={lab.calibration} />
+        <Metric label="Best Strategy" value={lab.best_strategy} />
+        <Metric label="Weakest Strategy" value={lab.weakest_strategy} />
+        <Metric label="Strategy Validation" value={lab.strategy_validation_status} />
+        <TextBlock label="Lessons Learned" value={formatList(lab.lessons_learned)} />
+        <TextBlock label="Founder Suggestions" value={formatList(lab.founder_suggestions)} />
+      </Section>
+      <Section title="Strategy Rankings">
+        {!strategyRows.length ? (
+          <Empty />
+        ) : (
+          strategyRows.map((item, index) => (
+            <View key={`${item.strategy_id || item.strategy_name}-${index}`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{notAvailable(item.strategy_name || item.strategy_id)}</Text>
+              <Metric label="Sample Size" value={item.sample_size} />
+              <Metric label="Win Rate" value={formatPercent(item.win_rate)} />
+              <Metric label="Expectancy" value={item.expectancy_r !== undefined ? `${Number(item.expectancy_r).toFixed(2)}R` : null} />
+              <Metric label="Recommendation" value={item.recommendation} />
+            </View>
+          ))
+        )}
+      </Section>
+      <Section title="Institutional Tests">
+        <TextBlock label="Backtest Results" value={formatJsonText(lab.backtest_results)} />
+        <TextBlock label="Walk-forward Results" value={formatJsonText(lab.walk_forward_results)} />
+        <TextBlock label="Committee Performance" value={formatJsonText(lab.committee_performance)} />
+      </Section>
+      <Section title="Signal Rankings">
+        {!signalRows.length ? (
+          <Empty />
+        ) : (
+          signalRows.map((item, index) => (
+            <View key={`${item.signal_name || item.signal}-${index}`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{notAvailable(item.signal_name || item.signal)}</Text>
+              <Metric label="Score" value={formatPercent(item.score)} />
+              <Metric label="Weight" value={formatPercent(item.weight)} />
+              <Metric label="Direction" value={item.direction} />
+            </View>
+          ))
+        )}
+      </Section>
+      <AskAiTrader messages={messages} setMessages={setMessages} request={request} />
     </View>
   );
 }
@@ -1147,6 +1358,15 @@ function Button({ label, onPress, tone = 'primary', disabled = false }) {
   );
 }
 
+function StatusPill({ label, tone = 'neutral' }) {
+  const styleName = tone === 'good' ? 'pillGood' : tone === 'warn' ? 'pillWarn' : tone === 'danger' ? 'pillDanger' : 'pillNeutral';
+  return (
+    <View style={[styles.statusPill, styles[styleName]]}>
+      <Text style={styles.statusPillText}>{label}</Text>
+    </View>
+  );
+}
+
 function Empty() {
   return <Text style={styles.bodyText}>Not available</Text>;
 }
@@ -1185,6 +1405,20 @@ function brokerMoney(broker, value) {
 
 function historyMoneyOrText(selectedExchange, value) {
   return brokerKey(selectedExchange) === 'kraken' ? gbpOrText(value) : moneyOrText(value);
+}
+
+function riskTone(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('high') || text.includes('poor') || text.includes('weak') || text.includes('attention') || text.includes('risk')) {
+    return 'danger';
+  }
+  if (text.includes('medium') || text.includes('mixed') || text.includes('developing') || text.includes('caution')) {
+    return 'warn';
+  }
+  if (text.includes('healthy') || text.includes('good') || text.includes('ready') || text.includes('low')) {
+    return 'good';
+  }
+  return 'neutral';
 }
 
 function formatKrakenAssets(items, converted) {
@@ -1555,6 +1789,60 @@ function formatGuardrailChecks(checks, status) {
     return status === 'failed' ? 'None' : null;
   }
   return matching.map((item) => `- ${item.label || String(item.key).replaceAll('_', ' ')}`).join('\n');
+}
+
+function marketRegimeText(regime) {
+  if (!regime) {
+    return null;
+  }
+  const primary = regime.primary_regime || 'unknown';
+  const trend = regime.trend_regime || 'unknown trend';
+  const risk = regime.risk_regime || 'neutral';
+  return `${primary}; ${trend}; ${risk}`;
+}
+
+function rMultiple(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const number = Number(value);
+  if (Number.isNaN(number)) {
+    return String(value);
+  }
+  return `${number.toFixed(2)}R`;
+}
+
+function committeeSummary(committee) {
+  if (!committee) {
+    return null;
+  }
+  const result = committee.committee_result ? `Result: ${committee.committee_result}` : null;
+  const votes = Array.isArray(committee.member_votes) ? committee.member_votes : [];
+  const voteText = votes
+    .slice(0, 6)
+    .map((vote) => `${vote.member}: ${vote.vote} (${formatPercent(vote.score)})`)
+    .join('\n');
+  return [result, voteText].filter(Boolean).join('\n');
+}
+
+function signalSummary(signals) {
+  if (!Array.isArray(signals) || !signals.length) {
+    return null;
+  }
+  return signals
+    .slice(0, 6)
+    .map((signal) => `${signal.signal_name}: ${formatPercent(signal.score)} weight ${formatPercent(signal.weight)}`)
+    .join('\n');
+}
+
+function lifecycleSummary(stages) {
+  if (!Array.isArray(stages) || !stages.length) {
+    return null;
+  }
+  return stages
+    .slice(-5)
+    .map((stage) => `${formatDateTime(stage.created_at)} - ${stage.stage}: ${stage.stage_reason}`)
+    .join('\n');
 }
 
 function formatList(items) {
@@ -1995,38 +2283,39 @@ function notAvailable(value) {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#0b1220',
   },
   header: {
     paddingHorizontal: 18,
     paddingTop: 10,
     paddingBottom: 8,
-    backgroundColor: '#ffffff',
-    borderBottomColor: '#dde1e7',
+    backgroundColor: '#0b1220',
+    borderBottomColor: '#1f2937',
     borderBottomWidth: 1,
   },
   title: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#17202a',
+    color: '#f8fafc',
   },
   subtitle: {
     marginTop: 2,
     fontSize: 13,
-    color: '#667085',
+    color: '#94a3b8',
   },
   tabs: {
     flexDirection: 'row',
     gap: 8,
     padding: 10,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#0b1220',
   },
   tab: {
     flex: 1,
     minHeight: 38,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#cfd6df',
+    borderColor: '#334155',
+    backgroundColor: '#111827',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 6,
@@ -2038,7 +2327,7 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#344054',
+    color: '#cbd5e1',
     textAlign: 'center',
   },
   activeTabText: {
@@ -2053,6 +2342,11 @@ const styles = StyleSheet.create({
   },
   section: {
     marginBottom: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d9e2ec',
+    padding: 12,
   },
   sectionTitle: {
     fontSize: 17,
@@ -2157,6 +2451,30 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#17202a',
     marginBottom: 8,
+  },
+  statusPill: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 8,
+  },
+  pillGood: {
+    backgroundColor: '#dcfce7',
+  },
+  pillWarn: {
+    backgroundColor: '#fef3c7',
+  },
+  pillDanger: {
+    backgroundColor: '#fee2e2',
+  },
+  pillNeutral: {
+    backgroundColor: '#e5e7eb',
+  },
+  statusPillText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#111827',
   },
   input: {
     minHeight: 42,

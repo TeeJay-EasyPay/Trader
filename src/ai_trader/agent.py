@@ -11,6 +11,7 @@ from .audit import AuditDatabase
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal
+from .trading_intelligence import evaluate_trade_intelligence
 
 
 class MarketDataClient(Protocol):
@@ -67,13 +68,31 @@ class AITradingAgent:
                 proposal = self._no_trade_probe(symbol, market, news)
             if proposal is None:
                 continue
+            intelligence = evaluate_trade_intelligence(
+                self.audit.path,
+                proposal,
+                account,
+                market=market,
+                news=news,
+                source="demo" if demo else "agent",
+            )
+            if intelligence is None:
+                self.audit.record_execution_event(
+                    proposal_id=proposal.proposal_id,
+                    event_type="agent_no_trade",
+                    payload={
+                        "symbol": symbol,
+                        "reason": "Trading Intelligence could not articulate both strongest argument for and strongest argument against.",
+                    },
+                )
+                continue
             validation = validate_trade_proposal(proposal, account, self.guardrails, now=now)
             proposal = replace(
                 proposal,
                 ai_guardrails_passed=validation.passed,
                 ai_guardrail_failures=validation.failures,
             )
-            self.audit.record_trade_event("agent_proposal", proposal, validation=validation)
+            self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
                 proposals.append(proposal)
         return proposals
@@ -190,6 +209,7 @@ def propose_crypto_trades(
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0
             reasoning = _json_loads(row["reasoning_json"]) or {}
+            score_payload = dict(row)
             proposal = TradeProposal(
                 symbol=symbol,
                 side="buy",
@@ -210,9 +230,26 @@ def propose_crypto_trades(
                 exchange="KRAKEN",
                 philosophy_fit=confidence,
             ).normalized()
+            intelligence = evaluate_trade_intelligence(
+                db_path,
+                proposal,
+                account,
+                crypto_score=score_payload,
+                source="crypto",
+            )
+            if intelligence is None:
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={
+                        "symbol": symbol,
+                        "reason": "Trading Intelligence could not articulate both strongest argument for and strongest argument against.",
+                    },
+                )
+                continue
             validation = validate_trade_proposal(proposal, account, guardrails, now=now)
             proposal = replace(proposal, ai_guardrails_passed=validation.passed, ai_guardrail_failures=validation.failures)
-            audit.record_trade_event("agent_proposal", proposal, validation=validation)
+            audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
                 proposals.append(proposal)
     return proposals

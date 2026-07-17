@@ -2,6 +2,65 @@
 
 Personal AI-assisted paper trading system for Alpaca.
 
+## CTO Handover Pack
+
+The current engineering handover lives in [`architecture/`](architecture/). Start with:
+
+- [`architecture/CTO_HANDOVER.md`](architecture/CTO_HANDOVER.md)
+- [`architecture/ARCHITECTURE.md`](architecture/ARCHITECTURE.md)
+- [`architecture/SYSTEM_OVERVIEW.md`](architecture/SYSTEM_OVERVIEW.md)
+- [`architecture/DATABASE_REFERENCE.md`](architecture/DATABASE_REFERENCE.md)
+- [`architecture/BROKER_ARCHITECTURE.md`](architecture/BROKER_ARCHITECTURE.md)
+- [`architecture/RISK_ENGINE.md`](architecture/RISK_ENGINE.md)
+
+The handover reflects the current implementation: Render-hosted Python API, Expo mobile app, SQLite persistence, Alpaca paper trading, Kraken live micro-trading under explicit seatbelts, broker-specific auto-trading controls, recommendation history, trade history, reports, and the read-only Ask AI screen.
+
+## World-Class Trading Intelligence Layer
+
+The current recommendation path now includes a formal Trading Intelligence layer before the Investment Orchestrator.
+
+New recommendations must have structured evidence covering:
+
+- strategy;
+- market regime;
+- signal evidence;
+- trade setup;
+- portfolio fit;
+- trading committee review;
+- probability estimate;
+- strongest argument for the trade;
+- strongest argument against the trade;
+- lifecycle stage.
+
+The AI still cannot execute trades directly. Execution remains controlled by the Investment Orchestrator, Risk Engine, and broker adapters.
+
+Start with:
+
+- [`architecture/WORLD_CLASS_TRADING_INTELLIGENCE_ARCHITECTURE.md`](architecture/WORLD_CLASS_TRADING_INTELLIGENCE_ARCHITECTURE.md)
+- [`architecture/WORLD_CLASS_TRADING_INTELLIGENCE_PHASE_2.md`](architecture/WORLD_CLASS_TRADING_INTELLIGENCE_PHASE_2.md)
+- [`architecture/WORLD_CLASS_TRADING_INTELLIGENCE_IMPLEMENTATION_REPORT.md`](architecture/WORLD_CLASS_TRADING_INTELLIGENCE_IMPLEMENTATION_REPORT.md)
+- [`architecture/WORLD_CLASS_TRADING_INTELLIGENCE_FOUNDER_BRIEFING.md`](architecture/WORLD_CLASS_TRADING_INTELLIGENCE_FOUNDER_BRIEFING.md)
+
+Phase 2 adds deterministic market-intelligence discovery, regime inference from price evidence, independent signal scoring, a richer strategy registry, a multi-member trading committee, probability calibration, strategy-lab backtesting primitives, performance intelligence, and measurable lifecycle fields for fees, slippage, R-multiple, MAE, MFE, and holding time.
+
+## Institutional Intelligence & Founder Experience Phase 3
+
+Phase 3 adds evidence-driven strategy selection, Strategy Lab walk-forward validation, richer portfolio intelligence, and a five-screen Founder experience:
+
+- Dashboard
+- Recommendations
+- Portfolio
+- Market
+- Learning
+
+The app now follows this long-term architectural principle: every new capability must help AI Trader make a better investment decision, help the Founder make a better decision, or help AI Trader learn to make better decisions in the future.
+
+Start with:
+
+- [`architecture/INSTITUTIONAL_INTELLIGENCE_PHASE_3.md`](architecture/INSTITUTIONAL_INTELLIGENCE_PHASE_3.md)
+- [`architecture/FOUNDER_EXPERIENCE_PHASE_3_MOCKUPS.md`](architecture/FOUNDER_EXPERIENCE_PHASE_3_MOCKUPS.md)
+- [`governance/FOUNDER_BRIEFING_PHASE_3.md`](governance/FOUNDER_BRIEFING_PHASE_3.md)
+
 ## Developer Setup
 
 The project is configured for local Windows development in VS Code.

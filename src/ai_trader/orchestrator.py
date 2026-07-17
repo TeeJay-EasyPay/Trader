@@ -28,6 +28,7 @@ from .multi_broker import (
     record_seatbelt_event,
 )
 from .operational import latest_pnl_snapshot
+from .trading_intelligence import latest_intelligence_packet, record_lifecycle_stage
 
 
 ORCHESTRATOR_SCHEMA = """
@@ -114,6 +115,11 @@ class InvestmentOrchestrator:
         auto_execute: bool,
     ) -> OrchestratorDecision:
         p = proposal.normalized()
+        intelligence = latest_intelligence_packet(self.db_path, p.proposal_id) or {}
+        strategy_id = (
+            (intelligence.get("committee") or {}).get("strategy_id")
+            or (intelligence.get("probability") or {}).get("strategy_id")
+        )
         selected = self._select_adapter(p)
         market_open = selected.is_market_open(p.exchange) if selected else False
         asset_available = selected.is_asset_available(p.symbol, p.exchange, p.asset_type) if selected else False
@@ -320,6 +326,16 @@ class InvestmentOrchestrator:
             validation_result=", ".join(failures) if failures else "passed",
             order_id=order_id,
             reason=decision.rejection_reason or notes,
+        )
+        lifecycle_stage = "rejected" if failures else ("submitted" if decision_text == "approved" else "approved")
+        record_lifecycle_stage(
+            self.db_path,
+            p,
+            stage=lifecycle_stage,
+            reason=decision.rejection_reason or notes or decision_text,
+            broker=selected.name if selected else None,
+            strategy_id=strategy_id,
+            payload=decision.to_dict(),
         )
         if failures:
             self.record_auto_trade_event(

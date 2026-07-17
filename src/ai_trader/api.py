@@ -62,6 +62,7 @@ from .multi_broker import (
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .scheduler import IntervalWorker, ResearchScheduler
+from .trading_intelligence import calculate_performance_metrics, latest_intelligence_packet, update_calibration_from_attribution
 
 
 logger = logging.getLogger("ai_trader.api")
@@ -444,6 +445,7 @@ class LocalApiService:
         executive_summary = self.executive_summary(brokers)
         founder_summary = self.founder_executive_summary(brokers, executive_summary)
         readiness = self.connection_readiness(brokers)
+        founder_experience = self.founder_experience_payload(brokers, recommendation_rows, policy, research_run)
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -466,6 +468,7 @@ class LocalApiService:
             "trading_policy": policy.to_dict(),
             "executive_summary": executive_summary,
             "founder_executive_summary": founder_summary,
+            "founder_experience": founder_experience,
             "last_orchestrator_decision": latest_decision,
             "morning_brief": latest_morning,
             "evening_brief": latest_evening,
@@ -481,6 +484,224 @@ class LocalApiService:
             },
             "updated_at": control["updated_at"],
         }
+
+    def founder_experience_payload(
+        self,
+        brokers: list[dict[str, Any]],
+        recommendations: list[dict[str, Any]],
+        policy: Any,
+        research_run: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        active = [row for row in recommendations if row.get("freshness_status") != "Expired"]
+        probabilities = [safe_float(row.get("probability_of_success") or row.get("confidence")) for row in active]
+        probabilities = [value for value in probabilities if value is not None]
+        avg_confidence = sum(probabilities) / len(probabilities) if probabilities else None
+        regimes = Counter(
+            str(((row.get("market_regime") or {}).get("primary_regime") or "unknown")).lower()
+            for row in active
+        )
+        current_regime = regimes.most_common(1)[0][0] if regimes else "unknown"
+        broker_total = sum(safe_float(row.get("portfolio_balance")) or 0.0 for row in brokers if safe_float(row.get("portfolio_balance")) is not None)
+        broker_cash = sum(safe_float(row.get("cash_balance")) or 0.0 for row in brokers if safe_float(row.get("cash_balance")) is not None)
+        broker_positions = sum(int(safe_float(row.get("open_positions")) or 0) for row in brokers)
+        deployed = max(0.0, broker_total - broker_cash) if broker_total else None
+        deployment_pct = deployed / broker_total if broker_total and deployed is not None else None
+        strategy_rows = self._latest_strategy_performance_rows()
+        best_strategy = strategy_rows[0] if strategy_rows else None
+        weakest_strategy = strategy_rows[-1] if len(strategy_rows) > 1 else None
+        try:
+            lab_rows = [dict(row) for row in self._rows("SELECT * FROM STRATEGY_LAB_RUNS ORDER BY lab_run_id DESC LIMIT 8")]
+        except sqlite3.OperationalError:
+            lab_rows = []
+        try:
+            calibration_rows = [dict(row) for row in self._rows("SELECT * FROM CONFIDENCE_CALIBRATION ORDER BY calibration_id DESC LIMIT 10")]
+        except sqlite3.OperationalError:
+            calibration_rows = []
+        accuracy = _average_numeric([row.get("observed_win_rate") for row in calibration_rows])
+        daily_learning = self.daily_learning_update(date.today().isoformat())
+        committee_confidence = _average_numeric([
+            _committee_numeric_confidence(row.get("committee"))
+            for row in active
+        ])
+        risk_level = "LOW" if deployment_pct is not None and deployment_pct < 0.35 else "MEDIUM" if deployment_pct is not None and deployment_pct < 0.70 else "HIGH" if deployment_pct is not None else "UNKNOWN"
+        diversification = "Concentrated" if broker_positions <= 2 else "Moderate" if broker_positions <= 7 else "Broad by position count"
+        return {
+            "architectural_principle": [
+                "Does it help AI Trader make a better investment decision?",
+                "Does it help the Founder make a better decision?",
+                "Does it help AI Trader learn to make better decisions in the future?",
+            ],
+            "executive_dashboard": {
+                "headline": "AI Trader is monitoring brokers, recommendations, risk, and learning evidence.",
+                "good_morning": [
+                    "Good morning. Here is what changed overnight.",
+                    f"{len(active)} active recommendation(s) are currently visible.",
+                    f"The dominant market regime in current recommendations is {current_regime}.",
+                    f"Portfolio risk is {risk_level}.",
+                    "I will continue watching broker health, fresh recommendations, open positions, and guardrail breaches.",
+                ],
+                "portfolio_health": "Needs attention" if risk_level == "HIGH" else "Stable",
+                "overall_ai_confidence": _plain_confidence(avg_confidence),
+                "current_market_regime": _plain_regime(current_regime),
+                "todays_recommendation_count": len(active),
+                "portfolio_risk": risk_level,
+                "portfolio_diversification": diversification,
+                "open_positions": broker_positions,
+                "capital_deployed": deployed,
+                "cash_available": broker_cash if brokers else None,
+                "learning_progress": f"{len(strategy_rows)} strategy performance snapshot(s), {len(lab_rows)} strategy lab run(s).",
+                "prediction_accuracy": accuracy,
+                "current_best_strategy": (best_strategy or {}).get("strategy_id"),
+                "current_weakest_strategy": (weakest_strategy or {}).get("strategy_id"),
+                "committee_confidence": _plain_confidence(committee_confidence),
+                "what_to_do": "Review green/amber dossiers only; do not override red guardrails.",
+                "what_to_worry_about": "Missing data, weak calibration, concentrated exposure, and any recommendation without fresh evidence.",
+            },
+            "portfolio_command": {
+                "portfolio_allocation": {
+                    "total": broker_total or None,
+                    "cash": broker_cash if brokers else None,
+                    "deployed": deployed,
+                    "deployed_pct": deployment_pct,
+                },
+                "diversification": diversification,
+                "sector_exposure": "Shown when company sector data is attached to positions.",
+                "country_exposure": "Shown when country data is attached to positions.",
+                "currency_exposure": "Broker/account currency evidence only in current implementation.",
+                "correlation": "Not enough provider data yet for statistical correlation.",
+                "portfolio_risk": risk_level,
+                "expected_portfolio_return": "Requires more closed trades before AI Trader can estimate this responsibly.",
+                "largest_winners": self._portfolio_extremes(winners=True),
+                "largest_losers": self._portfolio_extremes(winners=False),
+                "positions_requiring_attention": self._positions_requiring_attention(brokers),
+                "rebalancing_suggestions": _portfolio_rebalancing_suggestions(risk_level, diversification),
+            },
+            "market_intelligence_centre": {
+                "current_market_regime": _plain_regime(current_regime),
+                "market_health": _plain_market_health(current_regime, avg_confidence),
+                "volatility": "High volatility means prices may move quickly and stops may be hit more easily.",
+                "momentum": "Momentum means whether recent price movement is helping or fighting the trade idea.",
+                "breadth": "Market breadth needs a market-data provider before it can be measured responsibly.",
+                "fear_greed": _plain_confidence(avg_confidence),
+                "crypto_health": self._crypto_health_summary(brokers, active),
+                "sector_rotation": "Uses theme and company evidence where available; no sector-rotation provider is configured yet.",
+                "major_themes": [row.get("theme") for row in self.themes()[:5]],
+                "watch_list": [row.get("ticker") for row in self.companies()[:10]],
+                "important_news": "Summarised inside each recommendation dossier when news is available.",
+                "upcoming_risks": ["stale recommendations", "uncalibrated strategy evidence", "broker disconnection", "open-position drawdown"],
+            },
+            "learning_lab": {
+                "learning_progress": f"{len(strategy_rows)} performance snapshot(s) and {len(lab_rows)} lab validation run(s) recorded.",
+                "prediction_accuracy": accuracy,
+                "calibration": calibration_rows[:5],
+                "strategy_rankings": strategy_rows,
+                "best_performing_strategy": best_strategy,
+                "worst_performing_strategy": weakest_strategy,
+                "strategy_validation_status": self._strategy_validation_summary(lab_rows),
+                "backtest_results": [row for row in lab_rows if row.get("run_type") == "backtest"],
+                "walk_forward_results": [row for row in lab_rows if row.get("run_type") == "walk_forward"],
+                "committee_performance": "Tracked through committee reviews and closed-trade attribution; larger samples are needed before claiming skill.",
+                "signal_rankings": self._signal_rankings(),
+                "lessons_learned": (daily_learning or {}).get("trade_lessons", []),
+                "founder_suggestions": (daily_learning or {}).get("recommendations_for_founder", []),
+            },
+        }
+
+    def _latest_strategy_performance_rows(self) -> list[dict[str, Any]]:
+        try:
+            rows = [
+                dict(row)
+                for row in self._rows(
+                    """
+                    SELECT pi.*
+                    FROM PERFORMANCE_INTELLIGENCE pi
+                    JOIN (
+                        SELECT strategy_id, MAX(performance_id) AS performance_id
+                        FROM PERFORMANCE_INTELLIGENCE
+                        GROUP BY strategy_id
+                    ) latest ON latest.performance_id = pi.performance_id
+                    ORDER BY COALESCE(pi.expectancy_r, pi.average_r, -999) DESC
+                    LIMIT 12
+                    """
+                )
+            ]
+        except sqlite3.OperationalError:
+            rows = []
+        if rows:
+            return rows
+        strategy_ids = ["equity_conservative_ai_assisted", "crypto_trend_following_2r", "trend_following", "momentum"]
+        generated = []
+        for strategy_id in strategy_ids:
+            perf = calculate_performance_metrics(self.settings.db_path, strategy_id)
+            if perf.get("sample_size"):
+                generated.append({"strategy_id": strategy_id, **perf})
+        return sorted(generated, key=lambda item: safe_float(item.get("expectancy_r") or item.get("average_r") or -999), reverse=True)
+
+    def _portfolio_extremes(self, *, winners: bool) -> list[dict[str, Any]]:
+        try:
+            rows = [
+                dict(row)
+                for row in self._rows(
+                    """
+                    SELECT broker, symbol, profit_loss, entry_price, exit_price, closed_at
+                    FROM PERFORMANCE_ATTRIBUTION
+                    WHERE profit_loss IS NOT NULL
+                    ORDER BY profit_loss {direction}
+                    LIMIT 5
+                    """.format(direction="DESC" if winners else "ASC")
+                )
+            ]
+        except sqlite3.OperationalError:
+            rows = []
+        return rows
+
+    def _positions_requiring_attention(self, brokers: list[dict[str, Any]]) -> list[str]:
+        attention = []
+        for broker in brokers:
+            label = broker.get("label") or broker.get("broker") or "Broker"
+            if str(broker.get("connection_status") or "").lower() not in {"connected", "ok - connected"}:
+                attention.append(f"{label}: connection is not confirmed.")
+            if safe_float(broker.get("todays_pnl")) is not None and (safe_float(broker.get("todays_pnl")) or 0) < 0:
+                attention.append(f"{label}: today's P&L is negative.")
+            if str(broker.get("due_diligence_status") or "").lower() == "blocked":
+                attention.append(f"{label}: due diligence is blocked.")
+        return attention[:8] or ["No urgent broker attention item is visible from current data."]
+
+    def _crypto_health_summary(self, brokers: list[dict[str, Any]], recommendations: list[dict[str, Any]]) -> str:
+        kraken = next((row for row in brokers if str(row.get("broker") or "").lower() == "kraken"), None)
+        crypto_recs = [row for row in recommendations if str(row.get("asset_type") or "").lower() == "crypto"]
+        if not kraken:
+            return "Kraken is not visible in the current broker panel data."
+        if str(kraken.get("connection_status") or "").lower() == "connected":
+            return f"Crypto connection is visible; {len(crypto_recs)} active crypto recommendation(s) are available."
+        return f"Crypto broker needs attention: {kraken.get('connection_status') or 'not connected'}."
+
+    def _strategy_validation_summary(self, lab_rows: list[dict[str, Any]]) -> list[str]:
+        if not lab_rows:
+            return ["No Strategy Lab validation run has been recorded yet."]
+        return [
+            f"{row.get('strategy_id')}: {row.get('run_type')} is {row.get('status')}."
+            for row in lab_rows[:8]
+        ]
+
+    def _signal_rankings(self) -> list[dict[str, Any]]:
+        try:
+            rows = [
+                dict(row)
+                for row in self._rows(
+                    """
+                    SELECT signal_name, COUNT(*) AS sample_size, AVG(score) AS average_score,
+                           AVG(confidence) AS average_confidence
+                    FROM TRADE_SIGNALS
+                    GROUP BY signal_name
+                    ORDER BY average_score DESC
+                    LIMIT 10
+                    """
+                )
+            ]
+        except sqlite3.OperationalError:
+            rows = []
+        return rows
 
     def portfolio(self, broker_filter: str = "all") -> dict[str, Any]:
         broker_filter = broker_filter.lower()
@@ -942,6 +1163,13 @@ This report explains available evidence. It does not automatically change strate
             )
             due_diligence = latest_due_diligence(self.settings.db_path, row["proposal_id"])
             investment_score = latest_investment_score(self.settings.db_path, row["proposal_id"])
+            payload_intelligence = _payload_intelligence(row["payload_json"]) or {}
+            stored_intelligence = latest_intelligence_packet(self.settings.db_path, row["proposal_id"]) or {}
+            intelligence = {**payload_intelligence, **stored_intelligence} if (payload_intelligence or stored_intelligence) else None
+            committee = (intelligence or {}).get("committee") or {}
+            probability = (intelligence or {}).get("probability") or {}
+            strategy = _payload_strategy(row["payload_json"], intelligence)
+            regime = _payload_regime(row["payload_json"], intelligence)
             auto_trade_eligible = (
                 guardrails_passed
                 and freshness["status"] != "Expired"
@@ -960,6 +1188,19 @@ This report explains available evidence. It does not automatically change strate
                     "country": row["country"],
                     "confidence": confidence if confidence else None,
                     "investment_score": _score_payload(investment_score, confidence, philosophy_fit),
+                    "strategy": strategy,
+                    "strategy_id": (strategy or {}).get("strategy_id") or committee.get("strategy_id") or probability.get("strategy_id"),
+                    "strategy_name": (strategy or {}).get("name"),
+                    "market_regime": regime,
+                    "probability": probability,
+                    "committee": committee,
+                    "signals": (intelligence or {}).get("signals") or [],
+                    "trade_lifecycle": (intelligence or {}).get("lifecycle") or [],
+                    "strongest_argument_for": committee.get("strongest_argument_for"),
+                    "strongest_argument_against": committee.get("strongest_argument_against"),
+                    "probability_of_success": probability.get("probability_of_success"),
+                    "expected_return_r": probability.get("expected_return_r"),
+                    "calibration_status": probability.get("calibration_status"),
                     "asset_available": None if decision is None else bool(decision["asset_available"]),
                     "suggested_broker": decision["selected_broker"] if decision is not None else proposal_broker,
                     "exchange": _proposal_exchange(row["payload_json"]),
@@ -1441,6 +1682,7 @@ This report explains available evidence. It does not automatically change strate
         trade_lessons = _trade_learning_lessons(attribution, rejected, snapshots)
         benchmark_lessons = _benchmark_learning_lessons(benchmark.get("items") or [])
         recommendations = _learning_recommendations(attribution, rejected, benchmark.get("items") or [])
+        calibration = update_calibration_from_attribution(self.settings.db_path)
         return {
             "date": learning_date,
             "summary": (
@@ -1458,6 +1700,7 @@ This report explains available evidence. It does not automatically change strate
             },
             "trade_lessons": trade_lessons,
             "benchmark_learning": benchmark_lessons,
+            "confidence_calibration": calibration,
             "recommendations_for_founder": recommendations,
             "closed_trades": attribution,
             "recent_rejections": rejected[:10],
@@ -3657,6 +3900,104 @@ def _score_payload(score: dict[str, Any] | None, confidence: float, philosophy_f
         "overall_confidence": confidence or None,
         "reasoning": {"status": "Not available - not assessed by orchestrator yet"},
     }
+
+
+def _payload_intelligence(payload_json: Any) -> dict[str, Any] | None:
+    if not payload_json:
+        return None
+    try:
+        payload = json.loads(payload_json) if isinstance(payload_json, str) else payload_json
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    intelligence = payload.get("intelligence")
+    return intelligence if isinstance(intelligence, dict) else None
+
+
+def _payload_strategy(payload_json: Any, intelligence: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if intelligence and isinstance(intelligence.get("strategy"), dict):
+        return intelligence["strategy"]
+    fallback = _payload_intelligence(payload_json)
+    if fallback and isinstance(fallback.get("strategy"), dict):
+        return fallback["strategy"]
+    return None
+
+
+def _payload_regime(payload_json: Any, intelligence: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if intelligence and isinstance(intelligence.get("regime"), dict):
+        return intelligence["regime"]
+    fallback = _payload_intelligence(payload_json)
+    if fallback and isinstance(fallback.get("regime"), dict):
+        return fallback["regime"]
+    return None
+
+
+def _average_numeric(values: list[Any]) -> float | None:
+    numeric = [safe_float(value) for value in values]
+    clean = [value for value in numeric if value is not None]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
+
+
+def _committee_numeric_confidence(committee: dict[str, Any] | None) -> float | None:
+    if not committee:
+        return None
+    votes = committee.get("member_votes") or []
+    scores = [safe_float(vote.get("score")) for vote in votes if isinstance(vote, dict)]
+    return _average_numeric(scores)
+
+
+def _plain_confidence(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "Unknown - not enough evidence yet"
+    if number >= 0.8:
+        return "High confidence"
+    if number >= 0.6:
+        return "Moderate confidence"
+    if number >= 0.4:
+        return "Low to moderate confidence"
+    return "Low confidence"
+
+
+def _plain_regime(regime: str) -> str:
+    text = str(regime or "unknown").replace("_", " ").lower()
+    labels = {
+        "bull": "Trending up",
+        "bear": "Trending down",
+        "range": "Moving sideways",
+        "recovery": "Recovering",
+        "contraction": "Weakening",
+        "transition": "Changing direction",
+        "crisis": "Highly stressed",
+        "unknown": "Unknown - not enough market evidence yet",
+    }
+    return labels.get(text, text.title())
+
+
+def _plain_market_health(regime: str, confidence: Any) -> str:
+    conf = safe_float(confidence)
+    regime_text = str(regime or "").lower()
+    if regime_text in {"bull", "recovery"} and conf is not None and conf >= 0.6:
+        return "Constructive"
+    if regime_text in {"bear", "crisis", "contraction"}:
+        return "Cautious"
+    if regime_text == "range":
+        return "Mixed"
+    return "Unclear"
+
+
+def _portfolio_rebalancing_suggestions(risk_level: str, diversification: str) -> list[str]:
+    suggestions = []
+    if risk_level == "HIGH":
+        suggestions.append("Review whether too much capital is deployed before approving new trades.")
+    if "Concentrated" in diversification:
+        suggestions.append("Review whether too few positions are driving too much portfolio risk.")
+    if not suggestions:
+        suggestions.append("No urgent rebalance suggestion from current data.")
+    return suggestions
 
 
 def _broker_label(broker: str) -> str:

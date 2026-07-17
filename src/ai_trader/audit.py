@@ -81,11 +81,13 @@ class AuditDatabase:
         execution_result: dict[str, Any] | None = None,
         trade_outcome: str | None = None,
         lessons_learned: str | None = None,
+        intelligence: dict[str, Any] | None = None,
     ) -> int:
         payload = {
             "proposal": proposal.to_dict(),
             "validation": validation.to_dict() if validation else None,
             "execution_result": execution_result,
+            "intelligence": intelligence,
         }
         created_at = utc_now_iso()
         with closing(self.connect()) as conn:

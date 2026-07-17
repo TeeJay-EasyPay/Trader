@@ -2,7 +2,22 @@
 
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07)
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17)
+
+## 2026-07-17 Institutional Intelligence & Founder Experience Phase 3
+
+- Added the architectural principle that every new capability must help AI Trader make a better investment decision, help the Founder make a better decision, or help AI Trader learn to make better future decisions.
+- Reworked strategy selection so live intelligence chooses from candidate strategies using market intelligence, regime, trend, momentum, volatility, breakout/range evidence, and crypto risk/liquidity where available.
+- Strategy selections now record selection rationale, candidate scores, rejected alternatives, production-readiness notes, and validation status.
+- Added Strategy Lab walk-forward validation with train/test windows, out-of-sample aggregation, cost/slippage assumptions, buy-and-hold benchmark comparison, and bias-control notes.
+- Expanded portfolio intelligence with exposure, proposed notional, largest position, proposed risk contribution, diversification, capital efficiency, and explicit unknown-data notes.
+- Added `founder_experience` to `/status`, grouped into executive dashboard, portfolio command, market intelligence centre, and learning lab payloads.
+- Reframed the mobile app into five Founder-facing screens: Dashboard, Recommendations, Portfolio, Market, and Learning.
+- Added a dark executive shell with white decision cards, status pills, and plain-English cards for the Founder.
+- Added Phase 3 documentation and Founder briefing.
+- Verification so far:
+  - `py_compile` passed for `src/ai_trader/trading_intelligence.py` and `src/ai_trader/api.py`.
+  - Focused Trading Intelligence tests passed: 13/13.
 
 ## 2026-07-07 Autonomous Trading Readiness Sprint - Post-Sprint Status
 
@@ -427,3 +442,34 @@ Local token-auth smoke test passed:
 - `/healthz`: 200 without token.
 - `/status`: 401 without token.
 - `/status`: 200 with bearer token.
+# Status Update - 2026-07-17
+
+World-Class Trading Intelligence Transformation sprint implemented.
+
+Current status:
+
+- Trading Intelligence layer added before recommendation persistence.
+- No recommendation is persisted unless the platform can articulate both the strongest argument for and strongest argument against the trade.
+- Strategy registry, regime snapshots, signal evidence, trading committee reviews, probability estimates, confidence calibration snapshots, and lifecycle records are now stored in SQLite.
+- Recommendation API and mobile recommendation cards now expose strategy, regime, probability, committee, signal, bull/bear, and lifecycle evidence.
+- Existing Investment Orchestrator, Risk Engine, broker adapters, governance controls, Kraken seatbelts, Alpaca paper support, and execution pipeline remain protected.
+- Automated Python suite passed: 90 tests.
+- Mobile TypeScript check is not available because the Expo app does not include TypeScript as a dependency.
+
+## Status Update - 2026-07-17 Phase 2
+
+World-Class Trading Intelligence Phase 2 implemented.
+
+Current status:
+
+- Market intelligence now calculates trend, momentum, moving-average position, volatility, ATR percentage, volume trend, price structure, breakout/breakdown state, mean-reversion state, support, resistance, and data-quality evidence from available candles.
+- Regime inference now consumes market-intelligence evidence and stores confidence plus contradictory evidence.
+- Signal evidence is now independently scored from market data/context rather than simply mirroring proposal confidence.
+- Strategy registry expanded to trend following, momentum, pullback, breakout, mean reversion, range trading, volatility expansion, swing continuation, crypto infrastructure trend, institutional accumulation, quality growth, and value pullback.
+- Trading Committee now has deterministic independent member votes, questions, disagreements, and outcomes.
+- Probability estimation now includes small-sample uncertainty, calibration evidence, signal/regime history, expected R, expected drawdown R, and confidence intervals.
+- Strategy Lab primitives added for historical candle storage and deterministic backtest result storage.
+- Performance Intelligence added for strategy-level win rate, expectancy, profit factor, drawdown, holding time, Brier score, and calibration error.
+- Trade lifecycle records now support fees, slippage, R-multiple, MAE, MFE, and holding time fields.
+- Recommendation API now merges normalized intelligence rows with the richer audit payload so strategy/regime/market evidence remains visible.
+- Automated Python suite passed: 96 tests.
