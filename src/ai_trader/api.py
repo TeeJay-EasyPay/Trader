@@ -62,7 +62,7 @@ from .multi_broker import (
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .scheduler import IntervalWorker, ResearchScheduler
-from .trading_intelligence import calculate_performance_metrics, latest_intelligence_packet, update_calibration_from_attribution
+from .trading_intelligence import calculate_performance_metrics, initialize_trading_intelligence_schema, latest_intelligence_packet, update_calibration_from_attribution
 
 
 logger = logging.getLogger("ai_trader.api")
@@ -148,6 +148,7 @@ class LocalApiService:
         self.hosted_read_only = False
         self.api_token_configured = bool(os.getenv("AI_TRADER_API_TOKEN"))
         self.audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+        initialize_trading_intelligence_schema(settings.db_path)
         self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
         self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
         self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
