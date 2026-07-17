@@ -478,6 +478,14 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
                     newly_inserted.append({**item, "status": status})
                 except sqlite3.IntegrityError:
                     continue
+    if newly_inserted and broker.lower() in {"alpaca", "kraken"}:
+        try:
+            from .operational_truth import reconcile_broker_trade_rows
+
+            reconcile_broker_trade_rows(db_path, broker, newly_inserted)
+        except Exception:
+            # Broker history must not fail just because the secondary evidence spine needs review.
+            pass
     return newly_inserted
 
 

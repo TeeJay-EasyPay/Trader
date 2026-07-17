@@ -61,6 +61,27 @@ Start with:
 - [`architecture/FOUNDER_EXPERIENCE_PHASE_3_MOCKUPS.md`](architecture/FOUNDER_EXPERIENCE_PHASE_3_MOCKUPS.md)
 - [`governance/FOUNDER_BRIEFING_PHASE_3.md`](governance/FOUNDER_BRIEFING_PHASE_3.md)
 
+## World-Class Trader Transformation Phase 4-8
+
+Phase 4-8 adds the evidence spine for operational truth, market-data quality, portfolio intelligence, governed learning, and Founder AI decision support.
+
+Start with:
+
+- [`architecture/WORLD_CLASS_TRADER_PHASE_4_8_IMPLEMENTATION_PLAN.md`](architecture/WORLD_CLASS_TRADER_PHASE_4_8_IMPLEMENTATION_PLAN.md)
+- [`architecture/WORLD_CLASS_TRADER_TRANSFORMATION_ARCHITECTURE.md`](architecture/WORLD_CLASS_TRADER_TRANSFORMATION_ARCHITECTURE.md)
+- [`architecture/OPERATIONAL_TRUTH_AND_CANONICAL_LIFECYCLE.md`](architecture/OPERATIONAL_TRUTH_AND_CANONICAL_LIFECYCLE.md)
+- [`architecture/MARKET_INTELLIGENCE_PLATFORM.md`](architecture/MARKET_INTELLIGENCE_PLATFORM.md)
+- [`architecture/PORTFOLIO_INTELLIGENCE_STANDARD.md`](architecture/PORTFOLIO_INTELLIGENCE_STANDARD.md)
+- [`architecture/EXPERIENCE_ENGINE_AND_GOVERNED_LEARNING.md`](architecture/EXPERIENCE_ENGINE_AND_GOVERNED_LEARNING.md)
+- [`architecture/FOUNDER_AI_STANDARD.md`](architecture/FOUNDER_AI_STANDARD.md)
+- [`architecture/DATA_AVAILABILITY_AND_UNKNOWN_VALUES_STANDARD.md`](architecture/DATA_AVAILABILITY_AND_UNKNOWN_VALUES_STANDARD.md)
+- [`architecture/RENDER_EXPO_DEPLOYMENT_CONTRACT.md`](architecture/RENDER_EXPO_DEPLOYMENT_CONTRACT.md)
+- [`architecture/WORLD_CLASS_TRADER_IMPLEMENTATION_REPORT.md`](architecture/WORLD_CLASS_TRADER_IMPLEMENTATION_REPORT.md)
+- [`architecture/WORLD_CLASS_TRADER_TESTING_REPORT.md`](architecture/WORLD_CLASS_TRADER_TESTING_REPORT.md)
+- [`architecture/WORLD_CLASS_TRADER_FOUNDER_BRIEFING.md`](architecture/WORLD_CLASS_TRADER_FOUNDER_BRIEFING.md)
+
+The core principle is unchanged: AI Trader should optimise for better decisions, not more trades. A recommendation is not actionable unless it can state the strongest argument for, strongest argument against, invalidation, and why doing nothing may be better.
+
 ## Developer Setup
 
 The project is configured for local Windows development in VS Code.

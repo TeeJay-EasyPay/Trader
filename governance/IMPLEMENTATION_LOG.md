@@ -768,3 +768,22 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Verification:
   - `py_compile` passed for Trading Intelligence and API modules.
   - Focused Trading Intelligence tests passed: 13/13.
+
+## 2026-07-17 World-Class Trader Transformation Phase 4-8
+
+- Reviewed existing architecture and governance before implementation.
+- Created `architecture/WORLD_CLASS_TRADER_PHASE_4_8_IMPLEMENTATION_PLAN.md`.
+- Added `src/ai_trader/operational_truth.py` for canonical lifecycle, reconciliation, execution costs, true R, MAE, and MFE.
+- Added `src/ai_trader/market_intelligence_platform.py` for provider-neutral market observations, data quality, multi-timeframe conclusions, and Regime 2.0 evidence.
+- Added `src/ai_trader/portfolio_intelligence.py` for metadata, exposure, concentration, correlation, and proposed-trade portfolio impact.
+- Added `src/ai_trader/experience_engine.py` for immutable experience records, post-trade reviews, analogues, and governed learning proposals.
+- Wired additive schema initialization into `LocalApiService`.
+- Reconciled Alpaca/Kraken broker history into canonical lifecycle records during startup and broker-history writes.
+- Added `/operational-truth` and `/world-class-evidence`.
+- Added `world_class_evidence` to `/status` for Founder-facing truth, unknowns, operational health, portfolio intelligence, and learning boundaries.
+- Tightened recommendation actionability: auto-trade eligibility now requires both strongest argument for and strongest argument against.
+- Updated the mobile Dashboard, Portfolio, and Recommendation screens around progressive disclosure and explained unknowns.
+- Added Phase 4-8 architecture, standards, testing, implementation, deployment-contract, and Founder briefing documents.
+- Verification:
+  - `py_compile` passed for new backend modules and API.
+  - Focused World-Class Transformation tests passed: 6/6.

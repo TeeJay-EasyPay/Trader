@@ -31,6 +31,8 @@ from .briefing import generate_daily_briefing
 from .broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from .config import Settings, load_settings
 from .foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
+from .experience_engine import initialize_experience_engine_schema
+from .market_intelligence_platform import initialize_market_intelligence_schema
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import AccountContext, OrderRequest, Position, TradeProposal, utc_now_iso
 from .multi_broker import (
@@ -61,6 +63,8 @@ from .multi_broker import (
 )
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
+from .operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
+from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema
 from .scheduler import IntervalWorker, ResearchScheduler
 from .trading_intelligence import calculate_performance_metrics, initialize_trading_intelligence_schema, latest_intelligence_packet, update_calibration_from_attribution
 
@@ -155,6 +159,10 @@ class LocalApiService:
         initialize_foundation_schema(settings.db_path)
         initialize_operational_schema(settings.db_path)
         initialize_multi_broker_schema(settings.db_path)
+        initialize_operational_truth_schema(settings.db_path)
+        initialize_market_intelligence_schema(settings.db_path)
+        initialize_portfolio_intelligence_schema(settings.db_path)
+        initialize_experience_engine_schema(settings.db_path)
         self._initialize_report_schema()
         self._apply_env_broker_auto_defaults()
         self._initialize_control()
@@ -166,9 +174,26 @@ class LocalApiService:
             (stuck_cutoff,),
         )
         open_exits = self._rows("SELECT * FROM MANAGED_TRADE_EXITS WHERE status = 'open'")
+        reconciliation = {}
+        for broker in ["alpaca", "kraken"]:
+            rows = [
+                dict(row)
+                for row in self._rows(
+                    """
+                    SELECT *
+                    FROM BROKER_TRADE_HISTORY
+                    WHERE broker = ?
+                    ORDER BY trade_history_id DESC
+                    LIMIT 250
+                    """,
+                    (broker,),
+                )
+            ]
+            reconciliation[broker] = reconcile_broker_trade_rows(self.settings.db_path, broker, rows)
         summary = {
             "stuck_order_intents": len(stuck_locks),
             "open_managed_exits": len(open_exits),
+            "broker_reconciliation": reconciliation,
         }
         logger.info("Startup reconciliation: %s", summary)
         if stuck_locks:
@@ -356,6 +381,10 @@ class LocalApiService:
             return 200, {"performance_attribution": list_performance_attribution(self.settings.db_path)}
         if path == "/daily-learning-update":
             return 200, self.daily_learning_update(_first(query, "date"))
+        if path == "/operational-truth":
+            return 200, self.operational_truth_status()
+        if path == "/world-class-evidence":
+            return 200, self.world_class_evidence()
         if path == "/trading-report":
             return 200, self.trading_report(
                 report_date=_first(query, "date"),
@@ -447,6 +476,7 @@ class LocalApiService:
         founder_summary = self.founder_executive_summary(brokers, executive_summary)
         readiness = self.connection_readiness(brokers)
         founder_experience = self.founder_experience_payload(brokers, recommendation_rows, policy, research_run)
+        world_class = self.world_class_evidence(brokers=brokers, recommendations=recommendation_rows)
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -475,6 +505,7 @@ class LocalApiService:
             "evening_brief": latest_evening,
             "cloud_api_health": "Available",
             "connection_readiness": readiness,
+            "world_class_evidence": world_class,
             "latest_activity": [dict(row) for row in last_activity],
             "recent_transactions": [dict(row) for row in recent_transactions],
             "recommendation_summary": {
@@ -737,6 +768,178 @@ class LocalApiService:
         markdown = generate_daily_briefing(self.audit, date.today(), self.settings.output_dir)
         return {"briefing_date": date.today().isoformat(), "report_markdown": markdown, "created_at": utc_now_iso()}
 
+    def operational_truth_status(self) -> dict[str, Any]:
+        health = reconciliation_health(self.settings.db_path)
+        lifecycle_count = self._scalar("SELECT COUNT(*) FROM CANONICAL_TRADE_LIFECYCLE") or 0
+        rejected_count = self._scalar("SELECT COUNT(*) FROM LIFECYCLE_TRANSITION_REJECTIONS") or 0
+        latest_events = [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT created_at, broker, symbol, stage, event_source, event_reason
+                FROM CANONICAL_TRADE_LIFECYCLE
+                ORDER BY lifecycle_id DESC
+                LIMIT 20
+                """
+            )
+        ]
+        return {
+            "status": "active",
+            "canonical_lifecycle_events": lifecycle_count,
+            "illegal_transition_rejections": rejected_count,
+            "reconciliation_health": health,
+            "latest_events": latest_events,
+            "plain_english": (
+                "Alpaca and Kraken broker events now feed a single canonical lifecycle. "
+                "Duplicate polling is ignored by idempotency keys; illegal lifecycle jumps are logged for review."
+            ),
+        }
+
+    def world_class_evidence(
+        self,
+        *,
+        brokers: list[dict[str, Any]] | None = None,
+        recommendations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        brokers = brokers if brokers is not None else self.broker_panels()
+        recommendations = recommendations if recommendations is not None else self.recommendations(limit=50)
+        connected_brokers = [
+            item for item in brokers
+            if str(item.get("broker") or "").lower() in {"alpaca", "kraken"}
+            and str(item.get("connection_status") or "").lower() == "connected"
+        ]
+        future_brokers = [
+            {
+                "broker": item.get("broker"),
+                "label": item.get("label"),
+                "status": self._future_broker_status(item),
+            }
+            for item in brokers
+            if str(item.get("broker") or "").lower() not in {"alpaca", "kraken"}
+        ]
+        operational = self.operational_truth_status()
+        portfolio_evidence = self._portfolio_intelligence_summary(connected_brokers)
+        dossier_ready = [
+            item for item in recommendations
+            if item.get("strongest_argument_for")
+            and item.get("strongest_argument_against")
+            and item.get("freshness_status") != "Expired"
+        ]
+        unknowns = self._data_availability_unknowns(connected_brokers, recommendations)
+        daily_learning = self.daily_learning_update(date.today().isoformat())
+        first_conclusion = self._executive_first_conclusion(connected_brokers, dossier_ready, unknowns)
+        return {
+            "first_conclusion": first_conclusion,
+            "measured": [
+                "Broker connection state for Alpaca and Kraken.",
+                "Recorded broker trade/order rows.",
+                "Canonical lifecycle events generated from broker history.",
+                "Portfolio/cash values when broker APIs return them.",
+            ],
+            "calculated_from_assumptions": [
+                "Estimated capital in positions equals measured portfolio value minus measured cash when both are present.",
+                "Portfolio exposure uses available broker positions and metadata; missing metadata is labelled.",
+                "R, slippage, and MAE/MFE are calculated only when required entry, stop, fill, and observation data exist.",
+            ],
+            "unavailable": unknowns,
+            "operational_truth": operational,
+            "portfolio_intelligence": portfolio_evidence,
+            "experience_learning": {
+                "closed_trade_reviews": self._scalar("SELECT COUNT(*) FROM POST_TRADE_REVIEWS") or 0,
+                "experience_records": self._scalar("SELECT COUNT(*) FROM EXPERIENCE_RECORDS") or 0,
+                "learning_proposals": self._scalar("SELECT COUNT(*) FROM LEARNING_PROPOSALS") or 0,
+                "today": daily_learning,
+                "boundary": "Learning may suggest improvements, but cannot change broker permissions, guardrails, or production strategy status without approval.",
+            },
+            "recommendation_standard": {
+                "active_dossiers_with_for_and_against": len(dossier_ready),
+                "do_nothing_is_valid": True,
+                "minimum_required_fields": [
+                    "strongest argument for",
+                    "strongest argument against",
+                    "invalidation",
+                    "why taking no action may be preferable",
+                ],
+            },
+            "future_connections": future_brokers,
+        }
+
+    def _portfolio_intelligence_summary(self, brokers: list[dict[str, Any]]) -> dict[str, Any]:
+        positions: list[dict[str, Any]] = []
+        for broker in brokers:
+            for row in broker.get("trade_history") or []:
+                symbol = row.get("symbol")
+                if symbol and str(row.get("status") or "").lower() in {"filled", "open"}:
+                    positions.append({
+                        "symbol": symbol,
+                        "asset_type": row.get("asset_type") or ("crypto" if broker.get("broker") == "kraken" else "stock"),
+                        "notional": row.get("notional") or row.get("price"),
+                        "currency": "GBP" if broker.get("broker") == "kraken" else "USD",
+                    })
+        exposure = calculate_portfolio_exposure(self.settings.db_path, positions, broker="all") if positions else {
+            "total_value": 0,
+            "exposure": {},
+            "largest_positions": [],
+            "warnings": ["Not available - no broker position rows with measurable notional were available."],
+            "plain_english": "Portfolio exposure cannot be calculated yet because measurable broker position rows are unavailable.",
+        }
+        return exposure
+
+    def _future_broker_status(self, panel: dict[str, Any]) -> str:
+        connection = str(panel.get("connection_status") or "").lower()
+        if "not configured" in connection or "not configured" in str(panel.get("source") or "").lower():
+            return "Not configured"
+        if "authentication failed" in connection:
+            return "Authentication failed"
+        if connection == "connected":
+            return "Connected"
+        return "Not connected"
+
+    def _data_availability_unknowns(self, brokers: list[dict[str, Any]], recommendations: list[dict[str, Any]]) -> list[dict[str, str]]:
+        unknowns: list[dict[str, str]] = []
+        for broker in brokers:
+            key = str(broker.get("broker") or "broker")
+            for field, requirement in [
+                ("todays_pnl", "at least two same-day portfolio snapshots or broker-reported day P&L"),
+                ("week_pnl", "a prior weekly snapshot or broker-reported week P&L"),
+                ("month_pnl", "a month-start snapshot or broker-reported month P&L"),
+            ]:
+                value = broker.get(field)
+                if value in {None, "", "Not available"} or str(value).lower().startswith("not available"):
+                    unknowns.append({
+                        "field": f"{key}.{field}",
+                        "why": str(value or "No value returned by broker or snapshot layer."),
+                        "required": requirement,
+                        "expected_or_error": "Expected early in a deployment or after a database reset; review if snapshots exist but values remain missing.",
+                    })
+        incomplete_recommendations = [
+            row.get("symbol") or "unknown"
+            for row in recommendations
+            if not row.get("strongest_argument_for") or not row.get("strongest_argument_against")
+        ]
+        if incomplete_recommendations:
+            unknowns.append({
+                "field": "recommendation_dossier.arguments",
+                "why": f"{len(incomplete_recommendations)} recommendation(s) lack complete bull/bear evidence.",
+                "required": "Trading committee evidence with strongest argument for and strongest argument against.",
+                "expected_or_error": "Execution should not treat these as actionable recommendations.",
+            })
+        return unknowns
+
+    def _executive_first_conclusion(
+        self,
+        connected_brokers: list[dict[str, Any]],
+        dossier_ready: list[dict[str, Any]],
+        unknowns: list[dict[str, str]],
+    ) -> str:
+        if not connected_brokers:
+            return "Broker issue requires attention"
+        if any("recommendation_dossier" in item["field"] for item in unknowns):
+            return "Data issue requires attention"
+        if dossier_ready:
+            return "Review one recommendation"
+        return "No action required"
+
     def generate_report(self, body: dict[str, Any]) -> dict[str, Any]:
         report_type = str(body.get("type") or "daily").lower()
         broker = str(body.get("broker") or "all").lower()
@@ -847,6 +1050,7 @@ class LocalApiService:
                 )
             ],
             "daily_learning": self.daily_learning_update(date.today().isoformat()),
+            "world_class_evidence": self.world_class_evidence(brokers=broker_panels, recommendations=self.recommendations(limit=20)),
         }
 
     def trading_report(self, *, report_date: str | None, broker: str = "all", report_type: str = "daily", persist: bool = False) -> dict[str, Any]:
@@ -1169,8 +1373,13 @@ This report explains available evidence. It does not automatically change strate
             intelligence = {**payload_intelligence, **stored_intelligence} if (payload_intelligence or stored_intelligence) else None
             committee = (intelligence or {}).get("committee") or {}
             probability = (intelligence or {}).get("probability") or {}
+            explainability = (intelligence or {}).get("explainability") or {}
+            trade_setup = (intelligence or {}).get("trade_setup") or {}
             strategy = _payload_strategy(row["payload_json"], intelligence)
             regime = _payload_regime(row["payload_json"], intelligence)
+            strongest_for = committee.get("strongest_argument_for") or row["ai_reasoning"]
+            strongest_against = committee.get("strongest_argument_against") or row["reasons_for_caution"] or _format_guardrail_failures(guardrail_failures)
+            has_dossier_arguments = bool(str(strongest_for or "").strip()) and bool(str(strongest_against or "").strip())
             auto_trade_eligible = (
                 guardrails_passed
                 and freshness["status"] != "Expired"
@@ -1178,6 +1387,7 @@ This report explains available evidence. It does not automatically change strate
                 and philosophy_fit >= self.settings.auto_trade.min_philosophy_fit
                 and not already_executed
                 and broker_auto_enabled
+                and has_dossier_arguments
             )
             recommendations.append(
                 {
@@ -1197,8 +1407,10 @@ This report explains available evidence. It does not automatically change strate
                     "committee": committee,
                     "signals": (intelligence or {}).get("signals") or [],
                     "trade_lifecycle": (intelligence or {}).get("lifecycle") or [],
-                    "strongest_argument_for": committee.get("strongest_argument_for"),
-                    "strongest_argument_against": committee.get("strongest_argument_against"),
+                    "strongest_argument_for": strongest_for,
+                    "strongest_argument_against": strongest_against,
+                    "invalidation": (explainability.get("invalidation_conditions") or trade_setup.get("invalidation_conditions") or []),
+                    "why_no_action_may_be_better": _why_no_action_may_be_better(committee, probability, guardrail_failures, freshness["status"]),
                     "probability_of_success": probability.get("probability_of_success"),
                     "expected_return_r": probability.get("expected_return_r"),
                     "calibration_status": probability.get("calibration_status"),
@@ -1235,6 +1447,7 @@ This report explains available evidence. It does not automatically change strate
                         guardrails_passed=guardrails_passed,
                         already_executed=already_executed,
                         guardrail_failures=guardrail_failures,
+                        has_dossier_arguments=has_dossier_arguments,
                     ),
                     "guardrail_failures": guardrail_failures,
                     "guardrail_summary": "Passed" if guardrails_passed else _format_guardrail_failures(guardrail_failures),
@@ -3835,6 +4048,7 @@ def _auto_trade_reason(
     guardrails_passed: bool,
     already_executed: bool,
     guardrail_failures: list[str] | None = None,
+    has_dossier_arguments: bool = True,
 ) -> str:
     if not auto_enabled:
         return f"{auto_label} is disabled; manual approval is required."
@@ -3850,7 +4064,28 @@ def _auto_trade_reason(
         if guardrail_failures:
             return f"Execution guardrails failed: {_format_guardrail_failures(guardrail_failures)}."
         return "Execution guardrails did not pass, so auto-trade is blocked."
+    if not has_dossier_arguments:
+        return "Not actionable yet: AI Trader cannot state both the strongest argument for and against the trade."
     return "Eligible for broker auto-trade."
+
+
+def _why_no_action_may_be_better(
+    committee: dict[str, Any],
+    probability: dict[str, Any],
+    guardrail_failures: list[str],
+    freshness_status: str,
+) -> str:
+    if freshness_status == "Expired":
+        return "Waiting may be better because the evidence is stale and market conditions may have changed."
+    if guardrail_failures:
+        return "Taking no action is better while guardrails are failing."
+    calibration = str(probability.get("calibration_status") or "").lower()
+    if "insufficient" in calibration or "weak" in calibration:
+        return "Waiting may be better because AI Trader does not yet have enough similar outcomes to trust this confidence level."
+    opposing = committee.get("strongest_argument_against")
+    if opposing:
+        return f"Waiting may be better if this concern matters more than the thesis: {opposing}"
+    return "Doing nothing remains acceptable if evidence quality, portfolio fit, or market conditions are not strong enough."
 
 
 def _proposal_payload(payload_json: Any) -> dict[str, Any]:

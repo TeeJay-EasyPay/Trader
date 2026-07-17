@@ -315,10 +315,22 @@ export default function App() {
 
 function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
+  const evidence = status?.world_class_evidence || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
-  const brokerPanels = status?.brokers || [];
+  const brokerPanels = connectedFounderBrokers(status?.brokers || []);
+  const futureConnections = evidence.future_connections || futureBrokerPanels(status?.brokers || []);
   return (
     <View>
+      <Section title="Command Summary">
+        <StatusPill label={evidence.first_conclusion || 'No action required'} tone={summaryTone(evidence.first_conclusion)} />
+        <Metric label="Market" value={status?.founder_experience?.market_intelligence_centre?.market_health || explainMissing('market health', 'market intelligence has not produced a fresh regime summary yet')} />
+        <Metric label="Portfolio" value={executive.portfolio_health || explainMissing('portfolio health', 'broker portfolio values or exposure evidence are incomplete')} />
+        <Metric label="Brokers" value={brokerPanels.length ? `${brokerPanels.map((item) => item.label || item.broker).join(', ')} connected or visible` : explainMissing('broker status', 'Alpaca and Kraken are not both visible from the hosted API')} />
+        <Metric label="Data" value={(evidence.unavailable || []).length ? `${evidence.unavailable.length} value(s) need explanation` : 'Measured values are currently usable'} />
+        <Metric label="Research" value={status?.research_status || explainMissing('research status', 'no research run has been recorded yet')} />
+        <Metric label="Learning" value={evidence.experience_learning?.boundary || executive.learning_progress} />
+        <TextBlock label="Attention Required" value={formatUnavailableReasons(evidence.unavailable)} />
+      </Section>
       <Section title="Executive Summary">
         <StatusPill label={notAvailable(executive.portfolio_health)} tone={riskTone(executive.portfolio_risk)} />
         <Text style={styles.cardTitle}>{notAvailable(executive.headline)}</Text>
@@ -348,6 +360,13 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
           <BrokerPanel key={`${broker.broker}-dashboard`} broker={broker} onCommand={onCommand} onReport={onReport} />
         )) : <Empty />}
       </Section>
+      {futureConnections.length ? (
+        <Section title="Future Connections">
+          {futureConnections.map((item) => (
+            <Metric key={`future-${item.broker || item.label}`} label={item.label || item.broker} value={item.status || 'Not connected'} />
+          ))}
+        </Section>
+      ) : null}
       <Section title="Founder Actions">
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />
@@ -363,9 +382,10 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
 
 function PortfolioCommandCentre({ status, portfolio, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
   const portfolioCommand = status?.founder_experience?.portfolio_command || {};
+  const evidence = status?.world_class_evidence || {};
   const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
   const summary = tradeHistorySummary(status, trades, selectedExchange);
-  const brokerPanels = status?.brokers || [];
+  const brokerPanels = connectedFounderBrokers(status?.brokers || []);
   return (
     <View>
       <Section title="Portfolio Command Centre">
@@ -379,6 +399,15 @@ function PortfolioCommandCentre({ status, portfolio, performanceAttribution, lat
         <Metric label="Expected Portfolio Return" value={portfolioCommand.expected_portfolio_return} />
         <TextBlock label="Positions Requiring Attention" value={formatList(portfolioCommand.positions_requiring_attention)} />
         <TextBlock label="Rebalancing Suggestions" value={formatList(portfolioCommand.rebalancing_suggestions)} />
+      </Section>
+      <Section title="Operational Truth">
+        <Metric label="Lifecycle Events" value={evidence.operational_truth?.canonical_lifecycle_events} />
+        <Metric label="Illegal Transition Rejections" value={evidence.operational_truth?.illegal_transition_rejections} />
+        <TextBlock label="Reconciliation Health" value={formatReconciliation(evidence.operational_truth?.reconciliation_health)} />
+      </Section>
+      <Section title="Portfolio Intelligence">
+        <TextBlock label="Plain English" value={evidence.portfolio_intelligence?.plain_english} />
+        <TextBlock label="Warnings" value={formatList(evidence.portfolio_intelligence?.warnings)} />
       </Section>
       <Section title="Exposure Checks">
         <Metric label="Sector Exposure" value={portfolioCommand.sector_exposure} />
@@ -966,6 +995,23 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>{notAvailable(enriched.company)} ({notAvailable(enriched.ticker)})</Text>
+      <Section title="Decision Summary">
+        <Metric label="Action" value={item.side || 'Review'} />
+        <Metric label="Broker" value={item.suggested_broker} />
+        <Metric label="Status" value={recommendationStatus(item)} />
+        <Metric label="Probability Range" value={probabilityRange(item.probability_of_success)} />
+        <Metric label="Expected R" value={rMultiple(item.expected_return_r)} />
+        <Metric label="Selected Strategy" value={item.strategy_name || item.strategy_id} />
+        <TextBlock label="One-Sentence Thesis" value={item.reason_for_recommendation} />
+      </Section>
+      <Section title="Why This Trade">
+        <TextBlock label="Strongest Argument For" value={item.strongest_argument_for} />
+      </Section>
+      <Section title="Why Not Trade">
+        <TextBlock label="Strongest Argument Against" value={item.strongest_argument_against} />
+        <TextBlock label="What Would Invalidate It" value={formatList(item.invalidation)} />
+        <TextBlock label="Why Waiting May Be Better" value={item.why_no_action_may_be_better} />
+      </Section>
       <Metric label="Freshness" value={enriched.freshness_status} />
       <Metric label="Generated" value={formatDateTime(enriched.created_at)} />
       <Metric label="Expires" value={formatDateTime(enriched.expires_at)} />
@@ -978,14 +1024,11 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
       <Metric label="Market Open" value={yesNo(item.market_open)} />
       <Metric label="Auto Eligible" value={yesNo(enriched.auto_trade_eligible)} />
       <TextBlock label="Rejection Reason" value={item.orchestrator_rejection_reason || enriched.auto_trade_reason} />
-      <Metric label="Strategy" value={item.strategy_name || item.strategy_id} />
       <Metric label="Market Regime" value={marketRegimeText(item.market_regime)} />
       <Metric label="Probability Of Success" value={formatPercent(item.probability_of_success)} />
       <Metric label="Expected Return" value={rMultiple(item.expected_return_r)} />
       <Metric label="Calibration" value={item.calibration_status} />
       <TextBlock label="Committee View" value={committeeSummary(item.committee)} />
-      <TextBlock label="Strongest Argument For" value={item.strongest_argument_for} />
-      <TextBlock label="Strongest Argument Against" value={item.strongest_argument_against} />
       <TextBlock label="Signal Evidence" value={signalSummary(item.signals)} />
       <TextBlock label="Lifecycle" value={lifecycleSummary(item.trade_lifecycle)} />
       <Metric label="Confidence" value={formatPercent(item.confidence)} />
@@ -2311,9 +2354,65 @@ function enabledDisabled(value) {
 
 function notAvailable(value) {
   if (value === null || value === undefined || value === '') {
-    return 'Not available';
+    return 'Not available - source data has not been recorded yet.';
   }
   return String(value);
+}
+
+function explainMissing(field, reason) {
+  return `Not available - ${field} is unavailable because ${reason}.`;
+}
+
+function connectedFounderBrokers(brokers) {
+  return (brokers || []).filter((item) => ['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()));
+}
+
+function futureBrokerPanels(brokers) {
+  return (brokers || [])
+    .filter((item) => !['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()))
+    .map((item) => ({
+      broker: item.broker,
+      label: item.label || item.broker,
+      status: item.connection_status || item.source || 'Not connected',
+    }));
+}
+
+function formatUnavailableReasons(items) {
+  if (!items || !items.length) {
+    return 'No explained missing values currently require attention.';
+  }
+  return items.slice(0, 5).map((item) => `${item.field}: ${item.why} Required: ${item.required}`).join('\n');
+}
+
+function formatReconciliation(items) {
+  if (!items || !items.length) {
+    return 'Awaiting broker reconciliation - no reconciliation run has been recorded yet.';
+  }
+  return items.slice(0, 5).map((item) => `${item.broker}: ${item.status}. ${item.summary}`).join('\n');
+}
+
+function summaryTone(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('no action')) return 'good';
+  if (text.includes('review')) return 'warn';
+  if (text.includes('issue') || text.includes('unsuitable')) return 'danger';
+  return 'neutral';
+}
+
+function recommendationStatus(item) {
+  if (item.freshness_status === 'Expired') return 'Expired';
+  if (!item.strongest_argument_for || !item.strongest_argument_against) return 'Insufficient evidence';
+  if (item.auto_trade_eligible) return 'Actionable';
+  if (item.guardrails_passed === false) return 'Rejected by guardrails';
+  return 'Wait / review';
+}
+
+function probabilityRange(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'Not available - probability model did not return a value.';
+  const lower = Math.max(0, number - 0.05);
+  const upper = Math.min(1, number + 0.05);
+  return `${Math.round(lower * 100)}%-${Math.round(upper * 100)}%`;
 }
 
 const styles = StyleSheet.create({

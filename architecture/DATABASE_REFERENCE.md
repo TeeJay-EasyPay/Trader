@@ -12,6 +12,54 @@ The schema is modular. Each subsystem initializes its own tables:
 - `intelligence.py` initializes company intelligence tables.
 - `benchmark.py` initializes benchmark trader tables.
 - `orchestrator.py` initializes orchestrator decision tables.
+- `operational_truth.py` initializes canonical lifecycle, reconciliation, execution cost, R, MAE, and MFE tables.
+- `market_intelligence_platform.py` initializes provider-neutral market observation and source-aware evidence tables.
+- `portfolio_intelligence.py` initializes asset metadata, exposure, correlation, risk contribution, and stress-test tables.
+- `experience_engine.py` initializes immutable experience records, post-trade reviews, analogues, and governed learning proposals.
+
+## Phase 4-8 World-Class Evidence Tables
+
+### Operational Truth
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `CANONICAL_TRADE_LIFECYCLE` | Broker-neutral lifecycle event stream for Alpaca and Kraken. | Startup reconciliation, broker-history writes, future execution lifecycle hooks. | `/operational-truth`, `/world-class-evidence`, reports, learning. | Permanent append-only. | Unique `idempotency_key`; indexes on proposal, broker/symbol, stage. | Link directly to closed-trade attribution. |
+| `LIFECYCLE_TRANSITION_REJECTIONS` | Rejected unknown or illegal lifecycle transitions. | Operational Truth recorder. | Operational review and Founder exception summaries. | Permanent. | `rejection_id` primary key. | Add severity and manual-resolution status. |
+| `TRADE_EXECUTION_COSTS` | Intended/actual prices, slippage, fees, total costs, basis points, fee status. | Execution/reconciliation helpers. | Reports, Experience Engine. | Permanent. | `cost_id` primary key. | Add broker cost profile versions. |
+| `TRADE_R_MULTIPLES` | True R calculated from initial monetary risk. | Attribution helpers. | Learning, Strategy Lab, reports. | Permanent. | `r_id` primary key. | Link to strategy/regime IDs. |
+| `TRADE_EXCURSIONS` | MAE/MFE with timestamp, granularity, gaps, and confidence. | Monitoring/attribution helpers. | Learning, reports. | Permanent. | `excursion_id` primary key. | Add candle-source relationship. |
+| `BROKER_RECONCILIATION_RUNS` | Startup and polling reconciliation health. | API startup and broker-history write path. | Dashboard, Portfolio, Ask AI. | Permanent or archiveable. | `reconciliation_id` primary key. | Add per-order reconciliation status. |
+
+### Market Intelligence
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `MARKET_DATA_OBSERVATIONS` | Provider-neutral market observations with provenance and quality status. | Market data provider layer. | Market screen, strategy evidence. | Permanent or roll-up archive. | Symbol/timeframe/time index. | Add provider latency and adjustment lineage. |
+| `MARKET_DATA_QUALITY_EVENTS` | Stale/missing/impossible/duplicate data warnings. | Market data validator. | Recommendations, Market screen. | Permanent. | Symbol/issue index. | Add review workflow. |
+| `MULTI_TIMEFRAME_INTELLIGENCE` | Multi-timeframe conclusions with supporting and contradictory evidence. | Market Intelligence Engine. | Recommendations, Founder AI. | Permanent by analysis run. | `intelligence_id` primary key. | Add direct relation to proposal IDs. |
+| `FUNDAMENTAL_EVIDENCE` | Normalized equity fundamental evidence. | Fundamental data provider. | Dossiers and Portfolio. | Permanent by source timestamp. | `evidence_id` primary key. | Add metric lineage and restatement handling. |
+| `MACRO_EVENT_EVIDENCE` | Macro, earnings, crypto, regulatory, and event risk. | Event calendar providers. | Dossiers, Market screen. | Permanent. | `event_id` primary key. | Add event outcome tracking. |
+| `NEWS_CATALYST_EVIDENCE` | Source-aware catalyst evidence with duplicate clustering. | News processor. | Dossiers, Ask AI. | Permanent. | Unique symbol/cluster/timestamp. | Add credibility scoring by source history. |
+| `MARKET_REGIME_EVIDENCE` | Regime 2.0 supporting/contradictory evidence. | Regime Engine. | Dashboard and Market screen. | Permanent by run. | `regime_id` primary key. | Add benchmark regime comparison. |
+
+### Portfolio Intelligence
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `ASSET_METADATA` | Normalized source-aware asset metadata. | Metadata providers/manual seed. | Exposure, recommendations. | Latest by source plus history. | Unique symbol/source. | Add versioned confidence changes. |
+| `PORTFOLIO_EXPOSURE_SNAPSHOTS` | Exposure buckets and plain-English warnings. | Portfolio Intelligence Engine. | Portfolio screen, Risk Engine. | Permanent snapshots. | Broker/created_at index. | Add position-level source rows. |
+| `PORTFOLIO_CORRELATION_WARNINGS` | Sample-aware correlation warnings. | Portfolio Intelligence Engine. | Dossiers, Portfolio screen. | Permanent. | `warning_id` primary key. | Add rolling-window relationship. |
+| `PORTFOLIO_RISK_CONTRIBUTIONS` | Position and marginal risk contribution. | Portfolio/Risk Engine. | Orchestrator, reports. | Permanent by decision. | `contribution_id` primary key. | Add stress scenario link. |
+| `PORTFOLIO_STRESS_TESTS` | Stress scenarios with assumptions and uncertainty. | Portfolio Intelligence Engine. | Portfolio and Founder AI. | Permanent by scenario run. | `stress_id` primary key. | Add scenario library. |
+
+### Experience Engine
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `EXPERIENCE_RECORDS` | Immutable decision, execution, and result context. | Experience Engine. | Learning, analogues, Ask AI. | Permanent append-only. | Unique `immutable_hash`; symbol/strategy/regime index. | Add evidence graph IDs. |
+| `POST_TRADE_REVIEWS` | Closed-trade review and decision/outcome classification. | Experience Engine. | Learning screen and reports. | Permanent. | Symbol/date index. | Add reviewer approval status. |
+| `HISTORICAL_ANALOGUES` | Stored "have we seen this before" searches. | Experience Engine. | Dossiers, Ask AI. | Permanent or archiveable. | `analogue_id` primary key. | Add vector similarity when appropriate. |
+| `LEARNING_PROPOSALS` | Governed, versioned learning proposals. | Experience Engine. | Founder approval process. | Permanent. | `proposal_id` primary key. | Add formal approval and rollout tables. |
 
 ## Core Audit Tables
 

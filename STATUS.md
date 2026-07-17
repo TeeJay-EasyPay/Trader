@@ -2,7 +2,46 @@
 
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17)
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17)
+
+## 2026-07-17 World-Class Trader Transformation Phase 4-8
+
+- Added a detailed implementation plan for the controlled Phase 4-8 programme.
+- Added Operational Truth:
+  - canonical broker-neutral lifecycle;
+  - legal transition checks;
+  - idempotent broker event recording;
+  - Alpaca/Kraken reconciliation health;
+  - execution cost, true R, MAE, and MFE calculation helpers.
+- Added provider-neutral Market Intelligence foundation:
+  - market observation schema;
+  - candle quality validation;
+  - multi-timeframe conclusions;
+  - separated fundamental, macro/event, and news/catalyst evidence tables;
+  - Regime 2.0 supporting/contradictory evidence.
+- Added Portfolio Intelligence:
+  - asset metadata;
+  - exposure snapshots;
+  - concentration warnings;
+  - correlation warnings;
+  - proposed-trade portfolio impact.
+- Added Experience Engine:
+  - immutable experience records;
+  - post-trade reviews;
+  - historical analogues;
+  - governed learning proposals.
+- Render startup now initializes the new schemas additively.
+- Startup and broker-history writes now reconcile Alpaca/Kraken broker rows into the canonical lifecycle.
+- Added `/operational-truth` and `/world-class-evidence`.
+- `/status` now includes `world_class_evidence`.
+- Recommendation auto-trade eligibility now requires both strongest argument for and strongest argument against.
+- Mobile Dashboard now starts with a concise command summary and prioritizes Alpaca/Kraken; future brokers move to a compact Future Connections section.
+- Mobile Portfolio now shows operational truth and portfolio intelligence summaries.
+- Recommendation cards now show decision summary, why trade, why not trade, invalidation, and why waiting may be better before technical evidence.
+- Verification so far:
+  - `py_compile` passed for new backend modules and API.
+  - Focused World-Class Transformation tests passed: 6/6.
+  - Full suite, Expo Doctor, Render deploy verification, and installed-app verification remain release-gate items.
 
 ## 2026-07-17 Institutional Intelligence & Founder Experience Phase 3
 
