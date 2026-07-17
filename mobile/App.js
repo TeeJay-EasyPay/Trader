@@ -316,6 +316,7 @@ export default function App() {
 function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
+  const brokerPanels = status?.brokers || [];
   return (
     <View>
       <Section title="Executive Summary">
@@ -342,6 +343,11 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
         <Metric label="Committee Confidence" value={executive.committee_confidence} />
       </Section>
       <ConnectionReadinessCard readiness={readiness} />
+      <Section title="Broker Panels">
+        {brokerPanels.length ? brokerPanels.map((broker) => (
+          <BrokerPanel key={`${broker.broker}-dashboard`} broker={broker} onCommand={onCommand} onReport={onReport} />
+        )) : <Empty />}
+      </Section>
       <Section title="Founder Actions">
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />
@@ -700,6 +706,24 @@ function TradeHistorySection({ title, trades, onForceExit }) {
         })
       )}
     </Section>
+  );
+}
+
+function TradeHistoryRow({ item, onCommand }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.compactRow}>
+      <TouchableOpacity onPress={() => setOpen((value) => !value)}>
+        <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
+        <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
+      </TouchableOpacity>
+      {open ? (
+        <TradeDetail
+          item={item}
+          onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -1849,12 +1873,24 @@ function formatList(items) {
   if (!items || !items.length) {
     return null;
   }
+  if (typeof items === 'string') {
+    return items;
+  }
+  if (!Array.isArray(items)) {
+    return String(items);
+  }
   return items.map((item) => `- ${item}`).join('\n');
 }
 
 function formatListInline(items) {
   if (!items || !items.length) {
     return null;
+  }
+  if (typeof items === 'string') {
+    return items;
+  }
+  if (!Array.isArray(items)) {
+    return String(items);
   }
   return items.join(', ');
 }
