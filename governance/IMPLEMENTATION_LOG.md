@@ -1,5 +1,113 @@
 # Implementation Log
 
+## 2026-07-18 Sprint 6 - Institutional Production Control Layer
+
+- Reviewed Sprint 6 requirements and current Phase 5, Always-On, Operational Truth, Portfolio Intelligence, Market Intelligence, Experience Engine, API and mobile Dashboard integration points.
+- Added `src/ai_trader/sprint6.py`.
+- Added Sprint 6 schema tables:
+  - `OPERATIONAL_EVENTS`
+  - `DECISION_JOURNAL`
+  - `STRATEGY_MATURITY_REGISTRY`
+  - `STRATEGY_ENTITLEMENT_DECISIONS`
+  - `PRODUCTION_RISK_SENTINEL_DECISIONS`
+  - `KILL_SWITCH_STATE`
+  - `SPRINT6_WORKFLOW_OUTBOX`
+  - `BROKER_EVENT_MAPPINGS`
+  - `INCIDENT_LIFECYCLE`
+  - `FOUNDER_OPERATIONAL_REPORTS`
+- Seeded a conservative default strategy registry entry:
+  - strategy ID: `current_recommendation_process`
+  - stage: `Paper`
+  - permitted modes: `shadow`, `paper`, `manual`
+  - not permitted by default: `micro_live`, `production`
+- Wired mandatory Sprint 6 pre-execution decision packets into:
+  - `approve_and_execute`
+  - `auto_execute_recommendations`
+- The pre-execution packet records:
+  - Portfolio Manager decision
+  - strategy entitlement decision
+  - Production Risk Sentinel decision
+  - strongest argument for
+  - strongest argument against
+  - market data quality label
+  - final eligibility
+- Broker polling now:
+  - records broker polling incidents on failure;
+  - normalizes broker events into `BROKER_EVENT_MAPPINGS`;
+  - passes normalized rows into canonical reconciliation;
+  - queues terminal rows into the closed-loop learning outbox idempotently.
+- Research cycles now record Sprint 6 operational events.
+- Added API endpoints:
+  - `GET /sprint6-status`
+  - `GET /operational-events`
+  - `GET /decision-journal`
+  - `POST /generate-operational-report`
+- Added `sprint6_status` to `/status`.
+- Added the mobile Dashboard `Sprint 6 Production Control` card.
+- Added focused tests in `tests/test_sprint6_institutional_spine.py`.
+- Created Sprint 6 architecture documents:
+  - `architecture/SPRINT_6_IMPLEMENTATION_REPORT.md`
+  - `architecture/INSTITUTIONAL_PRODUCTION_ARCHITECTURE.md`
+  - `architecture/POSTGRES_RUNTIME_MIGRATION_REPORT.md`
+  - `architecture/BROKER_RECONCILIATION_STANDARD.md`
+  - `architecture/ALPACA_RECONCILIATION_CONTRACT.md`
+  - `architecture/KRAKEN_RECONCILIATION_CONTRACT.md`
+  - `architecture/STRATEGY_MATURITY_AND_ENTITLEMENT.md`
+  - `architecture/PRODUCTION_RISK_SENTINEL.md`
+  - `architecture/MARKET_DATA_AND_RESEARCH_FRESHNESS_STANDARD.md`
+  - `architecture/AUTONOMOUS_LEARNING_WORKFLOW.md`
+  - `architecture/RENDER_PRODUCTION_VERIFICATION.md`
+  - `architecture/AUTONOMOUS_QUALIFICATION_REPORT.md`
+  - `architecture/NEXT_STAGE_RECOMMENDATIONS.md`
+  - `architecture/FOUNDER_BRIEFING_SPRINT_6.md`
+- Verification completed so far:
+  - `python -m compileall src` passed.
+  - `python -m unittest tests.test_sprint6_institutional_spine` passed.
+  - `python -m unittest discover -s tests` passed.
+  - `npx expo-doctor` passed.
+- Safety note: Sprint 6 does not increase capital, promote strategies, bypass the Investment Orchestrator, bypass the Risk Engine, weaken Kraken controls, or allow Ask AI Trader to trade.
+
+## 2026-07-18 Phase 5 - Autonomous Production Spine and Closed-Loop Learning Foundation
+
+- Reviewed the current governance, architecture, implementation history, Operational Truth, Experience Engine, Portfolio Intelligence, Market Intelligence, and Always-On Operations implementation before changing code.
+- Added `src/ai_trader/production_spine.py`.
+- Added Phase 5 schema tables:
+  - `PRODUCTION_SPINE_SNAPSHOTS`
+  - `WORKER_SUPERVISION_RUNS`
+  - `CANONICAL_RECONCILIATION_CASES`
+  - `CLOSED_LOOP_LEARNING_RUNS`
+  - `PORTFOLIO_MANAGER_DECISIONS`
+  - `MARKET_DATA_GATEWAY_RUNS`
+  - `STRATEGY_PROMOTION_DECISIONS`
+- Added deterministic functions for:
+  - production database spine readiness;
+  - worker supervision and stale-worker incident creation;
+  - idempotent broker event reconciliation into logical trades;
+  - idempotent closed-loop learning;
+  - Portfolio Manager approve/approve-smaller/wait/reject/manual-review decisions;
+  - Market Data Gateway quality blocking;
+  - strategy promotion and demotion evidence gates.
+- Added API support:
+  - `GET /phase5-status`
+  - `phase5_status` inside `GET /status`
+- Added the mobile Dashboard `Autonomous Production Spine` card.
+- Added focused tests in `tests/test_phase5_production_spine.py`.
+- Created Phase 5 architecture documents:
+  - `architecture/PHASE_5_IMPLEMENTATION_REPORT.md`
+  - `architecture/AUTONOMOUS_PRODUCTION_SPINE.md`
+  - `architecture/CANONICAL_RECONCILIATION_DESIGN.md`
+  - `architecture/CLOSED_LOOP_LEARNING_ARCHITECTURE.md`
+  - `architecture/DATABASE_ARCHITECTURE.md`
+  - `architecture/TEST_RESULTS.md`
+  - `architecture/KNOWN_LIMITATIONS.md`
+  - `architecture/NEXT_PHASE_RECOMMENDATIONS.md`
+  - `architecture/FOUNDER_BRIEFING.md`
+- Verification:
+  - `python -m compileall src` passed.
+  - `python -m unittest tests.test_phase5_production_spine` passed.
+  - `python -m unittest tests.test_always_on_operations` passed.
+- Safety note: this phase does not enable trading, weaken guardrails, change broker permissions, or silently promote strategies. It adds evidence gates and readiness visibility.
+
 ## 2026-07-02
 
 - Reviewed repository contents.
@@ -787,3 +895,122 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Verification:
   - `py_compile` passed for new backend modules and API.
   - Focused World-Class Transformation tests passed: 6/6.
+
+## 2026-07-17 Always-On Operations, Shadow Trading, and Alpaca Recovery
+
+- Reviewed the existing Render blueprint, API startup scheduler, CLI, and operational tables.
+- Confirmed the previous topology had one Render web service and background daemon threads owned by the API process.
+- Added `src/ai_trader/always_on.py` with durable schemas and helpers for:
+  - scheduled job runs;
+  - worker heartbeats;
+  - research funnels;
+  - shadow trades;
+  - operations incidents;
+  - operations health;
+  - scheduler status;
+  - Alpaca inactivity diagnosis.
+- Added package entry point `src/ai_trader/__main__.py` so `python -m ai_trader ...` works.
+- Extended the CLI with:
+  - `run-worker`;
+  - `run-job`;
+  - named jobs for premarket, market open, midday, market close, overnight crypto, daily learning, daily report, broker poll, managed exits, and auto execution.
+- Wired additive always-on schema initialization into `LocalApiService`.
+- Added API endpoints:
+  - `/operations-health`;
+  - `/scheduler-status`;
+  - `/job-runs`;
+  - `/shadow-trades`;
+  - `/shadow-performance`;
+  - `/research-funnel`;
+  - `/alpaca-inactivity-diagnosis`.
+- Added `operations_health` to `/status`.
+- Added Alpaca and Kraken research funnel recording.
+- Added proposal-to-shadow-trade recording for Alpaca and Kraken proposals.
+- Added process commands for explicit API, worker, and cron job topology. Left `render.yaml` on the current single web service until Supabase/Postgres is connected, because SQLite on a persistent disk is not a safe multi-process shared datastore.
+- Updated the mobile Dashboard with a 24-Hour Operations card.
+- Added focused tests in `tests/test_always_on_operations.py`.
+- Added Always-On architecture and Founder briefing documents.
+- Added a governed Supabase Postgres migration plan. SQLite remains the current implementation; Supabase Postgres is the recommended production target for API, worker, and cron shared state.
+- Verification:
+  - Focused Always-On tests passed: 9/9.
+- Not yet proven:
+  - live Render worker heartbeat after deploy;
+  - scheduled cron job execution while app is closed;
+  - hosted Alpaca fresh research path from live provider to order or persisted no-trade reason.
+
+## 2026-07-18 Supabase/Postgres Always-On Evidence Backend
+
+- Implemented the next controlled datastore step after the Always-On sprint.
+- Added settings for:
+  - `AI_TRADER_DATABASE_BACKEND`;
+  - `DATABASE_URL`;
+  - `SUPABASE_DATABASE_URL`.
+- Added `Settings.uses_postgres` and exposed safe database backend diagnostics through `ai-trader config`.
+- Added Postgres schema support in `src/ai_trader/always_on.py` for:
+  - `SCHEDULED_JOB_RUNS`;
+  - `WORKER_HEARTBEATS`;
+  - `RESEARCH_FUNNELS`;
+  - `SHADOW_TRADES`;
+  - `OPERATIONS_INCIDENTS`.
+- Added dual-backend persistence for Always-On job claims, job completion, worker heartbeats, research funnels, shadow trades, shadow outcomes, operations incidents, and list/read helpers.
+- Added `database_backend` details to `/operations-health` so the Founder/CTO can see whether Always-On evidence is using SQLite or Supabase/Postgres.
+- Added `psycopg[binary]` as the Postgres driver dependency.
+- Updated `render.yaml` with `AI_TRADER_DATABASE_BACKEND` and `DATABASE_URL` placeholders while keeping worker/cron disabled until Postgres is proven active.
+- Updated:
+  - `architecture/SUPABASE_POSTGRES_MIGRATION_PLAN.md`;
+  - `architecture/RENDER_SERVICE_TOPOLOGY.md`;
+  - `architecture/DATABASE_REFERENCE.md`;
+  - `README.md`;
+  - `STATUS.md`.
+- Boundary:
+  - This does not migrate the full trading/audit database yet.
+  - Broker runtime, recommendations, canonical lifecycle, trade audit, reports, and learning records remain on the existing SQLite-oriented modules until their schemas are ported deliberately.
+
+## 2026-07-18 Autonomous Operations Completion and Render Activation
+
+- Reviewed the Sprint 6 production-control layer, Always-On worker commands, Render topology, database architecture, and hosted activation gates.
+- Updated `render.yaml` from a web-only production shape to an activation-ready topology:
+  - `ai-trader-api`;
+  - `ai-trader-worker`;
+  - premarket, market-open, midday, and market-close equity cron jobs;
+  - overnight crypto cron job;
+  - daily learning cron job;
+  - daily, weekly, and monthly report cron jobs.
+- Added hosted startup validation in `Settings.production_startup_errors`:
+  - hosted runtime now requires `AI_TRADER_DATABASE_BACKEND=postgres` plus `DATABASE_URL` or `SUPABASE_DATABASE_URL`;
+  - the check also honors `AI_TRADER_PROCESS_ROLE=render`;
+  - this prevents silent hosted SQLite fallback.
+- Added `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS`:
+  - when true, the API does not start duplicate scheduler, broker poll, exit monitor, auto-executor, crypto refresh, or push-dispatch loops;
+  - Render worker/cron services become the intended background owners.
+- Extended `python -m ai_trader run-worker` so every worker cycle processes the Sprint 6 closed-loop learning outbox after broker polling, managed exits, and auto-execution evaluation.
+- Added the learning outbox processor:
+  - idempotent claim/retry handling;
+  - abandoned claim recovery;
+  - manual review for incomplete deterministic evidence;
+  - immutable preservation of the original queued payload;
+  - operational-event evidence for every processor cycle.
+- Extended `python -m ai_trader run-job` to support daily, weekly, and monthly report jobs.
+- Updated `.env.example` and `cloud.env.example` with the production database/process-role contract.
+- Added architecture evidence documents:
+  - `AUTONOMOUS_OPERATIONS_COMPLETION_REPORT.md`;
+  - `POSTGRES_PRODUCTION_MIGRATION_REPORT.md`;
+  - `RENDER_PRODUCTION_TOPOLOGY.md`;
+  - `RENDER_DEPLOYMENT_EVIDENCE.md`;
+  - `RENDER_ENVIRONMENT_MANIFEST.md`;
+  - `AUTONOMOUS_RESEARCH_VERIFICATION.md`;
+  - `BROKER_RECONCILIATION_COMPLETION.md`;
+  - `LEARNING_PROCESSOR_VERIFICATION.md`;
+  - `AUTOMATIC_REPORTING_VERIFICATION.md`;
+  - `PHONE_CLOSED_VERIFICATION.md`;
+  - `HOSTED_RESTART_AND_RECOVERY_TESTS.md`;
+  - `OPEN_RELEASE_GATES.md`;
+  - `FOUNDER_COMPLETION_BRIEFING.md`.
+- Updated `README.md`, `STATUS.md`, `architecture/RENDER_SERVICE_TOPOLOGY.md`, and `architecture/DATABASE_REFERENCE.md`.
+- Verification completed locally:
+  - `python -m py_compile src\ai_trader\config.py src\ai_trader\api.py src\ai_trader\cli.py src\ai_trader\sprint6.py` passed.
+  - `python -m unittest tests.test_always_on_operations tests.test_sprint6_institutional_spine` passed: 23/23.
+- Hosted activation not completed from this environment:
+  - Render deployment ID not available;
+  - Supabase/Postgres live connection not verified;
+  - phone-closed worker/cron proof remains an open release gate.

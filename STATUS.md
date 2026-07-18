@@ -2,7 +2,155 @@
 
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17)
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18), hosted activation pending Render/Supabase verification
+
+## 2026-07-18 Autonomous Operations Completion and Render Activation
+
+- Updated `render.yaml` to define:
+  - one API web service;
+  - one background worker service;
+  - cron jobs for equity research, crypto research, daily learning, and daily/weekly/monthly reports.
+- Added hosted fail-close validation:
+  - hosted runtime refuses startup when `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED=true` and Postgres is not configured;
+  - this prevents API, worker, and cron services from silently writing separate SQLite runtime histories.
+- Added `AI_TRADER_PROCESS_ROLE`, `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS`, and `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED` settings.
+- API background workers can now be disabled in production so Render worker/cron owns autonomous operations.
+- Background worker now processes the Sprint 6 closed-loop learning outbox every cycle.
+- Learning outbox processor:
+  - claims pending/retryable workflows;
+  - recovers abandoned claims after timeout;
+  - preserves original evidence payloads;
+  - sends incomplete evidence to manual review;
+  - records processor outcomes as operational events.
+- Report scheduled jobs now support daily, weekly, and monthly report generation.
+- Updated environment templates for the Render/Supabase production contract.
+- Added the Autonomous Operations completion documentation pack under `architecture/`.
+- Verification:
+  - `python -m py_compile src\ai_trader\config.py src\ai_trader\api.py src\ai_trader\cli.py src\ai_trader\sprint6.py` passed.
+  - `python -m unittest tests.test_always_on_operations tests.test_sprint6_institutional_spine` passed: 23/23.
+- Remaining release gates:
+  - configure `DATABASE_URL` or `SUPABASE_DATABASE_URL` in Render;
+  - deploy the updated Render blueprint;
+  - verify `/operations-health` reports Postgres as active;
+  - prove worker heartbeat and scheduled job rows while the mobile app is closed;
+  - verify Alpaca paper research reaches either submitted paper order or persisted no-trade reason.
+
+## 2026-07-18 Sprint 6 Institutional Production Control Layer
+
+- Added `src/ai_trader/sprint6.py` with:
+  - operational event log;
+  - decision journal;
+  - strategy maturity registry;
+  - strategy entitlement decisions;
+  - Production Risk Sentinel decisions;
+  - kill switch state;
+  - learning workflow outbox;
+  - broker event mappings;
+  - incident lifecycle;
+  - founder operational reports.
+- Wired Sprint 6 pre-execution packets into:
+  - manual approval and execution;
+  - auto-execute recommendations.
+- Broker polling now normalizes broker events into the Sprint 6 mapping table before canonical reconciliation and queues terminal rows for learning workflow processing.
+- Research cycles now record operational events for started, completed, no-action, and blocked-configuration outcomes.
+- Added endpoints:
+  - `GET /sprint6-status`
+  - `GET /operational-events`
+  - `GET /decision-journal`
+  - `POST /generate-operational-report`
+- Added `sprint6_status` to `GET /status`.
+- Added a `Sprint 6 Production Control` card to the mobile Dashboard.
+- Added Sprint 6 architecture documentation and Founder briefing.
+- Verification:
+  - `python -m compileall src` passed.
+  - `python -m unittest tests.test_sprint6_institutional_spine` passed: 9/9.
+  - `python -m unittest discover -s tests` passed: 133/133.
+  - `npx expo-doctor` passed: 17/17.
+- Remaining release gates:
+  - verify Render/Supabase hosted runtime;
+  - prove worker/cron operation with the phone closed;
+  - process closed-loop learning outbox from real terminal Alpaca and Kraken records.
+
+## 2026-07-18 Phase 5 Autonomous Production Spine
+
+- Added `src/ai_trader/production_spine.py` with deterministic foundations for:
+  - production database spine readiness;
+  - worker supervision;
+  - canonical reconciliation cases;
+  - closed-loop learning runs;
+  - Portfolio Manager decisions;
+  - Market Data Gateway validation;
+  - strategy promotion and demotion.
+- Added Phase 5 schema initialization to the API startup path.
+- Added `GET /phase5-status`.
+- Added `phase5_status` to `GET /status`.
+- Added an `Autonomous Production Spine` card to the mobile Dashboard.
+- Added Phase 5 architecture documentation and Founder briefing.
+- Verification:
+  - `python -m compileall src` passed.
+  - `python -m unittest tests.test_phase5_production_spine` passed: 9/9.
+  - `python -m unittest tests.test_always_on_operations` passed: 10/10.
+- Remaining release gates:
+  - complete the full Postgres/Supabase migration for all critical runtime families;
+  - deploy and verify `/phase5-status` from Render;
+  - verify worker and cron evidence while the mobile app is closed;
+  - wire Portfolio Manager and strategy maturity gates into every production approval path.
+
+## 2026-07-18 Supabase/Postgres Always-On Evidence Backend
+
+- Added `AI_TRADER_DATABASE_BACKEND` and `DATABASE_URL`/`SUPABASE_DATABASE_URL` configuration.
+- Added Postgres support for the Always-On operations evidence tables:
+  - `SCHEDULED_JOB_RUNS`
+  - `WORKER_HEARTBEATS`
+  - `RESEARCH_FUNNELS`
+  - `SHADOW_TRADES`
+  - `OPERATIONS_INCIDENTS`
+- Kept SQLite as the default local/test backend.
+- Added `database_backend` visibility to `/operations-health` so Render can prove whether Always-On evidence is using SQLite or Supabase/Postgres.
+- Updated `render.yaml` with database backend placeholders while keeping worker/cron disabled until Postgres is confirmed active.
+- Updated `architecture/SUPABASE_POSTGRES_MIGRATION_PLAN.md`, `architecture/RENDER_SERVICE_TOPOLOGY.md`, and `architecture/DATABASE_REFERENCE.md`.
+- Remaining release gates:
+  - set `AI_TRADER_DATABASE_BACKEND=postgres` and `DATABASE_URL` in Render;
+  - deploy and verify `/operations-health` reports `database_backend.active_backend = postgres`;
+  - enable Render worker/cron only after the shared datastore is confirmed;
+  - migrate broker runtime, recommendations, lifecycle, audit, report, and learning tables in later controlled steps.
+
+## 2026-07-17 Always-On Operations and Alpaca Research Recovery
+
+- Added explicit runtime entry points:
+  - `python -m ai_trader serve-api`
+  - `python -m ai_trader run-worker`
+  - `python -m ai_trader run-job <job-name>`
+- Added durable operations tables:
+  - `SCHEDULED_JOB_RUNS`
+  - `WORKER_HEARTBEATS`
+  - `RESEARCH_FUNNELS`
+  - `SHADOW_TRADES`
+  - `OPERATIONS_INCIDENTS`
+- Added idempotent scheduled job claiming so duplicate workers/jobs cannot silently double-run the same scheduled cycle.
+- Added worker heartbeat recording and stale-worker operations health.
+- Added research funnel recording for Alpaca and Kraken so no-trade outcomes now have primary and secondary reasons.
+- Added shadow trade records from generated proposals. Shadow records remain separate from broker orders and never submit trades.
+- Added endpoints:
+  - `/operations-health`
+  - `/scheduler-status`
+  - `/job-runs`
+  - `/shadow-trades`
+  - `/shadow-performance`
+  - `/research-funnel`
+  - `/alpaca-inactivity-diagnosis`
+- Added a Dashboard 24-Hour Operations card in the mobile app.
+- Added worker/cron process commands and documented the Render target topology. `render.yaml` deliberately keeps only the current web service active until Supabase/Postgres is connected, because SQLite must not be treated as a safe multi-process production datastore.
+- Added Always-On documentation pack under `architecture/`.
+- Added `architecture/SUPABASE_POSTGRES_MIGRATION_PLAN.md` documenting Supabase Postgres as the recommended production datastore target.
+- Verification:
+  - Focused Always-On tests passed: 9/9.
+- Remaining release gates:
+  - migrate production state to Supabase/Postgres or equivalent shared datastore;
+  - enable Render worker/cron services against that datastore;
+  - verify live worker heartbeat;
+  - verify cron job execution while the app is closed;
+  - prove one fresh Alpaca research cycle reaches either a correctly submitted paper order or a persisted no-trade reason.
 
 ## 2026-07-17 World-Class Trader Transformation Phase 4-8
 

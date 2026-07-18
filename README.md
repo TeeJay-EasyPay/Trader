@@ -78,9 +78,141 @@ Start with:
 - [`architecture/RENDER_EXPO_DEPLOYMENT_CONTRACT.md`](architecture/RENDER_EXPO_DEPLOYMENT_CONTRACT.md)
 - [`architecture/WORLD_CLASS_TRADER_IMPLEMENTATION_REPORT.md`](architecture/WORLD_CLASS_TRADER_IMPLEMENTATION_REPORT.md)
 - [`architecture/WORLD_CLASS_TRADER_TESTING_REPORT.md`](architecture/WORLD_CLASS_TRADER_TESTING_REPORT.md)
+
+## Always-On Operations, Shadow Trading, and Alpaca Recovery
+
+The always-on operations sprint separates the Founder mobile app from backend operational responsibility. The app is now an interface only; background work is represented by explicit API, worker, and scheduled-job entry points:
+
+- `python -m ai_trader serve-api`
+- `python -m ai_trader run-worker`
+- `python -m ai_trader run-job <job-name>`
+
+## Phase 5 Autonomous Production Spine
+
+Phase 5 adds the first production-spine foundation for closed-loop autonomous operation. It does not loosen trading controls. It adds evidence and decision gates for:
+
+- production database spine readiness;
+- worker supervision and incident creation;
+- canonical reconciliation cases;
+- closed-loop learning idempotency;
+- Portfolio Manager authority;
+- Market Data Gateway quality blocking;
+- strategy promotion and demotion gates.
+
+New status endpoint:
+
+- `GET /phase5-status`
+
+`GET /status` also includes `phase5_status`, and the mobile Dashboard displays an `Autonomous Production Spine` card.
+
+Start with:
+
+- [`architecture/PHASE_5_IMPLEMENTATION_REPORT.md`](architecture/PHASE_5_IMPLEMENTATION_REPORT.md)
+- [`architecture/AUTONOMOUS_PRODUCTION_SPINE.md`](architecture/AUTONOMOUS_PRODUCTION_SPINE.md)
+- [`architecture/CANONICAL_RECONCILIATION_DESIGN.md`](architecture/CANONICAL_RECONCILIATION_DESIGN.md)
+- [`architecture/CLOSED_LOOP_LEARNING_ARCHITECTURE.md`](architecture/CLOSED_LOOP_LEARNING_ARCHITECTURE.md)
+- [`architecture/DATABASE_ARCHITECTURE.md`](architecture/DATABASE_ARCHITECTURE.md)
+- [`architecture/FOUNDER_BRIEFING.md`](architecture/FOUNDER_BRIEFING.md)
+
+## Sprint 6 Institutional Production Control Layer
+
+Sprint 6 adds the first enforced production-control layer around trade approval. It does not loosen guardrails or promote strategies to higher capital. Before a manual or autonomous trade can reach the Investment Orchestrator, AI Trader now records a Sprint 6 decision packet covering:
+
+- Portfolio Manager approval or rejection;
+- strategy maturity and execution entitlement;
+- Production Risk Sentinel approval or rejection;
+- strongest argument for the trade;
+- strongest argument against the trade;
+- market-data quality statement;
+- final pre-execution eligibility.
+
+New endpoints:
+
+- `GET /sprint6-status`
+- `GET /operational-events`
+- `GET /decision-journal`
+- `POST /generate-operational-report`
+
+`GET /status` also includes `sprint6_status`, and the mobile Dashboard displays a `Sprint 6 Production Control` card.
+
+Start with:
+
+- [`architecture/SPRINT_6_IMPLEMENTATION_REPORT.md`](architecture/SPRINT_6_IMPLEMENTATION_REPORT.md)
+- [`architecture/INSTITUTIONAL_PRODUCTION_ARCHITECTURE.md`](architecture/INSTITUTIONAL_PRODUCTION_ARCHITECTURE.md)
+- [`architecture/POSTGRES_RUNTIME_MIGRATION_REPORT.md`](architecture/POSTGRES_RUNTIME_MIGRATION_REPORT.md)
+- [`architecture/BROKER_RECONCILIATION_STANDARD.md`](architecture/BROKER_RECONCILIATION_STANDARD.md)
+- [`architecture/STRATEGY_MATURITY_AND_ENTITLEMENT.md`](architecture/STRATEGY_MATURITY_AND_ENTITLEMENT.md)
+- [`architecture/PRODUCTION_RISK_SENTINEL.md`](architecture/PRODUCTION_RISK_SENTINEL.md)
+- [`architecture/AUTONOMOUS_QUALIFICATION_REPORT.md`](architecture/AUTONOMOUS_QUALIFICATION_REPORT.md)
+- [`architecture/FOUNDER_BRIEFING_SPRINT_6.md`](architecture/FOUNDER_BRIEFING_SPRINT_6.md)
+
+Important: Sprint 6 local tests prove the control layer and evidence records. They do not by themselves prove Render/Supabase hosted operation, phone-closed worker uptime, or increased-capital readiness.
+
+New operations evidence is exposed through:
+
+- `/operations-health`
+- `/scheduler-status`
+- `/job-runs`
+- `/shadow-trades`
+- `/shadow-performance`
+- `/research-funnel`
+- `/alpaca-inactivity-diagnosis`
+
+Start with:
+
+- [`architecture/ALWAYS_ON_RUNTIME_FORENSIC_AUDIT.md`](architecture/ALWAYS_ON_RUNTIME_FORENSIC_AUDIT.md)
+- [`architecture/ALWAYS_ON_OPERATIONS_ARCHITECTURE.md`](architecture/ALWAYS_ON_OPERATIONS_ARCHITECTURE.md)
+- [`architecture/RENDER_SERVICE_TOPOLOGY.md`](architecture/RENDER_SERVICE_TOPOLOGY.md)
+- [`architecture/SHADOW_TRADING_STANDARD.md`](architecture/SHADOW_TRADING_STANDARD.md)
+- [`architecture/ALPACA_INACTIVITY_ROOT_CAUSE_REPORT.md`](architecture/ALPACA_INACTIVITY_ROOT_CAUSE_REPORT.md)
+- [`architecture/ALWAYS_ON_FOUNDER_BRIEFING.md`](architecture/ALWAYS_ON_FOUNDER_BRIEFING.md)
+- [`architecture/SUPABASE_POSTGRES_MIGRATION_PLAN.md`](architecture/SUPABASE_POSTGRES_MIGRATION_PLAN.md)
 - [`architecture/WORLD_CLASS_TRADER_FOUNDER_BRIEFING.md`](architecture/WORLD_CLASS_TRADER_FOUNDER_BRIEFING.md)
 
 The core principle is unchanged: AI Trader should optimise for better decisions, not more trades. A recommendation is not actionable unless it can state the strongest argument for, strongest argument against, invalidation, and why doing nothing may be better.
+
+## Supabase/Postgres Production State
+
+AI Trader now supports a controlled first step toward Supabase/Postgres production storage. The Always-On operations evidence tables can use Postgres when the backend is configured with:
+
+```text
+AI_TRADER_DATABASE_BACKEND=postgres
+DATABASE_URL=<Supabase Postgres connection string>
+```
+
+This currently applies to scheduled job runs, worker heartbeats, research funnels, shadow trades, and operations incidents. SQLite remains the default for local development and the wider legacy audit/trading schema. Do not enable separate Render worker or cron services until `/operations-health` reports `database_backend.active_backend = postgres` and `database_durability = supabase_postgres`.
+
+## Autonomous Operations Completion And Render Activation
+
+The latest operations sprint prepares the hosted topology for true phone-independent operation:
+
+- Render API service: Founder HTTP/API surface only.
+- Render worker service: broker polling, managed exits, auto-execution evaluation, and learning outbox processing.
+- Render cron jobs: equity research, crypto research, daily learning, and daily/weekly/monthly reports.
+- Hosted fail-close: production refuses silent SQLite when `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED=true`.
+- API duplicate-loop prevention: set `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true` when worker/cron services own background work.
+
+Production activation requires a shared Supabase/Postgres connection string:
+
+```text
+AI_TRADER_DATABASE_BACKEND=postgres
+DATABASE_URL=<Supabase Postgres connection string>
+AI_TRADER_PROCESS_ROLE=render
+AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true
+AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED=true
+RESEARCH_SCHEDULER_ENABLED=false
+```
+
+Start with:
+
+- [`architecture/AUTONOMOUS_OPERATIONS_COMPLETION_REPORT.md`](architecture/AUTONOMOUS_OPERATIONS_COMPLETION_REPORT.md)
+- [`architecture/POSTGRES_PRODUCTION_MIGRATION_REPORT.md`](architecture/POSTGRES_PRODUCTION_MIGRATION_REPORT.md)
+- [`architecture/RENDER_PRODUCTION_TOPOLOGY.md`](architecture/RENDER_PRODUCTION_TOPOLOGY.md)
+- [`architecture/RENDER_DEPLOYMENT_EVIDENCE.md`](architecture/RENDER_DEPLOYMENT_EVIDENCE.md)
+- [`architecture/OPEN_RELEASE_GATES.md`](architecture/OPEN_RELEASE_GATES.md)
+- [`architecture/FOUNDER_COMPLETION_BRIEFING.md`](architecture/FOUNDER_COMPLETION_BRIEFING.md)
+
+Important boundary: the repository is activation-ready, but hosted autonomy is not production-proven until Render/Supabase deployment evidence is captured.
 
 ## Developer Setup
 

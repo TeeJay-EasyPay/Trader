@@ -76,8 +76,8 @@
 3. Event sourcing.
    Convert critical state changes into append-only event stream with projections.
 
-4. External analytics store.
-   Consider Supabase or another managed database if the platform outgrows local SQLite.
+4. Complete Supabase/Postgres migration.
+   Always-On operations evidence is now Postgres-capable. Next migrate broker runtime, recommendations, canonical lifecycle, trade audit, reports, and learning records before enabling full Render worker/cron production topology.
 
 5. Multi-device identity and auth.
    Replace shared token model with user/device authentication if the platform grows beyond personal use.

@@ -6,7 +6,8 @@
 flowchart TD
     Mobile[Expo Mobile App] -->|HTTPS JSON + Bearer token| API[Render Python API]
     Browser[Browser Report Views] -->|GET /reports/{id}| API
-    API --> SQLite[(SQLite on Render disk)]
+    API --> SQLite[(SQLite local / legacy store)]
+    API --> Postgres[(Supabase Postgres for Always-On evidence when configured)]
     API --> Logs[Rotating logs]
     API --> OpenAI[OpenAI API]
     API --> Alpaca[Alpaca Paper API]
@@ -49,15 +50,54 @@ Render hosts the Python API as a Docker web service. `render.yaml` defines:
 - Persistent disk: `ai-trader-data` mounted at `/data`.
 - Production environment variables.
 
-Render is responsible for running the backend continuously. The 24x7 research and broker monitoring behavior happens in the hosted API process, not inside the mobile app.
+Render is responsible for running the backend continuously. The mobile app is a Founder interface only; it must not be responsible for keeping research, reconciliation, shadow trading, or learning alive.
+
+The code now supports explicit process entry points:
+
+- `python -m ai_trader serve-api`
+- `python -m ai_trader run-worker`
+- `python -m ai_trader run-job <job-name>`
+
+The current `render.yaml` keeps only the web service active until a shared production datastore is confirmed. Separate worker and cron services should only be enabled after `/operations-health` proves that Always-On evidence is using Supabase/Postgres.
+
+## Phase 5 Autonomous Production Spine
+
+Phase 5 adds `src/ai_trader/production_spine.py` as an additive production-readiness and closed-loop-learning layer. It does not replace the Investment Orchestrator, Risk Engine, Operational Truth, Experience Engine, or broker adapters. Instead, it coordinates their evidence into a clearer production spine:
+
+- database spine readiness;
+- worker supervision;
+- canonical reconciliation cases;
+- closed-loop learning completion;
+- Portfolio Manager decisions;
+- Market Data Gateway quality gates;
+- strategy promotion and demotion gates.
+
+The API exposes this through `GET /phase5-status` and includes the same evidence in `/status.phase5_status`. The mobile Dashboard shows a compact `Autonomous Production Spine` card.
+
+Current readiness is expected to remain partial until all critical runtime families move to a shared production datastore.
 
 ### Supabase
 
-Supabase is not currently an active runtime subsystem in AI Trader. The current implementation uses SQLite as the primary persistent store. Supabase can be considered a future option for identity, synchronization, or shared analytics, but it should not be described as part of the live AI Trader data path until a real Supabase module, schema, and deployment are added.
+Supabase/Postgres is now partially supported as the production target for Always-On operations evidence. When Render sets:
+
+```text
+AI_TRADER_DATABASE_BACKEND=postgres
+DATABASE_URL=<Supabase Postgres connection string>
+```
+
+`src/ai_trader/always_on.py` stores these tables in Postgres:
+
+- `SCHEDULED_JOB_RUNS`
+- `WORKER_HEARTBEATS`
+- `RESEARCH_FUNNELS`
+- `SHADOW_TRADES`
+- `OPERATIONS_INCIDENTS`
+
+This is not yet a full application datastore migration. Broker runtime, recommendations, trade audit, canonical lifecycle, reports, and learning tables remain SQLite-oriented until each schema family is ported deliberately.
 
 ### SQLite
 
-SQLite is the source of operational truth. It stores:
+SQLite remains the default local/test store and the broad legacy application store. It stores:
 
 - Trade audit events.
 - Broker runtime state.

@@ -316,6 +316,9 @@ export default function App() {
 function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
   const evidence = status?.world_class_evidence || {};
+  const operations = status?.operations_health || {};
+  const phase5 = status?.phase5_status || {};
+  const sprint6 = status?.sprint6_status || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
   const brokerPanels = connectedFounderBrokers(status?.brokers || []);
   const futureConnections = evidence.future_connections || futureBrokerPanels(status?.brokers || []);
@@ -337,6 +340,39 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
         <TextBlock label="What changed overnight" value={formatList(executive.good_morning)} />
         <TextBlock label="What I recommend" value={executive.what_to_do} />
         <TextBlock label="What to worry about" value={executive.what_to_worry_about} />
+      </Section>
+      <Section title="24-Hour Operations">
+        <StatusPill label={operations.plain_english || explainMissing('operations health', 'no background worker heartbeat or scheduled job evidence has been returned yet')} tone={operationsTone(operations)} />
+        <Metric label="API Health" value={operations.api_health || explainMissing('API health', 'the status endpoint did not include operations health yet')} />
+        <Metric label="Worker Health" value={operations.worker_health || explainMissing('worker health', 'no durable worker heartbeat has been recorded yet')} />
+        <Metric label="Database Durability" value={operations.database_durability || explainMissing('database durability', 'database path has not been checked by the operations module')} />
+        <Metric label="Last Equity Research" value={formatDateTime(operations.last_equity_research?.created_at)} />
+        <Metric label="Last Crypto Research" value={formatDateTime(operations.last_crypto_research?.created_at)} />
+        <Metric label="Last Broker Poll" value={latestJobTime(operations.last_job_runs, 'broker-poll')} />
+        <Metric label="Last Auto-Execution Check" value={latestJobTime(operations.last_job_runs, 'auto-execution')} />
+        <Metric label="Assets Reviewed Overnight" value={operations.last_equity_research?.symbols_examined || operations.last_crypto_research?.symbols_examined} />
+        <Metric label="Shadow Decisions Overnight" value={sumRecentJobs(operations.last_job_runs, 'shadow_decisions_created')} />
+        <Metric label="Alpaca Paper Orders" value={sumRecentJobs(operations.last_job_runs, 'paper_orders_submitted')} />
+        <Metric label="Kraken Orders" value={connectedFounderBrokers(status?.brokers || []).find((item) => item.broker === 'kraken')?.trades_today} />
+        <TextBlock label="Incidents" value={operationsIncidentText(operations.incidents)} />
+      </Section>
+      <Section title="Autonomous Production Spine">
+        <StatusPill label={phase5.plain_english || explainMissing('Phase 5 status', 'the hosted API has not returned production spine evidence yet')} tone={phase5Tone(phase5)} />
+        <Metric label="Overall" value={phase5.overall || explainMissing('overall Phase 5 readiness', 'production spine status is not available yet')} />
+        <Metric label="Database Spine" value={phase5.database_spine?.status || explainMissing('database spine', 'critical runtime database migration status is not available yet')} />
+        <Metric label="Shared Runtime Truth" value={phase5.database_spine?.plain_english} />
+        <Metric label="Worker Supervision" value={phase5.worker_supervision?.status || explainMissing('worker supervision', 'worker supervision has not run yet')} />
+        <Metric label="Worker Health Score" value={phase5.worker_supervision?.health_score} />
+        <TextBlock label="Still To Migrate" value={formatList(phase5.database_spine?.unmigrated_families)} />
+      </Section>
+      <Section title="Sprint 6 Production Control">
+        <StatusPill label={sprint6.plain_english || explainMissing('Sprint 6 status', 'the hosted API has not returned Sprint 6 control evidence yet')} tone={sprint6Tone(sprint6)} />
+        <Metric label="Overall" value={sprint6.overall || explainMissing('Sprint 6 readiness', 'pre-execution control status is not available yet')} />
+        <Metric label="Database Truth" value={sprint6.shared_runtime_truth} />
+        <Metric label="Kill Switch" value={sprint6.kill_switch?.active ? `Active - ${sprint6.kill_switch?.reason || 'manual resume required'}` : sprint6.kill_switch?.state || 'Not active'} />
+        <TextBlock label="Decision Journal" value={formatDecisionJournalCounts(sprint6.decision_journal_counts)} />
+        <TextBlock label="Latest Operational Events" value={formatOperationalEvents(sprint6.latest_operational_events)} />
+        <TextBlock label="Open Incidents" value={formatSprint6Incidents(sprint6.open_incidents)} />
       </Section>
       <Section title="CEO Dashboard">
         <Metric label="Overall Portfolio Health" value={executive.portfolio_health} />
@@ -2397,6 +2433,66 @@ function summaryTone(value) {
   if (text.includes('review')) return 'warn';
   if (text.includes('issue') || text.includes('unsuitable')) return 'danger';
   return 'neutral';
+}
+
+function operationsTone(operations) {
+  const text = String(operations?.overall || operations?.plain_english || '').toLowerCase();
+  if (text.includes('healthy') || text.includes('persisted research')) return 'good';
+  if (text.includes('attention') || text.includes('incident') || text.includes('stale')) return 'danger';
+  return 'warn';
+}
+
+function phase5Tone(phase5) {
+  const text = String(`${phase5?.overall || ''} ${phase5?.database_spine?.status || ''} ${phase5?.worker_supervision?.status || ''}`).toLowerCase();
+  if (text.includes('production_ready') && text.includes('healthy')) return 'good';
+  if (text.includes('incident') || text.includes('attention')) return 'danger';
+  return 'warn';
+}
+
+function sprint6Tone(sprint6) {
+  const text = String(`${sprint6?.overall || ''} ${sprint6?.shared_runtime_truth || ''}`).toLowerCase();
+  if (text.includes('ready_for_controlled_operation')) return 'good';
+  if (text.includes('attention') || text.includes('sqlite')) return 'warn';
+  if (text.includes('kill') || text.includes('incident')) return 'danger';
+  return 'neutral';
+}
+
+function formatDecisionJournalCounts(counts) {
+  if (!counts || !Object.keys(counts).length) {
+    return 'No Sprint 6 pre-execution decision packets have been recorded yet.';
+  }
+  return Object.entries(counts).map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+function formatOperationalEvents(items) {
+  if (!items || !items.length) {
+    return 'No Sprint 6 operational events have been recorded yet.';
+  }
+  return items.slice(0, 5).map((item) => `${formatDateTime(item.created_at)} - ${item.component}: ${item.summary}`).join('\n');
+}
+
+function formatSprint6Incidents(items) {
+  if (!items || !items.length) {
+    return 'No open Sprint 6 incidents.';
+  }
+  return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.explanation} Action: ${item.recommended_action}`).join('\n');
+}
+
+function latestJobTime(jobs, jobName) {
+  const row = (jobs || []).find((item) => item.job_name === jobName);
+  return row ? formatDateTime(row.completed_at || row.started_at || row.scheduled_for) : explainMissing(jobName, 'no durable job-run record has been returned yet');
+}
+
+function sumRecentJobs(jobs, key) {
+  const total = (jobs || []).reduce((sum, item) => sum + Number(item?.[key] || 0), 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+function operationsIncidentText(items) {
+  if (!items || !items.length) {
+    return 'No open operations incidents recorded.';
+  }
+  return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.title || item.message}`).join('\n');
 }
 
 function recommendationStatus(item) {

@@ -13,7 +13,8 @@ The platform is between prototype and early operational system.
 Implemented:
 
 - Hosted Python API on Render.
-- Persistent SQLite state and audit database.
+- Persistent SQLite state and audit database for local/default operation.
+- Supabase/Postgres-capable Always-On evidence tables for job runs, worker heartbeats, research funnels, shadow trades, and operations incidents.
 - Expo mobile app.
 - Alpaca paper account integration.
 - Kraken live micro-trading integration with explicit safety controls.
@@ -23,12 +24,13 @@ Implemented:
 - Trade History screen.
 - Reports and report browser endpoints.
 - Runtime scheduler workers for research, broker polling, managed exits, auto execution, crypto refresh, and push dispatch.
+- Explicit API, worker, and scheduled-job CLI entry points for Render process separation.
 
 Not fully mature:
 
 - Broker trade attribution is incomplete for all cases.
 - Raw broker fill data is still exposed in places where canonical trade lifecycle data should be shown.
-- Supabase is not currently part of the AI Trader runtime.
+- Supabase/Postgres is only partially integrated. Always-On evidence can use it, but the broader broker runtime, audit, lifecycle, reports, recommendations, and learning schemas still need controlled migration.
 - Coinbase, Binance, Interactive Brokers, and Saxo are placeholders or future adapters.
 - Push notifications exist server-side but need full mobile notification registration and delivery hardening.
 - Operational reporting is improving but still depends on quality of broker sync and attribution records.
@@ -64,6 +66,7 @@ Backend:
 - CLI entrypoint: `src/ai_trader/cli.py`.
 - Configuration: `src/ai_trader/config.py`.
 - Deployment: `Dockerfile` and `render.yaml`.
+- Always-On evidence backend: `src/ai_trader/always_on.py`.
 
 Mobile:
 

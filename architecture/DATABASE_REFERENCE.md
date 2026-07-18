@@ -1,6 +1,10 @@
 # Database Reference
 
-AI Trader uses SQLite as the primary persistent store. The default local path is `data/audit.sqlite3`; hosted deployments normally set `AI_TRADER_DB_PATH` to a file on Render persistent disk.
+AI Trader uses SQLite as the default local/test persistent store. The default local path is `data/audit.sqlite3`; hosted deployments may still set `AI_TRADER_DB_PATH` to a file on Render persistent disk during the transition.
+
+The Always-On operations evidence tables now also support Supabase/Postgres. When `AI_TRADER_DATABASE_BACKEND=postgres` and `DATABASE_URL` or `SUPABASE_DATABASE_URL` is configured, `always_on.py` stores scheduled jobs, worker heartbeats, research funnels, shadow trades, and operations incidents in Postgres instead of SQLite. This is the first controlled step toward a shared production datastore for the API, worker, and scheduled jobs.
+
+The rest of the application remains SQLite-oriented until each schema family is ported deliberately. Do not assume broker runtime, trade audit, lifecycle, reports, recommendations, or learning tables have already been migrated to Postgres.
 
 The schema is modular. Each subsystem initializes its own tables:
 
@@ -16,6 +20,40 @@ The schema is modular. Each subsystem initializes its own tables:
 - `market_intelligence_platform.py` initializes provider-neutral market observation and source-aware evidence tables.
 - `portfolio_intelligence.py` initializes asset metadata, exposure, correlation, risk contribution, and stress-test tables.
 - `experience_engine.py` initializes immutable experience records, post-trade reviews, analogues, and governed learning proposals.
+- `always_on.py` initializes job runs, worker heartbeats, research funnels, shadow trades, and operations incidents.
+- `production_spine.py` initializes Phase 5 production-spine readiness, worker supervision, reconciliation case, closed-loop learning, Portfolio Manager, Market Data Gateway, and strategy promotion tables.
+
+## Database Backend Selection
+
+Backend selection is controlled by environment:
+
+```text
+AI_TRADER_DATABASE_BACKEND=sqlite
+AI_TRADER_DB_PATH=data/audit.sqlite3
+```
+
+or:
+
+```text
+AI_TRADER_DATABASE_BACKEND=postgres
+DATABASE_URL=<Supabase Postgres connection string>
+```
+
+Only the Always-On operations tables currently observe the Postgres backend switch. Local tests continue to use SQLite.
+
+Hosted production now fails closed when `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED=true` and Postgres is not configured. This is intentional: API, worker, and cron services must not create separate SQLite runtime histories in separate containers.
+
+## Phase 5 Production Spine Tables
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `PRODUCTION_SPINE_SNAPSHOTS` | Records which critical runtime families are migrated into the shared production database spine. | `production_database_spine_status`. | `/phase5-status`, Dashboard. | Permanent snapshots. | `snapshot_id` primary key. | Replace family-level status with table-level backend mapping after full migration. |
+| `WORKER_SUPERVISION_RUNS` | Worker health score, stale workers, duplicate ownership, late jobs, backlog, and incident count. | `supervise_workers`. | `/phase5-status`, Dashboard, operations review. | Permanent or roll-up archive. | `supervision_id` primary key. | Add utilization and duration histograms. |
+| `CANONICAL_RECONCILIATION_CASES` | One reconciliation case per broker/logical trade ID with confidence and manual-review state. | `reconcile_logical_trade`. | Operational Truth, learning, reports. | Permanent. | Unique `(broker, logical_trade_id)`. | Add child table for event-to-lifecycle matching. |
+| `CLOSED_LOOP_LEARNING_RUNS` | Idempotent record that a terminal logical trade completed the learning chain. | `run_closed_loop_learning`. | Learning screen, reports, audit. | Permanent. | Unique `logical_trade_id`. | Trigger automatically from terminal lifecycle events. |
+| `PORTFOLIO_MANAGER_DECISIONS` | Mandatory portfolio authority decision before execution readiness. | `portfolio_manager_decision`. | Orchestrator, recommendations, audit. | Permanent. | Symbol/time index recommended. | Add formal override and Founder approval workflow. |
+| `MARKET_DATA_GATEWAY_RUNS` | Provider, symbol, timeframe, quality score, data issues, and provenance. | `market_data_gateway_validate`. | Strategy qualification, Market screen. | Permanent or roll-up archive. | Symbol/time index. | Add provider failover run groups. |
+| `STRATEGY_PROMOTION_DECISIONS` | Strategy maturity promotion, hold, or demotion evidence. | `strategy_promotion_decision`. | Strategy Lab, Learning screen, governance. | Permanent. | `promotion_id` primary key. | Add approval workflow for production changes. |
 
 ## Phase 4-8 World-Class Evidence Tables
 
@@ -83,6 +121,16 @@ The schema is modular. Each subsystem initializes its own tables:
 | `PORTFOLIO_SNAPSHOTS` | Broker portfolio snapshots: cash, value, buying power, P&L, positions count. | Broker polling and status refresh. | Command screen, reports, risk checks. | Permanent. | `snapshot_id` primary key. | Add indexes on broker/exchange/created_at. |
 | `RESEARCH_RUNS` | Research cycle record: status, markets reviewed, recommendations, errors, next run. | Scheduler and manual analysis. | Intelligence screen, reports, Ask AI. | Permanent. | `research_run_id` primary key. | Add run stage details and worker heartbeat relation. |
 | `CRYPTO_ASSET_MASTER` | Operational crypto universe seed table populated from public rankings. | `seed_crypto_universe`. | Crypto analysis. | Historical with active flag. | `asset_id` primary key. | Add unique symbol/category constraint and provider metadata. |
+
+## Always-On Operations Tables
+
+| Table | Purpose | Producer | Consumer | Retention | Indexes / Keys | Future Expansion |
+|---|---|---|---|---|---|---|
+| `SCHEDULED_JOB_RUNS` | Durable record of every background or cron job attempt, including no-action and failure outcomes. | `python -m ai_trader run-job`, `python -m ai_trader run-worker`. | `/scheduler-status`, `/job-runs`, Dashboard 24-Hour Operations, Alpaca inactivity diagnosis. | Permanent or archiveable after roll-up. | Unique `idempotency_key`; index on job/time. | Add PostgreSQL advisory locks during datastore migration. |
+| `WORKER_HEARTBEATS` | Latest heartbeat and current job for each background worker. | `run-worker` and scheduled job entry points. | `/operations-health`, Dashboard 24-Hour Operations, watchdogs. | Latest row per worker plus incident history. | `worker_id` primary key. | Add heartbeat history table if long-term uptime charts are required. |
+| `RESEARCH_FUNNELS` | Research-to-decision funnel explaining how many assets moved through data, idea, strategy, approval, submission, rejection, and fill stages. | Alpaca and Kraken analysis flows. | `/research-funnel`, `/alpaca-inactivity-diagnosis`, Learning screen. | Permanent. | Broker/time index. | Add symbol-level child rows for every rejected asset. |
+| `SHADOW_TRADES` | Always-on simulated decisions that never submit broker orders. | Proposal generation and future shadow outcome monitor. | `/shadow-trades`, `/shadow-performance`, Learning screen. | Permanent. | Unique `idempotency_key`; broker/status index. | Add separate observation ticks for MAE/MFE reconstruction. |
+| `OPERATIONS_INCIDENTS` | Founder-visible operational alerts such as stale worker, failed job, missing durable database, or broker poll failure. | Worker/job exception handlers and watchdogs. | `/operations-health`, Dashboard 24-Hour Operations. | Permanent until reviewed/archived. | `incident_id` primary key. | Add acknowledgement and resolution workflow. |
 
 ## Foundation And Governance Tables
 

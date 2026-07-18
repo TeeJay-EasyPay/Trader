@@ -50,6 +50,8 @@ class Settings:
     output_dir: Path
     trading_log_path: Path
     guardrails: GuardrailConfig
+    database_backend: str = "sqlite"
+    database_url: str | None = None
     render_api_key: str | None = None
     render_service_id: str | None = None
     auto_trade: AutoTradeConfig = field(default_factory=AutoTradeConfig)
@@ -57,10 +59,35 @@ class Settings:
     research_scheduler_interval_minutes: int = 60
     research_scheduler_limit: int = 30
     auto_execution_interval_seconds: int = 60
+    process_role: str = "local"
+    disable_api_background_workers: bool = False
+    require_postgres_in_hosted: bool = True
 
     @property
     def has_alpaca_credentials(self) -> bool:
         return bool(self.alpaca_api_key and self.alpaca_secret_key)
+
+    @property
+    def uses_postgres(self) -> bool:
+        return self.database_backend in {"postgres", "postgresql", "supabase"} and bool(self.database_url)
+
+    @property
+    def is_hosted_runtime(self) -> bool:
+        return self.process_role in {"render", "api", "worker", "scheduled-job"} or bool(
+            os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_INSTANCE_ID")
+        )
+
+    def production_startup_errors(self, *, host: str | None = None) -> list[str]:
+        hosted_host = bool(host and host not in {"127.0.0.1", "localhost", "::1"})
+        if not (self.require_postgres_in_hosted and (self.is_hosted_runtime or hosted_host)):
+            return []
+        errors: list[str] = []
+        if not self.uses_postgres:
+            errors.append(
+                "Hosted production requires AI_TRADER_DATABASE_BACKEND=postgres "
+                "and DATABASE_URL or SUPABASE_DATABASE_URL. Refusing to silently use SQLite."
+            )
+        return errors
 
 
 def load_settings() -> Settings:
@@ -73,6 +100,11 @@ def load_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         db_path=Path(os.getenv("AI_TRADER_DB_PATH", "data/audit.sqlite3")),
+        database_backend=os.getenv(
+            "AI_TRADER_DATABASE_BACKEND",
+            "postgres" if os.getenv("DATABASE_URL") else "sqlite",
+        ).strip().lower(),
+        database_url=os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL"),
         output_dir=Path(os.getenv("AI_TRADER_OUTPUT_DIR", "data")),
         trading_log_path=Path(os.getenv("AI_TRADER_TRADING_LOG_PATH", "governance/TRADING_LOG.md")),
         render_api_key=os.getenv("RENDER_API_KEY") or os.getenv("RENDER_API_TOKEN"),
@@ -107,4 +139,7 @@ def load_settings() -> Settings:
         research_scheduler_interval_minutes=_int_env("RESEARCH_SCHEDULER_INTERVAL_MINUTES", 60),
         research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
+        process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),
+        disable_api_background_workers=_bool_env("AI_TRADER_DISABLE_API_BACKGROUND_WORKERS", False),
+        require_postgres_in_hosted=_bool_env("AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED", True),
     )

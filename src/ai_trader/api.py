@@ -23,6 +23,18 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .agent import AITradingAgent, propose_crypto_trades
+from .always_on import (
+    alpaca_inactivity_diagnosis,
+    initialize_always_on_schema,
+    list_job_runs,
+    list_research_funnels,
+    list_shadow_trades,
+    operations_health,
+    record_research_funnel,
+    record_shadow_trade,
+    scheduler_status,
+    shadow_performance,
+)
 from .ai import OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
@@ -65,6 +77,19 @@ from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_rese
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema
+from .production_spine import initialize_production_spine_schema, phase5_status
+from .sprint6 import (
+    enqueue_learning_workflow,
+    execution_mode_for_broker,
+    generate_founder_operational_report,
+    initialize_sprint6_schema,
+    normalize_broker_events,
+    pre_execution_decision_packet,
+    record_operational_event,
+    seed_default_strategy_registry,
+    sprint6_status,
+    upsert_incident,
+)
 from .scheduler import IntervalWorker, ResearchScheduler
 from .trading_intelligence import calculate_performance_metrics, initialize_trading_intelligence_schema, latest_intelligence_packet, update_calibration_from_attribution
 
@@ -163,6 +188,10 @@ class LocalApiService:
         initialize_market_intelligence_schema(settings.db_path)
         initialize_portfolio_intelligence_schema(settings.db_path)
         initialize_experience_engine_schema(settings.db_path)
+        initialize_always_on_schema(settings.db_path)
+        initialize_production_spine_schema(settings.db_path)
+        initialize_sprint6_schema(settings.db_path)
+        seed_default_strategy_registry(settings.db_path)
         self._initialize_report_schema()
         self._apply_env_broker_auto_defaults()
         self._initialize_control()
@@ -273,9 +302,28 @@ class LocalApiService:
 
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
+        record_operational_event(
+            self.settings.db_path,
+            component="research",
+            event_type="research_started",
+            broker="kraken",
+            summary="Kraken crypto research cycle started.",
+            details={"symbols": symbols, "limit": limit},
+        )
         adapter = self.orchestrator.adapters.get("kraken")
         if adapter is None or not getattr(adapter, "configured", False):
-            return {"status": "not_available", "message": "Kraken credentials are required for crypto analysis."}
+            result = {"status": "not_available", "message": "Kraken credentials are required for crypto analysis."}
+            record_operational_event(
+                self.settings.db_path,
+                component="research",
+                event_type="research_blocked_configuration",
+                broker="kraken",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
         if symbols is None:
             limit = max(1, min(int(limit or 10), 30))
             rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT ?", (limit,))
@@ -283,10 +331,21 @@ class LocalApiService:
             if not symbols:
                 symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=limit)
         if not symbols:
-            return {
+            result = {
                 "status": "not_available",
                 "message": "No active crypto symbols are available yet. Add KRAKEN_ALLOWED_PAIRS or run the crypto universe refresh again.",
             }
+            record_operational_event(
+                self.settings.db_path,
+                component="research",
+                event_type="research_completed_no_action",
+                broker="kraken",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
         account = self._account_context_for_broker("kraken")
         proposals = propose_crypto_trades(
             self.settings.db_path,
@@ -300,6 +359,14 @@ class LocalApiService:
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
         )
         auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No crypto proposals generated."}
+        for proposal in proposals:
+            self._record_shadow_from_proposal(
+                proposal,
+                intended_broker="kraken",
+                decision_status="shadow_candidate",
+                trigger_type="scheduled",
+                wait_or_rejection_reason=None,
+            )
         update_broker_runtime(
             self.settings.db_path,
             "kraken",
@@ -349,6 +416,23 @@ class LocalApiService:
             next_scheduled_run=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
             summary=f"Crypto research completed with {len(proposals)} recommendation(s).",
         )
+        self._record_research_funnel_from_result(
+            broker="kraken",
+            asset_type="crypto",
+            trigger_type="scheduled",
+            symbols=symbols,
+            result={"status": "completed", "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution},
+            auto_execution=auto_execution,
+            skipped_symbols=[],
+        )
+        record_operational_event(
+            self.settings.db_path,
+            component="research",
+            event_type="research_completed",
+            broker="kraken",
+            summary=f"Kraken crypto research reviewed {len(symbols)} symbol(s) and created {len(proposals)} proposal(s).",
+            details={"symbols": symbols, "proposal_count": len(proposals), "auto_execution": auto_execution},
+        )
         return {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
@@ -385,6 +469,28 @@ class LocalApiService:
             return 200, self.operational_truth_status()
         if path == "/world-class-evidence":
             return 200, self.world_class_evidence()
+        if path == "/operations-health":
+            return 200, self.operations_health()
+        if path == "/scheduler-status":
+            return 200, scheduler_status(self.settings.db_path)
+        if path == "/job-runs":
+            return 200, {"job_runs": list_job_runs(self.settings.db_path, limit=_int_or_default(_first(query, "limit"), 50), job_name=_first(query, "job_name"))}
+        if path == "/shadow-trades":
+            return 200, {"shadow_trades": list_shadow_trades(self.settings.db_path, broker=_first(query, "broker"), limit=_int_or_default(_first(query, "limit"), 100))}
+        if path == "/shadow-performance":
+            return 200, shadow_performance(self.settings.db_path)
+        if path == "/research-funnel":
+            return 200, {"research_funnels": list_research_funnels(self.settings.db_path, broker=_first(query, "broker"), limit=_int_or_default(_first(query, "limit"), 50))}
+        if path == "/alpaca-inactivity-diagnosis":
+            return 200, alpaca_inactivity_diagnosis(self.settings.db_path)
+        if path == "/phase5-status":
+            return 200, self.phase5_status()
+        if path == "/sprint6-status":
+            return 200, self.sprint6_status()
+        if path == "/operational-events":
+            return 200, {"operational_events": self.operational_events(limit=_int_or_default(_first(query, "limit"), 50))}
+        if path == "/decision-journal":
+            return 200, {"decision_journal": self.decision_journal(limit=_int_or_default(_first(query, "limit"), 50))}
         if path == "/trading-report":
             return 200, self.trading_report(
                 report_date=_first(query, "date"),
@@ -426,6 +532,14 @@ class LocalApiService:
             return 200, self.force_managed_exit(body)
         if path == "/generate-report":
             return 200, self.generate_report(body)
+        if path == "/generate-operational-report":
+            return 200, generate_founder_operational_report(
+                self.settings.db_path,
+                output_dir=self.settings.output_dir,
+                report_type=str(body.get("type") or "daily"),
+                period_start=body.get("period_start"),
+                period_end=body.get("period_end"),
+            )
         if path == "/ask-ai-trader":
             return 200, self.ask_ai_trader(body)
         if path == "/notifications/ack":
@@ -477,6 +591,9 @@ class LocalApiService:
         readiness = self.connection_readiness(brokers)
         founder_experience = self.founder_experience_payload(brokers, recommendation_rows, policy, research_run)
         world_class = self.world_class_evidence(brokers=brokers, recommendations=recommendation_rows)
+        always_on = self.operations_health()
+        phase5 = self.phase5_status()
+        sprint6 = self.sprint6_status()
         return {
             "system_status": control["trading_state"],
             "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
@@ -506,6 +623,9 @@ class LocalApiService:
             "cloud_api_health": "Available",
             "connection_readiness": readiness,
             "world_class_evidence": world_class,
+            "operations_health": always_on,
+            "phase5_status": phase5,
+            "sprint6_status": sprint6,
             "latest_activity": [dict(row) for row in last_activity],
             "recent_transactions": [dict(row) for row in recent_transactions],
             "recommendation_summary": {
@@ -516,6 +636,51 @@ class LocalApiService:
             },
             "updated_at": control["updated_at"],
         }
+
+    def operations_health(self) -> dict[str, Any]:
+        return operations_health(
+            self.settings.db_path,
+            expected_worker_interval_seconds=max(60, self.settings.auto_execution_interval_seconds),
+        )
+
+    def phase5_status(self) -> dict[str, Any]:
+        return phase5_status(self.settings.db_path, database_backend=self.settings.database_backend)
+
+    def sprint6_status(self) -> dict[str, Any]:
+        return sprint6_status(self.settings.db_path, database_backend=self.settings.database_backend)
+
+    def operational_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        return [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT created_at, component, event_type, severity, summary,
+                       proposal_id, logical_trade_id, broker, duration_ms, success
+                FROM OPERATIONAL_EVENTS
+                ORDER BY event_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        ]
+
+    def decision_journal(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 200))
+        return [
+            dict(row)
+            for row in self._rows(
+                """
+                SELECT created_at, proposal_id, symbol, broker, strategy_id,
+                       confidence, final_decision, execution_eligibility,
+                       evidence_for, evidence_against, market_data_quality
+                FROM DECISION_JOURNAL
+                ORDER BY decision_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        ]
 
     def founder_experience_payload(
         self,
@@ -1573,6 +1738,14 @@ This report explains available evidence. It does not automatically change strate
         started_at = utc_now_iso()
         trigger_type = str(body.get("trigger_type") or "manual")
         broker_name = str(body.get("broker") or "alpaca").lower()
+        record_operational_event(
+            self.settings.db_path,
+            component="research",
+            event_type="research_started",
+            broker=broker_name,
+            summary=f"{broker_name.title()} research cycle started.",
+            details={"trigger_type": trigger_type, "body": {key: value for key, value in body.items() if key != "token"}},
+        )
         if broker_name == "kraken":
             symbols = body.get("symbols")
             if isinstance(symbols, str):
@@ -1598,12 +1771,50 @@ This report explains available evidence. It does not automatically change strate
         if not symbols:
             result = {"status": "not_available", "message": "No symbols available in SQLite."}
             self._record_research_from_result(started_at, result, [], trigger_type)
+            self._record_research_funnel_from_result(
+                broker="alpaca",
+                asset_type="stock",
+                trigger_type=trigger_type,
+                symbols=[],
+                result=result,
+                auto_execution={"status": "skipped", "message": result["message"]},
+                skipped_symbols=[],
+            )
             update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="idle", current_stage="complete")
+            record_operational_event(
+                self.settings.db_path,
+                component="research",
+                event_type="research_completed_no_action",
+                broker=broker_name,
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
             return result
         if not self.settings.has_alpaca_credentials:
             result = {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
             self._record_research_from_result(started_at, result, symbols, trigger_type)
+            self._record_research_funnel_from_result(
+                broker="alpaca",
+                asset_type="stock",
+                trigger_type=trigger_type,
+                symbols=symbols,
+                result=result,
+                auto_execution={"status": "blocked_configuration", "message": result["message"]},
+                skipped_symbols=[{"symbol": symbol, "reason": "alpaca_credentials_missing"} for symbol in symbols],
+            )
             update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="blocked", current_stage="credentials", details={"last_error": result["message"]})
+            record_operational_event(
+                self.settings.db_path,
+                component="research",
+                event_type="research_blocked_configuration",
+                broker=broker_name,
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
             return result
         broker = self._broker()
         analyzer = None
@@ -1626,6 +1837,14 @@ This report explains available evidence. It does not automatically change strate
                     {"symbol": symbol, "reason": reason},
                 )
         auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No proposals generated."}
+        for proposal in proposals:
+            self._record_shadow_from_proposal(
+                proposal,
+                intended_broker="alpaca",
+                decision_status="shadow_candidate",
+                trigger_type=trigger_type,
+                wait_or_rejection_reason=None,
+            )
         self.audit.record_execution_event(
             "analysis",
             "analysis_completed",
@@ -1645,6 +1864,15 @@ This report explains available evidence. It does not automatically change strate
         }
 
         self._record_research_from_result(started_at, result, symbols, trigger_type)
+        self._record_research_funnel_from_result(
+            broker="alpaca",
+            asset_type="stock",
+            trigger_type=trigger_type,
+            symbols=symbols,
+            result=result,
+            auto_execution=auto_execution,
+            skipped_symbols=skipped_symbols,
+        )
         update_broker_runtime(
             self.settings.db_path,
             broker_name,
@@ -1669,6 +1897,15 @@ This report explains available evidence. It does not automatically change strate
             title="Research completed",
             message=f"Due diligence completed for {len(symbols)} asset(s). {len(proposals)} recommendation(s) generated.",
             payload={"symbols": symbols, "proposal_count": len(proposals), "skipped_symbols": skipped_symbols},
+        )
+        record_operational_event(
+            self.settings.db_path,
+            component="research",
+            event_type="research_completed",
+            broker=broker_name,
+            summary=f"{broker_name.title()} research reviewed {len(symbols)} symbol(s) and created {len(proposals)} proposal(s).",
+            details={"symbols": symbols, "proposal_count": len(proposals), "auto_execution": auto_execution},
+            success=True,
         )
         return result
 
@@ -1800,6 +2037,28 @@ This report explains available evidence. It does not automatically change strate
             guardrails=self.settings.guardrails,
         )
         proposal = self._proposal_with_manual_amount(proposal, body.get("amount"), account_equity=context.account.equity)
+        permissions = self._broker_trading_permissions(broker_name, broker_auto_trading_enabled(self.settings.db_path, broker_name, False))
+        pre_execution = pre_execution_decision_packet(
+            self.settings.db_path,
+            proposal=proposal,
+            broker=broker_name,
+            mode=execution_mode_for_broker(
+                broker=broker_name,
+                can_submit_real_orders=bool(permissions.get("can_submit_real_orders")),
+                manual=True,
+            ),
+            account=context.account,
+            market_data_quality="Unknown - manual approval used the latest persisted recommendation.",
+        )
+        if not pre_execution["approved"]:
+            return {
+                "status": "blocked",
+                "message": pre_execution["plain_english"],
+                "pre_execution": pre_execution,
+                "amount_requested": body.get("amount"),
+            }
+        if pre_execution.get("approved_notional") and pre_execution["approved_notional"] > 0:
+            proposal = self._proposal_with_manual_amount(proposal, pre_execution["approved_notional"], account_equity=context.account.equity)
         decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
         if decision.decision == "approved":
             self.portfolio(broker_name)
@@ -2041,6 +2300,31 @@ This report explains available evidence. It does not automatically change strate
                 auto_trade=self._auto_config_for_broker(broker_name),
                 guardrails=self.settings.guardrails,
             )
+            permissions = self._broker_trading_permissions(broker_name, True)
+            pre_execution = pre_execution_decision_packet(
+                self.settings.db_path,
+                proposal=proposal,
+                broker=broker_name,
+                mode=execution_mode_for_broker(
+                    broker=broker_name,
+                    can_submit_real_orders=bool(permissions.get("can_submit_real_orders")),
+                    manual=False,
+                ),
+                account=context.account,
+                market_data_quality="Unknown - latest persisted recommendation has no attached market data gateway run.",
+            )
+            if not pre_execution["approved"]:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "sprint6_pre_execution_blocked",
+                    "message": pre_execution["plain_english"],
+                    "pre_execution": pre_execution,
+                })
+                continue
+            if pre_execution.get("approved_notional") and pre_execution["approved_notional"] > 0:
+                proposal = self._proposal_with_manual_amount(proposal, pre_execution["approved_notional"], account_equity=context.account.equity)
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
             if decision.decision == "approved":
                 decisions.append(decision.to_dict())
@@ -2370,8 +2654,24 @@ This report explains available evidence. It does not automatically change strate
                 history = adapter.get_trade_history()
             except Exception:
                 logger.exception("Failed to poll %s order/trade activity.", broker_name)
+                upsert_incident(
+                    self.settings.db_path,
+                    incident_key=f"broker-poll:{broker_name}",
+                    severity="warning",
+                    component="broker",
+                    affected_entity=broker_name,
+                    explanation=f"{broker_name.title()} broker polling failed.",
+                    recommended_action="Check broker credentials, network availability, and adapter logs.",
+                    payload={"broker": broker_name},
+                )
                 continue
             new_rows = record_broker_trade_history(self.settings.db_path, broker_name, list(orders) + list(history))
+            reconciliation = normalize_broker_events(
+                self.settings.db_path,
+                broker=broker_name,
+                events=list(orders) + list(history),
+                source_endpoint="poll_broker_activity",
+            )
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
             for row in new_rows:
                 status = str(row.get("status") or "").lower()
@@ -2388,7 +2688,19 @@ This report explains available evidence. It does not automatically change strate
                     message=f"{broker_name.title()} order for {symbol} is now {status}.",
                     payload=row,
                 )
-            results[broker_name] = {"orders": len(orders), "history": len(history), "new_records": len(new_rows)}
+                logical_trade_id = str(row.get("order_id") or row.get("ordertxid") or row.get("id") or row.get("trade_id") or symbol)
+                enqueue_learning_workflow(
+                    self.settings.db_path,
+                    logical_trade_id=logical_trade_id,
+                    broker=broker_name,
+                    payload={"broker_row": row, "status": status},
+                )
+            results[broker_name] = {
+                "orders": len(orders),
+                "history": len(history),
+                "new_records": len(new_rows),
+                "reconciliation": reconciliation,
+            }
         return results
 
     def broker_panels(self) -> list[dict[str, Any]]:
@@ -2982,6 +3294,105 @@ This report explains available evidence. It does not automatically change strate
             summary=result.get("message") or f"Research completed with {len(result.get('proposals', []))} recommendation(s).",
         )
 
+    def _record_research_funnel_from_result(
+        self,
+        *,
+        broker: str,
+        asset_type: str,
+        trigger_type: str,
+        symbols: list[str],
+        result: dict[str, Any],
+        auto_execution: dict[str, Any],
+        skipped_symbols: list[dict[str, Any]],
+    ) -> None:
+        proposals = result.get("proposals") or []
+        skipped = auto_execution.get("skipped") if isinstance(auto_execution, dict) else []
+        submitted = auto_execution.get("result") if isinstance(auto_execution, dict) else []
+        secondary_reasons = [
+            str(item.get("reason") or item.get("message"))
+            for item in list(skipped_symbols or []) + list(skipped or [])
+            if isinstance(item, dict) and (item.get("reason") or item.get("message"))
+        ]
+        primary_reason = (
+            result.get("message")
+            or (secondary_reasons[0] if secondary_reasons else None)
+            or (auto_execution.get("message") if isinstance(auto_execution, dict) else None)
+            or ("recommendations_created" if proposals else "no_valid_trade_recommendations")
+        )
+        eligible = len(proposals)
+        rejected = len(secondary_reasons)
+        if isinstance(auto_execution, dict) and auto_execution.get("status") in {"skipped", "manual_required", "blocked"}:
+            rejected = max(rejected, len(proposals))
+            eligible = 0
+        record_research_funnel(
+            self.settings.db_path,
+            broker=broker,
+            asset_type=asset_type,
+            trigger_type=trigger_type,
+            symbols_examined=len(symbols),
+            symbols_with_adequate_data=max(0, len(symbols) - len(skipped_symbols)),
+            interesting_ideas=len(proposals),
+            valid_strategies=len(proposals),
+            committee_approved=len(proposals),
+            portfolio_approved=len(proposals),
+            guardrail_approved=len(proposals),
+            eligible_for_paper_execution=eligible,
+            submitted=len(submitted) if isinstance(submitted, list) else 0,
+            filled=0,
+            rejected=rejected,
+            expired=0,
+            primary_reason=primary_reason,
+            secondary_reasons=secondary_reasons,
+            payload={
+                "result_status": result.get("status"),
+                "auto_execution_status": auto_execution.get("status") if isinstance(auto_execution, dict) else None,
+                "auto_execution_message": auto_execution.get("message") if isinstance(auto_execution, dict) else None,
+                "skipped_symbols": skipped_symbols,
+                "auto_skipped": skipped[:10] if isinstance(skipped, list) else [],
+            },
+        )
+
+    def _record_shadow_from_proposal(
+        self,
+        proposal: TradeProposal,
+        *,
+        intended_broker: str,
+        decision_status: str,
+        trigger_type: str,
+        wait_or_rejection_reason: str | None,
+    ) -> None:
+        proposal_payload = proposal.to_dict()
+        record_shadow_trade(
+            self.settings.db_path,
+            symbol=proposal.symbol,
+            asset_type=proposal.asset_type,
+            intended_broker=intended_broker,
+            decision_status=decision_status,
+            strategy=str((proposal_payload.get("strategy") or proposal_payload.get("strategy_id") or "current_recommendation_process")),
+            regime=json.dumps(proposal_payload.get("market_regime"), default=str) if proposal_payload.get("market_regime") else None,
+            intended_entry=proposal.entry_price,
+            stop_loss=proposal.stop_loss,
+            take_profit=proposal.take_profit,
+            quantity=proposal.position_size,
+            notional=getattr(proposal, "notional_amount", None) or (proposal.entry_price * proposal.position_size),
+            probability=safe_score(proposal.confidence_score),
+            expected_r=_proposal_expected_r(proposal),
+            strongest_argument_for=proposal_payload.get("strongest_argument_for") or proposal.plain_english_reasoning,
+            strongest_argument_against=proposal_payload.get("strongest_argument_against") or "Not available - current proposal did not preserve a strongest-against argument.",
+            wait_or_rejection_reason=wait_or_rejection_reason,
+            market_evidence={
+                "technical_summary": proposal.technical_summary,
+                "news_summary": proposal.news_summary,
+                "sentiment_summary": proposal.market_sentiment_summary,
+                "trigger_type": trigger_type,
+            },
+            portfolio_snapshot=self._account_context_for_broker(intended_broker).__dict__,
+            data_quality={"status": "recorded_from_trade_proposal", "freshness": "proposal_created_now"},
+            expires_at=(datetime.now(timezone.utc) + timedelta(hours=4)).isoformat(),
+            simulated_costs={"status": "estimated_or_unavailable", "note": "Shadow costs are estimates until broker fills exist."},
+            idempotency_key=f"{proposal.proposal_id}:shadow:{intended_broker}",
+        )
+
     def _latest_orchestrator_decision(self, recommendation_id: str) -> dict[str, Any] | None:
         row = self._row(
             "SELECT * FROM ORCHESTRATOR_DECISIONS WHERE recommendation_id = ? ORDER BY decision_id DESC LIMIT 1",
@@ -3233,6 +3644,11 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None = None) -> None:
     settings = load_settings()
     configure_logging(settings.output_dir)
+    startup_errors = settings.production_startup_errors(host=host)
+    if startup_errors:
+        for message in startup_errors:
+            logger.error("Hosted startup validation failed: %s", message)
+        raise RuntimeError("; ".join(startup_errors))
     hosted_read_only = False
     if not api_token and host not in _LOOPBACK_HOSTS:
         hosted_read_only = True
@@ -3306,59 +3722,65 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
             payload={"error": str(exc)},
         )
 
-    if service.settings.research_scheduler_enabled:
-        ResearchScheduler(
-            service,
-            interval_minutes=service.settings.research_scheduler_interval_minutes,
-            on_error=_on_research_error,
-        ).start_background(limit=service.settings.research_scheduler_limit)
+    if service.settings.disable_api_background_workers:
+        logger.info(
+            "API background workers are disabled by AI_TRADER_DISABLE_API_BACKGROUND_WORKERS; "
+            "Render worker/cron services own autonomous operations."
+        )
     else:
-        logger.warning("RESEARCH_SCHEDULER_ENABLED is false - continuous research will not run automatically.")
+        if service.settings.research_scheduler_enabled:
+            ResearchScheduler(
+                service,
+                interval_minutes=service.settings.research_scheduler_interval_minutes,
+                on_error=_on_research_error,
+            ).start_background(limit=service.settings.research_scheduler_limit)
+        else:
+            logger.warning("RESEARCH_SCHEDULER_ENABLED is false - continuous research will not run automatically.")
 
-    # Position/exit monitoring is a safety function, independent of whether research is
-    # scheduled, and always runs so stop-loss/take-profit protection is never dependent on
-    # a manual call to /monitor-managed-exits.
-    IntervalWorker(
-        service.monitor_managed_exits,
-        interval_seconds=60,
-        name="ai-trader-exit-monitor",
-        on_error=_on_exit_monitor_error,
-    ).start_background()
+        # Position/exit monitoring is a safety function, independent of whether research is
+        # scheduled, and always runs so stop-loss/take-profit protection is never dependent on
+        # a manual call to /monitor-managed-exits.
+        IntervalWorker(
+            service.monitor_managed_exits,
+            interval_seconds=60,
+            name="ai-trader-exit-monitor",
+            on_error=_on_exit_monitor_error,
+        ).start_background()
 
-    IntervalWorker(
-        service.poll_broker_activity,
-        interval_seconds=60,
-        name="ai-trader-order-monitor",
-        on_error=_on_activity_poll_error,
-    ).start_background()
+        IntervalWorker(
+            service.poll_broker_activity,
+            interval_seconds=60,
+            name="ai-trader-order-monitor",
+            on_error=_on_activity_poll_error,
+        ).start_background()
 
-    # Auto execution is intentionally separate from research. Research creates fresh
-    # proposals; this worker repeatedly asks the deterministic execution engine whether
-    # any proposal is currently eligible under broker permissions and guardrails.
-    IntervalWorker(
-        service.auto_execute_recommendations,
-        interval_seconds=max(30, service.settings.auto_execution_interval_seconds),
-        name="ai-trader-auto-executor",
-        on_error=_on_auto_execution_error,
-    ).start_background()
+        # Auto execution is intentionally separate from research. Research creates fresh
+        # proposals; this worker repeatedly asks the deterministic execution engine whether
+        # any proposal is currently eligible under broker permissions and guardrails.
+        IntervalWorker(
+            service.auto_execute_recommendations,
+            interval_seconds=max(30, service.settings.auto_execution_interval_seconds),
+            name="ai-trader-auto-executor",
+            on_error=_on_auto_execution_error,
+        ).start_background()
 
-    # Crypto knowledge engine refresh - independent of research_scheduler_enabled since it's
-    # foundational data (market cap / AI / privacy category universes and scoring), not a
-    # decision-making cycle. Runs on the same cadence as equities research by default.
-    IntervalWorker(
-        service.refresh_crypto_universe,
-        interval_seconds=max(300, service.settings.research_scheduler_interval_minutes * 60),
-        name="ai-trader-crypto-refresh",
-        on_error=_on_crypto_refresh_error,
-    ).start_background()
+        # Crypto knowledge engine refresh - independent of research_scheduler_enabled since it's
+        # foundational data (market cap / AI / privacy category universes and scoring), not a
+        # decision-making cycle. Runs on the same cadence as equities research by default.
+        IntervalWorker(
+            service.refresh_crypto_universe,
+            interval_seconds=max(300, service.settings.research_scheduler_interval_minutes * 60),
+            name="ai-trader-crypto-refresh",
+            on_error=_on_crypto_refresh_error,
+        ).start_background()
 
-    # Push dispatch runs on a short cadence since it's just an outbound HTTP call for
-    # already-recorded high-priority notifications, not a broker/API poll.
-    IntervalWorker(
-        service.dispatch_pending_push_notifications,
-        interval_seconds=30,
-        name="ai-trader-push-dispatch",
-    ).start_background()
+        # Push dispatch runs on a short cadence since it's just an outbound HTTP call for
+        # already-recorded high-priority notifications, not a broker/API poll.
+        IntervalWorker(
+            service.dispatch_pending_push_notifications,
+            interval_seconds=30,
+            name="ai-trader-push-dispatch",
+        ).start_background()
 
     ApiHandler.service = service
     ApiHandler.api_token = api_token
@@ -4647,6 +5069,14 @@ def _format_guardrail_failures(failures: list[str]) -> str:
     if not failures:
         return "No guardrail details available."
     return ", ".join(item.replace("_", " ") for item in failures)
+
+
+def _proposal_expected_r(proposal: TradeProposal) -> float | None:
+    risk = abs(float(proposal.entry_price) - float(proposal.stop_loss))
+    reward = abs(float(proposal.take_profit) - float(proposal.entry_price))
+    if risk <= 0:
+        return None
+    return reward / risk
 
 
 def _component(healthy: bool, detail: str) -> dict[str, Any]:

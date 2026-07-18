@@ -5,12 +5,18 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
-    disk:
-      name: ai-trader-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
+    envVars: &ai_trader_env
       - key: AI_TRADER_API_TOKEN
+        sync: false
+      - key: AI_TRADER_PROCESS_ROLE
+        value: render
+      - key: AI_TRADER_DISABLE_API_BACKGROUND_WORKERS
+        value: "true"
+      - key: AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED
+        value: "true"
+      - key: AI_TRADER_DATABASE_BACKEND
+        value: postgres
+      - key: DATABASE_URL
         sync: false
       - key: ALPACA_API_KEY
         sync: false
@@ -87,11 +93,13 @@ services:
       - key: COINBASE_PORTFOLIO_ID
         sync: false
       - key: RESEARCH_SCHEDULER_ENABLED
-        value: "true"
+        value: "false"
       - key: RESEARCH_SCHEDULER_INTERVAL_MINUTES
         value: "60"
       - key: RESEARCH_SCHEDULER_LIMIT
         value: "30"
+      - key: AUTO_EXECUTION_INTERVAL_SECONDS
+        value: "60"
       - key: PAPER_TRADING_ONLY
         value: "true"
       - key: MIN_CONFIDENCE_SCORE
@@ -102,3 +110,83 @@ services:
         value: "0.03"
       - key: MAX_OPEN_POSITIONS
         value: "3"
+
+  - type: worker
+    name: ai-trader-worker
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-worker --sleep-seconds 60
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-premarket-equity
+    env: docker
+    schedule: "30 12 * * 1-5"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job premarket-equity --limit 30
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-market-open-equity
+    env: docker
+    schedule: "45 13 * * 1-5"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job market-open-equity --limit 30
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-midday-equity
+    env: docker
+    schedule: "30 16 * * 1-5"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job midday-equity --limit 30
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-market-close-equity
+    env: docker
+    schedule: "50 19 * * 1-5"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job market-close-equity --limit 30
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-overnight-crypto
+    env: docker
+    schedule: "15 */2 * * *"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job overnight-crypto --limit 20
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-daily-learning
+    env: docker
+    schedule: "10 21 * * *"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job daily-learning
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-daily-report
+    env: docker
+    schedule: "20 21 * * *"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job daily-report --report-type daily
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-weekly-report
+    env: docker
+    schedule: "45 21 * * 5"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job weekly-report --report-type weekly
+    envVars: *ai_trader_env
+
+  - type: cron
+    name: ai-trader-monthly-report
+    env: docker
+    schedule: "15 22 1 * *"
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m ai_trader run-job monthly-report --report-type monthly
+    envVars: *ai_trader_env

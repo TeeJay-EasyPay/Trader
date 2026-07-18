@@ -1,82 +1,58 @@
 # Known Limitations
 
-## Data And Attribution
+## Sprint 6 Production Control
 
-1. Trade lifecycle reconstruction is incomplete.
-   `BROKER_TRADE_HISTORY` stores raw or near-raw broker rows. Some rows do not contain enough information to show entry reason, exit reason, target price, stop loss, current price, or P&L.
+Sprint 6 installs mandatory pre-execution evidence gates locally, but hosted production qualification still requires Render/Supabase runtime evidence.
 
-2. P&L can be unavailable without prior snapshots.
-   Day/week P&L requires earlier portfolio snapshots. If the service was not running or no snapshot exists for the comparison window, the UI correctly shows unavailable.
+The following are not yet proven by local tests:
 
-3. Closed trade attribution is incomplete.
-   `PERFORMANCE_ATTRIBUTION` is reliable only when the system can link entry and exit information. Broker fills that are not matched into round trips may not produce closed-trade P&L.
+- phone-closed worker uptime;
+- hosted cron execution;
+- Supabase/Postgres as the shared runtime truth for every critical table;
+- live Alpaca paper fill reconciliation through Sprint 6 mappings;
+- real Kraken terminal trade learning through the Sprint 6 outbox;
+- automatic outbox processing by a durable worker.
 
-4. Raw broker payloads are too visible.
-   Trade History currently exposes technical broker data. This is useful for debugging but not ideal for founder UX.
+## Strategy Entitlement
 
-## Broker Limitations
+The default Sprint 6 strategy is intentionally conservative. It is seeded at `Paper` and does not allow `micro_live` or `production` execution by default. Kraken micro-live strategy entitlement requires explicit evidence and governed promotion.
 
-1. Alpaca is paper only.
-   Live Alpaca trading is not approved.
+## Closed-Loop Learning Outbox
 
-2. Kraken is live micro-trading only under explicit seatbelts.
-   Kraken does not provide a true paper trading account. The system uses real small orders when all switches are enabled.
+Terminal broker rows are queued idempotently for learning, but the durable worker-owned outbox processor still needs to be completed and verified against hosted runtime records.
 
-3. Coinbase, Binance, Interactive Brokers, and Saxo are not complete.
-   They are placeholders or future adapter surfaces.
+## Database Spine
 
-4. Kraken managed exits depend on polling.
-   Exit behavior is not exchange-native bracket order behavior. It depends on the hosted service running and checking prices.
+The production spine currently reports `partial_spine` until all critical runtime families are migrated to Postgres/Supabase.
 
-## AI And Learning Limitations
+Always-On operations evidence can use Postgres. Broker runtime, recommendations, lifecycle, reports, and learning remain SQLite-oriented unless migrated in a later phase.
 
-1. OpenAI availability is external.
-   Ask AI and proposal analysis depend on `OPENAI_API_KEY`, network availability, model availability, and request timeouts.
+## Reconciliation
 
-2. AI memory is only durable if written to SQLite.
-   Chat reasoning is not persistent platform wisdom unless saved.
+The Phase 5 reconciliation layer groups and records broker events deterministically, but advanced cases still need expansion:
 
-3. AI does not automatically improve strategy.
-   It can produce lessons and recommendations. It cannot change strategy, guardrails, or broker settings without founder/engineering action.
+- complex broker corrections;
+- replaced order chains;
+- late events that contradict previously closed trades;
+- full broker-specific fee normalization;
+- complete partial-fill lifecycle analytics.
 
-4. Benchmark trader learning uses public information only.
-   It cannot reliably know private trades or proprietary performance.
+## Closed-Loop Learning
 
-## Research Limitations
+Closed-loop learning runs idempotently for supplied terminal trades. It still depends on terminal trade detection being called by reconciliation or the orchestrator.
 
-1. Crypto sentiment, news, and on-chain data are not fully provider-backed.
-   Fields are left unavailable rather than fabricated.
+## Portfolio Manager
 
-2. Public APIs can fail or rate-limit.
-   CoinGecko and broker APIs can be unavailable, incomplete, or delayed.
+Portfolio Manager authority is implemented as a deterministic decision function, but broader live integration into every approval path should be completed in the next controlled phase.
 
-3. Research state needs better worker-level observability.
-   The current UI shows status but should expose worker heartbeats and last error by worker.
+## Market Data Gateway
 
-## UI Limitations
+The gateway validates candles and records provenance. Full provider failover and production data-provider routing remain future work.
 
-1. `mobile/App.js` is large and monolithic.
-   It should be split into screens, API client, formatting helpers, and components.
+## Strategy Promotion
 
-2. Dense tables are hard on mobile.
-   Broker panels and trade history need progressive disclosure and better summary cards.
+The strategy maturity ladder exists with evidence gates. Strategy execution eligibility should next be wired directly into recommendation and orchestrator approval.
 
-3. Some values show "Not available" without enough context.
-   The UI should distinguish not configured, not fetched, not applicable, missing broker payload, and not yet closed.
+## Deployment
 
-## Architecture Concerns
-
-1. SQLite is a single-file operational store.
-   This is acceptable for personal use but not suitable for multi-user scale without migration.
-
-2. Schema migrations are ad hoc.
-   Modules create tables and add columns, but there is no formal migration framework.
-
-3. Route handling is concentrated in `api.py`.
-   The API file is large and should be split after behavior stabilizes.
-
-4. Environment configuration is powerful.
-   Broker permissions are controlled by env vars and database rows. Future changes should introduce audited configuration changes.
-
-5. Render config sync should remain limited.
-   Allowing the app to mutate cloud env vars is useful but risky. It must stay restricted, audited, and explicit.
+This local implementation does not prove Render worker/cron uptime. Deployment verification remains required before claiming always-on production operation.
