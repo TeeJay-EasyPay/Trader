@@ -88,7 +88,49 @@ export default function App() {
       const recommendationRequest = request('/recommendations')
         .then((payload) => ({ ok: true, payload }))
         .catch(() => ({ ok: false, payload: { recommendations: [] } }));
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning, nextActivity] = await Promise.all([
+      const activityRequest = request(`/autonomous-activity?period=${activityPeriod}&limit=30`)
+        .then((payload) => ({ ok: true, payload }))
+        .catch((error) => ({
+          ok: false,
+          payload: {
+            generated_at: new Date().toISOString(),
+            fetch_error: String(error.message || error),
+            status: {
+              state: 'STATUS UNKNOWN',
+              plain_english: `Activity evidence could not be loaded from the hosted API: ${String(error.message || error)}`,
+              worker_status: 'Not available - Activity API request failed.',
+              scheduler_status: 'Not available - Activity API request failed.',
+              database_status: 'Not available - Activity API request failed.',
+              unresolved_incident_count: 0,
+            },
+            summary: {},
+            timeline: {
+              items: [],
+              returned: 0,
+              total: 0,
+              source_event_count: 0,
+              empty_state: `Activity API request failed: ${String(error.message || error)}`,
+            },
+            why_no_trade: {
+              state: 'unknown',
+              conclusion: 'No-trade evidence could not be loaded because the Activity API request failed.',
+              counts: {},
+              top_reasons: [],
+            },
+            broker_activity: { brokers: [] },
+            founder_attention: {
+              plain_english: 'Founder attention items could not be loaded because the Activity API request failed.',
+              items: [],
+            },
+            latest_completed_actions: [],
+            truthfulness: {
+              source: 'Activity API request failed',
+              mock_data_used: false,
+              synthetic_activity_used: false,
+            },
+          },
+        }));
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning, nextActivityResult] = await Promise.all([
         request('/status'),
         optional('/portfolio', {
           portfolio_value: 'Not available',
@@ -104,7 +146,7 @@ export default function App() {
         optional('/notifications', { notifications: [] }),
         optional('/performance-attribution', { performance_attribution: [] }),
         optional('/daily-learning-update', null),
-        optional(`/autonomous-activity?period=${activityPeriod}&limit=80`, null),
+        activityRequest,
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
@@ -112,7 +154,7 @@ export default function App() {
       setNotifications(nextNotifications.notifications || []);
       setPerformanceAttribution(nextPerformance.performance_attribution || []);
       setDailyLearning(nextLearning);
-      setActivity(nextActivity);
+      setActivity(nextActivityResult.payload);
       const nextRecommendationItems = sortByConfidence(nextRecommendationsResult.payload.recommendations || []);
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);

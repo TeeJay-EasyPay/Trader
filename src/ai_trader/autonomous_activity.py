@@ -48,13 +48,16 @@ def autonomous_activity_payload(
         important_only=important_only,
         founder_action_required=founder_action_required,
         limit=limit,
+        include_all_events=True,
     )
     status = current_autonomous_status(db_path, period=period, broker_panels=broker_panels, database_backend=database_backend)
     summary = activity_summary(db_path, period=period)
     no_trade = why_no_trade_funnel(db_path, period=period)
     brokers = broker_activity(db_path, period=period, broker_panels=broker_panels)
     attention = founder_attention(db_path, period=period, broker_panels=broker_panels)
-    latest = latest_completed_actions(events["all_events"])
+    all_events = events.pop("all_events", [])
+    latest = latest_completed_actions(all_events)
+    events["source_event_count"] = len(all_events)
     return {
         "generated_at": utc_now_iso(),
         "period": period,
@@ -191,6 +194,7 @@ def activity_timeline(
     important_only: bool = False,
     founder_action_required: bool = False,
     limit: int = 100,
+    include_all_events: bool = False,
 ) -> dict[str, Any]:
     window = activity_window(period)
     events = _all_activity_events(db_path, window["start"], window["end"])
@@ -199,11 +203,11 @@ def activity_timeline(
         if _matches_filters(event, category=category, severity=severity, important_only=important_only, founder_action_required=founder_action_required)
     ]
     filtered.sort(key=lambda item: (item["timestamp"] or "", item["activity_id"]), reverse=True)
-    return {
+    payload = {
         "items": filtered[: max(1, int(limit))],
-        "all_events": events,
         "total": len(filtered),
         "returned": min(len(filtered), max(1, int(limit))),
+        "source_event_count": len(events),
         "filters": {
             "period": period,
             "category": category,
@@ -213,6 +217,9 @@ def activity_timeline(
         },
         "empty_state": _timeline_empty_state(events, filtered, period),
     }
+    if include_all_events:
+        payload["all_events"] = events
+    return payload
 
 
 def why_no_trade_funnel(db_path: Path, *, period: str = "24h") -> dict[str, Any]:
