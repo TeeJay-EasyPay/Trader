@@ -345,10 +345,7 @@ class LocalApiService:
             return result
         if symbols is None:
             limit = max(1, min(int(limit or 10), 30))
-            rows = self._rows("SELECT DISTINCT symbol FROM CRYPTO_MASTER WHERE active = 1 LIMIT ?", (limit,))
-            symbols = [row["symbol"] for row in rows]
-            if not symbols:
-                symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=limit)
+            symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=limit)
         if not symbols:
             result = {
                 "status": "not_available",

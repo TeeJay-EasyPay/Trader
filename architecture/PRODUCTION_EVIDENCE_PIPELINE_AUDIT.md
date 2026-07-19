@@ -25,6 +25,7 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 3. The mobile application loads one bounded Founder payload instead of blocking startup on the legacy `/status` aggregate.
 4. Cached evidence renders immediately while fresh evidence is requested.
 5. Long implementation-phase diagnostic cards were removed from the primary Founder experience.
+6. Live verification exposed Kraken `EQuery:Unknown asset pair`: research selected general active crypto records instead of only Founder-approved Kraken pairs. Autonomous Kraken research is now constrained to approved pairs, and an unavailable pair is recorded/skipped without aborting the remaining cycle.
 
 ## Truth boundaries
 

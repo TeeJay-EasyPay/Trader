@@ -252,6 +252,49 @@ class FoundationSprintTests(unittest.TestCase):
             self.assertTrue(proposals[0].ai_guardrails_passed, proposals[0].ai_guardrail_failures)
             self.assertLessEqual(proposals[0].risk_percentage, GuardrailConfig().max_risk_per_trade_pct)
 
+    def test_unavailable_kraken_pair_does_not_abort_crypto_research(self):
+        from ai_trader.agent import propose_crypto_trades
+        from ai_trader.audit import AuditDatabase
+        from ai_trader.multi_broker import record_crypto_research_score
+
+        class UnsupportedPairAdapter:
+            def current_prices(self, pairs):
+                raise RuntimeError("EQuery:Unknown asset pair")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            audit = AuditDatabase(db_path, None)
+            record_crypto_research_score(
+                db_path,
+                symbol="BNB",
+                category="Founder approved Kraken pairs",
+                metrics={
+                    "technical_trend_score": 0.9,
+                    "momentum_score": 0.9,
+                    "volatility": 0.2,
+                    "liquidity": 0.9,
+                    "risk_score": 0.9,
+                    "overall_due_diligence_score": 0.9,
+                    "confidence_score": 0.9,
+                },
+                source="test",
+            )
+
+            proposals = propose_crypto_trades(
+                db_path,
+                UnsupportedPairAdapter(),
+                ["BNB"],
+                AccountContext(equity=1000, daily_realized_pnl=0, open_positions=[], is_paper=False),
+                GuardrailConfig(),
+                audit,
+                min_confidence=0.85,
+                requested_notional=5.0,
+                default_stop_loss_pct=0.02,
+            )
+
+            self.assertEqual(proposals, [])
+
     def test_kraken_accepts_private_key_env_name_but_trading_stays_disabled(self):
         previous = {key: os.environ.get(key) for key in ["KRAKEN_API_KEY", "KRAKEN_PRIVATE_KEY", "KRAKEN_API_SECRET", "KRAKEN_TRADING_ENABLED"]}
         try:

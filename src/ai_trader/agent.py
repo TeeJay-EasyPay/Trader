@@ -194,7 +194,15 @@ def propose_crypto_trades(
                 )
                 continue
             pair = _kraken_pair(symbol)
-            prices = adapter.current_prices([pair]) if hasattr(adapter, "current_prices") else {}
+            try:
+                prices = adapter.current_prices([pair]) if hasattr(adapter, "current_prices") else {}
+            except Exception as exc:  # noqa: BLE001 - one unavailable pair must not abort the research cycle
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "pair": pair, "reason": "kraken_pair_unavailable", "detail": str(exc)},
+                )
+                continue
             price = _kraken_last_price(prices, pair)
             if price is None or price <= 0:
                 audit.record_execution_event(
