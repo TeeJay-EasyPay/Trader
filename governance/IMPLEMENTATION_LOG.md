@@ -1155,3 +1155,28 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Result:
   - a slow `/status` response should no longer interrupt the Founder with a modal;
   - the app should remain usable and explain that hosted status evidence is delayed or unavailable.
+
+## 2026-07-19 Production Evidence Activation Sprint - Completed
+
+- Implemented a shared Postgres production-evidence layer for research, recommendations, broker snapshots, trade evidence and learning evidence.
+- Added authenticated `/founder-evidence` and `/founder/trades` APIs and connected all six Founder screens to the same compact read model.
+- Added cached mobile startup so the last proven evidence renders before the hosted refresh completes.
+- Activated worker-owned research scheduling while retaining one scheduler owner and preserving all execution gates.
+- Hardened worker liveness with an independent durable heartbeat pulse during long broker operations.
+- Changed the worker order so due research and managed exits are not starved by slow broker polling; broker polling uses durable ten-minute buckets.
+- Corrected Kraken analysis so unavailable pairs create explicit no-trade evidence and do not abort the remaining approved symbols.
+- Hosted verification on revision `573c36b346a896e83886348a83204feaa9b1fe05` proved:
+  - heartbeat advancement from `23:02:23` to `23:03:40` UTC during autonomous work;
+  - active scheduler, healthy worker and Postgres shared state;
+  - four research runs, 36 assets analysed, 24 recommendations, two broker snapshots and 20 trade-history rows;
+  - explicit no-trade conclusion when no opportunity passed every portfolio, strategy and risk gate.
+- Published Android runtime `1.0.2` OTA updates:
+  - `hosted-preview` group `daa2d530-92b9-4ea8-b358-50ae8ced9648`;
+  - `preview` group `ca32b0ba-a219-4dbf-b418-138b32873749`.
+- Verification:
+  - full Python suite: 148 passed;
+  - Expo Doctor: 17/17 passed;
+  - Android export passed.
+- Safety boundary:
+  - no guardrail, strategy maturity gate, portfolio authority, broker permission or risk limit was weakened;
+  - the sprint exposes real trades and P&L evidence but does not fabricate missing exit attribution or force an order.

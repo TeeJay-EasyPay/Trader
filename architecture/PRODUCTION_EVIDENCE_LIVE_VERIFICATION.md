@@ -33,11 +33,21 @@ After Render deploys the implementation commit:
 
 ## Hosted evidence observed
 
-- Render API and background worker deployed the shared-evidence implementation from the same Git revision.
+- Render API and background worker deployed the shared-evidence implementation from Git revision `573c36b346a896e83886348a83204feaa9b1fe05`.
 - Authenticated `/founder-evidence` returned shared Postgres evidence in about seven seconds on a warm request.
-- The payload contained two broker snapshots, 20 bounded trade rows and persisted learning evidence.
+- A 70-second observation proved that the worker heartbeat advanced from `2026-07-19T23:02:23.635862+00:00` to `2026-07-19T23:03:40.208306+00:00` while autonomous work continued.
+- `/scheduler-status` reported `active`; `/founder-evidence` reported `OPERATING NORMALLY`, worker `healthy`, and database `postgres`.
+- The 24-hour payload contained four research runs, 36 assets analysed, 24 recommendations, two broker snapshots and 20 bounded trade-history rows.
+- No new order passed every execution gate. The persisted conclusion was: `Opportunities were found, but none passed every portfolio, strategy, and risk gate.`
+- Recorded net realised P&L was `-0.54616884`, consisting of known fees against zero matched realised trade P&L. This is not presented as full account mark-to-market performance.
 - A protected Kraken research run reviewed nine Founder-approved symbols, created six proposals and recorded one explicit no-trade outcome.
 - The run exposed and then verified the correction for an unsupported Kraken pair aborting an entire cycle.
 - Live inspection exposed slow broker polling as a heartbeat-freshness problem. The worker now emits independent heartbeat pulses, prioritises managed exits and due research, and limits broker polling to durable ten-minute buckets.
 
-Installed-device display and the next autonomous worker research cycle remain final acceptance checks after the heartbeat-hardening deployment and Expo OTA publication.
+## Mobile publication
+
+- `hosted-preview` runtime `1.0.2`: update group `daa2d530-92b9-4ea8-b358-50ae8ced9648`.
+- `preview` runtime `1.0.2`: update group `ca32b0ba-a219-4dbf-b418-138b32873749`.
+- Both Android updates include the hosted URL and mobile command token from `mobile/.env.local`; secret values were not written to logs or documentation.
+
+The remaining manual acceptance check is visual confirmation on the Founder's installed device after it downloads the OTA update. The backend evidence, autonomous worker operation and mobile bundle publication are proven.

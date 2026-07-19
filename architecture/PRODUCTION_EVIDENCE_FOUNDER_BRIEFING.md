@@ -21,6 +21,8 @@ This work does not force trades or loosen governance. The worker can research co
 
 An open holding is not a realized profit or loss. Exact trade P&L requires a matched entry and exit plus broker/reconciliation evidence. The app must say that rather than guess.
 
-## Founder action after deployment
+## Production proof
 
-Confirm the Render worker has `AI_TRADER_WORKER_RESEARCH_ENABLED=true`, keep the web-process scheduler disabled, deploy the backend commit, publish the mobile update, and complete the hosted verification checklist. Alpaca paper auto-trading remains a separate explicit permission.
+The Render worker is healthy on revision `573c36b3`, its heartbeat advances while long broker work runs, the shared database is Postgres, and the scheduler is active. The latest verified 24-hour evidence contained four research runs, 36 assets analysed and 24 recommendations. No order passed all execution gates; the app now reports that outcome directly.
+
+The Android runtime `1.0.2` update was published to both `hosted-preview` and `preview`. Restart the installed app once, allow it a few seconds to download the update, then close and reopen it. Alpaca paper auto-trading remains a separate explicit permission and was not silently enabled by this sprint.

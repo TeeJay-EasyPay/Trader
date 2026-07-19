@@ -668,6 +668,28 @@ Hosted analysis/activity follow-up:
 - Mobile Run Analysis message now explains when no safe recommendations were generated.
 - Mobile Command Centre now displays Alpaca recent orders/fills from `/portfolio` as broker activity.
 - Recommendation cards now show passed guardrails as well as failed guardrails for clearer trade decisions.
+
+## 2026-07-19 Production Evidence Activation
+
+- Activated one shared Founder evidence feed over Supabase/Postgres for Dashboard, Activity, Recommendations, Portfolio, Market and Learning.
+- The paid Render worker now schedules research independently of the phone and continues heartbeat updates during slow broker calls.
+- Corrected Kraken research so one unavailable pair cannot abort the remaining approved universe.
+- Live hosted proof on revision `573c36b3`:
+  - worker heartbeat advanced during autonomous work;
+  - scheduler `active`;
+  - Founder state `OPERATING NORMALLY`;
+  - database `postgres`;
+  - four research runs, 36 assets analysed and 24 recommendations in the verified 24-hour view;
+  - two broker snapshots and 20 bounded trade-history rows returned to the Founder read model.
+- No new order passed every gate during verification. This is persisted and displayed as governed inactivity, not hidden as missing data.
+- Recorded net realised P&L was `-0.54616884`, representing known fees against zero matched realised P&L; full account mark-to-market performance is not inferred from this number.
+- Verification passed:
+  - Python suite: 148 tests;
+  - Expo Doctor: 17/17;
+  - Android export: passed.
+- Expo OTA runtime `1.0.2` published:
+  - `hosted-preview`: `daa2d530-92b9-4ea8-b358-50ae8ced9648`;
+  - `preview`: `ca32b0ba-a219-4dbf-b418-138b32873749`.
 - `preview` OTA update group ID: `da0f2e4d-8ecc-4fff-b026-1693ca3ca139`.
 - `hosted-preview` OTA update group ID: `b6ae021d-9936-4003-972f-b719f79fb4b1`.
 
