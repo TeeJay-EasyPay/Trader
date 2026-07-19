@@ -1,5 +1,21 @@
 # AI Trading Assistant V1
 
+## Production Evidence Activation
+
+AI Trader now has a shared Founder evidence path for the paid Render worker. The worker performs recurring crypto research, market-aware equity research, broker polling, managed-exit checks, execution eligibility, evidence snapshots and learning without the phone being open. Results are projected to Supabase/Postgres and exposed through authenticated `GET /founder-evidence` and `GET /founder/trades` endpoints.
+
+The Expo app hydrates from its last successful evidence cache and refreshes from this bounded endpoint. Dashboard, Activity, Recommendations, Portfolio, Market and Learning therefore use the same worker-visible production evidence instead of depending on the slow legacy `/status` aggregate.
+
+Required hosted ownership settings:
+
+```text
+RESEARCH_SCHEDULER_ENABLED=false
+AI_TRADER_WORKER_RESEARCH_ENABLED=true
+AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS=300
+```
+
+This enables autonomous work, not unconditional trading. Orders still require every existing strategy, portfolio, risk, execution and broker-permission gate.
+
 Personal AI-assisted paper trading system for Alpaca.
 
 ## CTO Handover Pack

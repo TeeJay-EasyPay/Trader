@@ -87,6 +87,14 @@ from .operational import display_value, initialize_operational_schema, latest_pn
 from .operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema
 from .production_spine import initialize_production_spine_schema, phase5_status
+from .production_evidence import (
+    founder_evidence_payload,
+    initialize_production_evidence_schema,
+    list_production_trade_evidence,
+    record_broker_snapshot,
+    record_research_evidence,
+    record_trade_evidence,
+)
 from .sprint6 import (
     enqueue_learning_workflow,
     execution_mode_for_broker,
@@ -198,6 +206,7 @@ class LocalApiService:
         initialize_portfolio_intelligence_schema(settings.db_path)
         initialize_experience_engine_schema(settings.db_path)
         initialize_always_on_schema(settings.db_path)
+        initialize_production_evidence_schema(settings.db_path)
         initialize_production_spine_schema(settings.db_path)
         initialize_sprint6_schema(settings.db_path)
         seed_default_strategy_registry(settings.db_path)
@@ -332,6 +341,7 @@ class LocalApiService:
                 details=result,
                 success=False,
             )
+            self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols or [], result)
             return result
         if symbols is None:
             limit = max(1, min(int(limit or 10), 30))
@@ -354,6 +364,7 @@ class LocalApiService:
                 details=result,
                 success=False,
             )
+            self._record_production_research(started_at, "kraken", "crypto", "scheduled", [], result)
             return result
         account = self._account_context_for_broker("kraken")
         proposals = propose_crypto_trades(
@@ -442,13 +453,29 @@ class LocalApiService:
             summary=f"Kraken crypto research reviewed {len(symbols)} symbol(s) and created {len(proposals)} proposal(s).",
             details={"symbols": symbols, "proposal_count": len(proposals), "auto_execution": auto_execution},
         )
-        return {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
+        result = {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
+        self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols, result)
+        return result
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":
             return 200, self.status()
+        if path == "/founder-evidence":
+            return 200, founder_evidence_payload(
+                self.settings.db_path,
+                period=_first(query, "period") or "24h",
+                trade_limit=_int_or_default(_first(query, "trade_limit"), 100),
+            )
+        if path == "/founder/trades":
+            return 200, {
+                "trades": list_production_trade_evidence(
+                    self.settings.db_path,
+                    broker=_first(query, "broker"),
+                    limit=_int_or_default(_first(query, "limit"), 100),
+                )
+            }
         if path == "/portfolio":
             return 200, self.portfolio(_first(query, "broker") or "all")
         if path == "/founder-brief":
@@ -497,40 +524,26 @@ class LocalApiService:
         if path == "/sprint6-status":
             return 200, self.sprint6_status()
         if path == "/autonomous-activity":
-            return 200, self.autonomous_activity(query)
+            return 200, self.production_activity(query)
         if path == "/activity/status":
-            return 200, current_autonomous_status(
-                self.settings.db_path,
-                period=_first(query, "period") or "24h",
-                broker_panels=self.broker_panels(),
-                database_backend=self.settings.database_backend,
-            )
+            return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["status"]
         if path == "/activity/summary":
-            return 200, activity_summary(self.settings.db_path, period=_first(query, "period") or "24h")
+            return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["summary"]
         if path == "/activity/timeline":
-            return 200, activity_timeline(
-                self.settings.db_path,
-                period=_first(query, "period") or "24h",
-                category=_first(query, "category") or "all",
-                severity=_first(query, "severity") or "all",
-                important_only=_first(query, "important_only") == "true",
-                founder_action_required=_first(query, "founder_action_required") == "true",
-                limit=_int_or_default(_first(query, "limit"), 100),
-            )
+            return 200, self._filtered_production_timeline(query)
         if path == "/activity/why-no-trade":
-            return 200, why_no_trade_funnel(self.settings.db_path, period=_first(query, "period") or "24h")
+            return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["why_no_trade"]
         if path == "/activity/brokers":
-            return 200, broker_activity(
-                self.settings.db_path,
-                period=_first(query, "period") or "24h",
-                broker_panels=self.broker_panels(),
-            )
+            return 200, {"brokers": founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["brokers"]}
         if path == "/activity/founder-attention":
-            return 200, founder_attention(
-                self.settings.db_path,
-                period=_first(query, "period") or "24h",
-                broker_panels=self.broker_panels(),
-            )
+            payload = founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")
+            items = [] if payload["status"]["state"] == "OPERATING NORMALLY" else [{
+                "title": payload["status"]["state"],
+                "explanation": payload["status"]["plain_english"],
+                "recommended_action": "Review worker, research, and broker evidence on this screen.",
+                "started_at": payload["generated_at"],
+            }]
+            return 200, {"items": items, "count": len(items)}
         if path == "/operational-events":
             return 200, {"operational_events": self.operational_events(limit=_int_or_default(_first(query, "limit"), 50))}
         if path == "/decision-journal":
@@ -705,6 +718,54 @@ class LocalApiService:
             broker_panels=self.broker_panels(),
             database_backend=self.settings.database_backend,
         )
+
+    def production_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        payload = founder_evidence_payload(
+            self.settings.db_path,
+            period=_first(query, "period") or "24h",
+            trade_limit=_int_or_default(_first(query, "limit"), 100),
+        )
+        timeline = self._filtered_production_timeline(query, payload=payload)
+        attention_items = []
+        if payload["status"]["state"] != "OPERATING NORMALLY":
+            attention_items.append({
+                "title": payload["status"]["state"],
+                "explanation": payload["status"]["plain_english"],
+                "recommended_action": "Review stale or failed evidence below before enabling more capital.",
+                "started_at": payload["generated_at"],
+            })
+        latest = payload["status"].get("last_meaningful_activity")
+        return {
+            "generated_at": payload["generated_at"],
+            "period": payload["period"],
+            "status": payload["status"],
+            "summary": payload["summary"],
+            "timeline": timeline,
+            "why_no_trade": payload["why_no_trade"],
+            "broker_activity": {"brokers": payload["brokers"]},
+            "founder_attention": {"items": attention_items, "count": len(attention_items)},
+            "latest_completed_actions": [latest] if latest else [],
+            "truthfulness": payload["truthfulness"],
+        }
+
+    def _filtered_production_timeline(
+        self,
+        query: dict[str, list[str]],
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = payload or founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")
+        items = list(payload["timeline"]["items"])
+        category = (_first(query, "category") or "all").lower()
+        severity = (_first(query, "severity") or "all").lower()
+        if category != "all":
+            items = [row for row in items if str(row.get("category") or "").lower() == category]
+        if severity != "all":
+            items = [row for row in items if str(row.get("severity") or "").lower() == severity]
+        if _first(query, "important_only") == "true":
+            items = [row for row in items if row.get("severity") in {"warning", "blocked", "failure", "recovered"}]
+        limit = max(1, min(_int_or_default(_first(query, "limit"), 100), 200))
+        return {"items": items[:limit], "total": len(items), "period": payload["period"]}
 
     def operational_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))
@@ -1848,6 +1909,7 @@ This report explains available evidence. It does not automatically change strate
                 details=result,
                 success=False,
             )
+            self._record_production_research(started_at, "alpaca", "stock", trigger_type, [], result)
             return result
         if not self.settings.has_alpaca_credentials:
             result = {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
@@ -1872,6 +1934,7 @@ This report explains available evidence. It does not automatically change strate
                 details=result,
                 success=False,
             )
+            self._record_production_research(started_at, "alpaca", "stock", trigger_type, symbols, result)
             return result
         broker = self._broker()
         analyzer = None
@@ -1964,7 +2027,29 @@ This report explains available evidence. It does not automatically change strate
             details={"symbols": symbols, "proposal_count": len(proposals), "auto_execution": auto_execution},
             success=True,
         )
+        self._record_production_research(started_at, "alpaca", "stock", trigger_type, symbols, result)
         return result
+
+    def _record_production_research(
+        self,
+        started_at: str,
+        broker: str,
+        asset_type: str,
+        trigger_type: str,
+        symbols: list[str],
+        result: dict[str, Any],
+    ) -> None:
+        record_research_evidence(
+            self.settings.db_path,
+            idempotency_key=f"{broker}:{trigger_type}:{started_at}",
+            started_at=started_at,
+            broker=broker,
+            asset_type=asset_type,
+            trigger_type=trigger_type,
+            symbols=symbols,
+            result=result,
+            provider="Kraken" if broker == "kraken" else "Alpaca Market Data",
+        )
 
     def _bootstrap_crypto_universe_from_kraken_permissions(self, *, limit: int) -> list[str]:
         allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
@@ -2723,6 +2808,9 @@ This report explains available evidence. It does not automatically change strate
                 )
                 continue
             new_rows = record_broker_trade_history(self.settings.db_path, broker_name, list(orders) + list(history))
+            for event in list(orders) + list(history):
+                if isinstance(event, dict):
+                    record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
             reconciliation = normalize_broker_events(
                 self.settings.db_path,
                 broker=broker_name,
@@ -2758,6 +2846,37 @@ This report explains available evidence. It does not automatically change strate
                 "new_records": len(new_rows),
                 "reconciliation": reconciliation,
             }
+        return results
+
+    def capture_production_broker_snapshots(self) -> dict[str, Any]:
+        """Capture Founder-facing broker truth in the shared production datastore."""
+        results: dict[str, Any] = {}
+        for broker_name in ("alpaca", "kraken"):
+            try:
+                panel = self._live_alpaca_portfolio() if broker_name == "alpaca" else self._exchange_portfolio(broker_name)
+                panel = {**panel, "broker": broker_name}
+                record_broker_snapshot(self.settings.db_path, panel)
+                for event in list(panel.get("recent_orders") or []) + list(panel.get("recent_activities") or []):
+                    if isinstance(event, dict):
+                        record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
+                results[broker_name] = {
+                    "status": "captured",
+                    "connection_status": panel.get("connection_status"),
+                    "portfolio_value": panel.get("portfolio_value"),
+                    "open_positions": panel.get("open_positions_summary"),
+                }
+            except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
+                logger.exception("Failed to capture %s production broker snapshot.", broker_name)
+                record_broker_snapshot(
+                    self.settings.db_path,
+                    {
+                        "broker": broker_name,
+                        "connection_status": "Connection error",
+                        "error": str(exc),
+                        "source": "broker snapshot worker",
+                    },
+                )
+                results[broker_name] = {"status": "failed", "reason": str(exc)}
         return results
 
     def broker_panels(self) -> list[dict[str, Any]]:

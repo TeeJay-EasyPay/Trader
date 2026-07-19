@@ -1,5 +1,19 @@
 # Implementation Log
 
+## 2026-07-19 Production Evidence Activation Sprint
+
+- Audited the paid Render worker, research ownership, shared database boundaries and six Founder screens before implementation.
+- Confirmed the principal production gap: the worker was alive but did not own recurring research, while most useful screen data remained process-local SQLite evidence.
+- Added `production_evidence.py` with additive shared tables for research, recommendations, broker snapshots, broker trade/fill observations and learning outcomes.
+- Added authenticated bounded Founder evidence and trade APIs.
+- Extended the worker with durable crypto research, market-aware equity research and periodic production broker snapshots while preserving idempotent job locking.
+- Preserved all Investment Orchestrator, Portfolio Manager, Risk Engine, Alpaca paper and Kraken live safety authorities.
+- Reworked mobile startup to hydrate from cached evidence and refresh once from the shared Founder endpoint; removed `/status` as a blocking startup dependency.
+- Updated Dashboard, Activity, Recommendations, Portfolio, Market and Learning mappings to use the same persisted production truth.
+- Removed long phase-oriented diagnostic cards that obscured operating outcomes.
+- Added focused production evidence tests and passed the complete 146-test Python suite, Python compilation, Expo Doctor 17/17 and Android Expo export.
+- Recorded the live deployment checklist separately; no hosted order or P&L result is claimed before deployed broker evidence confirms it.
+
 ## 2026-07-19 Mobile Autonomous Activity Startup Hardening
 
 - Reviewed installed-app screenshots showing that the Dashboard and Activity screen were still degraded because `/status` and `/autonomous-activity` could exceed the mobile timeout.

@@ -1,5 +1,16 @@
 # Render and Expo Deployment Contract
 
+## Production Evidence Activation contract
+
+- Render API: serves authenticated APIs and does not own critical recurring schedules.
+- Render worker: runs `python -m ai_trader run-worker --sleep-seconds 60`.
+- Shared state: `AI_TRADER_DATABASE_BACKEND=postgres` and the same `DATABASE_URL` on API and worker.
+- API scheduler: `RESEARCH_SCHEDULER_ENABLED=false`.
+- Worker research: `AI_TRADER_WORKER_RESEARCH_ENABLED=true`.
+- Evidence snapshots: `AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS=300` by default.
+- Expo startup: loads cached Founder evidence, then requests `/founder-evidence`; it does not block on `/status`.
+- Credentials and API tokens remain environment variables and are never written to the mobile evidence cache except for the existing public command-token build contract.
+
 Date: 2026-07-17
 
 ## Render Startup Contract

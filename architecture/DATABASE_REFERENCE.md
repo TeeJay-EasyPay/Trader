@@ -4,7 +4,19 @@ AI Trader uses SQLite as the default local/test persistent store. The default lo
 
 The Always-On operations evidence tables now also support Supabase/Postgres. When `AI_TRADER_DATABASE_BACKEND=postgres` and `DATABASE_URL` or `SUPABASE_DATABASE_URL` is configured, `always_on.py` stores scheduled jobs, worker heartbeats, research funnels, shadow trades, and operations incidents in Postgres instead of SQLite. This is the first controlled step toward a shared production datastore for the API, worker, and scheduled jobs.
 
-The rest of the application remains SQLite-oriented until each schema family is ported deliberately. Do not assume broker runtime, trade audit, lifecycle, reports, recommendations, or learning tables have already been migrated to Postgres.
+The legacy transactional application remains SQLite-oriented until each schema family is ported deliberately. The Production Evidence Activation sprint adds a shared Postgres Founder projection for research, recommendations, broker snapshots, broker trade observations and learning outcomes. This projection makes worker evidence visible to the API and phone; it does not replace the canonical lifecycle or authorize execution.
+
+## Production evidence projection
+
+The following additive tables use the configured Always-On backend, which is Supabase/Postgres in hosted production and SQLite in local/test environments:
+
+- `PRODUCTION_RESEARCH_EVIDENCE`: one durable outcome per worker research cycle.
+- `PRODUCTION_RECOMMENDATION_EVIDENCE`: current/historical recommendation facts and balanced trade arguments.
+- `PRODUCTION_BROKER_SNAPSHOTS`: periodic safe account/portfolio panels for connected brokers.
+- `PRODUCTION_TRADE_EVIDENCE`: idempotent broker order, fill and trade observations.
+- `PRODUCTION_LEARNING_EVIDENCE`: completed worker learning outcomes.
+
+Indexes bound Founder queries by time and broker. Source payloads are retained for traceability, while the mobile API returns bounded projections. P&L fields remain null unless the source broker or reconciled trade supplies them.
 
 The schema is modular. Each subsystem initializes its own tables:
 

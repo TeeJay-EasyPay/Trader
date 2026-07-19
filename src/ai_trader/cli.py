@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,7 @@ from .always_on import (
     record_worker_heartbeat,
 )
 from .sprint6 import process_learning_outbox
+from .production_evidence import record_learning_evidence
 
 
 DEMO_MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -208,14 +209,30 @@ def main(argv: list[str] | None = None) -> int:
                 broker_poll = _run_worker_cycle_job(service, "broker-poll", worker_id)
                 exits = _run_worker_cycle_job(service, "managed-exits", worker_id)
                 auto = _run_worker_cycle_job(service, "auto-execution", worker_id)
+                scheduled_results = {}
+                for job_name, scheduled_for in _due_worker_jobs(settings):
+                    scheduled_results[job_name] = _run_worker_cycle_job(
+                        service,
+                        job_name,
+                        worker_id,
+                        scheduled_for=scheduled_for,
+                    )
                 learning = process_learning_outbox(settings.db_path, worker_id=worker_id, limit=10)
+                if int(learning.get("processed") or 0) > 0:
+                    record_learning_evidence(settings.db_path, learning, worker_id=worker_id)
                 record_worker_heartbeat(
                     settings.db_path,
                     worker_id=worker_id,
                     worker_type="background-worker",
                     current_job="idle",
                     last_successful_job="background-cycle",
-                    payload={"broker_poll": broker_poll, "managed_exits": exits, "auto_execution": auto, "learning": learning},
+                    payload={
+                        "broker_poll": _job_summary(broker_poll),
+                        "managed_exits": _job_summary(exits),
+                        "auto_execution": _job_summary(auto),
+                        "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
+                        "learning": _job_summary(learning),
+                    },
                 )
             except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
                 record_worker_heartbeat(
@@ -300,13 +317,15 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.auto_execute_recommendations()
     if job_name == "broker-poll":
         return service.poll_broker_activity()
+    if job_name == "evidence-snapshot":
+        return service.capture_production_broker_snapshots()
     if job_name == "managed-exits":
         return service.monitor_managed_exits()
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 
-def _run_worker_cycle_job(service, job_name: str, worker_id: str) -> dict:
-    scheduled_for = datetime.now().replace(second=0, microsecond=0).isoformat()
+def _run_worker_cycle_job(service, job_name: str, worker_id: str, *, scheduled_for: str | None = None) -> dict:
+    scheduled_for = scheduled_for or datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
     claim = claim_scheduled_job(
         service.settings.db_path,
         job_name=job_name,
@@ -323,6 +342,51 @@ def _run_worker_cycle_job(service, job_name: str, worker_id: str) -> dict:
     except Exception as exc:
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=str(exc))
         raise
+
+
+def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tuple[str, str]]:
+    """Return durable work buckets owned by the worker, independent of the mobile app."""
+    now = now or datetime.now(timezone.utc)
+    due = [
+        (
+            "evidence-snapshot",
+            _time_bucket(now, max(60, settings.production_snapshot_interval_seconds)),
+        )
+    ]
+    if not settings.worker_research_enabled:
+        return due
+    research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
+    due.append(("overnight-crypto", _time_bucket(now, research_seconds)))
+    market_now = now.astimezone(ZoneInfo("America/New_York"))
+    if market_now.weekday() >= 5:
+        return due
+    day = market_now.date().isoformat()
+    minutes = market_now.hour * 60 + market_now.minute
+    if 8 * 60 <= minutes < 9 * 60 + 30:
+        due.append(("premarket-equity", f"{day}T08:00:00-04:00"))
+    elif 9 * 60 + 30 <= minutes < 16 * 60:
+        due.append(("market-open-equity", _time_bucket(now, research_seconds)))
+    elif 16 * 60 <= minutes < 17 * 60:
+        due.append(("market-close-equity", f"{day}T16:00:00-04:00"))
+    if minutes >= 17 * 60:
+        due.append(("daily-report", f"{day}T17:00:00-04:00"))
+    return due
+
+
+def _time_bucket(now: datetime, interval_seconds: int) -> str:
+    epoch = int(now.timestamp())
+    bucket = epoch - (epoch % interval_seconds)
+    return datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat()
+
+
+def _job_summary(result: object) -> object:
+    if not isinstance(result, dict):
+        return result
+    keys = ("status", "message", "reason", "processed", "submitted", "rejected", "symbols", "recommendations_created")
+    summary = {key: result.get(key) for key in keys if key in result}
+    if "proposals" in result and isinstance(result.get("proposals"), list):
+        summary["proposal_count"] = len(result["proposals"])
+    return summary or {"status": "completed", "items": len(result)}
 
 
 def _raise_if_invalid_hosted_runtime(settings: Settings) -> None:

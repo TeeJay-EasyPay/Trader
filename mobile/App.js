@@ -18,6 +18,7 @@ const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
+const FOUNDER_EVIDENCE_CACHE_KEY = 'ai-trader:last-founder-evidence';
 const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
 const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
 const BACKGROUND_HYDRATION_TIMEOUT_MS = 60000;
@@ -246,6 +247,270 @@ function activityFromEvidence({ operations, summary, noTrade, period }) {
   };
 }
 
+function statusFromFounderEvidence(evidence) {
+  const operating = evidence?.status || {};
+  const portfolio = evidence?.portfolio || {};
+  const researchRows = evidence?.research || [];
+  const latestResearch = researchRows[0] || null;
+  const trades = evidence?.trades || [];
+  const recommendations = evidence?.recommendations || [];
+  const learning = evidence?.learning || [];
+  const brokerPanels = (evidence?.brokers || []).map((row) => {
+    const raw = row.payload || {};
+    const brokerTrades = trades.filter((trade) => String(trade.broker).toLowerCase() === String(row.broker).toLowerCase());
+    return {
+      ...raw,
+      broker: row.broker,
+      label: String(row.broker || '').toLowerCase() === 'alpaca' ? 'Alpaca' : 'Kraken',
+      connection_status: row.connection_status,
+      account_mode: row.account_mode,
+      currency: row.currency,
+      portfolio_value: row.portfolio_value,
+      cash_available: row.cash,
+      buying_power: row.buying_power,
+      estimated_in_positions: row.deployed_capital,
+      todays_pnl: row.day_pnl,
+      week_pnl: row.week_pnl,
+      month_pnl: row.month_pnl,
+      open_positions: row.open_positions,
+      open_positions_detail: row.positions || [],
+      reconciliation_status: row.reconciliation_status,
+      source: `${row.source || 'broker adapter'}; captured ${formatDateTime(row.captured_at)}`,
+      latest_error: row.error,
+      trades_today: brokerTrades.length,
+      trade_history: brokerTrades.map(productionTradeForMobile),
+      research_status: brokerResearchStatus(researchRows, row.broker),
+      due_diligence_status: recommendations.some((item) => String(item.suggested_broker || item.broker).toLowerCase() === String(row.broker).toLowerCase())
+        ? 'Completed - recommendation evidence is available'
+        : 'No recommendation passed due diligence in the selected period',
+      auto_trading_enabled: Boolean(raw.auto_trading_enabled),
+      trading_permissions: raw.trading_permissions,
+    };
+  });
+  const deployed = portfolio.deployed_capital;
+  const total = portfolio.portfolio_value;
+  const dayPnl = portfolio.todays_pnl;
+  const researchSummary = evidence?.summary?.research || {};
+  const learningCount = learning.length;
+  const operations = {
+    generated_at: evidence?.generated_at,
+    overall: operating.state === 'OPERATING NORMALLY' ? 'healthy' : 'attention_needed',
+    plain_english: operating.plain_english,
+    api_health: 'available',
+    worker_health: operating.worker_status,
+    database_durability: operating.database_status === 'postgres' ? 'Durable shared Postgres evidence is active' : operating.database_status,
+    database_backend: {
+      requested_backend: 'postgres',
+      active_backend: operating.database_status,
+      plain_english: operating.database_status === 'postgres'
+        ? 'The API and background worker share production evidence in Supabase Postgres.'
+        : 'Production evidence is not currently reporting Postgres as the active backend.',
+    },
+    last_equity_research: researchRows.find((item) => String(item.broker).toLowerCase() === 'alpaca'),
+    last_crypto_research: researchRows.find((item) => String(item.broker).toLowerCase() === 'kraken'),
+    last_research_run: latestResearch,
+    last_job_runs: evidence?.jobs || [],
+    incidents: operating.unresolved_incident_count ? [{ title: `${operating.unresolved_incident_count} unresolved incident(s)` }] : [],
+  };
+  const portfolioHealth = total == null
+    ? 'Awaiting a successful broker snapshot'
+    : dayPnl == null
+      ? 'Broker balances are current; daily P&L awaits a comparison snapshot'
+      : `${dayPnl >= 0 ? 'Up' : 'Down'} ${moneyOrText(Math.abs(dayPnl))} today`;
+  const researchHealth = latestResearch
+    ? `${latestResearch.broker || 'Market'} research ${latestResearch.status || 'recorded'} at ${formatDateTime(latestResearch.completed_at)}`
+    : 'No production research evidence has been recorded in this period';
+  return {
+    system_status: operating.state,
+    paper_live_mode: 'Alpaca paper; Kraken controlled live permissions',
+    engine_health: operating.plain_english,
+    research_status: researchHealth,
+    due_diligence_status: recommendations.length
+      ? `${recommendations.length} persisted recommendation(s) available for review`
+      : evidence?.why_no_trade?.conclusion,
+    last_analysis_time: operating.last_successful_research_run,
+    last_research_run: latestResearch,
+    research_assets_reviewed: researchSummary.assets_analysed,
+    crypto_projects_reviewed: researchRows
+      .filter((item) => String(item.broker).toLowerCase() === 'kraken')
+      .reduce((totalCount, item) => totalCount + Number(item.assets_analysed || 0), 0),
+    research_recommendations_created: researchSummary.recommendations_created,
+    next_scheduled_research_run: null,
+    brokers: brokerPanels,
+    operations_health: operations,
+    recommendation_summary: {
+      active: recommendations.filter((item) => item.freshness_status !== 'Expired').length,
+      expired: recommendations.filter((item) => item.freshness_status === 'Expired').length,
+      auto_trade_mode: 'Broker-specific permissions and governance gates apply',
+    },
+    selected_active_brokers: brokerPanels.map((item) => item.broker),
+    connection_readiness: {
+      trade_ready: operating.worker_status === 'healthy' && operating.database_status === 'postgres',
+      note: 'This readiness view is derived from shared production evidence. Every order still requires orchestrator, portfolio, strategy, and risk approval.',
+      checks: [
+        { component: 'Render API', status: 'connected', ready: true, detail: 'The Founder evidence endpoint responded.' },
+        { component: 'Background Worker', status: operating.worker_status, ready: operating.worker_status === 'healthy', detail: operating.plain_english },
+        { component: 'Supabase Postgres', status: operating.database_status, ready: operating.database_status === 'postgres', detail: operations.database_backend.plain_english },
+        ...brokerPanels.map((broker) => ({
+          component: broker.label,
+          status: broker.connection_status,
+          ready: String(broker.connection_status).toLowerCase() === 'connected',
+          auto_trading_enabled: broker.auto_trading_enabled,
+          detail: broker.latest_error || broker.source,
+        })),
+      ],
+    },
+    founder_experience: {
+      executive_dashboard: {
+        portfolio_health: portfolioHealth,
+        headline: founderHeadline(evidence),
+        good_morning: [operating.plain_english, evidence?.why_no_trade?.conclusion].filter(Boolean),
+        what_to_do: founderAction(evidence),
+        what_to_worry_about: operating.state === 'OPERATING NORMALLY'
+          ? 'No operational fault is visible. Review individual broker and trade evidence before changing capital.'
+          : operating.plain_english,
+        todays_recommendation_count: recommendations.length,
+        open_positions: portfolio.open_positions?.length || 0,
+        capital_deployed: deployed,
+        cash_available: portfolio.cash_available,
+        learning_progress: learningCount ? `${learningCount} learning cycle(s) completed in this period` : 'No completed learning cycle in this period',
+      },
+      portfolio_command: {
+        portfolio_allocation: {
+          total,
+          deployed,
+          cash: portfolio.cash_available,
+          deployed_pct: total ? deployed / total : null,
+        },
+        diversification: portfolio.open_positions?.length
+          ? `${portfolio.open_positions.length} broker position(s) captured; detailed diversification requires normalized metadata`
+          : 'No open broker positions captured',
+        portfolio_risk: 'Governed per recommendation; aggregate risk attribution is not yet present in this evidence projection',
+        expected_portfolio_return: 'Not estimated - no forecast is fabricated from broker balances',
+        positions_requiring_attention: [],
+        rebalancing_suggestions: [],
+      },
+      market_intelligence_centre: {
+        market_health: latestResearch ? `Fresh production research evidence from ${latestResearch.broker}` : 'No fresh production research evidence',
+        current_market_regime: latestResearch?.summary || 'Not calculated in the production evidence projection',
+        volatility: 'See recommendation evidence where available',
+        momentum: 'See recommendation evidence where available',
+        breadth: `${researchSummary.assets_analysed || 0} asset review(s) recorded in this period`,
+        crypto_health: brokerResearchStatus(researchRows, 'kraken'),
+        sector_rotation: [],
+        major_themes: [],
+        important_news: [],
+        upcoming_risks: evidence?.why_no_trade?.top_reasons?.map((item) => `${item.reason}: ${item.count}`) || [],
+        watch_list: recommendations.map((item) => item.symbol).filter(Boolean),
+      },
+      learning_lab: {
+        learning_progress: learningCount ? `${learningCount} completed learning processor run(s)` : 'No completed learning run in this period',
+        prediction_accuracy: null,
+        calibration: learningCount ? 'Learning evidence exists; statistical calibration requires completed attributed trades' : 'Insufficient completed trade evidence',
+        best_strategy: null,
+        weakest_strategy: null,
+        strategy_validation_status: 'Governed strategy promotion remains separate from production evidence display',
+        lessons_learned: learning.map((item) => item.summary).filter(Boolean),
+        founder_suggestions: learning.length ? ['Review completed learning evidence before approving any strategy change.'] : [],
+        strategy_rankings: [],
+        signal_rankings: [],
+      },
+    },
+    world_class_evidence: {
+      first_conclusion: operating.state === 'OPERATING NORMALLY' ? 'No action required' : 'Operational attention required',
+      unavailable: [],
+      future_connections: [],
+      operational_truth: {
+        canonical_lifecycle_events: trades.length,
+        illegal_transition_rejections: 0,
+        reconciliation_health: brokerPanels.map((item) => `${item.label}: ${item.reconciliation_status}`),
+      },
+      portfolio_intelligence: {
+        plain_english: portfolioHealth,
+        warnings: dayPnl == null ? ['Daily P&L needs at least two comparable broker snapshots or broker-reported P&L.'] : [],
+      },
+    },
+  };
+}
+
+function activityFromFounderEvidence(evidence) {
+  const timeline = evidence?.timeline || { items: [], total: 0 };
+  const brokers = (evidence?.brokers || []).map((row) => ({
+    broker: row.broker,
+    label: String(row.broker || '').toLowerCase() === 'alpaca' ? 'Alpaca' : 'Kraken',
+    connection_status: row.connection_status,
+    account_mode: row.account_mode,
+    last_successful_poll: row.captured_at,
+    polling_freshness: row.captured_at ? `Captured ${formatDateTime(row.captured_at)}` : 'No broker snapshot recorded',
+    autonomous_execution: row.payload?.auto_trading_enabled ? 'Enabled' : 'Disabled or not evidenced',
+    orders_submitted: (evidence?.trades || []).filter((trade) => trade.broker === row.broker && ['submitted', 'accepted', 'new'].includes(trade.status)).length,
+    fills_received: (evidence?.trades || []).filter((trade) => trade.broker === row.broker && String(trade.status).includes('filled')).length,
+    open_positions: row.open_positions,
+    reconciliation_status: row.reconciliation_status,
+    current_blocker: row.error || null,
+    latest_broker_error: row.error || null,
+  }));
+  return {
+    ...evidence,
+    timeline: {
+      ...timeline,
+      returned: timeline.items?.length || 0,
+      source_event_count: timeline.total || timeline.items?.length || 0,
+      empty_state: timeline.items?.length ? null : 'No autonomous activity has been recorded in the selected period.',
+    },
+    broker_activity: { brokers },
+    founder_attention: {
+      plain_english: evidence?.status?.state === 'OPERATING NORMALLY'
+        ? 'No Founder action is currently required.'
+        : evidence?.status?.plain_english || 'Operational evidence requires review.',
+      items: [],
+    },
+    latest_completed_actions: (timeline.items || []).slice(0, 8).map((item) => ({
+      label: item.category || item.component,
+      title: item.title,
+      timestamp: item.timestamp,
+      outcome: item.outcome,
+    })),
+  };
+}
+
+function productionTradeForMobile(trade) {
+  return {
+    ...trade,
+    created_at: trade.observed_at,
+    updated_at: trade.observed_at,
+    qty: trade.quantity,
+    filled_avg_price: trade.average_fill_price || trade.price,
+    profit_loss: trade.realized_pnl,
+    raw: trade.payload || {},
+  };
+}
+
+function brokerResearchStatus(rows, broker) {
+  const row = (rows || []).find((item) => String(item.broker).toLowerCase() === String(broker).toLowerCase());
+  return row
+    ? `${row.status || 'recorded'} - ${row.assets_analysed || 0} asset(s), ${formatDateTime(row.completed_at)}`
+    : 'No research evidence recorded for this broker in the selected period';
+}
+
+function founderHeadline(evidence) {
+  const pnl = evidence?.portfolio?.todays_pnl;
+  const tradeCount = evidence?.trades?.length || 0;
+  const state = evidence?.status?.state || 'STATUS UNKNOWN';
+  const pnlText = pnl == null ? 'Daily P&L is awaiting comparable broker evidence.' : `Today is ${pnl >= 0 ? 'up' : 'down'} ${moneyOrText(Math.abs(pnl))}.`;
+  return `${state}. ${pnlText} ${tradeCount} broker order or fill event(s) are visible in this period.`;
+}
+
+function founderAction(evidence) {
+  if (evidence?.status?.state !== 'OPERATING NORMALLY') {
+    return 'Open Activity and review the latest worker, research, or broker warning before changing trading permissions.';
+  }
+  if (evidence?.recommendations?.length) {
+    return `Review ${evidence.recommendations.length} persisted recommendation(s); governance remains the execution authority.`;
+  }
+  return evidence?.why_no_trade?.conclusion || 'No action is required.';
+}
+
 export default function App() {
   const [screen, setScreen] = useState('Dashboard');
   const [loading, setLoading] = useState(false);
@@ -324,86 +589,75 @@ export default function App() {
     try {
       const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
         request(path, { timeoutMs }).catch(() => fallback);
-      const recommendationRequest = request('/recommendations', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS })
-        .then((payload) => ({ ok: true, payload }))
-        .catch(() => ({ ok: false, payload: { recommendations: [] } }));
-      const operationsRequest = optional('/operations-health', null, PRIMARY_REFRESH_TIMEOUT_MS);
-      const activityRequest = Promise.all([
-        operationsRequest,
-        optional(`/activity/summary?period=${activityPeriod}`, null, PRIMARY_REFRESH_TIMEOUT_MS),
-        optional(`/activity/why-no-trade?period=${activityPeriod}`, null, PRIMARY_REFRESH_TIMEOUT_MS),
-      ]).then(([operations, activitySummary, noTrade]) => ({
-        ok: Boolean(operations || activitySummary || noTrade),
-        operations,
-        payload: operations || activitySummary || noTrade
-          ? activityFromEvidence({ operations, summary: activitySummary, noTrade, period: activityPeriod })
-          : unavailableActivity('No lightweight autonomous activity evidence responded before the mobile timeout.'),
-      }));
-      const [nextStatus, nextPortfolio, nextRecommendationsResult, nextActivityResult] = await Promise.all([
-        operationsRequest.then((operations) => (
-          operations
-            ? statusFromOperations(operations)
-            : unavailableStatus('The hosted operations endpoint did not respond before the mobile timeout.')
-        )),
-        optional('/portfolio', {
-          portfolio_value: 'Not available',
-          cash_available: 'Not available',
-          open_positions: [],
-          executive_summary: [],
-        }, PRIMARY_REFRESH_TIMEOUT_MS),
-        recommendationRequest,
-        activityRequest,
-      ]);
+      const founderEvidence = await request(
+        `/founder-evidence?period=${activityPeriod}&trade_limit=100`,
+        { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }
+      );
+      const nextStatus = statusFromFounderEvidence(founderEvidence);
+      const nextPortfolio = founderEvidence.portfolio || {
+        portfolio_value: null,
+        cash_available: null,
+        deployed_capital: null,
+        todays_pnl: null,
+        open_positions: [],
+      };
+      const nextRecommendationItems = sortByConfidence(founderEvidence.recommendations || []);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
-      setActivity(nextActivityResult.payload);
-      const nextRecommendationItems = sortByConfidence(nextRecommendationsResult.payload.recommendations || []);
+      setActivity(activityFromFounderEvidence(founderEvidence));
+      setPerformanceAttribution((founderEvidence.trades || []).map(productionTradeForMobile));
+      setDailyLearning(founderLearningForMobile(founderEvidence));
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);
         await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
-      } else if (!nextRecommendationsResult.ok) {
+      } else {
         const cached = await loadCachedRecommendations();
         setRecommendations(cached.length ? cached : []);
-      } else {
-        setRecommendations([]);
-        await AsyncStorage.removeItem(RECOMMENDATION_CACHE_KEY);
       }
+      await AsyncStorage.setItem(FOUNDER_EVIDENCE_CACHE_KEY, JSON.stringify(founderEvidence));
       setLastRefreshedAt(new Date().toISOString());
       setLoading(false);
 
       Promise.all([
-        optional('/status', null, BACKGROUND_HYDRATION_TIMEOUT_MS),
-        optional(`/autonomous-activity?period=${activityPeriod}&limit=30`, null, BACKGROUND_HYDRATION_TIMEOUT_MS),
         optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
         optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
         optional('/intelligence/themes', { themes: [] }),
         optional('/intelligence/companies', { companies: [] }),
         optional('/notifications', { notifications: [] }),
-        optional('/performance-attribution', { performance_attribution: [] }),
-        optional('/daily-learning-update', null),
-      ]).then(([hydratedStatus, hydratedActivity, nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning]) => {
-        if (hydratedStatus) {
-          setStatus(hydratedStatus);
-        }
-        if (hydratedActivity) {
-          setActivity(hydratedActivity);
-        }
+      ]).then(([nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications]) => {
         setBrief(nextBrief);
         setBenchmark(nextBenchmark);
         setThemes(nextThemes.themes || []);
         setCompanies(nextCompanies.companies || []);
         setNotifications(nextNotifications.notifications || []);
-        setPerformanceAttribution(nextPerformance.performance_attribution || []);
-        setDailyLearning(nextLearning);
         setLastRefreshedAt(new Date().toISOString());
       });
     } catch (error) {
-      setActivity(unavailableActivity(`Primary refresh could not complete: ${String(error.message || error)}`));
+      const cached = await loadCachedFounderEvidence();
+      if (cached) {
+        setStatus(statusFromFounderEvidence(cached));
+        setPortfolio(cached.portfolio || null);
+        setActivity(activityFromFounderEvidence(cached));
+        setPerformanceAttribution((cached.trades || []).map(productionTradeForMobile));
+        setDailyLearning(founderLearningForMobile(cached));
+      } else {
+        setActivity(unavailableActivity(`Production evidence could not be loaded: ${String(error.message || error)}`));
+        setStatus(unavailableStatus(String(error.message || error)));
+      }
       setLoading(false);
     }
   }, [activityPeriod, request]);
 
   useEffect(() => {
+    loadCachedFounderEvidence().then((cached) => {
+      if (cached) {
+        setStatus(statusFromFounderEvidence(cached));
+        setPortfolio(cached.portfolio || null);
+        setActivity(activityFromFounderEvidence(cached));
+        setPerformanceAttribution((cached.trades || []).map(productionTradeForMobile));
+        setDailyLearning(founderLearningForMobile(cached));
+      }
+    });
     loadCachedRecommendations().then((cached) => {
       if (cached.length) {
         setRecommendations(cached);
@@ -601,8 +855,6 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
   const executive = status?.founder_experience?.executive_dashboard || {};
   const evidence = status?.world_class_evidence || {};
   const operations = status?.operations_health || {};
-  const phase5 = status?.phase5_status || {};
-  const sprint6 = status?.sprint6_status || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
   const brokerPanels = connectedFounderBrokers(status?.brokers || []);
   const futureConnections = evidence.future_connections || futureBrokerPanels(status?.brokers || []);
@@ -640,40 +892,6 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
         <Metric label="Alpaca Paper Orders" value={sumRecentJobs(operations.last_job_runs, 'paper_orders_submitted')} />
         <Metric label="Kraken Orders" value={connectedFounderBrokers(status?.brokers || []).find((item) => item.broker === 'kraken')?.trades_today} />
         <TextBlock label="Incidents" value={operationsIncidentText(operations.incidents)} />
-      </Section>
-      <Section title="Autonomous Production Spine">
-        <StatusPill label={phase5.plain_english || explainMissing('Phase 5 status', 'the hosted API has not returned production spine evidence yet')} tone={phase5Tone(phase5)} />
-        <Metric label="Overall" value={phase5.overall || explainMissing('overall Phase 5 readiness', 'production spine status is not available yet')} />
-        <Metric label="Database Spine" value={phase5.database_spine?.status || explainMissing('database spine', 'critical runtime database migration status is not available yet')} />
-        <Metric label="Shared Runtime Truth" value={phase5.database_spine?.plain_english} />
-        <Metric label="Worker Supervision" value={phase5.worker_supervision?.status || explainMissing('worker supervision', 'worker supervision has not run yet')} />
-        <Metric label="Worker Health Score" value={phase5.worker_supervision?.health_score} />
-        <TextBlock label="Hardening Backlog" value={formatList(phase5.database_spine?.unmigrated_families)} />
-      </Section>
-      <Section title="Sprint 6 Production Control">
-        <StatusPill label={sprint6.plain_english || explainMissing('Sprint 6 status', 'the hosted API has not returned Sprint 6 control evidence yet')} tone={sprint6Tone(sprint6)} />
-        <Metric label="Overall" value={sprint6.overall || explainMissing('Sprint 6 readiness', 'pre-execution control status is not available yet')} />
-        <Metric label="Database Truth" value={sprint6.shared_runtime_truth} />
-        <Metric label="Kill Switch" value={sprint6.kill_switch?.active ? `Active - ${sprint6.kill_switch?.reason || 'manual resume required'}` : sprint6.kill_switch?.state || 'Not active'} />
-        <TextBlock label="Decision Journal" value={formatDecisionJournalCounts(sprint6.decision_journal_counts)} />
-        <TextBlock label="Latest Operational Events" value={formatOperationalEvents(sprint6.latest_operational_events)} />
-        <TextBlock label="Open Incidents" value={formatSprint6Incidents(sprint6.open_incidents)} />
-      </Section>
-      <Section title="CEO Dashboard">
-        <Metric label="Overall Portfolio Health" value={executive.portfolio_health} />
-        <Metric label="Overall AI Confidence" value={executive.overall_ai_confidence} />
-        <Metric label="Current Market Regime" value={executive.current_market_regime} />
-        <Metric label="Today's Recommendation Count" value={executive.todays_recommendation_count} />
-        <Metric label="Portfolio Risk" value={executive.portfolio_risk} />
-        <Metric label="Portfolio Diversification" value={executive.portfolio_diversification} />
-        <Metric label="Open Positions" value={executive.open_positions} />
-        <Metric label="Capital Deployed" value={moneyOrText(executive.capital_deployed)} />
-        <Metric label="Cash Available" value={moneyOrText(executive.cash_available)} />
-        <Metric label="Learning Progress" value={executive.learning_progress} />
-        <Metric label="Prediction Accuracy" value={formatPercent(executive.prediction_accuracy)} />
-        <Metric label="Best Strategy" value={executive.current_best_strategy} />
-        <Metric label="Weakest Strategy" value={executive.current_weakest_strategy} />
-        <Metric label="Committee Confidence" value={executive.committee_confidence} />
       </Section>
       <ConnectionReadinessCard readiness={readiness} />
       <Section title="Broker Panels">
@@ -2105,6 +2323,44 @@ async function loadCachedRecommendations() {
   } catch (error) {
     return [];
   }
+}
+
+async function loadCachedFounderEvidence() {
+  try {
+    const raw = await AsyncStorage.getItem(FOUNDER_EVIDENCE_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function founderLearningForMobile(evidence) {
+  const learning = evidence?.learning || [];
+  const performance = evidence?.performance || {};
+  const trades = evidence?.trades || [];
+  const closed = trades.filter((trade) => ['closed', 'target_exit', 'stop_exit', 'manual_exit'].includes(String(trade.status).toLowerCase()));
+  const winners = closed.filter((trade) => Number(trade.realized_pnl) > 0).length;
+  return {
+    date: String(evidence?.generated_at || '').slice(0, 10),
+    summary: learning.length
+      ? `${learning.length} durable learning processor run(s) completed in the selected period.`
+      : 'No completed learning run is recorded in the selected period. Learning only follows terminal, reconciled trade evidence.',
+    trade_outcomes: {
+      closed_trades: closed.length,
+      win_rate: closed.length ? winners / closed.length : null,
+      total_profit_loss: performance.realized_pnl,
+    },
+    trade_lessons: learning.map((item) => item.summary).filter(Boolean),
+    benchmark_learning: [],
+    recommendations_for_founder: learning.length
+      ? ['Review learning evidence before approving any governed strategy change.']
+      : ['Allow terminal trades to reconcile before judging strategy improvement.'],
+    note: 'This view is derived from shared production evidence. Learning cannot silently change trading policy or production parameters.',
+  };
 }
 
 function commandMessage(path, result) {

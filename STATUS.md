@@ -2,7 +2,18 @@
 
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18); Autonomous Activity screen implemented locally and verified against hosted API (2026-07-19); mobile refresh performance hardening implemented locally (2026-07-19)
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18); Autonomous Activity screen implemented locally and verified against hosted API (2026-07-19); Production Evidence Activation implemented and locally verified (2026-07-19)
+
+## 2026-07-19 Production Evidence Activation
+
+- Activated recurring worker-owned crypto and market-aware equity research.
+- Added shared Postgres/SQLite production evidence projections for research, recommendations, broker snapshots, broker trade observations and learning.
+- Added bounded authenticated `/founder-evidence` and `/founder/trades` APIs.
+- Reworked all six Founder screens to consume one shared evidence payload and use a local last-known-good cache.
+- Removed the legacy `/status` endpoint from the critical mobile startup path.
+- Removed long implementation-phase diagnostic cards from the primary Dashboard.
+- Full Python suite passes: 146 tests. Expo Doctor passes: 17/17. Android Expo export passes.
+- Hosted Render/installed-device verification remains required after deployment; this status does not claim a broker trade that has not been observed.
 
 ## 2026-07-19 Mobile Refresh Performance Hardening
 

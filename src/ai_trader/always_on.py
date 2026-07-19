@@ -1136,6 +1136,11 @@ def _use_postgres() -> bool:
     return requested in {"postgres", "postgresql", "supabase"} and bool(_database_url())
 
 
+def uses_postgres() -> bool:
+    """Return whether durable production evidence is configured for Postgres."""
+    return _use_postgres()
+
+
 def _postgres_connection():
     try:
         import psycopg
@@ -1148,3 +1153,8 @@ def _postgres_connection():
     if not url:
         raise RuntimeError("Postgres backend requested but DATABASE_URL/SUPABASE_DATABASE_URL is not configured.")
     return psycopg.connect(url, row_factory=dict_row)
+
+
+def postgres_connection():
+    """Open the shared production connection used by API and worker processes."""
+    return _postgres_connection()

@@ -94,6 +94,12 @@ SUPABASE_DATABASE_URL=<shared Postgres URL>
 
 This prevents AI Trader from silently splitting runtime truth across container-local SQLite databases.
 
+## Production evidence activation
+
+The API container must keep `RESEARCH_SCHEDULER_ENABLED=false`; it is not the recurring schedule owner. The paid background worker must run `python -m ai_trader run-worker --sleep-seconds 60` with `AI_TRADER_WORKER_RESEARCH_ENABLED=true`. It owns recurring crypto research, market-aware equity research, evidence snapshots, broker polling, managed exits, auto-execution evaluation and learning.
+
+`AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS` controls broker/Founder evidence capture and defaults to 300 seconds. All services must share the same `DATABASE_URL`. A worker heartbeat without shared production evidence is not sufficient Founder proof.
+
 ## Verification
 
 After deploy, verify:

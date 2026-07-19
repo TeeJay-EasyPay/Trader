@@ -59,6 +59,8 @@ class Settings:
     research_scheduler_interval_minutes: int = 60
     research_scheduler_limit: int = 30
     auto_execution_interval_seconds: int = 60
+    worker_research_enabled: bool = True
+    production_snapshot_interval_seconds: int = 300
     process_role: str = "local"
     disable_api_background_workers: bool = False
     require_postgres_in_hosted: bool = True
@@ -139,6 +141,8 @@ def load_settings() -> Settings:
         research_scheduler_interval_minutes=_int_env("RESEARCH_SCHEDULER_INTERVAL_MINUTES", 60),
         research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
+        worker_research_enabled=_bool_env("AI_TRADER_WORKER_RESEARCH_ENABLED", True),
+        production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 300),
         process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),
         disable_api_background_workers=_bool_env("AI_TRADER_DISABLE_API_BACKGROUND_WORKERS", False),
         require_postgres_in_hosted=_bool_env("AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED", True),

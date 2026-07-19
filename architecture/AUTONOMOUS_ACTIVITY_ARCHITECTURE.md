@@ -1,5 +1,7 @@
 # Autonomous Activity Architecture
 
+> Production Evidence Activation update: Activity now consumes the shared `/founder-evidence` read model. Worker research, broker snapshots, broker trade observations and learning outcomes are stored in Supabase/Postgres before they are displayed. The mobile app no longer depends on the legacy `/status` endpoint to populate Activity.
+
 Date: 2026-07-19
 
 ## Purpose
@@ -90,4 +92,3 @@ Trading still requires:
 - broker permissions;
 - auto-trading setting;
 - execution guardrails.
-

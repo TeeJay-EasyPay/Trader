@@ -94,6 +94,10 @@ services:
         sync: false
       - key: RESEARCH_SCHEDULER_ENABLED
         value: "false"
+      - key: AI_TRADER_WORKER_RESEARCH_ENABLED
+        value: "true"
+      - key: AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS
+        value: "300"
       - key: RESEARCH_SCHEDULER_INTERVAL_MINUTES
         value: "60"
       - key: RESEARCH_SCHEDULER_LIMIT
