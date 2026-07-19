@@ -2,7 +2,48 @@
 
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
-Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18), hosted activation pending Render/Supabase verification
+Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18); Autonomous Activity screen implemented locally (2026-07-19), hosted deploy and OTA verification pending
+
+## 2026-07-19 Autonomous Activity Screen
+
+- Added `src/ai_trader/autonomous_activity.py`, a read-only activity read model that aggregates persisted operational evidence without creating duplicate truth tables.
+- Added authenticated activity endpoints:
+  - `GET /autonomous-activity`
+  - `GET /activity/status`
+  - `GET /activity/summary`
+  - `GET /activity/timeline`
+  - `GET /activity/why-no-trade`
+  - `GET /activity/brokers`
+  - `GET /activity/founder-attention`
+- Added a primary `Activity` tab to the mobile app.
+- Added a compact `Autonomous Activity` card to the Dashboard.
+- The Activity screen shows:
+  - current autonomous status;
+  - selected-period totals;
+  - chronological timeline;
+  - why-no-trade funnel;
+  - Alpaca and Kraken broker activity;
+  - Founder attention items;
+  - latest completed actions.
+- Truthfulness boundary:
+  - no mock events;
+  - no synthetic counts;
+  - no API-health-only operating label;
+  - missing evidence is shown honestly.
+- Added architecture and Founder guide documentation:
+  - `AUTONOMOUS_ACTIVITY_ARCHITECTURE.md`
+  - `AUTONOMOUS_ACTIVITY_DATA_MAPPING.md`
+  - `AUTONOMOUS_ACTIVITY_API.md`
+  - `AUTONOMOUS_ACTIVITY_LIVE_VERIFICATION.md`
+  - `FOUNDER_ACTIVITY_SCREEN_GUIDE.md`
+- Verification:
+  - `python -m py_compile src\ai_trader\autonomous_activity.py src\ai_trader\api.py` passed.
+  - `python -m unittest tests.test_autonomous_activity` passed: 6/6.
+- Remaining release gates:
+  - deploy the API changes to Render;
+  - publish the Expo OTA update;
+  - verify `/autonomous-activity` from the hosted API;
+  - close and reopen the phone app after a worker cycle to prove phone-closed activity appears.
 
 ## 2026-07-18 Autonomous Operations Completion and Render Activation
 

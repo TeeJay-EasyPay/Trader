@@ -214,6 +214,40 @@ Start with:
 
 Important boundary: the repository is activation-ready, but hosted autonomy is not production-proven until Render/Supabase deployment evidence is captured.
 
+## Autonomous Activity Screen
+
+The mobile app now includes a primary `Activity` screen and a compact Dashboard card answering:
+
+> What has AI Trader actually done while I was not looking?
+
+The Activity screen is powered by persisted application evidence only. It aggregates worker heartbeats, scheduled jobs, research funnels, decision records, broker trade history, reconciliation cases, learning runs, reports, and incidents into:
+
+- current autonomous status;
+- selected-period activity totals;
+- chronological activity timeline;
+- why-no-trade funnel;
+- Alpaca and Kraken broker activity;
+- Founder attention items;
+- latest completed actions.
+
+New authenticated endpoints:
+
+- `GET /autonomous-activity`
+- `GET /activity/status`
+- `GET /activity/summary`
+- `GET /activity/timeline`
+- `GET /activity/why-no-trade`
+- `GET /activity/brokers`
+- `GET /activity/founder-attention`
+
+Start with:
+
+- [`architecture/AUTONOMOUS_ACTIVITY_ARCHITECTURE.md`](architecture/AUTONOMOUS_ACTIVITY_ARCHITECTURE.md)
+- [`architecture/AUTONOMOUS_ACTIVITY_DATA_MAPPING.md`](architecture/AUTONOMOUS_ACTIVITY_DATA_MAPPING.md)
+- [`architecture/AUTONOMOUS_ACTIVITY_API.md`](architecture/AUTONOMOUS_ACTIVITY_API.md)
+- [`architecture/AUTONOMOUS_ACTIVITY_LIVE_VERIFICATION.md`](architecture/AUTONOMOUS_ACTIVITY_LIVE_VERIFICATION.md)
+- [`architecture/FOUNDER_ACTIVITY_SCREEN_GUIDE.md`](architecture/FOUNDER_ACTIVITY_SCREEN_GUIDE.md)
+
 ## Developer Setup
 
 The project is configured for local Windows development in VS Code.

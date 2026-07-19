@@ -19,7 +19,7 @@ const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 
-const SCREENS = ['Dashboard', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
+const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
 
 export default function App() {
   const [screen, setScreen] = useState('Dashboard');
@@ -39,6 +39,8 @@ export default function App() {
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
+  const [activity, setActivity] = useState(null);
+  const [activityPeriod, setActivityPeriod] = useState('24h');
   const [askMessages, setAskMessages] = useState([
     {
       role: 'assistant',
@@ -86,7 +88,7 @@ export default function App() {
       const recommendationRequest = request('/recommendations')
         .then((payload) => ({ ok: true, payload }))
         .catch(() => ({ ok: false, payload: { recommendations: [] } }));
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning] = await Promise.all([
+      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning, nextActivity] = await Promise.all([
         request('/status'),
         optional('/portfolio', {
           portfolio_value: 'Not available',
@@ -102,6 +104,7 @@ export default function App() {
         optional('/notifications', { notifications: [] }),
         optional('/performance-attribution', { performance_attribution: [] }),
         optional('/daily-learning-update', null),
+        optional(`/autonomous-activity?period=${activityPeriod}&limit=80`, null),
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
@@ -109,6 +112,7 @@ export default function App() {
       setNotifications(nextNotifications.notifications || []);
       setPerformanceAttribution(nextPerformance.performance_attribution || []);
       setDailyLearning(nextLearning);
+      setActivity(nextActivity);
       const nextRecommendationItems = sortByConfidence(nextRecommendationsResult.payload.recommendations || []);
       if (nextRecommendationItems.length) {
         setRecommendations(nextRecommendationItems);
@@ -129,7 +133,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [request]);
+  }, [activityPeriod, request]);
 
   useEffect(() => {
     loadCachedRecommendations().then((cached) => {
@@ -214,6 +218,18 @@ export default function App() {
           onRefresh={refresh}
           onCommand={command}
           onReport={reportCommand}
+          activity={activity}
+          onOpenActivity={() => setScreen('Activity')}
+        />
+      );
+    }
+    if (screen === 'Activity') {
+      return (
+        <AutonomousActivity
+          activity={activity}
+          period={activityPeriod}
+          setPeriod={setActivityPeriod}
+          onRefresh={refresh}
         />
       );
     }
@@ -277,7 +293,7 @@ export default function App() {
         request={request}
       />
     );
-  }, [amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
+  }, [activity, activityPeriod, amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -313,7 +329,7 @@ export default function App() {
   );
 }
 
-function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport }) {
+function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
   const evidence = status?.world_class_evidence || {};
   const operations = status?.operations_health || {};
@@ -334,6 +350,7 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
         <Metric label="Learning" value={evidence.experience_learning?.boundary || executive.learning_progress} />
         <TextBlock label="Attention Required" value={formatUnavailableReasons(evidence.unavailable)} />
       </Section>
+      <AutonomousActivitySummaryCard activity={activity} onOpenActivity={onOpenActivity} />
       <Section title="Executive Summary">
         <StatusPill label={notAvailable(executive.portfolio_health)} tone={riskTone(executive.portfolio_risk)} />
         <Text style={styles.cardTitle}>{notAvailable(executive.headline)}</Text>
@@ -510,6 +527,206 @@ function BrokerPanel({ broker, onCommand, onReport }) {
         <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
         <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
       </View>
+    </View>
+  );
+}
+
+function AutonomousActivitySummaryCard({ activity, onOpenActivity }) {
+  const status = activity?.status || {};
+  const summary = activity?.summary || {};
+  const noTrade = activity?.why_no_trade || {};
+  const latest = status.last_meaningful_activity;
+  return (
+    <Section title="Autonomous Activity">
+      <StatusPill label={status.state || 'Status unknown'} tone={activityStatusTone(status.state)} />
+      <Text style={styles.bodyText}>
+        {status.plain_english || 'No persisted autonomous activity status has been returned yet.'}
+      </Text>
+      <Metric label="Last Action" value={latest ? `${latest.title} - ${formatDateTime(latest.timestamp)}` : 'Not available - no meaningful activity recorded in this period.'} />
+      <Metric label="Research Runs" value={summary.research?.runs} />
+      <Metric label="Recommendations" value={summary.research?.recommendations_created} />
+      <Metric label="Orders Submitted" value={summary.execution?.orders_submitted} />
+      <TextBlock label="No Trade" value={noTrade.conclusion} />
+      <View style={styles.buttonGrid}>
+        <Button label="Open Activity" onPress={onOpenActivity} />
+      </View>
+    </Section>
+  );
+}
+
+function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
+  const [category, setCategory] = useState('All');
+  const [mode, setMode] = useState('all');
+  const [expanded, setExpanded] = useState({});
+  const status = activity?.status || {};
+  const summary = activity?.summary || {};
+  const timeline = filterActivityItems(activity?.timeline?.items || [], category, mode);
+  const allTimeline = activity?.timeline?.items || [];
+  const noTrade = activity?.why_no_trade || {};
+  const brokers = activity?.broker_activity?.brokers || [];
+  const attention = activity?.founder_attention || {};
+  const latest = activity?.latest_completed_actions || [];
+  return (
+    <View>
+      <Section title="Current Autonomous Status">
+        <StatusPill label={status.state || 'STATUS UNKNOWN'} tone={activityStatusTone(status.state)} />
+        <Text style={styles.bodyText}>{status.plain_english || 'No autonomous status evidence was returned.'}</Text>
+        <Metric label="Last Meaningful Activity" value={status.last_meaningful_activity ? `${status.last_meaningful_activity.title} - ${formatDateTime(status.last_meaningful_activity.timestamp)}` : 'Not available - no meaningful activity recorded in this period.'} />
+        <Metric label="Worker" value={status.worker_status} />
+        <Metric label="Scheduler" value={status.scheduler_status} />
+        <Metric label="Database" value={status.database_status} />
+        <Metric label="Last Research" value={formatDateTime(status.last_successful_research_run)} />
+        <Metric label="Last Broker Poll" value={formatDateTime(status.last_broker_poll)} />
+        <Metric label="Last Report" value={formatDateTime(status.last_report_generated)} />
+        <Metric label="Unresolved Incidents" value={status.unresolved_incident_count} />
+      </Section>
+
+      <Section title="Period">
+        <View style={styles.buttonGrid}>
+          {[
+            ['1h', 'Last Hour'],
+            ['24h', 'Last 24 Hours'],
+            ['7d', 'Last 7 Days'],
+            ['30d', 'Last 30 Days'],
+          ].map(([key, label]) => (
+            <Button key={key} label={label} tone={period === key ? 'primary' : 'neutral'} onPress={() => setPeriod(key)} />
+          ))}
+          <Button label="Refresh" tone="neutral" onPress={onRefresh} />
+        </View>
+        <Text style={styles.smallText}>Last refreshed from persisted backend evidence: {formatDateTime(activity?.generated_at) || 'Not available'}</Text>
+      </Section>
+
+      <Section title="Last Period Summary">
+        <ActivitySummaryGroup title="Research" values={summary.research} labels={{
+          runs: 'Runs',
+          assets_analysed: 'Assets analysed',
+          candidates: 'Candidates',
+          recommendations_created: 'Recommendations',
+        }} />
+        <ActivitySummaryGroup title="Decisions" values={summary.decisions} labels={{
+          portfolio_manager_approvals: 'Portfolio approvals',
+          portfolio_manager_rejections: 'Portfolio rejections',
+          risk_engine_approvals: 'Risk approvals',
+          risk_engine_rejections: 'Risk rejections',
+          sentinel_blocks: 'Sentinel blocks',
+        }} />
+        <ActivitySummaryGroup title="Execution" values={summary.execution} labels={{
+          orders_submitted: 'Orders submitted',
+          orders_rejected: 'Orders rejected',
+          orders_filled: 'Orders filled',
+          trades_closed: 'Trades closed',
+        }} />
+        <ActivitySummaryGroup title="Operations" values={summary.operations} labels={{
+          broker_polls: 'Broker polls',
+          learning_reviews_completed: 'Learning completed',
+          reports_generated: 'Reports',
+          incidents_opened: 'Incidents opened',
+          incidents_resolved: 'Incidents resolved',
+        }} />
+      </Section>
+
+      <Section title="What Happened?">
+        <View style={styles.buttonGrid}>
+          {['All', 'Research', 'Decisions', 'Risk', 'Execution', 'Brokers', 'Reconciliation', 'Learning', 'Reports', 'Incidents', 'System'].map((item) => (
+            <Button key={item} label={item} tone={category === item ? 'primary' : 'neutral'} onPress={() => setCategory(item)} />
+          ))}
+        </View>
+        <View style={styles.buttonGrid}>
+          <Button label="All Events" tone={mode === 'all' ? 'primary' : 'neutral'} onPress={() => setMode('all')} />
+          <Button label="Important" tone={mode === 'important' ? 'primary' : 'neutral'} onPress={() => setMode('important')} />
+          <Button label="Action Required" tone={mode === 'action' ? 'primary' : 'neutral'} onPress={() => setMode('action')} />
+        </View>
+        {!timeline.length ? (
+          <Text style={styles.bodyText}>{activity?.timeline?.empty_state || 'No autonomous activity matched this filter.'}</Text>
+        ) : timeline.map((item) => {
+          const isOpen = !!expanded[item.activity_id];
+          return (
+            <TouchableOpacity
+              key={item.activity_id}
+              style={styles.compactRow}
+              onPress={() => setExpanded((current) => ({ ...current, [item.activity_id]: !current[item.activity_id] }))}
+            >
+              <Text style={styles.cardTitle}>{isOpen ? 'v' : '>'} {item.title}</Text>
+              <Text style={styles.smallText}>{formatDateTime(item.timestamp)} - {item.component}</Text>
+              <Text style={styles.bodyText}>{item.summary}</Text>
+              <StatusPill label={`${item.severity} - ${item.outcome}`} tone={activitySeverityTone(item.severity)} />
+              {item.broker ? <Metric label="Broker" value={item.broker} /> : null}
+              {item.asset_or_symbol ? <Metric label="Symbol" value={item.asset_or_symbol} /> : null}
+              {isOpen ? (
+                <>
+                  <TextBlock label="Reason" value={item.detailed_reason} />
+                  <Metric label="Source" value={`${item.source_table} #${item.source_record_id}`} />
+                  <Metric label="Raw Evidence" value={item.raw_evidence_available ? 'Available' : 'Not available'} />
+                  {item.founder_action_required ? <TextBlock label="Founder Action" value="This event needs Founder review." /> : null}
+                </>
+              ) : null}
+            </TouchableOpacity>
+          );
+        })}
+        <Text style={styles.smallText}>Showing {timeline.length} of {allTimeline.length} returned event(s). Newest first.</Text>
+      </Section>
+
+      <Section title="Why No Trade?">
+        <StatusPill label={noTrade.state || 'unknown'} tone={noTradeTone(noTrade.state)} />
+        <Text style={styles.bodyText}>{noTrade.conclusion || 'No no-trade funnel evidence has been returned yet.'}</Text>
+        {Object.entries(noTrade.counts || {}).map(([key, value]) => (
+          <Metric key={key} label={key.replaceAll('_', ' ')} value={value} />
+        ))}
+        <TextBlock label="Top Reasons" value={(noTrade.top_reasons || []).map((item) => `${item.reason}: ${item.count}`).join('\n') || 'No rejection reasons recorded in this period.'} />
+      </Section>
+
+      <Section title="Broker Activity">
+        {brokers.length ? brokers.map((broker) => (
+          <View key={`activity-broker-${broker.broker}`} style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{broker.label || broker.broker}</Text>
+            <Metric label="Connection" value={broker.connection_status} />
+            <Metric label="Mode" value={broker.account_mode} />
+            <Metric label="Last Poll" value={formatDateTime(broker.last_successful_poll)} />
+            <Metric label="Polling Freshness" value={broker.polling_freshness} />
+            <Metric label="Autonomous Execution" value={broker.autonomous_execution} />
+            <Metric label="Orders Submitted" value={broker.orders_submitted} />
+            <Metric label="Fills Received" value={broker.fills_received} />
+            <Metric label="Open Positions" value={broker.open_positions} />
+            <Metric label="Reconciliation" value={broker.reconciliation_status} />
+            <TextBlock label="Current Blocker" value={broker.current_blocker} />
+            <TextBlock label="Latest Error" value={broker.latest_broker_error} />
+          </View>
+        )) : <Empty />}
+      </Section>
+
+      <Section title="Founder Attention">
+        {attention.items?.length ? attention.items.map((item, index) => (
+          <View key={`attention-${index}-${item.title}`} style={styles.compactRow}>
+            <StatusPill label={item.severity || 'warning'} tone={activitySeverityTone(item.severity)} />
+            <Text style={styles.cardTitle}>{item.title}</Text>
+            <TextBlock label="Impact" value={item.impact} />
+            <Metric label="Began" value={formatDateTime(item.began_at)} />
+            <TextBlock label="Recommended Action" value={item.recommended_action} />
+          </View>
+        )) : <Text style={styles.bodyText}>{attention.plain_english || 'No Founder action is currently required.'}</Text>}
+      </Section>
+
+      <Section title="Latest Completed Actions">
+        {latest.length ? latest.map((item) => (
+          <View key={`${item.label}-${item.timestamp}`} style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{item.label}</Text>
+            <Metric label="Time" value={formatDateTime(item.timestamp)} />
+            <Text style={styles.bodyText}>{item.title}</Text>
+            <Metric label="Outcome" value={item.outcome} />
+          </View>
+        )) : <Text style={styles.bodyText}>No completed actions were recorded in this period.</Text>}
+      </Section>
+    </View>
+  );
+}
+
+function ActivitySummaryGroup({ title, values, labels }) {
+  return (
+    <View style={styles.compactRow}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      {Object.entries(labels).map(([key, label]) => (
+        <Metric key={`${title}-${key}`} label={label} value={values?.[key] ?? 0} />
+      ))}
     </View>
   );
 }
@@ -2357,6 +2574,60 @@ function formatHoldingDuration(start, end, isOpen) {
     return `${formatDuration(start, new Date().toISOString()) || '0 min'} so far`;
   }
   return formatDuration(start, end);
+}
+
+function filterActivityItems(items, category, mode) {
+  return (items || []).filter((item) => {
+    if (category && category !== 'All' && item.event_category !== category) {
+      return false;
+    }
+    if (mode === 'important') {
+      return ['warning', 'blocked', 'failure', 'failed', 'error', 'incident', 'recovered'].includes(String(item.severity || '').toLowerCase()) || item.founder_action_required;
+    }
+    if (mode === 'action') {
+      return !!item.founder_action_required;
+    }
+    return true;
+  });
+}
+
+function activityStatusTone(state) {
+  const text = String(state || '').toLowerCase();
+  if (text.includes('normal')) {
+    return 'good';
+  }
+  if (text.includes('warning') || text.includes('partial') || text.includes('unknown')) {
+    return 'warn';
+  }
+  if (text.includes('blocked') || text.includes('not operating')) {
+    return 'danger';
+  }
+  return 'neutral';
+}
+
+function activitySeverityTone(severity) {
+  const text = String(severity || '').toLowerCase();
+  if (text === 'success' || text === 'recovered') {
+    return 'good';
+  }
+  if (text === 'warning' || text === 'blocked') {
+    return 'warn';
+  }
+  if (text === 'failure' || text === 'failed' || text === 'error') {
+    return 'danger';
+  }
+  return 'neutral';
+}
+
+function noTradeTone(state) {
+  const text = String(state || '').toLowerCase();
+  if (text.includes('submitted') || text.includes('completed')) {
+    return 'good';
+  }
+  if (text.includes('did_not_run') || text.includes('not_submitted')) {
+    return 'warn';
+  }
+  return 'neutral';
 }
 
 function describeTransaction(item) {

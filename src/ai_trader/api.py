@@ -35,6 +35,15 @@ from .always_on import (
     scheduler_status,
     shadow_performance,
 )
+from .autonomous_activity import (
+    activity_summary,
+    activity_timeline,
+    autonomous_activity_payload,
+    broker_activity,
+    current_autonomous_status,
+    founder_attention,
+    why_no_trade_funnel,
+)
 from .ai import OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .audit import AuditDatabase
@@ -487,6 +496,41 @@ class LocalApiService:
             return 200, self.phase5_status()
         if path == "/sprint6-status":
             return 200, self.sprint6_status()
+        if path == "/autonomous-activity":
+            return 200, self.autonomous_activity(query)
+        if path == "/activity/status":
+            return 200, current_autonomous_status(
+                self.settings.db_path,
+                period=_first(query, "period") or "24h",
+                broker_panels=self.broker_panels(),
+                database_backend=self.settings.database_backend,
+            )
+        if path == "/activity/summary":
+            return 200, activity_summary(self.settings.db_path, period=_first(query, "period") or "24h")
+        if path == "/activity/timeline":
+            return 200, activity_timeline(
+                self.settings.db_path,
+                period=_first(query, "period") or "24h",
+                category=_first(query, "category") or "all",
+                severity=_first(query, "severity") or "all",
+                important_only=_first(query, "important_only") == "true",
+                founder_action_required=_first(query, "founder_action_required") == "true",
+                limit=_int_or_default(_first(query, "limit"), 100),
+            )
+        if path == "/activity/why-no-trade":
+            return 200, why_no_trade_funnel(self.settings.db_path, period=_first(query, "period") or "24h")
+        if path == "/activity/brokers":
+            return 200, broker_activity(
+                self.settings.db_path,
+                period=_first(query, "period") or "24h",
+                broker_panels=self.broker_panels(),
+            )
+        if path == "/activity/founder-attention":
+            return 200, founder_attention(
+                self.settings.db_path,
+                period=_first(query, "period") or "24h",
+                broker_panels=self.broker_panels(),
+            )
         if path == "/operational-events":
             return 200, {"operational_events": self.operational_events(limit=_int_or_default(_first(query, "limit"), 50))}
         if path == "/decision-journal":
@@ -648,6 +692,19 @@ class LocalApiService:
 
     def sprint6_status(self) -> dict[str, Any]:
         return sprint6_status(self.settings.db_path, database_backend=self.settings.database_backend)
+
+    def autonomous_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        return autonomous_activity_payload(
+            self.settings.db_path,
+            period=_first(query, "period") or "24h",
+            category=_first(query, "category") or "all",
+            severity=_first(query, "severity") or "all",
+            important_only=_first(query, "important_only") == "true",
+            founder_action_required=_first(query, "founder_action_required") == "true",
+            limit=_int_or_default(_first(query, "limit"), 100),
+            broker_panels=self.broker_panels(),
+            database_backend=self.settings.database_backend,
+        )
 
     def operational_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 200))

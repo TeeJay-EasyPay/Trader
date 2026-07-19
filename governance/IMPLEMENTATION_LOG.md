@@ -1028,3 +1028,57 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Boundary:
   - No guardrails, broker permissions, risk limits, or trading thresholds were weakened.
   - Remaining hardening backlog still matters for institutional maturity, but it no longer masks the proven always-on worker milestone.
+
+## 2026-07-19 Autonomous Activity Screen
+
+- Implemented a new Founder-facing `Activity` tab in the mobile app.
+- Added a compact Dashboard `Autonomous Activity` card so the home screen now shows:
+  - operating state;
+  - last meaningful action;
+  - research runs;
+  - recommendations;
+  - orders submitted;
+  - latest blocker or no-trade explanation.
+- Added `src/ai_trader/autonomous_activity.py` as a deterministic read model over persisted evidence:
+  - scheduled job runs;
+  - worker heartbeats;
+  - research funnels;
+  - operational events;
+  - decision journal rows;
+  - Portfolio Manager decisions;
+  - broker trade history;
+  - canonical reconciliation cases;
+  - closed-loop learning runs;
+  - generated reports;
+  - incident lifecycle.
+- Added authenticated API routes:
+  - `/autonomous-activity`;
+  - `/activity/status`;
+  - `/activity/summary`;
+  - `/activity/timeline`;
+  - `/activity/why-no-trade`;
+  - `/activity/brokers`;
+  - `/activity/founder-attention`.
+- Added the mandatory Why No Trade funnel. It separates:
+  - research did not run;
+  - no opportunity found;
+  - opportunity found but rejected;
+  - approved/candidate blocked;
+  - approved but not submitted;
+  - order submitted or trade completed.
+- Added timeline filtering by category and importance/action-required mode.
+- Added Founder attention items for stale worker heartbeat, durable database not proven, connected-broker issues, disabled Alpaca paper auto-trading, and unresolved incidents.
+- Added tests in `tests/test_autonomous_activity.py`.
+- Added documentation:
+  - `architecture/AUTONOMOUS_ACTIVITY_ARCHITECTURE.md`;
+  - `architecture/AUTONOMOUS_ACTIVITY_DATA_MAPPING.md`;
+  - `architecture/AUTONOMOUS_ACTIVITY_API.md`;
+  - `architecture/AUTONOMOUS_ACTIVITY_LIVE_VERIFICATION.md`;
+  - `architecture/FOUNDER_ACTIVITY_SCREEN_GUIDE.md`.
+- Verification:
+  - `python -m py_compile src\ai_trader\autonomous_activity.py src\ai_trader\api.py` passed.
+  - `python -m unittest tests.test_autonomous_activity` passed: 6/6.
+- Boundary:
+  - No mock events or synthetic activity rows were added.
+  - No guardrails, broker permissions, auto-trading settings, or risk thresholds were changed.
+  - The Activity screen is evidence visibility only; it does not approve or place trades.
