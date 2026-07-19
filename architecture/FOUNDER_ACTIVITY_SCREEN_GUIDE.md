@@ -2,6 +2,19 @@
 
 Date: 2026-07-19
 
+## Loading Behaviour
+
+The mobile app should show the main operating picture before every optional panel has finished loading.
+
+Refresh is intentionally split into two phases:
+
+- primary evidence: status, portfolio, recommendations, and autonomous activity;
+- secondary evidence: Founder brief, benchmark brief, intelligence themes, company intelligence, notifications, performance attribution, and daily learning.
+
+The global spinner should represent the primary evidence load only. Secondary cards may update shortly afterwards in the background. This prevents a slow optional endpoint from making the full app appear frozen.
+
+If the Render web service is on a plan that spins down when idle, the first request after inactivity can still be delayed while Render wakes the API. That is infrastructure latency, not evidence that the worker or trading engine is stopped.
+
 ## What The Screen Shows
 
 The Activity screen shows what AI Trader actually recorded while you were not watching.
@@ -102,4 +115,3 @@ Examples:
 - Alpaca paper auto-trading disabled.
 
 If no action is required, it says so plainly.
-

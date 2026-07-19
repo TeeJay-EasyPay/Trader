@@ -1082,3 +1082,25 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - No mock events or synthetic activity rows were added.
   - No guardrails, broker permissions, auto-trading settings, or risk thresholds were changed.
   - The Activity screen is evidence visibility only; it does not approve or place trades.
+
+## 2026-07-19 Mobile Refresh Performance Hardening
+
+- Investigated the slow mobile startup/refresh spinner reported by the Founder.
+- Root cause found in the mobile refresh path:
+  - the app waited for eleven API calls to complete before clearing the global loading spinner;
+  - optional/secondary endpoints such as intelligence, reports, notifications, performance attribution, and daily learning could keep the whole interface waiting;
+  - Render free-tier cold starts can still add startup delay before the first hosted API response.
+- Updated `mobile/App.js` so refresh now happens in two phases:
+  - primary evidence first: status, portfolio, recommendations, and autonomous activity;
+  - secondary evidence in the background: Founder brief, benchmark, themes, companies, notifications, performance attribution, and daily learning.
+- Added request timeouts:
+  - primary refresh calls use a 14 second timeout;
+  - secondary calls use an 8 second timeout;
+  - long POST commands use a 45 second timeout.
+- Expected Founder impact:
+  - the app should show the main operating picture sooner;
+  - optional panels can continue filling in after the main screen is usable;
+  - a single slow optional endpoint should no longer make the entire app look frozen.
+- Boundary:
+  - this does not change trading logic, governance, guardrails, broker permissions, or autonomous execution behaviour.
+  - a paid/no-spin-down Render web service or external uptime monitor is still required to remove Render cold-start delays entirely.

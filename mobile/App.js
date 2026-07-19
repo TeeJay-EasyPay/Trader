@@ -18,6 +18,9 @@ const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
+const PRIMARY_REFRESH_TIMEOUT_MS = 14000;
+const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
+const COMMAND_TIMEOUT_MS = 45000;
 
 const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
 
@@ -48,47 +51,63 @@ export default function App() {
     },
   ]);
 
-  const request = useCallback(async (path, options) => {
+  const request = useCallback(async (path, options = {}) => {
+    const { timeoutMs = PRIMARY_REFRESH_TIMEOUT_MS, ...fetchOptions } = options || {};
     const headers = {
       'Content-Type': 'application/json',
       ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
     };
-    const response = await fetch(`${API_BASE}${path}`, {
-      headers,
-      ...options,
-    });
-    const text = await response.text();
-    let json = {};
-    if (text) {
-      try {
-        json = JSON.parse(text);
-      } catch (error) {
-        throw new Error(
-          `Backend returned non-JSON data from ${path} (${response.status}). ${bodyPreview(text)}`
-        );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${API_BASE}${path}`, {
+        headers,
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let json = {};
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch (error) {
+          throw new Error(
+            `Backend returned non-JSON data from ${path} (${response.status}). ${bodyPreview(text)}`
+          );
+        }
       }
-    }
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error(
-          `${json.message || json.error || 'unauthorized'}. Mobile command token is ${
-            API_TOKEN ? `loaded (${API_TOKEN_MASK})` : 'missing'
-          }. It must exactly match AI_TRADER_API_TOKEN in Render.`
-        );
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error(
+            `${json.message || json.error || 'unauthorized'}. Mobile command token is ${
+              API_TOKEN ? `loaded (${API_TOKEN_MASK})` : 'missing'
+            }. It must exactly match AI_TRADER_API_TOKEN in Render.`
+          );
+        }
+        throw new Error(json.message || json.error || `Request failed: ${response.status}`);
       }
-      throw new Error(json.message || json.error || `Request failed: ${response.status}`);
+      return json;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s: ${path}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    return json;
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const optional = (path, fallback) => request(path).catch(() => fallback);
-      const recommendationRequest = request('/recommendations')
+      const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
+        request(path, { timeoutMs }).catch(() => fallback);
+      const recommendationRequest = request('/recommendations', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS })
         .then((payload) => ({ ok: true, payload }))
         .catch(() => ({ ok: false, payload: { recommendations: [] } }));
-      const activityRequest = request(`/autonomous-activity?period=${activityPeriod}&limit=30`)
+      const activityRequest = request(`/autonomous-activity?period=${activityPeriod}&limit=30`, {
+        timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS,
+      })
         .then((payload) => ({ ok: true, payload }))
         .catch((error) => ({
           ok: false,
@@ -130,30 +149,19 @@ export default function App() {
             },
           },
         }));
-      const [nextStatus, nextPortfolio, nextBrief, nextRecommendationsResult, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning, nextActivityResult] = await Promise.all([
-        request('/status'),
+      const [nextStatus, nextPortfolio, nextRecommendationsResult, nextActivityResult] = await Promise.all([
+        request('/status', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
         optional('/portfolio', {
           portfolio_value: 'Not available',
           cash_available: 'Not available',
           open_positions: [],
           executive_summary: [],
-        }),
-        optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
+        }, PRIMARY_REFRESH_TIMEOUT_MS),
         recommendationRequest,
-        optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
-        optional('/intelligence/themes', { themes: [] }),
-        optional('/intelligence/companies', { companies: [] }),
-        optional('/notifications', { notifications: [] }),
-        optional('/performance-attribution', { performance_attribution: [] }),
-        optional('/daily-learning-update', null),
         activityRequest,
       ]);
       setStatus(nextStatus);
       setPortfolio(nextPortfolio);
-      setBrief(nextBrief);
-      setNotifications(nextNotifications.notifications || []);
-      setPerformanceAttribution(nextPerformance.performance_attribution || []);
-      setDailyLearning(nextLearning);
       setActivity(nextActivityResult.payload);
       const nextRecommendationItems = sortByConfidence(nextRecommendationsResult.payload.recommendations || []);
       if (nextRecommendationItems.length) {
@@ -166,13 +174,29 @@ export default function App() {
         setRecommendations([]);
         await AsyncStorage.removeItem(RECOMMENDATION_CACHE_KEY);
       }
-      setBenchmark(nextBenchmark);
-      setThemes(nextThemes.themes || []);
-      setCompanies(nextCompanies.companies || []);
       setLastRefreshedAt(new Date().toISOString());
+      setLoading(false);
+
+      Promise.all([
+        optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
+        optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
+        optional('/intelligence/themes', { themes: [] }),
+        optional('/intelligence/companies', { companies: [] }),
+        optional('/notifications', { notifications: [] }),
+        optional('/performance-attribution', { performance_attribution: [] }),
+        optional('/daily-learning-update', null),
+      ]).then(([nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning]) => {
+        setBrief(nextBrief);
+        setBenchmark(nextBenchmark);
+        setThemes(nextThemes.themes || []);
+        setCompanies(nextCompanies.companies || []);
+        setNotifications(nextNotifications.notifications || []);
+        setPerformanceAttribution(nextPerformance.performance_attribution || []);
+        setDailyLearning(nextLearning);
+        setLastRefreshedAt(new Date().toISOString());
+      });
     } catch (error) {
       Alert.alert('Backend unavailable', `${String(error.message || error)}\n\nAPI: ${API_BASE}`);
-    } finally {
       setLoading(false);
     }
   }, [activityPeriod, request]);
@@ -191,10 +215,10 @@ export default function App() {
     try {
       let result;
       try {
-        result = await request(path, { method: 'POST', body: JSON.stringify(body) });
+        result = await request(path, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
       } catch (error) {
         if (fallbackPath && String(error.message || error) === 'not_found') {
-          result = await request(fallbackPath, { method: 'POST', body: JSON.stringify(body) });
+          result = await request(fallbackPath, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
         } else {
           throw error;
         }
