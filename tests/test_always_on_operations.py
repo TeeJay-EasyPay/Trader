@@ -27,6 +27,7 @@ from ai_trader.always_on import (
 )
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
+from ai_trader.cli import WorkerHeartbeatPulse
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 
 
@@ -82,6 +83,22 @@ class AlwaysOnOperationsTests(unittest.TestCase):
 
             self.assertEqual(health["worker_health"], "healthy")
             self.assertEqual(health["overall"], "healthy")
+
+    def test_worker_heartbeat_pulse_records_current_long_running_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+
+            with WorkerHeartbeatPulse(db_path, "worker-pulse", interval_seconds=10) as pulse:
+                pulse.set_job("broker-poll")
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT status, current_job FROM WORKER_HEARTBEATS WHERE worker_id = ?",
+                    ("worker-pulse",),
+                ).fetchone()
+
+            self.assertEqual(dict(row), {"status": "running", "current_job": "broker-poll"})
 
     def test_stale_worker_is_attention_needed(self):
         with tempfile.TemporaryDirectory() as tmp:

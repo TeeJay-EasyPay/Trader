@@ -98,6 +98,10 @@ services:
         value: "true"
       - key: AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS
         value: "300"
+      - key: AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS
+        value: "30"
+      - key: AI_TRADER_BROKER_POLL_INTERVAL_SECONDS
+        value: "600"
       - key: RESEARCH_SCHEDULER_INTERVAL_MINUTES
         value: "60"
       - key: RESEARCH_SCHEDULER_LIMIT

@@ -4,7 +4,7 @@
 
 - Python compilation passed for changed backend modules.
 - Focused production-evidence and Always-On tests passed.
-- Full Python suite passed: 146 tests.
+- Full Python suite passed: 148 tests.
 - Expo Doctor passed: 17 of 17 checks.
 - Android Expo production export completed successfully.
 
@@ -31,4 +31,13 @@ After Render deploys the implementation commit:
 - Broker snapshot: within the configured snapshot interval plus normal API latency.
 - Research: within its market-aware or crypto cadence.
 
-Hosted proof is incomplete until these checks are observed on the deployed commit. Local tests cannot prove Render cadence or broker responses.
+## Hosted evidence observed
+
+- Render API and background worker deployed the shared-evidence implementation from the same Git revision.
+- Authenticated `/founder-evidence` returned shared Postgres evidence in about seven seconds on a warm request.
+- The payload contained two broker snapshots, 20 bounded trade rows and persisted learning evidence.
+- A protected Kraken research run reviewed nine Founder-approved symbols, created six proposals and recorded one explicit no-trade outcome.
+- The run exposed and then verified the correction for an unsupported Kraken pair aborting an entire cycle.
+- Live inspection exposed slow broker polling as a heartbeat-freshness problem. The worker now emits independent heartbeat pulses, prioritises managed exits and due research, and limits broker polling to durable ten-minute buckets.
+
+Installed-device display and the next autonomous worker research cycle remain final acceptance checks after the heartbeat-hardening deployment and Expo OTA publication.

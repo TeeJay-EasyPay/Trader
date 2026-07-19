@@ -12,8 +12,8 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Reworked all six Founder screens to consume one shared evidence payload and use a local last-known-good cache.
 - Removed the legacy `/status` endpoint from the critical mobile startup path.
 - Removed long implementation-phase diagnostic cards from the primary Dashboard.
-- Full Python suite passes: 147 tests. Expo Doctor passes: 17/17. Android Expo export passes.
-- Hosted Render/installed-device verification remains required after deployment; this status does not claim a broker trade that has not been observed.
+- Full Python suite passes: 148 tests. Expo Doctor passes: 17/17. Android Expo export passes.
+- Hosted Render verification confirms shared Postgres evidence, a matching API/worker revision, broker snapshots, bounded trade rows and successful Kraken research. Installed-device verification remains required; this status does not claim a broker trade that has not been observed.
 
 ## 2026-07-19 Mobile Refresh Performance Hardening
 

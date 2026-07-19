@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -204,56 +205,97 @@ def main(argv: list[str] | None = None) -> int:
         service = LocalApiService(settings)
         worker_id = default_worker_id("background-worker")
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
-        while True:
-            try:
-                broker_poll = _run_worker_cycle_job(service, "broker-poll", worker_id)
-                exits = _run_worker_cycle_job(service, "managed-exits", worker_id)
-                auto = _run_worker_cycle_job(service, "auto-execution", worker_id)
-                scheduled_results = {}
-                for job_name, scheduled_for in _due_worker_jobs(settings):
-                    scheduled_results[job_name] = _run_worker_cycle_job(
+        with WorkerHeartbeatPulse(
+            settings.db_path,
+            worker_id,
+            interval_seconds=settings.worker_heartbeat_interval_seconds,
+        ) as pulse:
+            while True:
+                try:
+                    pulse.set_job("starting")
+                    now = datetime.now(timezone.utc)
+                    exits = _run_pulsed_job(
                         service,
-                        job_name,
+                        "managed-exits",
                         worker_id,
-                        scheduled_for=scheduled_for,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
                     )
-                learning = process_learning_outbox(settings.db_path, worker_id=worker_id, limit=10)
-                if int(learning.get("processed") or 0) > 0:
-                    record_learning_evidence(settings.db_path, learning, worker_id=worker_id)
-                record_worker_heartbeat(
-                    settings.db_path,
-                    worker_id=worker_id,
-                    worker_type="background-worker",
-                    current_job="idle",
-                    last_successful_job="background-cycle",
-                    payload={
-                        "broker_poll": _job_summary(broker_poll),
-                        "managed_exits": _job_summary(exits),
-                        "auto_execution": _job_summary(auto),
-                        "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
-                        "learning": _job_summary(learning),
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
-                record_worker_heartbeat(
-                    settings.db_path,
-                    worker_id=worker_id,
-                    worker_type="background-worker",
-                    status="degraded",
-                    current_job="background-cycle",
-                    last_error=str(exc),
-                )
-                record_operations_incident(
-                    settings.db_path,
-                    severity="warning",
-                    component="background-worker",
-                    title="Background worker cycle failed",
-                    message=str(exc),
-                    payload={"worker_id": worker_id},
-                )
-            if args.once:
-                return 0
-            time.sleep(max(10, int(args.sleep_seconds)))
+                    scheduled_results = {}
+                    due_jobs = _due_worker_jobs(settings, now)
+                    for job_name, scheduled_for in due_jobs:
+                        if job_name == "evidence-snapshot":
+                            continue
+                        scheduled_results[job_name] = _run_pulsed_job(
+                            service,
+                            job_name,
+                            worker_id,
+                            pulse,
+                            scheduled_for=scheduled_for,
+                        )
+                    auto = _run_pulsed_job(
+                        service,
+                        "auto-execution",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
+                    )
+                    broker_poll = _run_pulsed_job(
+                        service,
+                        "broker-poll",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(300, settings.broker_poll_interval_seconds)),
+                    )
+                    snapshot_schedule = next((value for name, value in due_jobs if name == "evidence-snapshot"), None)
+                    if snapshot_schedule:
+                        scheduled_results["evidence-snapshot"] = _run_pulsed_job(
+                            service,
+                            "evidence-snapshot",
+                            worker_id,
+                            pulse,
+                            scheduled_for=snapshot_schedule,
+                        )
+                    pulse.set_job("learning")
+                    learning = process_learning_outbox(settings.db_path, worker_id=worker_id, limit=10)
+                    if int(learning.get("processed") or 0) > 0:
+                        record_learning_evidence(settings.db_path, learning, worker_id=worker_id)
+                    pulse.set_job("idle")
+                    record_worker_heartbeat(
+                        settings.db_path,
+                        worker_id=worker_id,
+                        worker_type="background-worker",
+                        current_job="idle",
+                        last_successful_job="background-cycle",
+                        payload={
+                            "broker_poll": _job_summary(broker_poll),
+                            "managed_exits": _job_summary(exits),
+                            "auto_execution": _job_summary(auto),
+                            "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
+                            "learning": _job_summary(learning),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
+                    pulse.set_status("degraded", current_job="background-cycle")
+                    record_worker_heartbeat(
+                        settings.db_path,
+                        worker_id=worker_id,
+                        worker_type="background-worker",
+                        status="degraded",
+                        current_job="background-cycle",
+                        last_error=str(exc),
+                    )
+                    record_operations_incident(
+                        settings.db_path,
+                        severity="warning",
+                        component="background-worker",
+                        title="Background worker cycle failed",
+                        message=str(exc),
+                        payload={"worker_id": worker_id},
+                    )
+                if args.once:
+                    return 0
+                time.sleep(max(10, int(args.sleep_seconds)))
 
     if args.command == "run-job":
         from .api import LocalApiService
@@ -342,6 +384,66 @@ def _run_worker_cycle_job(service, job_name: str, worker_id: str, *, scheduled_f
     except Exception as exc:
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=str(exc))
         raise
+
+
+def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartbeatPulse", *, scheduled_for: str) -> dict:
+    pulse.set_job(job_name)
+    return _run_worker_cycle_job(service, job_name, worker_id, scheduled_for=scheduled_for)
+
+
+class WorkerHeartbeatPulse:
+    """Keep liveness evidence current while a broker or provider call is slow."""
+
+    def __init__(self, db_path: Path, worker_id: str, *, interval_seconds: int = 30) -> None:
+        self.db_path = db_path
+        self.worker_id = worker_id
+        self.interval_seconds = max(10, int(interval_seconds))
+        self._current_job = "starting"
+        self._status = "running"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="worker-heartbeat", daemon=True)
+
+    def __enter__(self) -> "WorkerHeartbeatPulse":
+        self._write()
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self._stop.set()
+        self._thread.join(timeout=self.interval_seconds + 1)
+
+    def set_job(self, job_name: str) -> None:
+        with self._lock:
+            self._current_job = job_name
+            self._status = "running"
+        self._write()
+
+    def set_status(self, status: str, *, current_job: str | None = None) -> None:
+        with self._lock:
+            self._status = status
+            if current_job is not None:
+                self._current_job = current_job
+        self._write()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                self._write()
+            except Exception:  # The main worker records persistent failures and incidents.
+                continue
+
+    def _write(self) -> None:
+        with self._lock:
+            current_job = self._current_job
+            status = self._status
+        record_worker_heartbeat(
+            self.db_path,
+            worker_id=self.worker_id,
+            worker_type="background-worker",
+            status=status,
+            current_job=current_job,
+        )
 
 
 def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tuple[str, str]]:

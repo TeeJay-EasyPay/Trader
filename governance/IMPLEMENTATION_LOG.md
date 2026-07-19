@@ -11,9 +11,11 @@
 - Reworked mobile startup to hydrate from cached evidence and refresh once from the shared Founder endpoint; removed `/status` as a blocking startup dependency.
 - Updated Dashboard, Activity, Recommendations, Portfolio, Market and Learning mappings to use the same persisted production truth.
 - Removed long phase-oriented diagnostic cards that obscured operating outcomes.
-- Added focused production evidence tests and passed the complete 147-test Python suite, Python compilation, Expo Doctor 17/17 and Android Expo export.
+- Added focused production evidence tests and passed the complete 148-test Python suite, Python compilation, Expo Doctor 17/17 and Android Expo export.
 - Recorded the live deployment checklist separately; no hosted order or P&L result is claimed before deployed broker evidence confirms it.
 - During hosted verification, found the first worker crypto research cycle failing with Kraken `EQuery:Unknown asset pair`. Corrected autonomous symbol selection to use Founder-approved Kraken pairs and isolated per-pair quote failures so one unsupported pair creates a no-trade record instead of aborting the cycle.
+- Proved the shared Founder endpoint against Render: Postgres evidence included research, recommendations, broker snapshots, trade rows and learning evidence. A governed Kraken analysis reviewed nine approved symbols and produced six proposals without submitting an order.
+- Found slow broker polling could make an active worker heartbeat appear stale. Added an independent heartbeat pulse, prioritised managed exits and due research ahead of polling, and placed expensive broker polls in durable ten-minute idempotency buckets.
 
 ## 2026-07-19 Mobile Autonomous Activity Startup Hardening
 

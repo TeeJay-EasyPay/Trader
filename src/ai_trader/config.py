@@ -61,6 +61,8 @@ class Settings:
     auto_execution_interval_seconds: int = 60
     worker_research_enabled: bool = True
     production_snapshot_interval_seconds: int = 300
+    worker_heartbeat_interval_seconds: int = 30
+    broker_poll_interval_seconds: int = 600
     process_role: str = "local"
     disable_api_background_workers: bool = False
     require_postgres_in_hosted: bool = True
@@ -143,6 +145,8 @@ def load_settings() -> Settings:
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
         worker_research_enabled=_bool_env("AI_TRADER_WORKER_RESEARCH_ENABLED", True),
         production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 300),
+        worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
+        broker_poll_interval_seconds=_int_env("AI_TRADER_BROKER_POLL_INTERVAL_SECONDS", 600),
         process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),
         disable_api_background_workers=_bool_env("AI_TRADER_DISABLE_API_BACKGROUND_WORKERS", False),
         require_postgres_in_hosted=_bool_env("AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED", True),
