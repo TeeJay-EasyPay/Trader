@@ -24,6 +24,10 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 - Boundary:
   - Render free-tier cold starts can still delay the first response after inactivity.
   - This change reduces mobile-side blocking once the API responds and prevents optional panels from holding up the whole UI.
+- Follow-up hotfix after installed-app verification:
+  - `/status` is now treated as a graceful degraded-status source during refresh rather than a whole-app failure.
+  - If `/status` times out, the app shows a partial status message and keeps the UI usable instead of displaying a blocking `Backend unavailable` modal.
+  - The primary timeout was adjusted to 18 seconds to give the hosted API slightly more room without returning to the previous 30+ second blocking behaviour.
 
 ## 2026-07-19 Autonomous Activity Screen
 

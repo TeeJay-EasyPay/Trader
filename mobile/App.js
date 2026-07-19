@@ -18,11 +18,96 @@ const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
-const PRIMARY_REFRESH_TIMEOUT_MS = 14000;
+const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
 const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
 const COMMAND_TIMEOUT_MS = 45000;
 
 const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
+
+function unavailableStatus(reason) {
+  return {
+    system_status: 'partial',
+    engine_health: 'Status endpoint timed out before the app finished refreshing.',
+    research_status: `Not available - ${reason}`,
+    brokers: [],
+    connection_readiness: {
+      trade_ready: false,
+      note: 'The app is showing a degraded status because the hosted status endpoint did not respond quickly enough. Check the Activity screen for persisted autonomous evidence.',
+      checks: [
+        {
+          component: 'Render API',
+          status: 'timeout',
+          ready: false,
+          detail: reason,
+        },
+      ],
+    },
+    founder_experience: {
+      executive_dashboard: {
+        portfolio_health: 'Status unavailable',
+        headline: 'The status endpoint was slow, so AI Trader is showing partial evidence instead of blocking the app.',
+        good_morning: [reason],
+        what_to_do: 'Open Activity or refresh again after Render has warmed up.',
+        what_to_worry_about: 'If this persists after repeated refreshes, check Render logs and API health.',
+      },
+    },
+    world_class_evidence: {
+      first_conclusion: 'Data issue requires attention',
+      unavailable: [
+        {
+          field: 'Hosted status',
+          reason,
+          required: 'The /status endpoint must respond within the mobile refresh timeout.',
+          expected_or_error: 'Expected during Render cold start; an error if persistent.',
+        },
+      ],
+    },
+  };
+}
+
+function unavailableActivity(reason) {
+  return {
+    generated_at: new Date().toISOString(),
+    fetch_error: reason,
+    status: {
+      state: 'STATUS UNKNOWN',
+      plain_english: `Activity evidence could not be loaded from the hosted API: ${reason}`,
+      last_meaningful_activity: null,
+      worker_status: 'Not available - Activity API request failed.',
+      scheduler_status: 'Not available - Activity API request failed.',
+      database_status: 'Not available - Activity API request failed.',
+      last_successful_research: null,
+      last_broker_poll: null,
+      last_report_generated: null,
+      unresolved_incident_count: 0,
+    },
+    summary: {},
+    timeline: {
+      items: [],
+      returned: 0,
+      total: 0,
+      source_event_count: 0,
+      empty_state: reason,
+    },
+    why_no_trade: {
+      state: 'unknown',
+      conclusion: 'No-trade evidence could not be loaded because the Activity API request failed.',
+      counts: {},
+      top_reasons: [],
+    },
+    broker_activity: { brokers: [] },
+    founder_attention: {
+      plain_english: 'Founder attention items could not be loaded because the Activity API request failed.',
+      items: [],
+    },
+    latest_completed_actions: [],
+    truthfulness: {
+      source: 'Activity API request failed',
+      mock_data_used: false,
+      synthetic_activity_used: false,
+    },
+  };
+}
 
 export default function App() {
   const [screen, setScreen] = useState('Dashboard');
@@ -109,48 +194,9 @@ export default function App() {
         timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS,
       })
         .then((payload) => ({ ok: true, payload }))
-        .catch((error) => ({
-          ok: false,
-          payload: {
-            generated_at: new Date().toISOString(),
-            fetch_error: String(error.message || error),
-            status: {
-              state: 'STATUS UNKNOWN',
-              plain_english: `Activity evidence could not be loaded from the hosted API: ${String(error.message || error)}`,
-              worker_status: 'Not available - Activity API request failed.',
-              scheduler_status: 'Not available - Activity API request failed.',
-              database_status: 'Not available - Activity API request failed.',
-              unresolved_incident_count: 0,
-            },
-            summary: {},
-            timeline: {
-              items: [],
-              returned: 0,
-              total: 0,
-              source_event_count: 0,
-              empty_state: `Activity API request failed: ${String(error.message || error)}`,
-            },
-            why_no_trade: {
-              state: 'unknown',
-              conclusion: 'No-trade evidence could not be loaded because the Activity API request failed.',
-              counts: {},
-              top_reasons: [],
-            },
-            broker_activity: { brokers: [] },
-            founder_attention: {
-              plain_english: 'Founder attention items could not be loaded because the Activity API request failed.',
-              items: [],
-            },
-            latest_completed_actions: [],
-            truthfulness: {
-              source: 'Activity API request failed',
-              mock_data_used: false,
-              synthetic_activity_used: false,
-            },
-          },
-        }));
+        .catch((error) => ({ ok: false, payload: unavailableActivity(`Activity API request failed: ${String(error.message || error)}`) }));
       const [nextStatus, nextPortfolio, nextRecommendationsResult, nextActivityResult] = await Promise.all([
-        request('/status', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
+        optional('/status', unavailableStatus('The hosted status endpoint did not respond before the mobile timeout.'), PRIMARY_REFRESH_TIMEOUT_MS),
         optional('/portfolio', {
           portfolio_value: 'Not available',
           cash_available: 'Not available',
@@ -196,7 +242,7 @@ export default function App() {
         setLastRefreshedAt(new Date().toISOString());
       });
     } catch (error) {
-      Alert.alert('Backend unavailable', `${String(error.message || error)}\n\nAPI: ${API_BASE}`);
+      setActivity(unavailableActivity(`Primary refresh could not complete: ${String(error.message || error)}`));
       setLoading(false);
     }
   }, [activityPeriod, request]);

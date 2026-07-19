@@ -36,6 +36,8 @@ Primary refresh calls have bounded timeouts so the app can fail visibly instead 
 
 This does not remove Render cold-start latency. If the web service uses a plan that spins down after inactivity, the first request can still take tens of seconds while the API wakes. Continuous worker activity proves backend autonomy but does not by itself keep the HTTP API process warm.
 
+The mobile app must not treat a slow `/status` response as proof that the whole backend is unavailable. If `/status` times out during refresh, the app should display a degraded status explanation and keep the interface usable. Protected command failures may still show explicit alerts because those actions require confirmation of authenticated backend control.
+
 ## OTA vs Rebuild
 
 JavaScript-only UI and API-contract changes can normally ship by EAS OTA if the native runtime is unchanged. Icon/native metadata changes require an EAS rebuild.

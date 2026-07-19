@@ -15,6 +15,8 @@ The global spinner should represent the primary evidence load only. Secondary ca
 
 If the Render web service is on a plan that spins down when idle, the first request after inactivity can still be delayed while Render wakes the API. That is infrastructure latency, not evidence that the worker or trading engine is stopped.
 
+If the hosted `/status` endpoint is slow, the app should show a degraded status explanation instead of blocking the whole screen. Activity evidence is persisted separately and may still prove that AI Trader is alive even while the large dashboard status payload is delayed.
+
 ## What The Screen Shows
 
 The Activity screen shows what AI Trader actually recorded while you were not watching.

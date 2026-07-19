@@ -1104,3 +1104,14 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Boundary:
   - this does not change trading logic, governance, guardrails, broker permissions, or autonomous execution behaviour.
   - a paid/no-spin-down Render web service or external uptime monitor is still required to remove Render cold-start delays entirely.
+
+### Installed-App Follow-Up
+
+- Founder verification showed the previous 14 second `/status` timeout could still raise a blocking `Backend unavailable` modal during Render cold-start or slow hosted status responses.
+- Adjusted refresh behaviour:
+  - `/status` now uses a structured degraded-status fallback instead of failing the whole refresh;
+  - primary refresh timeout increased from 14 seconds to 18 seconds;
+  - Activity fallback messaging is centralized so timeout states remain plain-English and truth-labelled.
+- Result:
+  - a slow `/status` response should no longer interrupt the Founder with a modal;
+  - the app should remain usable and explain that hosted status evidence is delayed or unavailable.
