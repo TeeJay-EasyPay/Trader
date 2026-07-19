@@ -1,5 +1,28 @@
 # Implementation Log
 
+## 2026-07-19 Mobile Autonomous Activity Startup Hardening
+
+- Reviewed installed-app screenshots showing that the Dashboard and Activity screen were still degraded because `/status` and `/autonomous-activity` could exceed the mobile timeout.
+- Updated `mobile/App.js` so first paint no longer depends on those heavyweight endpoints.
+- Primary refresh now uses lightweight persisted evidence:
+  - `/operations-health`
+  - `/activity/summary`
+  - `/activity/why-no-trade`
+  - `/portfolio`
+  - `/recommendations`
+- Added a mobile-side operations-derived status payload so the Dashboard can show worker, database and job evidence while full broker/status detail is still loading.
+- Moved full `/status` and `/autonomous-activity` into background hydration with a longer timeout.
+- Preserved truthfulness:
+  - no mock activity;
+  - no synthetic counts;
+  - no false trading claims;
+  - unavailable data still explains why it is unavailable.
+- Verification:
+  - `npx expo-doctor` passed.
+  - `git diff --check` passed.
+- Known limitation:
+  - if the lightweight hosted endpoints themselves become slow, the app will still show a degraded evidence message; the backend endpoint or database query path would then need server-side optimisation.
+
 ## 2026-07-18 Sprint 6 - Institutional Production Control Layer
 
 - Reviewed Sprint 6 requirements and current Phase 5, Always-On, Operational Truth, Portfolio Intelligence, Market Intelligence, Experience Engine, API and mobile Dashboard integration points.

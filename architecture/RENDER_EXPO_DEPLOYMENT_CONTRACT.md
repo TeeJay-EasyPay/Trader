@@ -29,14 +29,16 @@ The mobile app must not block the Founder interface on every optional endpoint.
 
 Refresh is split into:
 
-- primary refresh: `/status`, `/portfolio`, `/recommendations`, and `/autonomous-activity`;
-- secondary background refresh: Founder brief, benchmark brief, intelligence themes, companies, notifications, performance attribution, and daily learning.
+- primary refresh: `/operations-health`, `/activity/summary`, `/activity/why-no-trade`, `/portfolio`, and `/recommendations`;
+- secondary background refresh: full `/status`, full `/autonomous-activity`, Founder brief, benchmark brief, intelligence themes, companies, notifications, performance attribution, and daily learning.
 
 Primary refresh calls have bounded timeouts so the app can fail visibly instead of spinning indefinitely. Secondary calls hydrate their cards after the main screen is usable.
 
 This does not remove Render cold-start latency. If the web service uses a plan that spins down after inactivity, the first request can still take tens of seconds while the API wakes. Continuous worker activity proves backend autonomy but does not by itself keep the HTTP API process warm.
 
 The mobile app must not treat a slow `/status` response as proof that the whole backend is unavailable. If `/status` times out during refresh, the app should display a degraded status explanation and keep the interface usable. Protected command failures may still show explicit alerts because those actions require confirmation of authenticated backend control.
+
+The mobile app must also avoid treating the full `/autonomous-activity` payload as a first-load dependency. The Dashboard and Activity summary should be able to prove basic autonomy from lightweight persisted evidence first, then hydrate the full timeline and broker-level details in the background.
 
 ## OTA vs Rebuild
 

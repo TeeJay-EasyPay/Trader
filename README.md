@@ -87,6 +87,8 @@ The always-on operations sprint separates the Founder mobile app from backend op
 - `python -m ai_trader run-worker`
 - `python -m ai_trader run-job <job-name>`
 
+The mobile app now uses a two-stage refresh contract. It paints the Dashboard from lightweight persisted evidence first (`/operations-health`, `/activity/summary`, `/activity/why-no-trade`, `/portfolio`, and `/recommendations`) and hydrates heavyweight diagnostics (`/status` and `/autonomous-activity`) in the background. This keeps the Founder interface responsive while still preserving the deeper operational evidence model.
+
 ## Phase 5 Autonomous Production Spine
 
 Phase 5 adds the first production-spine foundation for closed-loop autonomous operation. It does not loosen trading controls. It adds evidence and decision gates for:

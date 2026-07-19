@@ -20,6 +20,7 @@ const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
 const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
+const BACKGROUND_HYDRATION_TIMEOUT_MS = 60000;
 const COMMAND_TIMEOUT_MS = 45000;
 
 const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
@@ -109,6 +110,142 @@ function unavailableActivity(reason) {
   };
 }
 
+function statusFromOperations(operations) {
+  const reason = operations?.plain_english || 'Operations health has not loaded yet.';
+  const workerHealthy = operations?.worker_health === 'healthy';
+  const databaseBackend = operations?.database_backend?.active_backend || operations?.database_backend?.requested_backend;
+  return {
+    system_status: workerHealthy ? 'running' : 'partial',
+    paper_live_mode: 'Mixed - broker-specific controls apply',
+    engine_health: workerHealthy ? 'Background worker heartbeat is healthy.' : reason,
+    research_status: operations?.last_research_run
+      ? 'Research evidence has been recorded by the background worker.'
+      : 'Not available - no completed research run has been returned by operations health yet.',
+    due_diligence_status: 'Not available - full status is still hydrating in the background.',
+    brokers: [],
+    operations_health: operations || {},
+    connection_readiness: {
+      trade_ready: workerHealthy,
+      note: 'Readiness is loaded from the lightweight operations endpoint. Full broker readiness is still hydrating.',
+      checks: [
+        {
+          component: 'Render API',
+          status: operations?.api_health || 'available',
+          ready: true,
+          detail: 'The app received lightweight operations evidence.',
+        },
+        {
+          component: 'Background Worker',
+          status: operations?.worker_health || 'not_proven',
+          ready: workerHealthy,
+          detail: reason,
+        },
+        {
+          component: 'Database',
+          status: databaseBackend || 'not_proven',
+          ready: databaseBackend === 'postgres',
+          detail: operations?.database_backend?.plain_english || 'Database backend is still being verified.',
+        },
+      ],
+    },
+    founder_experience: {
+      executive_dashboard: {
+        portfolio_health: 'Hydrating',
+        headline: workerHealthy
+          ? 'AI Trader is alive. Worker evidence has loaded; detailed broker and portfolio evidence is still hydrating.'
+          : 'AI Trader loaded a partial operations view while detailed status evidence hydrates.',
+        good_morning: [reason],
+        what_to_do: workerHealthy ? 'Open Activity for the latest worker and job evidence.' : 'Check Activity for worker and job evidence.',
+        what_to_worry_about: workerHealthy
+          ? 'If broker panels remain empty after background hydration, inspect broker endpoint latency.'
+          : 'If the worker remains unproven, inspect Render worker logs.',
+      },
+    },
+    world_class_evidence: {
+      first_conclusion: workerHealthy ? 'No action required' : 'Data issue requires attention',
+      unavailable: workerHealthy
+        ? []
+        : [
+            {
+              field: 'Full hosted status',
+              reason,
+              required: 'The /status endpoint should hydrate after the fast operations view.',
+              expected_or_error: 'Expected during slow hosted responses; an error if it never hydrates.',
+            },
+          ],
+    },
+  };
+}
+
+function activityFromEvidence({ operations, summary, noTrade, period }) {
+  const latestJob = (operations?.last_job_runs || [])[0] || null;
+  const workerHealthy = operations?.worker_health === 'healthy';
+  const state = workerHealthy
+    ? operations?.overall === 'healthy'
+      ? 'OPERATING NORMALLY'
+      : 'OPERATING WITH WARNINGS'
+    : 'STATUS UNKNOWN';
+  return {
+    generated_at: operations?.generated_at || new Date().toISOString(),
+    period,
+    status: {
+      state,
+      plain_english: operations?.plain_english || 'AI Trader operations evidence has partially loaded. Full activity timeline is still hydrating.',
+      last_meaningful_activity: latestJob
+        ? {
+            title: `${latestJob.job_name || 'Job'} ${latestJob.status || 'recorded'}`,
+            timestamp: latestJob.completed_at || latestJob.started_at || latestJob.scheduled_for,
+          }
+        : null,
+      worker_status: operations?.worker_health,
+      scheduler_status: latestJob ? 'active' : 'not_proven',
+      database_status: operations?.database_backend?.active_backend,
+      database_durability: operations?.database_durability,
+      last_successful_research_run: operations?.last_research_run?.created_at,
+      last_broker_poll: latestJob?.job_name === 'broker-poll' ? (latestJob.completed_at || latestJob.started_at) : null,
+      last_report_generated: null,
+      unresolved_incident_count: (operations?.incidents || []).length,
+    },
+    summary: summary || {},
+    timeline: {
+      items: [],
+      returned: 0,
+      total: 0,
+      source_event_count: summary?.raw_evidence_counts
+        ? Object.values(summary.raw_evidence_counts).reduce((total, value) => total + (Number(value) || 0), 0)
+        : 0,
+      empty_state: 'Full activity timeline is still hydrating. Dashboard summary is built from operations, summary, and no-trade evidence.',
+    },
+    why_no_trade: noTrade || {
+      state: 'unknown',
+      conclusion: 'No-trade evidence has not loaded yet.',
+      counts: {},
+      top_reasons: [],
+    },
+    broker_activity: { brokers: [] },
+    founder_attention: {
+      plain_english: operations?.incidents?.length
+        ? `${operations.incidents.length} operational incident(s) need attention.`
+        : 'No Founder action is currently required from the lightweight operations evidence.',
+      items: operations?.incidents || [],
+    },
+    latest_completed_actions: latestJob
+      ? [
+          {
+            title: latestJob.job_name || 'Scheduled job',
+            timestamp: latestJob.completed_at || latestJob.started_at || latestJob.scheduled_for,
+            outcome: latestJob.status || 'recorded',
+          },
+        ]
+      : [],
+    truthfulness: {
+      source: 'operations-health, activity-summary, and why-no-trade endpoints',
+      mock_data_used: false,
+      synthetic_activity_used: false,
+    },
+  };
+}
+
 export default function App() {
   const [screen, setScreen] = useState('Dashboard');
   const [loading, setLoading] = useState(false);
@@ -190,13 +327,24 @@ export default function App() {
       const recommendationRequest = request('/recommendations', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS })
         .then((payload) => ({ ok: true, payload }))
         .catch(() => ({ ok: false, payload: { recommendations: [] } }));
-      const activityRequest = request(`/autonomous-activity?period=${activityPeriod}&limit=30`, {
-        timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS,
-      })
-        .then((payload) => ({ ok: true, payload }))
-        .catch((error) => ({ ok: false, payload: unavailableActivity(`Activity API request failed: ${String(error.message || error)}`) }));
+      const operationsRequest = optional('/operations-health', null, PRIMARY_REFRESH_TIMEOUT_MS);
+      const activityRequest = Promise.all([
+        operationsRequest,
+        optional(`/activity/summary?period=${activityPeriod}`, null, PRIMARY_REFRESH_TIMEOUT_MS),
+        optional(`/activity/why-no-trade?period=${activityPeriod}`, null, PRIMARY_REFRESH_TIMEOUT_MS),
+      ]).then(([operations, activitySummary, noTrade]) => ({
+        ok: Boolean(operations || activitySummary || noTrade),
+        operations,
+        payload: operations || activitySummary || noTrade
+          ? activityFromEvidence({ operations, summary: activitySummary, noTrade, period: activityPeriod })
+          : unavailableActivity('No lightweight autonomous activity evidence responded before the mobile timeout.'),
+      }));
       const [nextStatus, nextPortfolio, nextRecommendationsResult, nextActivityResult] = await Promise.all([
-        optional('/status', unavailableStatus('The hosted status endpoint did not respond before the mobile timeout.'), PRIMARY_REFRESH_TIMEOUT_MS),
+        operationsRequest.then((operations) => (
+          operations
+            ? statusFromOperations(operations)
+            : unavailableStatus('The hosted operations endpoint did not respond before the mobile timeout.')
+        )),
         optional('/portfolio', {
           portfolio_value: 'Not available',
           cash_available: 'Not available',
@@ -224,6 +372,8 @@ export default function App() {
       setLoading(false);
 
       Promise.all([
+        optional('/status', null, BACKGROUND_HYDRATION_TIMEOUT_MS),
+        optional(`/autonomous-activity?period=${activityPeriod}&limit=30`, null, BACKGROUND_HYDRATION_TIMEOUT_MS),
         optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
         optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
         optional('/intelligence/themes', { themes: [] }),
@@ -231,7 +381,13 @@ export default function App() {
         optional('/notifications', { notifications: [] }),
         optional('/performance-attribution', { performance_attribution: [] }),
         optional('/daily-learning-update', null),
-      ]).then(([nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning]) => {
+      ]).then(([hydratedStatus, hydratedActivity, nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications, nextPerformance, nextLearning]) => {
+        if (hydratedStatus) {
+          setStatus(hydratedStatus);
+        }
+        if (hydratedActivity) {
+          setActivity(hydratedActivity);
+        }
         setBrief(nextBrief);
         setBenchmark(nextBenchmark);
         setThemes(nextThemes.themes || []);

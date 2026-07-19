@@ -8,14 +8,16 @@ The mobile app should show the main operating picture before every optional pane
 
 Refresh is intentionally split into two phases:
 
-- primary evidence: status, portfolio, recommendations, and autonomous activity;
-- secondary evidence: Founder brief, benchmark brief, intelligence themes, company intelligence, notifications, performance attribution, and daily learning.
+- primary evidence: operations health, activity summary, why-no-trade evidence, portfolio, and recommendations;
+- secondary evidence: full status, full autonomous activity timeline, Founder brief, benchmark brief, intelligence themes, company intelligence, notifications, performance attribution, and daily learning.
 
 The global spinner should represent the primary evidence load only. Secondary cards may update shortly afterwards in the background. This prevents a slow optional endpoint from making the full app appear frozen.
 
 If the Render web service is on a plan that spins down when idle, the first request after inactivity can still be delayed while Render wakes the API. That is infrastructure latency, not evidence that the worker or trading engine is stopped.
 
-If the hosted `/status` endpoint is slow, the app should show a degraded status explanation instead of blocking the whole screen. Activity evidence is persisted separately and may still prove that AI Trader is alive even while the large dashboard status payload is delayed.
+If the hosted `/status` or `/autonomous-activity` endpoint is slow, the app should show a lightweight operations view instead of blocking the whole screen. That lightweight view is built from `/operations-health`, `/activity/summary`, and `/activity/why-no-trade`. Activity evidence is persisted separately and may still prove that AI Trader is alive even while the large dashboard status payload or full activity timeline is delayed.
+
+The full Activity timeline is allowed to hydrate after the Dashboard is usable. Until it arrives, the Activity screen may say that the complete timeline is still hydrating, but worker health, database backend, job evidence, and no-trade summaries should still be visible when those lightweight endpoints respond.
 
 ## What The Screen Shows
 

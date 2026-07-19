@@ -8,11 +8,14 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
 
 - Updated the mobile app refresh flow so the screen no longer waits for every optional API endpoint before releasing the loading spinner.
 - Primary refresh now loads the operating essentials first:
-  - `/status`;
+  - `/operations-health`;
+  - `/activity/summary`;
+  - `/activity/why-no-trade`;
   - `/portfolio`;
-  - `/recommendations`;
-  - `/autonomous-activity`.
+  - `/recommendations`.
 - Secondary panels now hydrate in the background:
+  - full `/status`;
+  - full `/autonomous-activity`;
   - Founder brief;
   - benchmark brief;
   - themes;
@@ -28,6 +31,11 @@ Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Eng
   - `/status` is now treated as a graceful degraded-status source during refresh rather than a whole-app failure.
   - If `/status` times out, the app shows a partial status message and keeps the UI usable instead of displaying a blocking `Backend unavailable` modal.
   - The primary timeout was adjusted to 18 seconds to give the hosted API slightly more room without returning to the previous 30+ second blocking behaviour.
+- Follow-up Activity performance hardening after installed-app screenshots:
+  - `/status` and `/autonomous-activity` are no longer first-load blockers.
+  - Dashboard and Activity summary now render from lightweight persisted evidence first.
+  - Full dashboard status, broker panels, and the complete Activity timeline hydrate in the background with a longer timeout.
+  - This should make the app show worker/database/job evidence quickly even when the full hosted status payload is slow.
 
 ## 2026-07-19 Autonomous Activity Screen
 
