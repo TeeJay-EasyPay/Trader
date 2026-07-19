@@ -363,7 +363,7 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
         <Metric label="Shared Runtime Truth" value={phase5.database_spine?.plain_english} />
         <Metric label="Worker Supervision" value={phase5.worker_supervision?.status || explainMissing('worker supervision', 'worker supervision has not run yet')} />
         <Metric label="Worker Health Score" value={phase5.worker_supervision?.health_score} />
-        <TextBlock label="Still To Migrate" value={formatList(phase5.database_spine?.unmigrated_families)} />
+        <TextBlock label="Hardening Backlog" value={formatList(phase5.database_spine?.unmigrated_families)} />
       </Section>
       <Section title="Sprint 6 Production Control">
         <StatusPill label={sprint6.plain_english || explainMissing('Sprint 6 status', 'the hosted API has not returned Sprint 6 control evidence yet')} tone={sprint6Tone(sprint6)} />

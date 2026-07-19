@@ -1014,3 +1014,17 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   - Render deployment ID not available;
   - Supabase/Postgres live connection not verified;
   - phone-closed worker/cron proof remains an open release gate.
+
+## 2026-07-19 Always-On Worker Activation Wording Correction
+
+- Founder-provided hosted evidence confirmed:
+  - `/operations-health` returned `overall=healthy` and `worker_health=healthy`;
+  - `/scheduler-status` returned `status=active` with a background-worker heartbeat;
+  - `/job-runs` returned durable background job records, including auto-execution cycles.
+- Corrected backend status wording so resolved deployment proof is not still presented as an open blocker:
+  - `phase5_status` now reports `operational_with_hardening_backlog` when Supabase/Postgres and worker supervision are healthy;
+  - `sprint6_status` now reports that production control gates are active when Postgres is configured and no kill switch/open incident blocks operation.
+- Updated the mobile Dashboard label from `Still To Migrate` to `Hardening Backlog` so remaining database-spine work is not confused with a current trading blocker.
+- Boundary:
+  - No guardrails, broker permissions, risk limits, or trading thresholds were weakened.
+  - Remaining hardening backlog still matters for institutional maturity, but it no longer masks the proven always-on worker milestone.

@@ -159,7 +159,8 @@ def initialize_production_spine_schema(db_path: Path) -> None:
 def production_database_spine_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
     initialize_production_spine_schema(db_path)
     tables = _sqlite_tables(db_path)
-    migrated = {"always_on": database_backend in {"postgres", "postgresql", "supabase"}}
+    backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
+    migrated = {"always_on": backend_ready}
     for family in CRITICAL_RUNTIME_FAMILIES:
         if family != "always_on":
             migrated[family] = False
@@ -168,11 +169,17 @@ def production_database_spine_status(db_path: Path, *, database_backend: str = "
         for family, names in CRITICAL_RUNTIME_FAMILIES.items()
     }
     unmigrated = [family for family, done in migrated.items() if not done]
-    status = "production_ready" if not unmigrated else "partial_spine"
+    status = "production_ready" if not unmigrated else ("operational_with_hardening_backlog" if backend_ready else "partial_spine")
     explanation = (
         "All critical runtime families share the production database."
         if status == "production_ready"
-        else "Only part of the production database spine is unified; do not enable full multi-process autonomy for unmigrated runtime families."
+        else (
+            "Supabase/Postgres is active for always-on operational evidence. "
+            "Remaining runtime families are hardening backlog items; they do not stop the current worker, broker-poll, "
+            "auto-execution, and learning cycles from operating."
+            if backend_ready
+            else "SQLite is active; acceptable for local/test/offline use but not enough for multi-process production truth."
+        )
     )
     payload = {
         "critical_runtime_families": CRITICAL_RUNTIME_FAMILIES,
@@ -725,14 +732,27 @@ def strategy_promotion_decision(
 def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
     spine = production_database_spine_status(db_path, database_backend=database_backend)
     supervision = supervise_workers(db_path)
+    worker_healthy = supervision["status"] == "healthy"
+    backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
+    operational = backend_ready and worker_healthy
+    if spine["status"] == "production_ready" and operational:
+        overall = "production_ready"
+        plain = "AI Trader is operating from shared Supabase/Postgres truth with a healthy background worker."
+    elif operational:
+        overall = "operational_with_hardening_backlog"
+        plain = (
+            "AI Trader is alive: Supabase/Postgres is active and the background worker is healthy. "
+            "The listed backlog is future hardening, not a blocker to controlled autonomous operation."
+        )
+    else:
+        overall = "attention_needed"
+        plain = "AI Trader needs attention: shared database or background worker evidence is not healthy yet."
     return {
         "generated_at": utc_now_iso(),
         "database_spine": spine,
         "worker_supervision": supervision,
-        "overall": "ready_for_next_gate" if spine["status"] == "production_ready" and supervision["status"] == "healthy" else "attention_needed",
-        "plain_english": (
-            "Phase 5 foundations are present, but full production autonomy still requires completing the remaining database migration and live Render worker validation."
-        ),
+        "overall": overall,
+        "plain_english": plain,
     }
 
 

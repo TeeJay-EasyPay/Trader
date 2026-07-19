@@ -937,7 +937,17 @@ def sprint6_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[s
     kill = _row(db_path, "SELECT * FROM KILL_SWITCH_STATE WHERE id = 1", ())
     decisions = _rows(db_path, "SELECT final_decision, COUNT(*) AS count FROM DECISION_JOURNAL GROUP BY final_decision", ())
     backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
-    overall = "ready_for_controlled_operation" if backend_ready and not open_incidents and not (kill and kill["active"]) else "attention_needed"
+    blocked = bool(open_incidents) or bool(kill and kill["active"])
+    overall = "ready_for_controlled_operation" if backend_ready and not blocked else "attention_needed"
+    if backend_ready and not blocked:
+        plain = (
+            "Production control gates are active. AI Trader can operate autonomously inside the approved broker, "
+            "portfolio, strategy, and risk limits."
+        )
+    elif backend_ready:
+        plain = "Production control gates are installed, but an open incident or kill switch currently requires attention."
+    else:
+        plain = "Production control gates are installed, but shared Supabase/Postgres runtime truth is not active."
     return {
         "generated_at": utc_now_iso(),
         "overall": overall,
@@ -952,9 +962,7 @@ def sprint6_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[s
         "decision_journal_counts": {row["final_decision"]: row["count"] for row in decisions},
         "open_incidents": [dict(row) for row in open_incidents],
         "latest_operational_events": [dict(row) for row in latest_events],
-        "plain_english": (
-            "Sprint 6 control gates are installed. Increased capital still requires deployed Postgres/Supabase and hosted runtime evidence."
-        ),
+        "plain_english": plain,
     }
 
 
