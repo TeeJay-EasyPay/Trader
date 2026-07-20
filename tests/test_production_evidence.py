@@ -135,6 +135,9 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(payload["recommendations"][0]["symbol"], "AAPL")
             self.assertEqual(len(payload["learning"]), 1)
             self.assertTrue(any(item["category"] == "Execution" for item in payload["timeline"]["items"]))
+            self.assertNotIn("payload_json", payload["research"][0])
+            self.assertNotIn("payload_json", payload["trades"][0])
+            self.assertNotIn("payload_json", payload["learning"][0])
 
     def test_repeated_broker_event_does_not_create_duplicate_trade_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1236,3 +1236,14 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Hosted production-completion gate remains open pending Render deployment, real Supabase schema/migration validation, a genuine Alpaca paper round trip, terminal-learning evidence and a sustained phone-closed soak.
 - No governance threshold, strategy maturity, broker permission or risk limit was weakened.
 - No synthetic trade, P&L, recommendation or learning evidence was created.
+
+## 2026-07-20 - Founder Evidence Latency and Mobile Navigation Fix
+
+- Confirmed from the installed-app screenshots that `/founder-evidence` timing out caused Dashboard, Activity, Portfolio, Market and Learning to fall back to unavailable states together.
+- Removed repeated hosted schema initialization from the Founder evidence read path; schema migration remains owned by process startup, while isolated local SQLite databases retain idempotent bootstrapping.
+- Replaced broad production evidence reads with a compact projection that excludes raw job, funnel, heartbeat, trade, learning and broker payload blobs not used by the Founder interface.
+- Reduced recent job and funnel projection limits from 250 to 100 while preserving the selected-period operational totals and newest-first timeline.
+- Changed the six primary mobile destinations to a stable three-column, two-row navigation grid.
+- Set the Android runtime and Expo status bar to the application navy background with light system icons.
+- Verification: 9 focused evidence/activity tests passed; the authoritative root suite passed with 153 tests; Python compileall passed; Expo Doctor passed all 17 checks.
+- No trading rules, broker permissions, portfolio authority, risk controls or execution behavior changed.

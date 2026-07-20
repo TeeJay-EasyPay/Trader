@@ -6,6 +6,7 @@ import {
   RefreshControl,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -819,6 +820,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <StatusBar barStyle="light-content" backgroundColor="#0b1220" translucent={false} />
       <View style={styles.header}>
         <Text style={styles.title}>AI Trader</Text>
         <Text style={styles.subtitle}>
@@ -832,7 +834,12 @@ export default function App() {
             style={[styles.tab, screen === item && styles.activeTab]}
             onPress={() => setScreen(item)}
           >
-            <Text style={[styles.tabText, screen === item && styles.activeTabText]}>{item}</Text>
+            <Text
+              numberOfLines={2}
+              style={[styles.tabText, screen === item && styles.activeTabText]}
+            >
+              {item}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -3331,13 +3338,15 @@ const styles = StyleSheet.create({
   },
   tabs: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     padding: 10,
     backgroundColor: '#0b1220',
   },
   tab: {
-    flex: 1,
-    minHeight: 38,
+    flexGrow: 1,
+    flexBasis: '30%',
+    minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#334155',

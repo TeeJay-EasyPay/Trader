@@ -315,20 +315,53 @@ def record_learning_evidence(db_path: Path, result: dict[str, Any], *, worker_id
 
 
 def founder_evidence_payload(db_path: Path, *, period: str = "24h", trade_limit: int = 100) -> dict[str, Any]:
-    initialize_always_on_schema(db_path)
-    initialize_production_evidence_schema(db_path)
+    # Schema creation belongs to process startup. Re-running DDL here opened two
+    # extra hosted database connections and could block every Founder refresh.
+    # Local SQLite callers may create isolated demo/test databases without a
+    # long-running process, so retain idempotent local schema bootstrapping.
+    if not uses_postgres():
+        initialize_always_on_schema(db_path)
+        initialize_production_evidence_schema(db_path)
     since = _period_start(period)
     research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = _query_batch(
         db_path,
         [
-            ("SELECT * FROM PRODUCTION_RESEARCH_EVIDENCE WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 100", (since,)),
+            ("""SELECT evidence_id, created_at, completed_at, broker, asset_type, trigger_type,
+                       provider, symbols_json, assets_analysed, recommendations_created, status,
+                       freshness_status, data_quality_status, no_action_reason, summary
+                FROM PRODUCTION_RESEARCH_EVIDENCE
+                WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 100""", (since,)),
             ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 100", ()),
-            ("SELECT * FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 100", ()),
-            ("SELECT * FROM PRODUCTION_TRADE_EVIDENCE WHERE observed_at >= {x} ORDER BY observed_at DESC LIMIT {n}", (since,)),
-            ("SELECT * FROM PRODUCTION_LEARNING_EVIDENCE WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 50", (since,)),
-            ("SELECT * FROM SCHEDULED_JOB_RUNS WHERE COALESCE(started_at, scheduled_for) >= {x} ORDER BY scheduled_for DESC LIMIT 250", (since,)),
-            ("SELECT * FROM RESEARCH_FUNNELS WHERE created_at >= {x} ORDER BY created_at DESC LIMIT 250", (since,)),
-            ("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC", ()),
+            ("""SELECT snapshot_id, captured_at, broker, connection_status, account_mode, currency,
+                       portfolio_value, cash, buying_power, deployed_capital, day_pnl, week_pnl,
+                       month_pnl, open_positions, positions_json, reconciliation_status, source, error
+                FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 100""", ()),
+            ("""SELECT trade_evidence_id, observed_at, broker, broker_order_id, broker_trade_id,
+                       symbol, side, status, quantity, price, average_fill_price, fee, realized_pnl,
+                       opened_at, closed_at, entry_reason, exit_reason
+                FROM PRODUCTION_TRADE_EVIDENCE
+                WHERE observed_at >= {x} ORDER BY observed_at DESC LIMIT {n}""", (since,)),
+            ("""SELECT learning_id, completed_at, broker, logical_trade_id, status, summary,
+                       realized_pnl, gross_r, net_r
+                FROM PRODUCTION_LEARNING_EVIDENCE
+                WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 50""", (since,)),
+            ("""SELECT job_run_id, job_name, scheduled_for, started_at, completed_at, status,
+                       attempt, worker_id, assets_requested, assets_processed,
+                       recommendations_created, shadow_decisions_created, paper_orders_submitted,
+                       paper_orders_filled, rejection_count, failure_count, failure_reason
+                FROM SCHEDULED_JOB_RUNS
+                WHERE COALESCE(started_at, scheduled_for) >= {x}
+                ORDER BY scheduled_for DESC LIMIT 100""", (since,)),
+            ("""SELECT funnel_id, created_at, job_run_id, broker, asset_type, trigger_type,
+                       symbols_examined, symbols_with_adequate_data, interesting_ideas,
+                       valid_strategies, committee_approved, portfolio_approved,
+                       guardrail_approved, eligible_for_paper_execution, submitted, filled,
+                       rejected, expired, primary_reason
+                FROM RESEARCH_FUNNELS
+                WHERE created_at >= {x} ORDER BY created_at DESC LIMIT 100""", (since,)),
+            ("""SELECT worker_id, worker_type, started_at, last_heartbeat_at, status,
+                       current_job, last_successful_job, last_error, deployment_commit
+                FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC""", ()),
         ],
         limit=trade_limit,
     )

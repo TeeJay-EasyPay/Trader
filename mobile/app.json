@@ -4,6 +4,11 @@
     "slug": "ai-trader-mobile",
     "version": "1.0.2",
     "orientation": "portrait",
+    "androidStatusBar": {
+      "backgroundColor": "#0b1220",
+      "barStyle": "light-content",
+      "translucent": false
+    },
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
