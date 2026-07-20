@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -192,7 +193,7 @@ CREATE TABLE IF NOT EXISTS BROKER_RECONCILIATION_RUNS (
 
 
 def initialize_operational_truth_schema(db_path: Path) -> None:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(OPERATIONAL_TRUTH_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_proposal ON CANONICAL_TRADE_LIFECYCLE(proposal_id)")
@@ -236,7 +237,7 @@ def record_lifecycle_event(
             idempotency_key=idempotency_key or _lifecycle_key(normalized_stage, proposal_id, broker, symbol, payload),
         )
     key = idempotency_key or _lifecycle_key(normalized_stage, proposal_id, broker, symbol, payload)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         existing = conn.execute(
             "SELECT lifecycle_id FROM CANONICAL_TRADE_LIFECYCLE WHERE idempotency_key = ?",
             (key,),
@@ -256,7 +257,7 @@ def record_lifecycle_event(
             payload=payload,
             idempotency_key=key,
         )
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             try:
                 cursor = conn.execute(
@@ -318,7 +319,7 @@ def latest_lifecycle_stage(
         params.append(symbol)
     if not filters:
         return None
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             f"SELECT * FROM CANONICAL_TRADE_LIFECYCLE WHERE {' AND '.join(filters)} ORDER BY lifecycle_id DESC LIMIT 1",
@@ -358,7 +359,7 @@ def reconcile_broker_trade_rows(db_path: Path, broker: str, rows: list[dict[str,
             duplicates += 1
     status = "Fully reconciled" if rows and manual_review == 0 else "Awaiting broker data" if not rows else "Manual review required"
     summary = f"{broker.title()} reconciliation saw {len(rows)} row(s), created {created} lifecycle event(s), skipped {duplicates} duplicate(s)."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -454,7 +455,7 @@ def calculate_execution_costs(
         "cost_bps": cost_bps,
         "fee_status": fee_status,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -524,7 +525,7 @@ def calculate_r_multiple(
         "actual_r": net_r,
         "prediction_error": prediction_error,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -607,7 +608,7 @@ def calculate_mae_mfe(
         "monitoring_gaps": "No observations supplied." if not observations else "Calculated from supplied observations; precision depends on granularity.",
         "confidence": "low" if data_granularity in {"daily", "weekly", "monthly"} else "medium",
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -651,7 +652,7 @@ def reconciliation_health(db_path: Path, broker: str | None = None) -> list[dict
     if broker:
         where = "WHERE broker = ?"
         params = (broker.lower(),)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
@@ -700,7 +701,7 @@ def _reject_transition(
     payload: dict[str, Any],
     idempotency_key: str,
 ) -> dict[str, Any]:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """

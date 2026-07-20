@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Protocol
 
 from .audit import AuditDatabase
+from .database import is_hosted_runtime
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal
 
@@ -26,6 +27,11 @@ class ExecutionEngine:
         daily_realized_pnl: float = 0.0,
         now: datetime | None = None,
     ) -> list[dict]:
+        if is_hosted_runtime():
+            raise RuntimeError(
+                "The legacy ExecutionEngine is disabled in hosted production. "
+                "All production orders must pass through InvestmentOrchestrator."
+            )
         results: list[dict] = []
         for proposal in proposals:
             account = self.broker.account_context(daily_realized_pnl=daily_realized_pnl)
@@ -49,4 +55,3 @@ class ExecutionEngine:
             self.audit.record_execution_event(proposal.proposal_id, "execution_approved", result)
             results.append(result)
         return results
-

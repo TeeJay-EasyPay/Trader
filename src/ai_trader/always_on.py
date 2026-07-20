@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from .database import connect
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -274,7 +275,7 @@ def initialize_always_on_schema(db_path: Path) -> None:
             conn.commit()
         return
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(ALWAYS_ON_SCHEMA)
 
@@ -336,7 +337,7 @@ def claim_scheduled_job(
                 row = cur.fetchone()
             conn.commit()
         return {**dict(row), "claimed": True, "message": "Scheduled job claimed."}
-    with closing(sqlite3.connect(db_path, timeout=30)) as conn:
+    with closing(connect(db_path, timeout=30)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             existing = conn.execute(
@@ -410,7 +411,7 @@ def complete_scheduled_job(
                 row = cur.fetchone()
             conn.commit()
         return dict(row) if row else {"job_run_id": job_run_id, "status": "missing"}
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.execute(
@@ -495,7 +496,7 @@ def record_worker_heartbeat(
                 row = cur.fetchone()
             conn.commit()
         return dict(row)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             existing = conn.execute("SELECT started_at FROM WORKER_HEARTBEATS WHERE worker_id = ?", (worker_id,)).fetchone()
@@ -599,7 +600,7 @@ def record_research_funnel(
                 row = cur.fetchone()
             conn.commit()
         return dict(row)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.execute(
@@ -695,7 +696,7 @@ def record_shadow_trade(
                 row = cur.fetchone()
             conn.commit()
         return dict(row)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.execute(
@@ -760,7 +761,7 @@ def update_shadow_outcome(
                 row = cur.fetchone()
             conn.commit()
         return dict(row) if row else {"shadow_trade_id": shadow_trade_id, "status": "missing"}
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.execute(
@@ -804,7 +805,7 @@ def record_operations_incident(
                 row = cur.fetchone()
             conn.commit()
         return dict(row)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.execute(
@@ -836,7 +837,7 @@ def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return [dict(row) for row in cur.fetchall()]
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute(sql, params)]
 
@@ -848,7 +849,7 @@ def list_worker_heartbeats(db_path: Path) -> list[dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC")
                 return [dict(row) for row in cur.fetchall()]
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC")]
 
@@ -868,7 +869,7 @@ def list_shadow_trades(db_path: Path, *, broker: str | None = None, limit: int =
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return [dict(row) for row in cur.fetchall()]
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute(sql, params)]
 
@@ -888,7 +889,7 @@ def list_research_funnels(db_path: Path, *, broker: str | None = None, limit: in
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 return [dict(row) for row in cur.fetchall()]
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute(sql, params)]
 
@@ -986,7 +987,7 @@ def scheduler_status(db_path: Path) -> dict[str, Any]:
 
 def alpaca_inactivity_diagnosis(db_path: Path) -> dict[str, Any]:
     initialize_always_on_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         last_research = conn.execute(
             "SELECT * FROM RESEARCH_RUNS WHERE markets_reviewed LIKE '%Alpaca%' ORDER BY research_run_id DESC LIMIT 1"
@@ -1049,7 +1050,7 @@ def _open_incidents(db_path: Path) -> list[dict[str, Any]]:
                     "SELECT * FROM OPERATIONS_INCIDENTS WHERE status = 'open' ORDER BY incident_id DESC LIMIT 10"
                 )
                 return [dict(row) for row in cur.fetchall()]
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -1116,7 +1117,7 @@ def _latest_approved(decisions: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 def _broker_auto_state(db_path: Path, broker: str) -> dict[str, Any]:
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM BROKER_AUTO_TRADING_SETTINGS WHERE broker = ?",

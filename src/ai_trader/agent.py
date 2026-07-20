@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from .database import connect
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .audit import AuditDatabase
+from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal
@@ -172,7 +174,7 @@ def propose_crypto_trades(
     computed from CoinGecko market data. Only proposes a long entry when the score clears
     the confidence bar and the 7-day trend is positive; otherwise the symbol is skipped."""
     proposals: list[TradeProposal] = []
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         for symbol in symbols:
             row = conn.execute(

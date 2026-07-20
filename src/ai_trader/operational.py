@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -81,7 +82,7 @@ QUALITATIVE_SCORES = {
 
 def initialize_operational_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(OPERATIONAL_SCHEMA)
 
@@ -141,7 +142,7 @@ def record_portfolio_snapshot(
     day_pnl = _pnl_since(db_path, broker, exchange, portfolio_value, days=1)
     week_pnl = _pnl_since(db_path, broker, exchange, portfolio_value, days=7)
     month_pnl = None if month_start_value is None or portfolio_value is None else portfolio_value - month_start_value
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -203,7 +204,7 @@ def record_research_run(
     summary: str,
 ) -> None:
     initialize_operational_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -235,7 +236,7 @@ def record_research_run(
 
 def latest_pnl_snapshot(db_path: Path, broker: str) -> dict[str, Any]:
     initialize_operational_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -260,7 +261,7 @@ def latest_pnl_snapshot(db_path: Path, broker: str) -> dict[str, Any]:
 
 def latest_research_run(db_path: Path) -> dict[str, Any] | None:
     initialize_operational_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM RESEARCH_RUNS ORDER BY research_run_id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
@@ -300,7 +301,7 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
             notes = "Fetched live public market data across market-cap, AI, and privacy/security categories."
         except Exception as exc:
             notes = f"Rankings unavailable: {exc}"
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             if assets:
                 for asset in assets:
@@ -335,7 +336,7 @@ def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any
 
     initialize_foundation_schema(db_path)
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             for asset, raw_row in zip(assets, market_rows):
                 conn.execute(
@@ -426,7 +427,7 @@ def _pnl_since(db_path: Path, broker: str, exchange: str, current_value: float |
     if current_value is None:
         return None
     cutoff = (datetime.now(timezone.utc).timestamp() - days * 86400)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -451,7 +452,7 @@ def _month_start_value(db_path: Path, broker: str, exchange: str, now_iso: str) 
     if parsed is None:
         return None
     month_start = parsed.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         row = conn.execute(
             """
             SELECT portfolio_value FROM PORTFOLIO_SNAPSHOTS

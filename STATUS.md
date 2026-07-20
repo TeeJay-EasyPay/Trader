@@ -1,5 +1,28 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-20 Production Completion Repository Gate
+
+Status: **repository implementation passed; hosted cutover and soak not yet proven**.
+
+- Replaced hosted domain-level SQLite opens with one Postgres-aware DB-API provider.
+- Hosted startup now refuses SQLite and refuses a selected Postgres backend without a URL.
+- Added an additive, fingerprinted `migrate-sqlite-to-postgres` command for historical runtime records.
+- Moved mandatory production governance into the Investment Orchestrator.
+- Disabled the legacy direct Execution Engine in hosted runtime.
+- Added one canonical logical trade, event and fill ledger with partial-fill, duplicate-fill, fee and net-P&L aggregation.
+- Moved terminal learning initiation to canonical reconciliation and made the outbox exactly-once.
+- Added explicit completion for irrecoverably incomplete historical evidence without fabricating metrics.
+- Added per-worker-job timeout evidence and incidents so slow work cannot remain silently stuck.
+- Verification: compilation passed; 5 completion tests passed; 48 focused production tests passed; full authoritative suite passed 153/153.
+
+Release blockers:
+
+- deploy the revision to Render;
+- initialize and validate all schemas against the real Supabase database;
+- run and reconcile the historical SQLite migration if the source exists;
+- prove a real Alpaca paper round trip through canonical P&L and learning;
+- complete one equity-session plus overnight-crypto soak with the phone closed.
+
 Date: 2026-07-02 (Autonomous Trading Readiness Sprint completed 2026-07-07 - see below)
 
 Status: Version 1 validation sprint passed; Sprint 2 Investment Intelligence Engine initialized; Sprint 3 mobile/API foundation added; Sprint 3.1 developer experience configured; hosted backend path added; Sprint 3.2 app intelligence refinements added; Sprint 4 Investment Orchestrator implemented; Sprint 5 operational clarity implemented locally; Foundation Sprint autonomous investment platform governance implemented; multi-broker autonomous platform controls implemented; Autonomous Trading Readiness Sprint implemented (2026-07-07); World-Class Trading Intelligence Phase 2 implemented (2026-07-17); Institutional Intelligence and Founder Experience Phase 3 implemented locally (2026-07-17); World-Class Trader Transformation Phase 4-8 foundation implemented locally (2026-07-17); Always-On Operations and Alpaca Research Recovery implemented locally (2026-07-17); Supabase/Postgres Always-On evidence backend implemented locally (2026-07-18); Phase 5 Autonomous Production Spine foundation implemented locally (2026-07-18); Sprint 6 institutional production control layer implemented locally (2026-07-18); Autonomous Operations Completion and Render activation repository work implemented locally (2026-07-18); Autonomous Activity screen implemented locally and verified against hosted API (2026-07-19); Production Evidence Activation implemented and locally verified (2026-07-19)

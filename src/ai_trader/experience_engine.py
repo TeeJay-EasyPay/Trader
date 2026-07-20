@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,7 @@ CREATE TABLE IF NOT EXISTS LEARNING_PROPOSALS (
 
 def initialize_experience_engine_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(EXPERIENCE_ENGINE_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_experience_symbol ON EXPERIENCE_RECORDS(symbol, strategy_id, regime_id)")
@@ -110,7 +111,7 @@ def record_experience(
         "result_context": result_context,
     }
     immutable_hash = _hash(immutable_payload)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             try:
                 cursor = conn.execute(
@@ -178,7 +179,7 @@ def generate_post_trade_review(db_path: Path, attribution: dict[str, Any], decis
             "Would doing nothing have been better?",
         ],
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """
@@ -223,7 +224,7 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
         clauses.append("symbol = ?")
         params.append(symbol)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(f"SELECT * FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 50", tuple(params)).fetchall()
     cases = [dict(row) for row in rows]
@@ -237,7 +238,7 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
         "major_differences": ["Small sample; do not treat this as reliable precedent."] if comparable < minimum_cases else [],
         "confidence": confidence,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -276,7 +277,7 @@ def create_learning_proposal(
     status = "Suggested"
     if sample_size < 30:
         risks = f"{risks} Minimum sample gate not met; proposal must remain research-only."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """

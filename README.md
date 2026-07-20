@@ -1,5 +1,33 @@
 # AI Trading Assistant V1
 
+## Production Completion and Architectural Cutover
+
+The repository now has one mandatory hosted database and execution contract:
+
+- Supabase Postgres is the only permitted hosted runtime database;
+- SQLite is retained only for local development, isolated tests, migration input and local inspection;
+- the Investment Orchestrator owns strategy maturity, Portfolio Manager, Risk Engine, Sentinel, execution intent and broker submission;
+- one logical trade ID links intent, broker events, fills, fees, P&L and terminal learning;
+- terminal learning is idempotent and incomplete historical evidence is labelled rather than invented;
+- individual worker jobs have persisted timeout and incident evidence.
+
+Historical SQLite data can be copied additively after Postgres schema initialization:
+
+```powershell
+python -m ai_trader migrate-sqlite-to-postgres --source data/audit.sqlite3
+```
+
+Repository verification passes 153 authoritative Python tests. This does **not** claim the hosted cutover is complete: deploy, Supabase migration, a real Alpaca paper round trip and the production soak protocol remain mandatory release evidence.
+
+Start with:
+
+- [`architecture/PRODUCTION_COMPLETION_ARCHITECTURE_AUDIT.md`](architecture/PRODUCTION_COMPLETION_ARCHITECTURE_AUDIT.md)
+- [`architecture/PRODUCTION_COMPLETION_ARCHITECTURE.md`](architecture/PRODUCTION_COMPLETION_ARCHITECTURE.md)
+- [`architecture/PRODUCTION_DATABASE_CUTOVER.md`](architecture/PRODUCTION_DATABASE_CUTOVER.md)
+- [`architecture/CANONICAL_TRADE_AND_LEARNING.md`](architecture/CANONICAL_TRADE_AND_LEARNING.md)
+- [`architecture/PRODUCTION_COMPLETION_VERIFICATION.md`](architecture/PRODUCTION_COMPLETION_VERIFICATION.md)
+- [`architecture/PRODUCTION_COMPLETION_FOUNDER_BRIEFING.md`](architecture/PRODUCTION_COMPLETION_FOUNDER_BRIEFING.md)
+
 ## Production Evidence Activation
 
 AI Trader now has a shared Founder evidence path for the paid Render worker. The worker performs recurring crypto research, market-aware equity research, broker polling, managed-exit checks, execution eligibility, evidence snapshots and learning without the phone being open. Results are projected to Supabase/Postgres and exposed through authenticated `GET /founder-evidence` and `GET /founder/trades` endpoints.

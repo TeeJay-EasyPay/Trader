@@ -184,15 +184,16 @@ class Sprint6InstitutionalSpineTests(unittest.TestCase):
 
             result = process_learning_outbox(db_path, worker_id="test-worker")
 
-            self.assertEqual(result["manual_review"], 1)
+            self.assertEqual(result["manual_review"], 0)
+            self.assertEqual(result["processed"], 1)
             with closing(sqlite3.connect(db_path)) as conn:
                 row = conn.execute(
                     "SELECT status, payload_json, last_error FROM SPRINT6_WORKFLOW_OUTBOX WHERE workflow_id = ?",
                     (queued["workflow_id"],),
                 ).fetchone()
-            self.assertEqual(row[0], "manual_review")
+            self.assertEqual(row[0], "completed_insufficient_evidence")
             self.assertEqual(json.loads(row[1]), original_payload)
-            self.assertIn("Missing deterministic learning evidence", row[2])
+            self.assertIsNone(row[2])
 
     def test_learning_processor_completes_deterministic_terminal_trade_once(self):
         with tempfile.TemporaryDirectory() as tmp:

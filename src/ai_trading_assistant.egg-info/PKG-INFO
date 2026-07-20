@@ -4,3 +4,4 @@ Version: 0.1.0
 Summary: Personal AI-powered Alpaca paper trading assistant
 Requires-Python: >=3.11
 Requires-Dist: tzdata>=2026.2
+Requires-Dist: psycopg[binary]>=3.2

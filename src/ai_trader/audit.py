@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -63,7 +64,7 @@ class AuditDatabase:
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
 

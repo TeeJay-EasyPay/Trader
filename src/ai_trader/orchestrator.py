@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from .database import connect
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .broker_adapters import BrokerAdapter
+from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
     calculate_capital_allocation,
     calculate_investment_score,
@@ -102,7 +104,7 @@ class InvestmentOrchestrator:
         self.initialize()
 
     def initialize(self) -> None:
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        with closing(connect(self.db_path)) as conn:
             with conn:
                 conn.executescript(ORCHESTRATOR_SCHEMA)
         initialize_foundation_schema(self.db_path)
@@ -190,6 +192,33 @@ class InvestmentOrchestrator:
                 failures.append("maximum_capital_allocation_exceeded")
         failures.extend(validate_investment_universe(self.db_path, p, policy))
         failures.extend(validation.failures)
+
+        production_packet: dict[str, Any] | None = None
+        if selected and selected.name in {"alpaca", "kraken"}:
+            # One production pipeline: every real broker route passes the same
+            # Strategy -> Portfolio -> Risk -> Sentinel decision chain here.
+            from .sprint6 import pre_execution_decision_packet
+
+            production_packet = pre_execution_decision_packet(
+                self.db_path,
+                proposal=p,
+                broker=selected.name,
+                mode="paper" if selected.name == "alpaca" else "micro_live",
+                account=context.account,
+                guardrails=context.guardrails,
+                now=context.now,
+                market_data_quality=(
+                    (intelligence.get("market_data") or {}).get("quality")
+                    or "Unknown - no current market-data quality record was attached."
+                ),
+            )
+            if not production_packet["approved"]:
+                failures.extend(production_packet["reasons"])
+            elif production_packet.get("approved_notional") is not None:
+                allocation["approved_notional"] = min(
+                    float(allocation["approved_notional"]),
+                    float(production_packet["approved_notional"]),
+                )
         failures = list(dict.fromkeys(failures))
         record_broker_decision(
             self.db_path,
@@ -213,6 +242,19 @@ class InvestmentOrchestrator:
             notes = "Auto Paper Trading is disabled; recommendation requires manual approval."
         else:
             assert selected is not None
+            logical_trade_id = register_execution_intent(
+                self.db_path,
+                proposal=p,
+                broker=selected.name,
+                decision_context={
+                    "proposal": p.to_dict(),
+                    "intelligence": intelligence,
+                    "production_gate": production_packet,
+                    "allocation": allocation,
+                    "guardrails": validation.to_dict(),
+                    "account_equity": context.account.equity,
+                },
+            )
             client_order_id = p.proposal_id
             lock_acquired = acquire_order_intent_lock(
                 self.db_path,
@@ -239,6 +281,14 @@ class InvestmentOrchestrator:
                 )
                 order_request = _order_request(p, allocation["approved_notional"])
                 order = selected.place_bracket_order(order_request)
+                broker_order_id = str(order.get("id") or order.get("order_id") or "")
+                if broker_order_id:
+                    link_broker_order(
+                        self.db_path,
+                        logical_trade_id=logical_trade_id,
+                        broker_order_id=broker_order_id,
+                        payload=order,
+                    )
                 complete_order_intent_lock(
                     self.db_path,
                     broker=selected.name,
@@ -353,7 +403,7 @@ class InvestmentOrchestrator:
         return decision
 
     def record_decision(self, decision: OrchestratorDecision) -> None:
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        with closing(connect(self.db_path)) as conn:
             with conn:
                 conn.execute(
                     """
@@ -398,7 +448,7 @@ class InvestmentOrchestrator:
         order_status: str | None,
         notes: str | None,
     ) -> None:
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        with closing(connect(self.db_path)) as conn:
             with conn:
                 conn.execute(
                     """
@@ -412,7 +462,7 @@ class InvestmentOrchestrator:
                 )
 
     def latest_decision(self) -> dict[str, Any] | None:
-        with closing(sqlite3.connect(self.db_path)) as conn:
+        with closing(connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM ORCHESTRATOR_DECISIONS ORDER BY decision_id DESC LIMIT 1").fetchone()
             return dict(row) if row else None

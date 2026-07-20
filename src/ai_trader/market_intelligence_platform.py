@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -119,7 +120,7 @@ CREATE TABLE IF NOT EXISTS MARKET_REGIME_EVIDENCE (
 
 def initialize_market_intelligence_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(MARKET_INTELLIGENCE_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_mdo_symbol_time ON MARKET_DATA_OBSERVATIONS(normalized_symbol, timeframe, observation_time)")
@@ -186,7 +187,7 @@ def record_market_observations(
 ) -> dict[str, Any]:
     initialize_market_intelligence_schema(db_path)
     quality = validate_candles(candles)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             for issue in quality["issues"]:
                 conn.execute(

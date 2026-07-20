@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -217,7 +218,7 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
 
 def initialize_multi_broker_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(MULTI_BROKER_SCHEMA)
             _ensure_columns(
@@ -256,7 +257,7 @@ def initialize_multi_broker_schema(db_path: Path) -> None:
 
 def broker_auto_trading_enabled(db_path: Path, broker: str, env_default: bool = False) -> bool:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         row = conn.execute(
             "SELECT auto_trading_enabled FROM BROKER_AUTO_TRADING_SETTINGS WHERE broker = ?",
             (broker.lower(),),
@@ -270,7 +271,7 @@ def set_broker_auto_trading(db_path: Path, broker: str, enabled: bool, *, update
     initialize_multi_broker_schema(db_path)
     broker_key = broker.lower()
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -305,7 +306,7 @@ def set_broker_auto_trading(db_path: Path, broker: str, enabled: bool, *, update
 
 def broker_auto_settings(db_path: Path) -> dict[str, bool]:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         return {
             row[0]: bool(row[1])
             for row in conn.execute("SELECT broker, auto_trading_enabled FROM BROKER_AUTO_TRADING_SETTINGS")
@@ -353,7 +354,7 @@ def update_broker_runtime(
         updated_at=now,
         details={**current.details, **(details or {})},
     )
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -406,7 +407,7 @@ def update_broker_runtime(
 def broker_runtime(db_path: Path, broker: str) -> BrokerRuntime:
     initialize_multi_broker_schema(db_path)
     broker_key = broker.lower()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM BROKER_RUNTIME_STATE WHERE broker = ?", (broker_key,)).fetchone()
     if row is None:
@@ -444,7 +445,7 @@ def all_broker_runtime(db_path: Path) -> list[dict[str, Any]]:
 def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
     newly_inserted: list[dict[str, Any]] = []
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             for item in trades:
                 external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
@@ -491,7 +492,7 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
 
 def latest_broker_trades(db_path: Path, broker: str, limit: int = 20) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM BROKER_TRADE_HISTORY WHERE broker = ? ORDER BY trade_history_id DESC LIMIT ?",
@@ -511,7 +512,7 @@ def record_recommendation_set(
     summary: str | None,
 ) -> None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -536,7 +537,7 @@ def record_recommendation_set(
 
 def latest_recommendation_set(db_path: Path) -> dict[str, Any] | None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM RECOMMENDATION_SETS ORDER BY set_id DESC LIMIT 1").fetchone()
     if not row:
@@ -558,7 +559,7 @@ def record_notification(
     payload: dict[str, Any] | None = None,
 ) -> int:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """
@@ -578,7 +579,7 @@ def list_notifications(db_path: Path, *, unread_only: bool = False, limit: int =
     if unread_only:
         sql += " WHERE delivery_status = 'queued'"
     sql += " ORDER BY notification_id DESC LIMIT ?"
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, (limit,)).fetchall()
     return [dict(row) for row in rows]
@@ -587,7 +588,7 @@ def list_notifications(db_path: Path, *, unread_only: bool = False, limit: int =
 def register_push_token(db_path: Path, push_token: str, *, platform: str | None = None) -> dict[str, Any]:
     initialize_multi_broker_schema(db_path)
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -602,7 +603,7 @@ def register_push_token(db_path: Path, push_token: str, *, platform: str | None 
 
 def active_push_tokens(db_path: Path) -> list[str]:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         rows = conn.execute("SELECT push_token FROM PUSH_TOKENS WHERE active = 1").fetchall()
     return [row[0] for row in rows]
 
@@ -623,7 +624,7 @@ PUSH_NOTIFIED_EVENT_TYPES = {
 def pending_push_notifications(db_path: Path, limit: int = 20) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
     placeholders = ",".join("?" for _ in PUSH_NOTIFIED_EVENT_TYPES)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
@@ -642,7 +643,7 @@ def mark_push_sent(db_path: Path, notification_ids: list[int]) -> None:
         return
     now = utc_now_iso()
     placeholders = ",".join("?" for _ in notification_ids)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 f"UPDATE NOTIFICATION_EVENTS SET push_sent_at = ? WHERE notification_id IN ({placeholders})",
@@ -674,7 +675,7 @@ def mark_notifications_read(db_path: Path, notification_ids: list[int]) -> int:
     if not notification_ids:
         return 0
     placeholders = ",".join("?" for _ in notification_ids)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 f"UPDATE NOTIFICATION_EVENTS SET delivery_status = 'read' WHERE notification_id IN ({placeholders})",
@@ -694,7 +695,7 @@ def acquire_order_intent_lock(
 ) -> bool:
     initialize_multi_broker_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             with conn:
                 conn.execute(
                     """
@@ -720,7 +721,7 @@ def complete_order_intent_lock(
     notes: str | None,
 ) -> None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -748,7 +749,7 @@ def record_managed_trade_exit(
 ) -> dict[str, Any]:
     initialize_multi_broker_schema(db_path)
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """
@@ -782,7 +783,7 @@ def record_managed_trade_exit(
 
 def update_trailing_water_marks(db_path: Path, managed_exit_id: int, *, high_water_mark: float | None, low_water_mark: float | None) -> None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 "UPDATE MANAGED_TRADE_EXITS SET high_water_mark = ?, low_water_mark = ?, last_checked_at = ? WHERE managed_exit_id = ?",
@@ -798,7 +799,7 @@ def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[st
         sql += " AND broker = ?"
         params = (broker.lower(),)
     sql += " ORDER BY managed_exit_id ASC"
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
@@ -813,7 +814,7 @@ def close_managed_exit(
     payload: dict[str, Any] | None = None,
 ) -> None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -868,7 +869,7 @@ def close_managed_exit_and_record(
     closed_dt = _parse_iso(now)
     if opened_dt and closed_dt:
         holding_period_seconds = (closed_dt - opened_dt).total_seconds()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -948,7 +949,7 @@ def _parse_iso(value: str) -> datetime | None:
 
 def list_performance_attribution(db_path: Path, limit: int = 50) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM PERFORMANCE_ATTRIBUTION ORDER BY attribution_id DESC LIMIT ?",
@@ -968,7 +969,7 @@ def record_seatbelt_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -1012,7 +1013,7 @@ def record_crypto_research_score(db_path: Path, *, symbol: str, category: str | 
         "reasoning": metrics.get("reasoning") or {"source": source},
         "source": source,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -1068,7 +1069,7 @@ def research_freshness(last_scan: str | None, *, max_age_minutes: int = 90) -> s
 def today_runtime_counts(db_path: Path, broker: str) -> dict[str, int]:
     today = date.today().isoformat()
     initialize_multi_broker_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         reviewed = conn.execute(
             "SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES WHERE created_at LIKE ?",
             (f"{today}%",),

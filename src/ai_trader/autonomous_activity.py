@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from collections import Counter
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -715,7 +716,7 @@ def _sqlite_rows(db_path: Path, table: str, order_column: str, limit: int) -> li
     if not db_path.exists() or not _table_exists(db_path, table):
         return []
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 f"SELECT * FROM {table} ORDER BY {order_column} DESC LIMIT ?",
@@ -728,7 +729,7 @@ def _sqlite_rows(db_path: Path, table: str, order_column: str, limit: int) -> li
 
 def _table_exists(db_path: Path, table: str) -> bool:
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table,)).fetchone()
             return bool(row)
     except sqlite3.Error:

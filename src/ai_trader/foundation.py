@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from .database import connect
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
@@ -382,7 +383,7 @@ class TradingPolicy:
 
 def initialize_foundation_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(FOUNDATION_SCHEMA)
             _seed_policies(conn)
@@ -390,7 +391,7 @@ def initialize_foundation_schema(db_path: Path) -> None:
 
 def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> TradingPolicy:
     initialize_foundation_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         investment = _policy_map(conn, "INVESTMENT_POLICIES")
         risk = _policy_map(conn, "RISK_POLICIES")
@@ -472,7 +473,7 @@ def _behavioural_context_available(conn: sqlite3.Connection, proposal: TradeProp
 
 def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> dict[str, Any]:
     p = proposal.normalized()
-    with closing(sqlite3.connect(db_path)) as probe_conn:
+    with closing(connect(db_path)) as probe_conn:
         macro_available = _macro_context_available(probe_conn, p)
         behavioural_available = _behavioural_context_available(probe_conn, p)
     statuses = {
@@ -500,7 +501,7 @@ def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> d
         ),
         "investment_policy": f"Policy fit score: {p.philosophy_fit}",
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -544,7 +545,7 @@ def calculate_investment_score(db_path: Path, proposal: TradeProposal) -> dict[s
     fundamental = confidence if p.news_summary else 0.0
     technical = (safe_score(p.technical_summary) or confidence) if p.technical_summary else 0.0
     market = (safe_score(p.market_sentiment_summary) or confidence) if p.market_sentiment_summary else 0.0
-    with closing(sqlite3.connect(db_path)) as probe_conn:
+    with closing(connect(db_path)) as probe_conn:
         macro_available = _macro_context_available(probe_conn, p)
         behavioural_available = _behavioural_context_available(probe_conn, p)
     macro = confidence if macro_available else 0.0
@@ -583,7 +584,7 @@ def calculate_investment_score(db_path: Path, proposal: TradeProposal) -> dict[s
         "overall_confidence": overall,
         "reasoning": reasoning,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -630,7 +631,7 @@ def validate_investment_universe(db_path: Path, proposal: TradeProposal, policy:
     if p.asset_type == "crypto" and not policy.crypto_enabled:
         failures.append("crypto_disabled_by_policy")
     if p.asset_type == "crypto":
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             row = conn.execute(
                 "SELECT active FROM CRYPTO_MASTER WHERE UPPER(symbol) = UPPER(?) AND active = 1 LIMIT 1",
                 (p.symbol,),
@@ -675,7 +676,7 @@ def calculate_capital_allocation(
     risk_amount = approved_quantity * per_unit_risk
     result = "approved" if approved_notional > 0 else "rejected"
     notes = None if result == "approved" else "Capital allocation produced zero approved notional."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -722,7 +723,7 @@ def record_broker_decision(
     reason: str | None,
 ) -> None:
     p = proposal.normalized()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -745,7 +746,7 @@ def record_execution_decision(
     reason: str | None,
 ) -> None:
     p = proposal.normalized()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -767,7 +768,7 @@ def latest_investment_score(db_path: Path, proposal_id: str) -> dict[str, Any] |
 
 
 def _latest(db_path: Path, table: str, order_column: str, proposal_id: str) -> dict[str, Any] | None:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             f"SELECT * FROM {table} WHERE proposal_id = ? ORDER BY {order_column} DESC LIMIT 1",

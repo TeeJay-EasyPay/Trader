@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import sqlite3
+from .database import connect
 import sys
 import time
 from collections import Counter, defaultdict, deque
@@ -96,12 +97,9 @@ from .production_evidence import (
     record_trade_evidence,
 )
 from .sprint6 import (
-    enqueue_learning_workflow,
-    execution_mode_for_broker,
     generate_founder_operational_report,
     initialize_sprint6_schema,
     normalize_broker_events,
-    pre_execution_decision_packet,
     record_operational_event,
     seed_default_strategy_registry,
     sprint6_status,
@@ -1594,7 +1592,7 @@ This report explains available evidence. It does not automatically change strate
         markdown: str,
         path: Path | None,
     ) -> int:
-        with closing(sqlite3.connect(self.settings.db_path)) as conn:
+        with closing(connect(self.settings.db_path)) as conn:
             with conn:
                 conn.executescript(REPORT_SCHEMA)
                 cursor = conn.execute(
@@ -2056,7 +2054,7 @@ This report explains available evidence. It does not automatically change strate
         if not symbols:
             return []
         now = utc_now_iso()
-        with closing(sqlite3.connect(self.settings.db_path)) as conn:
+        with closing(connect(self.settings.db_path)) as conn:
             with conn:
                 for symbol in symbols:
                     conn.execute(
@@ -2150,7 +2148,7 @@ This report explains available evidence. It does not automatically change strate
             if not row:
                 return {
                     "status": "rejected",
-                    "message": "Proposal not found in SQLite. Refresh recommendations, then try the latest card again.",
+                    "message": "Proposal not found in the production database. Refresh recommendations, then try the latest card again.",
                 }
         freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
         if freshness["status"] == "Expired":
@@ -2176,28 +2174,6 @@ This report explains available evidence. It does not automatically change strate
             guardrails=self.settings.guardrails,
         )
         proposal = self._proposal_with_manual_amount(proposal, body.get("amount"), account_equity=context.account.equity)
-        permissions = self._broker_trading_permissions(broker_name, broker_auto_trading_enabled(self.settings.db_path, broker_name, False))
-        pre_execution = pre_execution_decision_packet(
-            self.settings.db_path,
-            proposal=proposal,
-            broker=broker_name,
-            mode=execution_mode_for_broker(
-                broker=broker_name,
-                can_submit_real_orders=bool(permissions.get("can_submit_real_orders")),
-                manual=True,
-            ),
-            account=context.account,
-            market_data_quality="Unknown - manual approval used the latest persisted recommendation.",
-        )
-        if not pre_execution["approved"]:
-            return {
-                "status": "blocked",
-                "message": pre_execution["plain_english"],
-                "pre_execution": pre_execution,
-                "amount_requested": body.get("amount"),
-            }
-        if pre_execution.get("approved_notional") and pre_execution["approved_notional"] > 0:
-            proposal = self._proposal_with_manual_amount(proposal, pre_execution["approved_notional"], account_equity=context.account.equity)
         decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
         if decision.decision == "approved":
             self.portfolio(broker_name)
@@ -2439,31 +2415,6 @@ This report explains available evidence. It does not automatically change strate
                 auto_trade=self._auto_config_for_broker(broker_name),
                 guardrails=self.settings.guardrails,
             )
-            permissions = self._broker_trading_permissions(broker_name, True)
-            pre_execution = pre_execution_decision_packet(
-                self.settings.db_path,
-                proposal=proposal,
-                broker=broker_name,
-                mode=execution_mode_for_broker(
-                    broker=broker_name,
-                    can_submit_real_orders=bool(permissions.get("can_submit_real_orders")),
-                    manual=False,
-                ),
-                account=context.account,
-                market_data_quality="Unknown - latest persisted recommendation has no attached market data gateway run.",
-            )
-            if not pre_execution["approved"]:
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "sprint6_pre_execution_blocked",
-                    "message": pre_execution["plain_english"],
-                    "pre_execution": pre_execution,
-                })
-                continue
-            if pre_execution.get("approved_notional") and pre_execution["approved_notional"] > 0:
-                proposal = self._proposal_with_manual_amount(proposal, pre_execution["approved_notional"], account_equity=context.account.equity)
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
             if decision.decision == "approved":
                 decisions.append(decision.to_dict())
@@ -2829,13 +2780,6 @@ This report explains available evidence. It does not automatically change strate
                     title=event_type.replace("_", " ").title(),
                     message=f"{broker_name.title()} order for {symbol} is now {status}.",
                     payload=row,
-                )
-                logical_trade_id = str(row.get("order_id") or row.get("ordertxid") or row.get("id") or row.get("trade_id") or symbol)
-                enqueue_learning_workflow(
-                    self.settings.db_path,
-                    logical_trade_id=logical_trade_id,
-                    broker=broker_name,
-                    payload={"broker_row": row, "status": status},
                 )
             results[broker_name] = {
                 "orders": len(orders),
@@ -3641,7 +3585,7 @@ This report explains available evidence. It does not automatically change strate
         return None
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.settings.db_path)
+        conn = connect(self.settings.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

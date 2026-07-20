@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -135,7 +136,7 @@ def initialize_production_evidence_schema(db_path: Path) -> None:
             conn.commit()
         return
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.executescript(SQLITE_SCHEMA)
 
 
@@ -407,7 +408,7 @@ def _upsert(db_path: Path, sql: str, values: tuple[Any, ...]) -> None:
             conn.commit()
         return
     statement = sql.format(p=", ".join(["?"] * len(values)))
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(statement, values)
 
@@ -420,7 +421,7 @@ def _query(db_path: Path, sql: str, values: tuple[Any, ...] = (), *, limit: int 
                 cur.execute(statement, values)
                 return [dict(row) for row in cur.fetchall()]
     statement = sql.format(x="?", n=max(1, min(limit, 500)))
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute(statement, values).fetchall()]
 
@@ -441,7 +442,7 @@ def _query_batch(
                     cur.execute(sql.format(x="%s", n=bounded_limit), values)
                     results.append([dict(row) for row in cur.fetchall()])
         return results
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return [
             [dict(row) for row in conn.execute(sql.format(x="?", n=bounded_limit), values).fetchall()]

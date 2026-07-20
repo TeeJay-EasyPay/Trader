@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -149,7 +150,7 @@ STRATEGY_STAGES = ["Research", "Backtest", "Walk Forward", "Shadow", "Paper", "M
 
 def initialize_production_spine_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(PHASE5_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_decisions_symbol ON PORTFOLIO_MANAGER_DECISIONS(symbol, created_at)")
@@ -186,7 +187,7 @@ def production_database_spine_status(db_path: Path, *, database_backend: str = "
         "missing_local_tables": missing_tables,
         "migration_status_by_family": migrated,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -268,7 +269,7 @@ def supervise_workers(
         "late_jobs": late_jobs,
         "backlog": backlog,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -342,22 +343,28 @@ def reconcile_logical_trade(db_path: Path, *, broker: str, events: list[dict[str
             if status == "reconciled"
             else "Deterministic reconciliation is incomplete; manual review is required."
         )
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             with conn:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO CANONICAL_RECONCILIATION_CASES (
-                        case_id, created_at, broker, logical_trade_id, symbol, status,
+                    INSERT INTO CANONICAL_RECONCILIATION_CASES (
+                        created_at, broker, logical_trade_id, symbol, status,
                         confidence_score, events_seen, lifecycle_events_recorded,
                         duplicate_events, manual_review_required, explanation, payload_json
-                    ) VALUES (
-                        (SELECT case_id FROM CANONICAL_RECONCILIATION_CASES WHERE broker = ? AND logical_trade_id = ?),
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                    )
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(broker, logical_trade_id) DO UPDATE SET
+                        created_at = excluded.created_at,
+                        symbol = excluded.symbol,
+                        status = excluded.status,
+                        confidence_score = excluded.confidence_score,
+                        events_seen = excluded.events_seen,
+                        lifecycle_events_recorded = excluded.lifecycle_events_recorded,
+                        duplicate_events = excluded.duplicate_events,
+                        manual_review_required = excluded.manual_review_required,
+                        explanation = excluded.explanation,
+                        payload_json = excluded.payload_json
                     """,
                     (
-                        broker.lower(),
-                        logical_trade_id,
                         utc_now_iso(),
                         broker.lower(),
                         logical_trade_id,
@@ -498,7 +505,7 @@ def run_closed_loop_learning(
     )
     status = "completed" if lifecycle["status"] in {"recorded", "duplicate"} else "manual_review_required"
     explanation = "Closed-loop learning completed without changing production parameters."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -545,6 +552,65 @@ def run_closed_loop_learning(
         "review": review,
         "analogues": analogues,
         "learning_proposal": learning_proposal,
+        "plain_english": explanation,
+    }
+
+
+def complete_insufficient_evidence_learning(
+    db_path: Path,
+    *,
+    logical_trade_id: str,
+    broker: str,
+    symbol: str,
+    missing: list[str],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Complete an irrecoverable legacy learning case without fabricating metrics."""
+
+    initialize_production_spine_schema(db_path)
+    existing = _row(
+        db_path,
+        "SELECT * FROM CLOSED_LOOP_LEARNING_RUNS WHERE logical_trade_id = ?",
+        (logical_trade_id,),
+    )
+    if existing:
+        return {**existing, "status": "duplicate"}
+    lifecycle = record_lifecycle_event(
+        db_path,
+        stage="learning_completed",
+        proposal_id=(payload.get("attribution") or {}).get("proposal_id"),
+        broker=broker,
+        symbol=symbol or "UNKNOWN",
+        event_source="closed_loop_learning",
+        event_reason="Learning completed with insufficient historical decision evidence; no metrics were invented.",
+        payload={"logical_trade_id": logical_trade_id, "missing": missing},
+        idempotency_key=f"learning_completed:{logical_trade_id}",
+    )
+    explanation = "Learning closed automatically with insufficient evidence: " + ", ".join(missing)
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO CLOSED_LOOP_LEARNING_RUNS (
+                    created_at, logical_trade_id, broker, symbol, status,
+                    lifecycle_marked, experience_id, review_id, learning_proposal_id,
+                    explanation, payload_json
+                ) VALUES (?, ?, ?, ?, 'completed_insufficient_evidence', ?, NULL, NULL, NULL, ?, ?)
+                """,
+                (
+                    utc_now_iso(),
+                    logical_trade_id,
+                    broker.lower(),
+                    (symbol or "UNKNOWN").upper(),
+                    1 if lifecycle["status"] in {"recorded", "duplicate"} else 0,
+                    explanation,
+                    json.dumps({"missing": missing, "source_payload": payload}, sort_keys=True, default=str),
+                ),
+            )
+    return {
+        "logical_trade_id": logical_trade_id,
+        "status": "completed_insufficient_evidence",
+        "missing": missing,
         "plain_english": explanation,
     }
 
@@ -598,7 +664,7 @@ def portfolio_manager_decision(
         "liquidity_impact": proposal.get("liquidity_impact") or "Unknown - liquidity provider not configured.",
         "capital_efficiency": "Unknown - requires strategy expectancy and cost history.",
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -649,7 +715,7 @@ def market_data_gateway_validate(
         "normalization": {"original_symbol": symbol, "normalized_symbol": symbol.upper()},
         "quality": quality,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -698,7 +764,7 @@ def strategy_promotion_decision(
         proposed = "Retired" if current in {"Production", "Micro Live"} else current
         decision = "demote" if proposed != current else "hold"
     reason = "All evidence gates passed." if decision == "promote" else "; ".join(item["reason"] for item in gates if not item["passed"]) or "Performance deterioration detected."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -759,13 +825,13 @@ def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[st
 def _sqlite_tables(db_path: Path) -> set[str]:
     if not db_path.exists():
         return set()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     return {row[0] for row in rows}
 
 
 def _row(db_path: Path, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(sql, params).fetchone()
     return dict(row) if row else None

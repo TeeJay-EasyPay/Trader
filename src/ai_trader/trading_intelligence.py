@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from .database import connect
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,7 +220,7 @@ class IntelligencePacket:
 
 def initialize_trading_intelligence_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(TRADING_INTELLIGENCE_SCHEMA)
             _ensure_column(conn, "TRADE_LIFECYCLE", "fees", "REAL")
@@ -942,16 +943,22 @@ def persist_intelligence_packet(db_path: Path, proposal: TradeProposal, packet: 
     p = proposal.normalized()
     data = packet.to_dict()
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             regime = data["regime"]
             conn.execute(
                 """
-                INSERT OR REPLACE INTO MARKET_REGIME_SNAPSHOTS (
+                INSERT INTO MARKET_REGIME_SNAPSHOTS (
                     regime_id, created_at, asset_type, exchange, primary_regime,
                     volatility_regime, trend_regime, liquidity_regime, risk_regime,
                     confidence, evidence_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(regime_id) DO UPDATE SET
+                    created_at=excluded.created_at, asset_type=excluded.asset_type,
+                    exchange=excluded.exchange, primary_regime=excluded.primary_regime,
+                    volatility_regime=excluded.volatility_regime, trend_regime=excluded.trend_regime,
+                    liquidity_regime=excluded.liquidity_regime, risk_regime=excluded.risk_regime,
+                    confidence=excluded.confidence, evidence_json=excluded.evidence_json
                 """,
                 (
                     regime["regime_id"],
@@ -970,11 +977,19 @@ def persist_intelligence_packet(db_path: Path, proposal: TradeProposal, packet: 
             for signal in data["signals"]:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO TRADE_SIGNALS (
+                    INSERT INTO TRADE_SIGNALS (
                         signal_id, created_at, proposal_id, symbol, asset_type, strategy_id,
                         regime_id, signal_name, score, confidence, weight,
                         historical_effectiveness, evidence_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(signal_id) DO UPDATE SET
+                        created_at=excluded.created_at, proposal_id=excluded.proposal_id,
+                        symbol=excluded.symbol, asset_type=excluded.asset_type,
+                        strategy_id=excluded.strategy_id, regime_id=excluded.regime_id,
+                        signal_name=excluded.signal_name, score=excluded.score,
+                        confidence=excluded.confidence, weight=excluded.weight,
+                        historical_effectiveness=excluded.historical_effectiveness,
+                        evidence_json=excluded.evidence_json
                     """,
                     (
                         signal["signal_id"],
@@ -995,11 +1010,20 @@ def persist_intelligence_packet(db_path: Path, proposal: TradeProposal, packet: 
             committee = data["committee"]
             conn.execute(
                 """
-                INSERT OR REPLACE INTO TRADING_COMMITTEE_REVIEWS (
+                INSERT INTO TRADING_COMMITTEE_REVIEWS (
                     review_id, created_at, proposal_id, symbol, strategy_id, regime_id,
                     committee_result, strongest_argument_for, strongest_argument_against,
                     member_votes_json, supporting_evidence_json, opposing_evidence_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(review_id) DO UPDATE SET
+                    created_at=excluded.created_at, proposal_id=excluded.proposal_id,
+                    symbol=excluded.symbol, strategy_id=excluded.strategy_id,
+                    regime_id=excluded.regime_id, committee_result=excluded.committee_result,
+                    strongest_argument_for=excluded.strongest_argument_for,
+                    strongest_argument_against=excluded.strongest_argument_against,
+                    member_votes_json=excluded.member_votes_json,
+                    supporting_evidence_json=excluded.supporting_evidence_json,
+                    opposing_evidence_json=excluded.opposing_evidence_json
                 """,
                 (
                     committee["review_id"],
@@ -1019,12 +1043,23 @@ def persist_intelligence_packet(db_path: Path, proposal: TradeProposal, packet: 
             probability = data["probability"]
             conn.execute(
                 """
-                INSERT OR REPLACE INTO PROBABILITY_ESTIMATES (
+                INSERT INTO PROBABILITY_ESTIMATES (
                     estimate_id, created_at, proposal_id, symbol, strategy_id, regime_id,
                     probability_of_success, expected_return_r, expected_drawdown_r,
                     historical_sample_size, confidence_interval_low, confidence_interval_high,
                     expected_holding_time, expected_volatility, calibration_status, evidence_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(estimate_id) DO UPDATE SET
+                    created_at=excluded.created_at, proposal_id=excluded.proposal_id,
+                    symbol=excluded.symbol, strategy_id=excluded.strategy_id,
+                    regime_id=excluded.regime_id, probability_of_success=excluded.probability_of_success,
+                    expected_return_r=excluded.expected_return_r, expected_drawdown_r=excluded.expected_drawdown_r,
+                    historical_sample_size=excluded.historical_sample_size,
+                    confidence_interval_low=excluded.confidence_interval_low,
+                    confidence_interval_high=excluded.confidence_interval_high,
+                    expected_holding_time=excluded.expected_holding_time,
+                    expected_volatility=excluded.expected_volatility,
+                    calibration_status=excluded.calibration_status, evidence_json=excluded.evidence_json
                 """,
                 (
                     probability["estimate_id"],
@@ -1066,7 +1101,7 @@ def record_lifecycle_stage(
 ) -> None:
     initialize_trading_intelligence_schema(db_path)
     p = proposal.normalized()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -1098,7 +1133,7 @@ def record_lifecycle_stage(
 
 def latest_intelligence_packet(db_path: Path, proposal_id: str) -> dict[str, Any] | None:
     initialize_trading_intelligence_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         committee = conn.execute(
             "SELECT * FROM TRADING_COMMITTEE_REVIEWS WHERE proposal_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -1130,7 +1165,7 @@ def latest_intelligence_packet(db_path: Path, proposal_id: str) -> dict[str, Any
 
 def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         strategies = conn.execute("SELECT strategy_id FROM STRATEGY_REGISTRY").fetchall()
     refresh_rows = []
@@ -1141,7 +1176,7 @@ def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
         perf = calculate_performance_metrics(db_path, strategy_id)
         refresh_rows.append((strategy_id, history, calibration, perf))
     metrics_written = 0
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         updated = 0
         with conn:
             for strategy_id, history, calibration, perf in refresh_rows:
@@ -1209,14 +1244,18 @@ def record_historical_candle(
     payload: dict[str, Any] | None = None,
 ) -> None:
     initialize_trading_intelligence_schema(db_path)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO HISTORICAL_CANDLES (
+                INSERT INTO HISTORICAL_CANDLES (
                     symbol, asset_type, timeframe, observed_at, open, high, low,
                     close, volume, source, payload_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, asset_type, timeframe, observed_at) DO UPDATE SET
+                    open=excluded.open, high=excluded.high, low=excluded.low,
+                    close=excluded.close, volume=excluded.volume,
+                    source=excluded.source, payload_json=excluded.payload_json
                 """,
                 (
                     symbol.upper(),
@@ -1249,7 +1288,7 @@ def run_strategy_backtest(
     if candles is None:
         candles = _load_historical_candles(db_path, symbol=symbol, asset_type=asset_type, timeframe=timeframe)
     results = _simulate_strategy(strategy_definition(strategy_id), candles, transaction_cost_r=transaction_cost_r, slippage_r=slippage_r)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -1372,7 +1411,7 @@ def run_walk_forward_validation(
         },
         "windows": windows,
     }
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -1419,7 +1458,7 @@ def replay_historical_strategy(
 def calculate_calibration_metrics(db_path: Path, strategy_id: str) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1474,7 +1513,7 @@ def calculate_calibration_metrics(db_path: Path, strategy_id: str) -> dict[str, 
 
 def calculate_performance_metrics(db_path: Path, strategy_id: str) -> dict[str, Any]:
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1566,7 +1605,7 @@ def _record_calibration_snapshot(conn: sqlite3.Connection, probability: dict[str
 
 def _strategy_history(db_path: Path, strategy_id: str) -> dict[str, Any]:
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1595,7 +1634,7 @@ def _strategy_history(db_path: Path, strategy_id: str) -> dict[str, Any]:
 
 def _regime_history(db_path: Path, strategy_id: str, regime_name: str) -> dict[str, Any]:
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -1626,7 +1665,7 @@ def _signal_history(db_path: Path, strategy_id: str, signals: list[dict[str, Any
         return {"sample_size": 0, "observed_effectiveness": None}
     placeholders = ",".join("?" for _ in names)
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 f"""
@@ -1915,7 +1954,7 @@ def _candles_for_symbol(symbol: str, market: dict[str, Any]) -> list[dict[str, A
 
 
 def _load_historical_candles(db_path: Path, *, symbol: str, asset_type: str, timeframe: str) -> list[dict[str, Any]]:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import threading
 import time
 from datetime import date, datetime, timezone
@@ -91,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     run_job.add_argument("--scheduled-for", default=None)
     run_job.add_argument("--limit", default=30, type=int)
     run_job.add_argument("--report-type", default="daily")
+
+    migrate_database = sub.add_parser("migrate-sqlite-to-postgres")
+    migrate_database.add_argument("--source", required=True)
 
     args = parser.parse_args(argv)
     settings = load_settings()
@@ -341,6 +345,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"job": failed, "error": str(exc)}, indent=2, sort_keys=True))
             return 1
 
+    if args.command == "migrate-sqlite-to-postgres":
+        from .api import LocalApiService
+        from .database_migration import migrate_sqlite_runtime_to_postgres
+
+        _raise_if_invalid_hosted_runtime(settings)
+        # Initialize every authoritative production repository before copying
+        # historical rows. The migration itself refuses missing target tables.
+        LocalApiService(settings)
+        result = migrate_sqlite_runtime_to_postgres(Path(args.source))
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
     return 1
 
 
@@ -366,7 +382,14 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 
-def _run_worker_cycle_job(service, job_name: str, worker_id: str, *, scheduled_for: str | None = None) -> dict:
+def _run_worker_cycle_job(
+    service,
+    job_name: str,
+    worker_id: str,
+    *,
+    scheduled_for: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict:
     scheduled_for = scheduled_for or datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
     claim = claim_scheduled_job(
         service.settings.db_path,
@@ -378,7 +401,46 @@ def _run_worker_cycle_job(service, job_name: str, worker_id: str, *, scheduled_f
         return {"status": "skipped_duplicate", "job_name": job_name}
     record_worker_heartbeat(service.settings.db_path, worker_id=worker_id, worker_type="background-worker", current_job=job_name)
     try:
-        result = _run_named_job(service, job_name, limit=0)
+        if timeout_seconds and timeout_seconds > 0:
+            outcome: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+            def execute_job() -> None:
+                try:
+                    outcome.put(("result", _run_named_job(service, job_name, limit=0)))
+                except BaseException as exc:  # noqa: BLE001 - move the exception to the owning worker thread
+                    outcome.put(("error", exc))
+
+            job_thread = threading.Thread(
+                target=execute_job,
+                name=f"worker-job-{job_name}",
+                daemon=True,
+            )
+            job_thread.start()
+            try:
+                outcome_type, value = outcome.get(timeout=max(1, int(timeout_seconds)))
+            except queue.Empty:
+                message = f"Worker job exceeded its {int(timeout_seconds)} second execution boundary."
+                timed_out = complete_scheduled_job(
+                    service.settings.db_path,
+                    int(claim["job_run_id"]),
+                    status="timed_out",
+                    result={},
+                    failure_reason=message,
+                )
+                record_operations_incident(
+                    service.settings.db_path,
+                    severity="error",
+                    component="background-worker",
+                    title=f"Worker job timed out: {job_name}",
+                    message=message,
+                    payload={"worker_id": worker_id, "job": timed_out},
+                )
+                return {"status": "timed_out", "job_name": job_name, "reason": message}
+            if outcome_type == "error":
+                raise value
+            result = value
+        else:
+            result = _run_named_job(service, job_name, limit=0)
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="completed", result=result)
         return result
     except Exception as exc:
@@ -388,7 +450,13 @@ def _run_worker_cycle_job(service, job_name: str, worker_id: str, *, scheduled_f
 
 def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartbeatPulse", *, scheduled_for: str) -> dict:
     pulse.set_job(job_name)
-    return _run_worker_cycle_job(service, job_name, worker_id, scheduled_for=scheduled_for)
+    return _run_worker_cycle_job(
+        service,
+        job_name,
+        worker_id,
+        scheduled_for=scheduled_for,
+        timeout_seconds=service.settings.worker_job_timeout_seconds,
+    )
 
 
 class WorkerHeartbeatPulse:

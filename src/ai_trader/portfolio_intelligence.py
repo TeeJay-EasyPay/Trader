@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from .database import connect
 from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS PORTFOLIO_STRESS_TESTS (
 
 def initialize_portfolio_intelligence_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(PORTFOLIO_INTELLIGENCE_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_metadata_symbol ON ASSET_METADATA(symbol)")
@@ -101,7 +102,7 @@ def upsert_asset_metadata(
 ) -> dict[str, Any]:
     initialize_portfolio_intelligence_schema(db_path)
     payload = payload or {}
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -182,7 +183,7 @@ def calculate_portfolio_exposure(db_path: Path, positions: list[dict[str, Any]],
     exposure = {name: _bucket_percentages(values, total) for name, values in buckets.items()}
     warnings = _exposure_warnings(exposure, largest, missing_metadata)
     plain = _plain_exposure_summary(total, exposure, warnings)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -255,7 +256,7 @@ def proposed_trade_portfolio_impact(
 
 
 def _metadata_by_symbol(db_path: Path) -> dict[str, dict[str, Any]]:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

@@ -3,15 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .models import AccountContext, TradeProposal, utc_now_iso
+from .canonical_trades import reconcile_canonical_broker_event
+from .guardrails import validate_trade_proposal
+from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .operational import safe_float
-from .production_spine import portfolio_manager_decision, reconcile_logical_trade, run_closed_loop_learning
+from .production_spine import (
+    complete_insufficient_evidence_learning,
+    portfolio_manager_decision,
+    reconcile_logical_trade,
+    run_closed_loop_learning,
+)
 
 
 SPRINT6_SCHEMA = """
@@ -192,7 +200,7 @@ MODE_MINIMUM_STAGE = {
 
 def initialize_sprint6_schema(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(SPRINT6_SCHEMA)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_operational_events_created ON OPERATIONAL_EVENTS(created_at)")
@@ -212,7 +220,7 @@ def seed_default_strategy_registry(db_path: Path) -> None:
     initialize_sprint6_schema(db_path)
     now = utc_now_iso()
     next_review = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -279,7 +287,7 @@ def record_operational_event(
 ) -> dict[str, Any]:
     initialize_sprint6_schema(db_path)
     correlation = correlation_id or str(uuid4())
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """
@@ -316,14 +324,30 @@ def pre_execution_decision_packet(
     account: AccountContext,
     positions: list[dict[str, Any]] | None = None,
     market_data_quality: str | None = None,
+    guardrails: GuardrailConfig | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     initialize_sprint6_schema(db_path)
     seed_default_strategy_registry(db_path)
     proposal_payload = proposal.to_dict()
     proposal_payload["broker"] = broker.lower()
     proposal_payload["notional"] = proposal.entry_price * proposal.position_size
-    portfolio = portfolio_manager_decision(db_path, proposal=proposal_payload, positions=positions or _positions_from_account(account, broker))
     strategy = strategy_entitlement_decision(db_path, proposal=proposal, broker=broker, mode=mode)
+    portfolio = portfolio_manager_decision(db_path, proposal=proposal_payload, positions=positions or _positions_from_account(account, broker))
+    risk_validation = (
+        validate_trade_proposal(proposal, account, guardrails, now=now)
+        if guardrails is not None
+        else None
+    )
+    risk_result = (
+        risk_validation.to_dict()
+        if risk_validation is not None
+        else {
+            "passed": True,
+            "failures": [],
+            "note": "Risk Engine evaluation is owned by the Orchestrator; no standalone guardrail configuration was supplied.",
+        }
+    )
     sentinel = production_risk_sentinel_decision(
         db_path,
         proposal=proposal,
@@ -339,6 +363,9 @@ def pre_execution_decision_packet(
     if strategy["decision"] != "approved":
         approved = False
         reasons.append(f"strategy_entitlement_blocked: {strategy['reason']}")
+    if risk_validation is not None and not risk_validation.passed:
+        approved = False
+        reasons.extend(f"risk_engine_blocked: {reason}" for reason in risk_validation.failures)
     if sentinel["decision"] != "approved":
         approved = False
         reasons.append(f"risk_sentinel_blocked: {sentinel['reason']}")
@@ -348,7 +375,7 @@ def pre_execution_decision_packet(
     if approved and portfolio["decision"] == "approve_smaller":
         reasons.append("Portfolio Manager approved a smaller notional amount.")
     evidence_for, evidence_against = _arguments(proposal)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -389,7 +416,13 @@ def pre_execution_decision_packet(
         severity="info" if approved else "warning",
         success=approved,
         summary=f"{proposal.symbol} {final_decision} by Sprint 6 pre-execution packet.",
-        details={"portfolio": portfolio, "strategy": strategy, "sentinel": sentinel, "reasons": reasons},
+        details={
+            "strategy": strategy,
+            "portfolio": portfolio,
+            "risk_engine": risk_result,
+            "sentinel": sentinel,
+            "reasons": reasons,
+        },
     )
     return {
         "approved": approved,
@@ -399,6 +432,7 @@ def pre_execution_decision_packet(
         "approved_notional": approved_notional,
         "portfolio_manager": portfolio,
         "strategy_entitlement": strategy,
+        "risk_engine": risk_result,
         "risk_sentinel": sentinel,
         "plain_english": (
             "The trade may proceed to the Investment Orchestrator."
@@ -449,7 +483,7 @@ def strategy_entitlement_decision(db_path: Path, *, proposal: TradeProposal, bro
         elif _stage_rank(stage) < _stage_rank(required_stage):
             decision = "blocked"
             reason = f"Strategy stage {stage} is below the {required_stage} gate required for {mode}."
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -507,7 +541,7 @@ def production_risk_sentinel_decision(
         evidence["open_incident"] = incident
     decision = "approved" if not issues else "blocked"
     reason = "Risk Sentinel clear." if not issues else "; ".join(issues)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -531,7 +565,7 @@ def production_risk_sentinel_decision(
 def set_kill_switch(db_path: Path, *, active: bool, reason: str, activated_by: str = "system") -> dict[str, Any]:
     initialize_sprint6_schema(db_path)
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -560,13 +594,23 @@ def normalize_broker_events(
 ) -> dict[str, Any]:
     initialize_sprint6_schema(db_path)
     canonical_events: list[dict[str, Any]] = []
+    terminal_trades: dict[str, dict[str, Any]] = {}
     inserted = 0
     duplicates = 0
     for event in events:
         canonical = _canonical_broker_event(broker, event)
+        canonical_result = reconcile_canonical_broker_event(
+            db_path,
+            broker=broker,
+            event=canonical,
+            source=source_endpoint,
+        )
+        canonical["logical_trade_id"] = canonical_result["logical_trade_id"]
+        if canonical_result["terminal"] and canonical_result.get("trade"):
+            terminal_trades[canonical_result["logical_trade_id"]] = canonical_result["trade"]
         raw_hash = _stable_hash(event)
         try:
-            with closing(sqlite3.connect(db_path)) as conn:
+            with closing(connect(db_path)) as conn:
                 with conn:
                     conn.execute(
                         """
@@ -593,16 +637,36 @@ def normalize_broker_events(
             duplicates += 1
         canonical_events.append(canonical)
     reconciliation = reconcile_logical_trade(db_path, broker=broker, events=canonical_events) if canonical_events else {"count": 0, "logical_trades": []}
+    learning_workflows = [
+        enqueue_learning_workflow(
+            db_path,
+            logical_trade_id=logical_trade_id,
+            broker=broker,
+            payload=_learning_payload_from_canonical_trade(trade),
+        )
+        for logical_trade_id, trade in terminal_trades.items()
+    ]
     record_operational_event(
         db_path,
         component="broker-reconciliation",
         event_type="broker_events_normalized",
         broker=broker,
         summary=f"{broker.title()} broker poll normalized {inserted} new event(s), {duplicates} duplicate(s).",
-        details={"inserted": inserted, "duplicates": duplicates, "reconciliation": reconciliation},
+        details={
+            "inserted": inserted,
+            "duplicates": duplicates,
+            "reconciliation": reconciliation,
+            "terminal_learning": learning_workflows,
+        },
         success=True,
     )
-    return {"status": "completed", "inserted": inserted, "duplicates": duplicates, "reconciliation": reconciliation}
+    return {
+        "status": "completed",
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "reconciliation": reconciliation,
+        "terminal_learning": learning_workflows,
+    }
 
 
 def enqueue_learning_workflow(db_path: Path, *, logical_trade_id: str, broker: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -610,7 +674,7 @@ def enqueue_learning_workflow(db_path: Path, *, logical_trade_id: str, broker: s
     key = f"closed-loop-learning:{broker.lower()}:{logical_trade_id}"
     workflow_id = str(uuid4())
     try:
-        with closing(sqlite3.connect(db_path)) as conn:
+        with closing(connect(db_path)) as conn:
             with conn:
                 conn.execute(
                     """
@@ -641,16 +705,15 @@ def process_learning_outbox(
 ) -> dict[str, Any]:
     """Claim and process pending learning workflows.
 
-    This is deliberately conservative: completed-trade learning runs only when
-    the queued payload contains enough deterministic evidence to identify the
-    logical trade, symbol, attribution and decision context. Incomplete rows are
-    moved to manual review rather than guessed from symbol-level history.
+    Complete evidence runs the full learning chain. Irrecoverably incomplete
+    historical evidence is closed explicitly as insufficient; it is never guessed
+    and never left in an indefinite manual-review queue.
     """
 
     initialize_sprint6_schema(db_path)
     now = utc_now_iso()
     claimed: list[dict[str, Any]] = []
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             rows = conn.execute(
@@ -715,14 +778,21 @@ def process_learning_outbox(
                 if not value
             ]
             if missing:
+                learning = complete_insufficient_evidence_learning(
+                    db_path,
+                    logical_trade_id=logical_trade_id,
+                    broker=broker or "unknown",
+                    symbol=symbol or "UNKNOWN",
+                    missing=missing,
+                    payload=payload,
+                )
                 _complete_learning_workflow(
                     db_path,
                     workflow_id,
-                    status="manual_review",
-                    error=f"Missing deterministic learning evidence: {', '.join(missing)}",
+                    status="completed_insufficient_evidence",
                 )
-                manual_review += 1
-                results.append({"workflow_id": workflow_id, "status": "manual_review", "missing": missing})
+                processed += 1
+                results.append({"workflow_id": workflow_id, "status": "completed_insufficient_evidence", "learning": learning})
                 continue
             learning = run_closed_loop_learning(
                 db_path,
@@ -771,7 +841,7 @@ def _complete_learning_workflow(
     error: str | None = None,
     next_attempt_at: str | None = None,
 ) -> None:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -803,7 +873,7 @@ def upsert_incident(
 ) -> dict[str, Any]:
     initialize_sprint6_schema(db_path)
     now = utc_now_iso()
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
                 """
@@ -904,7 +974,7 @@ def generate_founder_operational_report(
     reports_dir.mkdir(parents=True, exist_ok=True)
     file_path = reports_dir / f"{report_type}-{now.strftime('%Y%m%d-%H%M%S')}.md"
     file_path.write_text(markdown, encoding="utf-8")
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             cursor = conn.execute(
                 """
@@ -1033,12 +1103,62 @@ def _canonical_broker_event(broker: str, event: dict[str, Any]) -> dict[str, Any
         "side": event.get("side") or event.get("type"),
         "asset_type": event.get("asset_type") or ("crypto" if broker.lower() == "kraken" else "stock"),
         "price": event.get("price"),
+        "average_fill_price": event.get("average_fill_price") or event.get("filled_avg_price") or event.get("avg_price") or event.get("price"),
         "quantity": event.get("quantity") or event.get("qty") or event.get("vol") or event.get("vol_exec"),
         "filled_quantity": event.get("filled_quantity") or event.get("filled_qty") or event.get("vol_exec"),
         "remaining_quantity": event.get("remaining_quantity") or event.get("remaining"),
+        "broker_fee": event.get("broker_fee"),
+        "exchange_fee": event.get("exchange_fee") or event.get("fee"),
+        "fill_id": event.get("fill_id") or event.get("trade_id") or event.get("tradeid") or event.get("id"),
+        "proposal_id": event.get("proposal_id") or event.get("client_order_id"),
+        "recommendation_id": event.get("recommendation_id"),
+        "fill_role": event.get("fill_role"),
         "timestamp": event.get("updated_at") or event.get("transaction_time") or event.get("time") or event.get("created_at") or utc_now_iso(),
         "confidence": confidence,
         "raw_status": status,
+    }
+
+
+def _learning_payload_from_canonical_trade(trade: dict[str, Any]) -> dict[str, Any]:
+    try:
+        stored_context = json.loads(trade.get("decision_context_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        stored_context = {}
+    proposal_context = stored_context.get("proposal") if isinstance(stored_context.get("proposal"), dict) else {}
+    intelligence = stored_context.get("intelligence") if isinstance(stored_context.get("intelligence"), dict) else {}
+    committee = intelligence.get("committee") if isinstance(intelligence.get("committee"), dict) else {}
+    probability = intelligence.get("probability") if isinstance(intelligence.get("probability"), dict) else {}
+    decision_context = {
+        **proposal_context,
+        "intended_entry_price": trade.get("intended_entry_price"),
+        "entry_price": trade.get("intended_entry_price"),
+        "original_stop": trade.get("original_stop"),
+        "stop_loss": trade.get("original_stop"),
+        "take_profit": trade.get("intended_target"),
+        "strategy_id": committee.get("strategy_id") or probability.get("strategy_id") or proposal_context.get("strategy_id"),
+        "asset_type": trade.get("asset_type"),
+        "side": trade.get("side"),
+        "reconciliation_confidence": trade.get("reconciliation_confidence"),
+    }
+    return {
+        "symbol": trade.get("symbol"),
+        "attribution": {
+            "proposal_id": trade.get("proposal_id"),
+            "symbol": trade.get("symbol"),
+            "side": trade.get("side"),
+            "quantity": trade.get("entry_filled_quantity"),
+            "actual_average_entry_price": trade.get("average_entry_price"),
+            "actual_average_exit_price": trade.get("average_exit_price"),
+            "entry_price": trade.get("average_entry_price"),
+            "exit_price": trade.get("average_exit_price"),
+            "broker_fee": trade.get("broker_fee"),
+            "exchange_fee": trade.get("exchange_fee"),
+            "gross_realized_pnl": trade.get("gross_pnl"),
+            "profit_loss": trade.get("gross_pnl"),
+            "net_realized_pnl": trade.get("net_pnl"),
+        },
+        "decision_context": decision_context,
+        "observations": [],
     }
 
 
@@ -1074,14 +1194,14 @@ def _latest_open_incident(db_path: Path, *, components: set[str]) -> dict[str, A
 
 
 def _row(db_path: Path, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(sql, params).fetchone()
     return dict(row) if row else None
 
 
 def _rows(db_path: Path, sql: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(sql, params).fetchall()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from .database import connect
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -72,7 +73,7 @@ class BenchmarkIntelligenceDatabase:
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
 

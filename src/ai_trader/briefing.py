@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from .database import connect
 from collections import Counter
 from contextlib import closing
 from datetime import date, datetime, time, timezone
@@ -87,7 +88,7 @@ def generate_session_brief(
     if brief_type not in {"morning", "evening"}:
         raise ValueError("brief_type must be 'morning' or 'evening'")
     period_start, period_end = _brief_period(brief_type, briefing_date)
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
             conn.executescript(ORCHESTRATOR_SCHEMA)
@@ -159,7 +160,7 @@ Review orchestrator rejections before changing strategy, guardrails, or executio
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{brief_type}_brief_{briefing_date.isoformat()}.md"
     path.write_text(markdown, encoding="utf-8")
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(ORCHESTRATOR_SCHEMA)
             conn.execute(

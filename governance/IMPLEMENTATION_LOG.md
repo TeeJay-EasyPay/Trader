@@ -1180,3 +1180,59 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Safety boundary:
   - no guardrail, strategy maturity gate, portfolio authority, broker permission or risk limit was weakened;
   - the sprint exposes real trades and P&L evidence but does not fabricate missing exit attribution or force an order.
+## 2026-07-20 - Production Completion and Architectural Cutover Programme
+
+### Governance review and forensic gate
+
+- Reviewed the repository-derived database, execution, lifecycle, learning, worker, API, mobile and configuration paths before implementation.
+- Created `architecture/PRODUCTION_COMPLETION_ARCHITECTURE_AUDIT.md`.
+- Determined that the four requested cutovers were necessary but insufficient.
+- Added two mandatory blockers to programme scope:
+  - worker responsibility timeout isolation;
+  - source-aware Founder evidence that cannot hide missing authority behind projections.
+
+### Production database unification
+
+- Added `src/ai_trader/database.py` as the mandatory runtime connection provider.
+- Migrated production-capable domain repositories away from direct SQLite opens.
+- Hosted runtime now fails closed unless Postgres is selected and configured.
+- Retained SQLite only for local/test usage, migration input and local inspection.
+- Replaced ambiguous `INSERT OR REPLACE` usage with explicit conflict-safe upserts.
+- Added `src/ai_trader/database_migration.py` and CLI command `migrate-sqlite-to-postgres`.
+- The migration fingerprints its source, preserves existing Postgres rows, records row/table evidence and fails on missing target schemas.
+
+### One production execution pipeline
+
+- Made `InvestmentOrchestrator` the owner of Strategy Maturity, Portfolio Manager, Risk Engine, deterministic guardrails and Production Risk Sentinel evaluation.
+- Created the canonical execution intent before broker submission and linked the broker response afterward.
+- Removed duplicate API-owned pre-execution checks.
+- Disabled legacy `ExecutionEngine` broker submission in hosted runtime while preserving local tests and demos.
+
+### Canonical reconciliation and learning
+
+- Added `src/ai_trader/canonical_trades.py` with one logical trade aggregate, immutable event ledger and immutable fill ledger.
+- Added deterministic partial/multiple-fill aggregation, weighted prices, remaining quantity, broker/exchange fees, gross P&L, net P&L and reconciliation confidence.
+- A filled entry is now explicitly open, not terminal.
+- Duplicate broker events and fills do not alter trade quantities or create additional logical trades.
+- Canonical terminal reconciliation now queues closed-loop learning exactly once.
+- Complete evidence runs the existing full learning pipeline; incomplete historical evidence completes as `completed_insufficient_evidence` without fabricated metrics.
+
+### Worker resilience
+
+- Added `AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS` with a 180-second default.
+- A timed-out worker responsibility records a `timed_out` job result and operational incident while preserving worker heartbeat evidence.
+
+### Verification
+
+- `python -m compileall -q src`: passed.
+- `pytest -q tests/test_production_completion.py`: 5 passed.
+- Focused production suite: 48 passed.
+- `pytest -q tests`: 153 passed in 48.14 seconds.
+- Unrestricted root discovery is not authoritative because `mobile/inspect-output` contains stale copied test/package artifacts.
+
+### Honest release boundary
+
+- Repository gate passed.
+- Hosted production-completion gate remains open pending Render deployment, real Supabase schema/migration validation, a genuine Alpaca paper round trip, terminal-learning evidence and a sustained phone-closed soak.
+- No governance threshold, strategy maturity, broker permission or risk limit was weakened.
+- No synthetic trade, P&L, recommendation or learning evidence was created.
