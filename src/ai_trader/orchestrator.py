@@ -97,11 +97,12 @@ class OrchestratorContext:
 
 
 class InvestmentOrchestrator:
-    def __init__(self, *, db_path: Path, adapters: list[BrokerAdapter]):
+    def __init__(self, *, db_path: Path, adapters: list[BrokerAdapter], initialize_schema: bool = True):
         self.db_path = db_path
         self.adapters = {adapter.name: adapter for adapter in adapters}
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
+        if initialize_schema:
+            self.initialize()
 
     def initialize(self) -> None:
         with closing(connect(self.db_path)) as conn:

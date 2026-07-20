@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -162,6 +163,36 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertIn("why_no_trade", payload)
             self.assertEqual(trades_status, 200)
             self.assertIn("trades", trades_payload)
+
+    def test_worker_owned_api_service_skips_startup_schema_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            LocalApiService(settings)
+
+            with (
+                patch("ai_trader.api.AuditDatabase.initialize", side_effect=AssertionError("audit schema write")),
+                patch(
+                    "ai_trader.api.InvestmentIntelligenceDatabase.initialize",
+                    side_effect=AssertionError("intelligence schema write"),
+                ),
+                patch(
+                    "ai_trader.api.BenchmarkIntelligenceDatabase.initialize",
+                    side_effect=AssertionError("benchmark schema write"),
+                ),
+                patch(
+                    "ai_trader.api.InvestmentOrchestrator.initialize",
+                    side_effect=AssertionError("orchestrator schema write"),
+                ),
+                patch(
+                    "ai_trader.api.initialize_foundation_schema",
+                    side_effect=AssertionError("foundation schema write"),
+                ),
+            ):
+                service = LocalApiService(settings, initialize_runtime=False)
+
+            status, payload = service.get("/founder-evidence", {"period": ["24h"]})
+            self.assertEqual(status, 200)
+            self.assertIn("status", payload)
 
 
 if __name__ == "__main__":

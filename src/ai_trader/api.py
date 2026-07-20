@@ -187,15 +187,32 @@ GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
 
 
 class LocalApiService:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, initialize_runtime: bool = True):
         self.settings = settings
         self.hosted_read_only = False
         self.api_token_configured = bool(os.getenv("AI_TRADER_API_TOKEN"))
-        self.audit = AuditDatabase(settings.db_path, settings.trading_log_path)
-        initialize_trading_intelligence_schema(settings.db_path)
-        self.intelligence = InvestmentIntelligenceDatabase(settings.db_path)
-        self.benchmark = BenchmarkIntelligenceDatabase(settings.db_path)
-        self.orchestrator = InvestmentOrchestrator(db_path=settings.db_path, adapters=self._adapters())
+        self.audit = AuditDatabase(
+            settings.db_path,
+            settings.trading_log_path,
+            initialize_schema=initialize_runtime,
+        )
+        if initialize_runtime:
+            initialize_trading_intelligence_schema(settings.db_path)
+        self.intelligence = InvestmentIntelligenceDatabase(
+            settings.db_path,
+            initialize_schema=initialize_runtime,
+        )
+        self.benchmark = BenchmarkIntelligenceDatabase(
+            settings.db_path,
+            initialize_schema=initialize_runtime,
+        )
+        self.orchestrator = InvestmentOrchestrator(
+            db_path=settings.db_path,
+            adapters=self._adapters(),
+            initialize_schema=initialize_runtime,
+        )
+        if not initialize_runtime:
+            return
         initialize_foundation_schema(settings.db_path)
         initialize_operational_schema(settings.db_path)
         initialize_multi_broker_schema(settings.db_path)
@@ -3774,15 +3791,25 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
             "All POST trading/control commands will be rejected until the token is configured.",
             host,
         )
-    service = LocalApiService(settings)
+    # The production worker owns schema/bootstrap writes. Repeating every migration,
+    # seed and reconciliation operation before binding the HTTP socket made a sleeping
+    # Render API take minutes to wake. Local and combined-process deployments retain
+    # the self-initializing behavior.
+    worker_owns_runtime = settings.is_hosted_runtime and settings.disable_api_background_workers
+    service = LocalApiService(settings, initialize_runtime=not worker_owns_runtime)
     service.hosted_read_only = hosted_read_only
     service.api_token_configured = bool(api_token)
-    service.intelligence.seed_initial_data()
-    service.benchmark.seed_initial_data()
-    seed_crypto_universe(service.settings.db_path, fetch_live=False)
-    service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
-    service.benchmark.write_initial_brief(service.settings.output_dir)
-    service.reconcile_on_startup()
+    if not worker_owns_runtime:
+        service.intelligence.seed_initial_data()
+        service.benchmark.seed_initial_data()
+        seed_crypto_universe(service.settings.db_path, fetch_live=False)
+        service.benchmark.write_schema_doc(Path("governance/BENCHMARK_INTELLIGENCE_SCHEMA.md"))
+        service.benchmark.write_initial_brief(service.settings.output_dir)
+        service.reconcile_on_startup()
+    else:
+        logger.info(
+            "Hosted API startup skipped schema/bootstrap writes; the production worker owns durable initialization."
+        )
 
     def _on_research_error(exc: Exception) -> None:
         record_notification(

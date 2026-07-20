@@ -57,11 +57,18 @@ CREATE TABLE IF NOT EXISTS daily_briefings (
 
 
 class AuditDatabase:
-    def __init__(self, path: Path, trading_log_path: Path | None = None):
+    def __init__(
+        self,
+        path: Path,
+        trading_log_path: Path | None = None,
+        *,
+        initialize_schema: bool = True,
+    ):
         self.path = path
         self.trading_log_path = trading_log_path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
+        if initialize_schema:
+            self.initialize()
 
     def connect(self) -> sqlite3.Connection:
         conn = connect(self.path)

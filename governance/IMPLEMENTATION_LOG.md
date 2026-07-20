@@ -1247,3 +1247,12 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Set the Android runtime and Expo status bar to the application navy background with light system icons.
 - Verification: 9 focused evidence/activity tests passed; the authoritative root suite passed with 153 tests; Python compileall passed; Expo Doctor passed all 17 checks.
 - No trading rules, broker permissions, portfolio authority, risk controls or execution behavior changed.
+
+### Hosted API cold-start correction
+
+- Live verification showed the Render web service remaining on its infrastructure wake page while the paid autonomous worker continued operating normally.
+- Found that the API process performed eleven schema initializers, seed writes, generated documents and startup reconciliation before binding its HTTP socket.
+- Assigned hosted schema/bootstrap ownership to the production worker and made the hosted API a fast read/command process over the already-initialized shared Postgres database.
+- Retained self-initializing behavior for local development, tests and combined-process deployments.
+- Added regression coverage proving a worker-owned API service can start and read Founder evidence without invoking schema writes.
+- Render free-tier infrastructure can still impose a provider cold-start delay; the application caches the last successful Founder evidence, and upgrading the API service is the operational route to eliminating provider sleep entirely.

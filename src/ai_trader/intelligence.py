@@ -116,10 +116,11 @@ COMPANY_FIELDS = [
 
 
 class InvestmentIntelligenceDatabase:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, initialize_schema: bool = True):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
+        if initialize_schema:
+            self.initialize()
 
     def connect(self) -> sqlite3.Connection:
         conn = connect(self.path)

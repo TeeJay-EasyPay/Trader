@@ -1,5 +1,13 @@
 # Render and Expo Deployment Contract
 
+## API startup ownership
+
+In hosted production, the background worker owns idempotent schema initialization and durable bootstrap work. The API binds its HTTP socket without repeating migrations, seed writes, generated-document writes or broker reconciliation. This keeps `/healthz` and Founder read endpoints available promptly after a Render process start.
+
+Local development and isolated tests retain self-initializing database behavior. A combined deployment may also retain bootstrap ownership when `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS` is false.
+
+The Render free web tier may still sleep the API process after inactivity. That provider wake delay is distinct from autonomous worker health: the worker can remain active and continue writing Postgres evidence while the HTTP service sleeps. Eliminating infrastructure sleep requires a continuously provisioned web-service plan; application code must not report a sleeping API as proof that the worker stopped.
+
 ## Production Evidence Activation contract
 
 - Render API: serves authenticated APIs and does not own critical recurring schedules.
