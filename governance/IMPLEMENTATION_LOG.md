@@ -1256,3 +1256,8 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Retained self-initializing behavior for local development, tests and combined-process deployments.
 - Added regression coverage proving a worker-owned API service can start and read Founder evidence without invoking schema writes.
 - Render free-tier infrastructure can still impose a provider cold-start delay; the application caches the last successful Founder evidence, and upgrading the API service is the operational route to eliminating provider sleep entirely.
+
+### Deterministic Android release
+
+- Bumped the mobile release to `1.0.3` / Android build `4` so the two-row navigation and native dark status bar are embedded in a fresh APK rather than depending on an existing installation accepting an OTA update.
+- No trading, broker, governance, portfolio or risk behavior changed in this release.
