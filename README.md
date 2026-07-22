@@ -44,6 +44,12 @@ AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS=300
 
 This enables autonomous work, not unconditional trading. Orders still require every existing strategy, portfolio, risk, execution and broker-permission gate.
 
+### Founder evidence snapshot recovery
+
+The worker now materializes the complete Founder evidence view for `1h`, `24h`, `7d`, and `30d` every five minutes. Mobile refreshes read one persisted Postgres row rather than rebuilding eight evidence datasets synchronously. A missing first snapshot returns an immediate truthful warm-up state; a snapshot older than 15 minutes remains visible and is marked stale. Database connection and statement timeouts prevent an unavailable query from occupying the API indefinitely.
+
+This fixes application-owned evidence latency. It does not remove Render infrastructure cold starts: a free sleeping web service may still take tens of seconds before the API process can answer. Eliminating that provider delay requires an always-on Render web-service plan.
+
 Personal AI-assisted paper trading system for Alpaca.
 
 ## CTO Handover Pack

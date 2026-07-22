@@ -12,6 +12,8 @@ from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
 from ai_trader.production_evidence import (
     founder_evidence_payload,
+    persist_founder_evidence_snapshot,
+    refresh_founder_evidence_snapshots,
     record_broker_snapshot,
     record_learning_evidence,
     record_recommendation_evidence,
@@ -38,6 +40,65 @@ def settings_for(tmp: str) -> Settings:
 
 
 class ProductionEvidenceTests(unittest.TestCase):
+    def test_founder_snapshot_is_served_without_rebuilding_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            payload = {
+                "generated_at": "2026-07-22T12:00:00+00:00",
+                "period": "24h",
+                "status": {"state": "OPERATING NORMALLY", "plain_english": "Worker evidence is current."},
+                "summary": {"research": {"runs": 4}},
+            }
+            persist_founder_evidence_snapshot(db_path, payload, period="24h")
+
+            with patch("ai_trader.production_evidence._build_founder_evidence_payload", side_effect=AssertionError("live rebuild")):
+                result = founder_evidence_payload(db_path, period="24h")
+
+            self.assertEqual(result["summary"]["research"]["runs"], 4)
+            self.assertEqual(result["snapshot"]["served_from"], "worker_projection")
+
+    def test_stale_founder_snapshot_is_labelled_without_hiding_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            persist_founder_evidence_snapshot(
+                db_path,
+                {
+                    "generated_at": "2020-01-01T00:00:00+00:00",
+                    "period": "24h",
+                    "status": {"state": "OPERATING NORMALLY", "plain_english": "Old state."},
+                    "trades": [{"symbol": "AAPL"}],
+                },
+                period="24h",
+            )
+
+            result = founder_evidence_payload(db_path, period="24h")
+
+            self.assertTrue(result["snapshot"]["stale"])
+            self.assertEqual(result["status"]["state"], "OPERATING WITH WARNINGS")
+            self.assertEqual(result["trades"][0]["symbol"], "AAPL")
+
+    def test_worker_refresh_persists_all_requested_periods(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            result = refresh_founder_evidence_snapshots(db_path, periods=("1h", "24h"))
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["refreshed_periods"], ["1h", "24h"])
+            self.assertEqual(founder_evidence_payload(db_path, period="1h")["snapshot"]["served_from"], "worker_projection")
+
+    def test_hosted_read_returns_warmup_state_instead_of_slow_live_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            with (
+                patch("ai_trader.production_evidence.uses_postgres", return_value=True),
+                patch("ai_trader.production_evidence.postgres_connection", side_effect=TimeoutError("database unavailable")),
+                patch("ai_trader.production_evidence._build_founder_evidence_payload", side_effect=AssertionError("live rebuild")),
+            ):
+                result = founder_evidence_payload(db_path, period="24h")
+
+            self.assertEqual(result["status"]["state"], "STATUS UNKNOWN")
+            self.assertEqual(result["snapshot"]["served_from"], "warmup_state")
+
     def test_founder_payload_reconstructs_worker_activity_and_financial_truth(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

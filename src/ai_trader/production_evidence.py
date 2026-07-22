@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import connect
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .always_on import initialize_always_on_schema, postgres_connection, uses_postgres
+from .database import connect
 from .models import utc_now_iso
 
 
@@ -121,23 +122,40 @@ CREATE TABLE IF NOT EXISTS PRODUCTION_LEARNING_EVIDENCE (
 );
 CREATE INDEX IF NOT EXISTS idx_production_learning_time
 ON PRODUCTION_LEARNING_EVIDENCE(completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS (
+    period TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY").replace(" REAL", " DOUBLE PRECISION")
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+FOUNDER_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
+
 
 def initialize_production_evidence_schema(db_path: Path) -> None:
-    if uses_postgres():
-        with postgres_connection() as conn:
-            with conn.cursor() as cur:
-                for statement in POSTGRES_SCHEMA.split(";"):
-                    if statement.strip():
-                        cur.execute(statement)
-            conn.commit()
+    schema_key = _schema_key(db_path)
+    if schema_key in _INITIALIZED_SCHEMA_KEYS:
         return
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        conn.executescript(SQLITE_SCHEMA)
+    with _SCHEMA_LOCK:
+        if schema_key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        if uses_postgres():
+            with postgres_connection() as conn:
+                with conn.cursor() as cur:
+                    for statement in POSTGRES_SCHEMA.split(";"):
+                        if statement.strip():
+                            cur.execute(statement)
+                conn.commit()
+        else:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            with closing(connect(db_path)) as conn:
+                conn.executescript(SQLITE_SCHEMA)
+        _INITIALIZED_SCHEMA_KEYS.add(schema_key)
 
 
 def record_research_evidence(
@@ -193,6 +211,7 @@ def record_research_evidence(
 
 
 def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, broker: str) -> None:
+    initialize_production_evidence_schema(db_path)
     recommendation_id = str(proposal.get("proposal_id") or proposal.get("recommendation_id") or "").strip()
     if not recommendation_id:
         return
@@ -233,6 +252,7 @@ def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, b
 
 
 def record_broker_snapshot(db_path: Path, panel: dict[str, Any], *, captured_at: str | None = None) -> None:
+    initialize_production_evidence_schema(db_path)
     broker = str(panel.get("broker") or "").lower()
     if broker not in {"alpaca", "kraken"}:
         return
@@ -266,6 +286,7 @@ def record_broker_snapshot(db_path: Path, panel: dict[str, Any], *, captured_at:
 
 
 def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) -> None:
+    initialize_production_evidence_schema(db_path)
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
     status = str(_first(event, "status", "order_status", "type") or "observed").lower()
@@ -300,6 +321,7 @@ def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) 
 
 
 def record_learning_evidence(db_path: Path, result: dict[str, Any], *, worker_id: str) -> None:
+    initialize_production_evidence_schema(db_path)
     completed_at = utc_now_iso()
     key = f"{worker_id}:{completed_at[:16]}:{result.get('processed', 0)}"
     summary = f"Learning processor completed; {int(result.get('processed') or 0)} item(s) processed."
@@ -314,7 +336,28 @@ def record_learning_evidence(db_path: Path, result: dict[str, Any], *, worker_id
     )
 
 
-def founder_evidence_payload(db_path: Path, *, period: str = "24h", trade_limit: int = 100) -> dict[str, Any]:
+def founder_evidence_payload(
+    db_path: Path,
+    *,
+    period: str = "24h",
+    trade_limit: int = 100,
+    prefer_snapshot: bool = True,
+) -> dict[str, Any]:
+    """Return a fast persisted projection with a local-only live fallback.
+
+    Hosted mobile reads should never reconstruct the complete Founder view on
+    demand. The worker owns that work and persists one row per supported period.
+    """
+    if prefer_snapshot:
+        snapshot = load_founder_evidence_snapshot(db_path, period=period)
+        if snapshot is not None:
+            return snapshot
+        if uses_postgres():
+            return _snapshot_not_ready_payload(period)
+    return _build_founder_evidence_payload(db_path, period=period, trade_limit=trade_limit)
+
+
+def _build_founder_evidence_payload(db_path: Path, *, period: str, trade_limit: int) -> dict[str, Any]:
     # Schema creation belongs to process startup. Re-running DDL here opened two
     # extra hosted database connections and could block every Founder refresh.
     # Local SQLite callers may create isolated demo/test databases without a
@@ -422,6 +465,140 @@ def founder_evidence_payload(db_path: Path, *, period: str = "24h", trade_limit:
     }
 
 
+def persist_founder_evidence_snapshot(db_path: Path, payload: dict[str, Any], *, period: str) -> None:
+    initialize_production_evidence_schema(db_path)
+    generated_at = str(payload.get("generated_at") or utc_now_iso())
+    values = (period, generated_at, _json(payload))
+    _upsert(
+        db_path,
+        """INSERT INTO PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS (period, generated_at, payload_json)
+        VALUES ({p}) ON CONFLICT(period) DO UPDATE SET
+            generated_at=excluded.generated_at, payload_json=excluded.payload_json""",
+        values,
+    )
+
+
+def load_founder_evidence_snapshot(db_path: Path, *, period: str) -> dict[str, Any] | None:
+    try:
+        rows = _query(
+            db_path,
+            """SELECT generated_at, payload_json
+            FROM PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS WHERE period = {x} LIMIT 1""",
+            (period,),
+            limit=1,
+        )
+    except Exception:
+        # A newly deployed API can briefly precede the worker migration. Hosted
+        # callers receive an explicit warm-up payload until the first worker
+        # snapshot has been written.
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    generated_at = str(row.get("generated_at") or payload.get("generated_at") or "")
+    age_seconds = _timestamp_age_seconds(generated_at)
+    stale = age_seconds is None or age_seconds > FOUNDER_SNAPSHOT_MAX_AGE_SECONDS
+    payload["snapshot"] = {
+        "served_from": "worker_projection",
+        "generated_at": generated_at or None,
+        "age_seconds": age_seconds,
+        "stale": stale,
+        "refresh_expected_seconds": 300,
+    }
+    if stale:
+        status = payload.setdefault("status", {})
+        status["state"] = "OPERATING WITH WARNINGS"
+        status["plain_english"] = (
+            "The last durable Founder snapshot is stale. Historical evidence is shown, "
+            "but current worker and broker activity require attention."
+        )
+    return payload
+
+
+def refresh_founder_evidence_snapshots(
+    db_path: Path,
+    *,
+    periods: tuple[str, ...] = ("24h", "1h", "7d", "30d"),
+    trade_limit: int = 100,
+) -> dict[str, Any]:
+    """Build and persist worker-owned Founder projections for mobile reads."""
+    initialize_production_evidence_schema(db_path)
+    refreshed: list[str] = []
+    failures: dict[str, str] = {}
+    for period in periods:
+        try:
+            payload = _build_founder_evidence_payload(db_path, period=period, trade_limit=trade_limit)
+            persist_founder_evidence_snapshot(db_path, payload, period=period)
+            refreshed.append(period)
+        except Exception as exc:  # noqa: BLE001 - retain partial snapshots and expose failure evidence
+            failures[period] = str(exc)
+    return {
+        "status": "completed" if not failures else "partially_completed",
+        "refreshed_periods": refreshed,
+        "failed_periods": failures,
+        "generated_at": utc_now_iso(),
+    }
+
+
+def _snapshot_not_ready_payload(period: str) -> dict[str, Any]:
+    reason = (
+        "The production worker has not written the first Founder evidence snapshot yet. "
+        "The API is available, but current autonomous evidence is still warming up."
+    )
+    return {
+        "generated_at": utc_now_iso(),
+        "period": period,
+        "status": {
+            "state": "STATUS UNKNOWN",
+            "plain_english": reason,
+            "last_meaningful_activity": None,
+            "worker_status": "awaiting_snapshot",
+            "scheduler_status": "awaiting_snapshot",
+            "database_status": "postgres",
+            "last_successful_research_run": None,
+            "last_broker_poll": None,
+            "last_report_generated": None,
+            "unresolved_incident_count": 0,
+        },
+        "summary": {
+            "research": {"runs": 0, "assets_analysed": 0, "candidates": 0, "recommendations_created": 0},
+            "decisions": {},
+            "execution": {"orders_submitted": 0, "orders_rejected": 0, "orders_filled": 0, "trades_closed": 0},
+            "operations": {
+                "broker_polls": 0,
+                "learning_reviews_completed": 0,
+                "reports_generated": 0,
+                "incidents_opened": 0,
+                "incidents_resolved": 0,
+            },
+        },
+        "why_no_trade": {"state": "operational_evidence_pending", "conclusion": reason, "reasons": []},
+        "portfolio": {},
+        "brokers": [],
+        "trades": [],
+        "performance": {"realized_pnl": 0.0, "fees": 0.0, "net_realized_pnl": 0.0},
+        "research": [],
+        "recommendations": [],
+        "learning": [],
+        "jobs": [],
+        "timeline": {"items": [], "total": 0},
+        "snapshot": {
+            "served_from": "warmup_state",
+            "generated_at": None,
+            "age_seconds": None,
+            "stale": True,
+            "refresh_expected_seconds": 300,
+        },
+        "truthfulness": {"source": "snapshot availability check", "mock_data_used": False, "synthetic_activity_used": False},
+    }
+
+
 def list_production_trade_evidence(db_path: Path, *, broker: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     initialize_production_evidence_schema(db_path)
     if broker and broker.lower() != "all":
@@ -432,7 +609,6 @@ def list_production_trade_evidence(db_path: Path, *, broker: str | None = None, 
 
 
 def _upsert(db_path: Path, sql: str, values: tuple[Any, ...]) -> None:
-    initialize_production_evidence_schema(db_path)
     if uses_postgres():
         statement = sql.format(p=", ".join(["%s"] * len(values)))
         with postgres_connection() as conn:
@@ -481,6 +657,22 @@ def _query_batch(
             [dict(row) for row in conn.execute(sql.format(x="?", n=bounded_limit), values).fetchall()]
             for sql, values in queries
         ]
+
+
+def _schema_key(db_path: Path) -> str:
+    if uses_postgres():
+        return "postgres"
+    return f"sqlite:{db_path.resolve()}"
+
+
+def _timestamp_age_seconds(value: str) -> float | None:
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds())
 
 
 def _json(value: Any) -> str:

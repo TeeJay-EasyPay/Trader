@@ -37,8 +37,14 @@ The payload contains:
 
 The mobile app reads the last successful Founder payload from AsyncStorage first. It then requests one fresh `/founder-evidence` response and atomically replaces the screen models. Secondary narrative endpoints load afterward and cannot block the primary experience.
 
+The hosted endpoint is a projection read, not an aggregation job. The paid worker builds and persists one evidence-derived JSON projection for each supported period (`1h`, `24h`, `7d`, and `30d`) during its five-minute evidence-snapshot responsibility. The API reads one `PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS` row instead of repeating the underlying evidence queries for every phone refresh.
+
+If the first worker projection has not been created, hosted reads return a complete `STATUS UNKNOWN` warm-up payload immediately. If a projection is older than 15 minutes, historical evidence remains visible but the status becomes `OPERATING WITH WARNINGS`. Neither state fabricates activity.
+
 The legacy `/status` endpoint remains available for compatibility and diagnostics but is not the startup dependency. This avoids serial broker calls and large local SQLite aggregates on every app open.
 
 ## Performance controls
 
-Queries are time-bounded and row-limited. The projection stores safe serialized source payloads so screens do not fan out to broker APIs. Indexes cover broker/time, recommendation time, trade broker/time and learning time. No unbounded operational log is returned.
+Worker projection queries are time-bounded and row-limited. Postgres connections default to a five-second connection timeout and an eight-second statement timeout. The projection stores safe serialized source payloads so screens do not fan out to broker APIs. Indexes cover broker/time, recommendation time, trade broker/time and learning time. No unbounded operational log is returned.
+
+The remaining external latency boundary is Render service wake-up. A sleeping free web service can delay before the Python API starts, which application code cannot eliminate. Once the API process is running, the Founder evidence database path is a single bounded row read.

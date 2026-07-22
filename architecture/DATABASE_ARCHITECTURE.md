@@ -68,3 +68,17 @@ The remaining families are deliberately reported as unmigrated by `production_da
 Do not duplicate runtime state between SQLite and Postgres.
 
 Each future migration should move one schema family at a time, prove compatibility, and then switch that family to the production database.
+
+## Founder Evidence Projection
+
+`PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS` is the durable read projection used by all six Founder screens. It contains one row per supported period:
+
+- `period`: stable key (`1h`, `24h`, `7d`, or `30d`);
+- `generated_at`: UTC projection creation time;
+- `payload_json`: evidence-derived Founder payload.
+
+The background worker is the sole projection builder. Its existing evidence-snapshot responsibility first captures connected broker evidence and then refreshes all four periods. The API is a read-only consumer for this table. This ownership avoids request-time reconstruction and ensures the phone sees the same shared Postgres truth as the worker.
+
+The table is a derived read model, not a duplicate system of record. Authoritative research, recommendation, broker, trade, learning, heartbeat, job, and funnel rows remain in their existing tables. A stale or absent projection is labelled explicitly and never replaced with synthetic data.
+
+Production connections use bounded defaults: five seconds to establish a connection and eight seconds per SQL statement. Both are configurable through `AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS` and `AI_TRADER_DB_STATEMENT_TIMEOUT_MS`.

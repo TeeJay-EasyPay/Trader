@@ -92,6 +92,7 @@ from .production_evidence import (
     founder_evidence_payload,
     initialize_production_evidence_schema,
     list_production_trade_evidence,
+    refresh_founder_evidence_snapshots,
     record_broker_snapshot,
     record_research_evidence,
     record_trade_evidence,
@@ -2835,6 +2836,7 @@ This report explains available evidence. It does not automatically change strate
                     },
                 )
                 results[broker_name] = {"status": "failed", "reason": str(exc)}
+        results["founder_evidence"] = refresh_founder_evidence_snapshots(self.settings.db_path)
         return results
 
     def broker_panels(self) -> list[dict[str, Any]]:

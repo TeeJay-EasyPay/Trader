@@ -1261,3 +1261,16 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 
 - Bumped the mobile release to `1.0.3` / Android build `4` so the two-row navigation and native dark status bar are embedded in a fresh APK rather than depending on an existing installation accepting an OTA update.
 - No trading, broker, governance, portfolio or risk behavior changed in this release.
+## 2026-07-22 - Founder Evidence Snapshot Recovery
+
+- Investigated installed-app evidence showing Dashboard, Activity, Portfolio, Market, and Learning all failing together on an 18-second `/founder-evidence` timeout.
+- Confirmed the shared failure was backend request-time reconstruction, not missing mobile widgets or an inactive worker.
+- Added `PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS`, keyed by display period, as a durable derived read model in shared Postgres.
+- Assigned projection ownership to the worker's existing five-minute evidence-snapshot responsibility.
+- Changed hosted Founder reads to one snapshot lookup; the legacy live builder remains available only for local SQLite development and tests.
+- Added explicit first-snapshot warm-up and stale-snapshot states without generating synthetic events, trades, P&L, research, or learning.
+- Added bounded Postgres connection and statement timeouts and process-local idempotent schema initialization.
+- Restricted pytest discovery to authoritative `tests/` so ignored mobile inspection exports cannot shadow the installed source package.
+- Added regression tests for snapshot reads, stale evidence, worker projection refresh, and unavailable hosted snapshots.
+- Verification: `python -m compileall -q src` passed; `pytest -q` passed 158 tests.
+- Hosted proof remains pending deployment. Render free-tier API wake time remains a separate provider constraint.

@@ -114,7 +114,14 @@ class PostgresConnection:
         except ImportError as exc:  # pragma: no cover - exercised by hosted startup validation
             raise RuntimeError("Postgres runtime requires the psycopg package.") from exc
         self._psycopg = psycopg
-        self._conn = psycopg.connect(url, row_factory=dict_row)
+        connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
+        statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
+        self._conn = psycopg.connect(
+            url,
+            row_factory=dict_row,
+            connect_timeout=connect_timeout,
+            options=f"-c statement_timeout={statement_timeout}",
+        )
         self._row_factory = None
 
     @property

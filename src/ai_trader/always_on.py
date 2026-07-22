@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from .database import connect
+import threading
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .database import connect
 from .models import utc_now_iso
 from .operational import latest_research_run, safe_float
 
@@ -264,20 +265,30 @@ JOB_STATUSES = {
     "blocked_market_closed",
 }
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
 
 def initialize_always_on_schema(db_path: Path) -> None:
-    if _use_postgres():
-        with _postgres_connection() as conn:
-            with conn.cursor() as cur:
-                for statement in POSTGRES_ALWAYS_ON_SCHEMA.split(";"):
-                    if statement.strip():
-                        cur.execute(statement)
-            conn.commit()
+    schema_key = _always_on_schema_key(db_path)
+    if schema_key in _INITIALIZED_SCHEMA_KEYS:
         return
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(ALWAYS_ON_SCHEMA)
+    with _SCHEMA_LOCK:
+        if schema_key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        if _use_postgres():
+            with _postgres_connection() as conn:
+                with conn.cursor() as cur:
+                    for statement in POSTGRES_ALWAYS_ON_SCHEMA.split(";"):
+                        if statement.strip():
+                            cur.execute(statement)
+                conn.commit()
+        else:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            with closing(connect(db_path)) as conn:
+                with conn:
+                    conn.executescript(ALWAYS_ON_SCHEMA)
+        _INITIALIZED_SCHEMA_KEYS.add(schema_key)
 
 
 def database_backend_status(db_path: Path) -> dict[str, Any]:
@@ -1153,9 +1164,22 @@ def _postgres_connection():
     url = _database_url()
     if not url:
         raise RuntimeError("Postgres backend requested but DATABASE_URL/SUPABASE_DATABASE_URL is not configured.")
-    return psycopg.connect(url, row_factory=dict_row)
+    connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
+    statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
+    return psycopg.connect(
+        url,
+        row_factory=dict_row,
+        connect_timeout=connect_timeout,
+        options=f"-c statement_timeout={statement_timeout}",
+    )
 
 
 def postgres_connection():
     """Open the shared production connection used by API and worker processes."""
     return _postgres_connection()
+
+
+def _always_on_schema_key(db_path: Path) -> str:
+    if _use_postgres():
+        return "postgres"
+    return f"sqlite:{db_path.resolve()}"

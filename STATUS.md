@@ -1,5 +1,25 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-22 Founder Evidence Snapshot Recovery
+
+Status: **repository gate passed; Render deployment verification pending**.
+
+- Root cause confirmed: all six Founder screens depended on a request-time projection that opened and queried multiple Postgres evidence families sequentially.
+- The autonomous worker now builds durable `1h`, `24h`, `7d`, and `30d` Founder evidence snapshots every five minutes.
+- Hosted `/founder-evidence` reads one persisted snapshot row and never falls back to the expensive live aggregation.
+- Missing snapshots return an immediate, truthful warm-up state; snapshots older than 15 minutes are retained but marked stale.
+- Postgres connection and statement timeouts are bounded at five and eight seconds by default.
+- Repeated schema initialization is cached per process instead of running before routine reads and writes.
+- Verification: Python compilation passed; full authoritative suite passed 158/158.
+
+Remaining operational boundary:
+
+- deploy API and worker from this revision;
+- allow the worker's evidence-snapshot responsibility to write its first projection;
+- verify `/founder-evidence` reports `snapshot.served_from=worker_projection`;
+- confirm the installed app populates Dashboard, Activity, Portfolio, Market, and Learning;
+- Render free web-service sleep can still delay the first request before application code starts.
+
 ## 2026-07-20 Production Completion Repository Gate
 
 Status: **repository implementation passed; hosted cutover and soak not yet proven**.
