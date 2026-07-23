@@ -1,5 +1,17 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-23 Worker Operational-Priority Recovery
+
+Status: **implemented and locally verified; hosted deployment verification pending**.
+
+- Managed exits, broker reconciliation, Founder evidence publication and
+  automatic execution evaluation now run before potentially slow research
+  scans.
+- A market-data provider timeout can no longer starve known Alpaca portfolio
+  and recommendation evidence from the mobile read model.
+- No trading permission, strategy qualification, portfolio control or risk
+  guardrail was weakened.
+
 ## 2026-07-23 Alpaca Portfolio and Recommendation Evidence Recovery
 
 Status: **implemented and locally verified; hosted deployment verification pending**.

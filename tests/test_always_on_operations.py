@@ -27,7 +27,7 @@ from ai_trader.always_on import (
 )
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
-from ai_trader.cli import WorkerHeartbeatPulse
+from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 
 
@@ -49,6 +49,21 @@ def settings_for(tmp: str) -> Settings:
 
 
 class AlwaysOnOperationsTests(unittest.TestCase):
+    def test_research_worker_jobs_excludes_priority_evidence_snapshot(self) -> None:
+        due = [
+            ("evidence-snapshot", "2026-07-23T16:00:00+00:00"),
+            ("overnight-crypto", "2026-07-23T16:00:00+00:00"),
+            ("market-open-equity", "2026-07-23T16:00:00+00:00"),
+        ]
+
+        self.assertEqual(
+            _research_worker_jobs(due),
+            [
+                ("overnight-crypto", "2026-07-23T16:00:00+00:00"),
+                ("market-open-equity", "2026-07-23T16:00:00+00:00"),
+            ],
+        )
+
     def test_scheduled_jobs_are_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

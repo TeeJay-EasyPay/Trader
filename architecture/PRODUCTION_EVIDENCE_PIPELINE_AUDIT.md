@@ -1,5 +1,16 @@
 # Production Evidence Pipeline Audit
 
+## Worker priority correction
+
+Hosted job evidence showed that a healthy worker could still leave the Founder
+interface without broker truth: sequential crypto and equity research jobs
+reached their three-minute limits before broker polling and evidence snapshot
+publication. The production cycle now prioritises managed exits, broker
+reconciliation, evidence publication and execution eligibility ahead of slow
+research. Research remains autonomous and retains the same governance
+requirements, but it can no longer prevent already-known Alpaca or Kraken state
+from reaching the read model.
+
 ## Finding
 
 The hosted API and the paid Render worker were alive, but they did not previously share enough Founder-facing evidence to prove what the worker had done. The worker scheduled broker polling, managed exits, auto-execution evaluation and learning. It did not own recurring market research. Most rich UI payloads were assembled from process-local SQLite, while worker heartbeats and jobs were stored in shared Supabase/Postgres. This caused a healthy worker to coexist with empty Market, Portfolio, Learning and Activity screens.

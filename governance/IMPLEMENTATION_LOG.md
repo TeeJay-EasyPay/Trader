@@ -1,5 +1,17 @@
 # Implementation Log
 
+## 2026-07-23 - Worker operational-priority recovery
+
+- Confirmed from hosted job evidence that the final worker was healthy but
+  sequential crypto and equity research jobs consumed their three-minute
+  limits before broker polling and Founder evidence publication.
+- Reordered the worker cycle so managed exits, broker polling, evidence
+  snapshots and automatic execution evaluation run before scheduled research.
+- Preserved every research, strategy-maturity, portfolio, risk and broker
+  execution gate.
+- Added a regression test that keeps evidence snapshots out of the deferred
+  research queue.
+
 ## 2026-07-23 - Render web-service environment compatibility recovery
 
 - Investigated repeated Render failures after both the Dockerfile command and

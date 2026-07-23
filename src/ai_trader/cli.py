@@ -230,23 +230,6 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     scheduled_results = {}
                     due_jobs = _due_worker_jobs(settings, now)
-                    for job_name, scheduled_for in due_jobs:
-                        if job_name == "evidence-snapshot":
-                            continue
-                        scheduled_results[job_name] = _run_pulsed_job(
-                            service,
-                            job_name,
-                            worker_id,
-                            pulse,
-                            scheduled_for=scheduled_for,
-                        )
-                    auto = _run_pulsed_job(
-                        service,
-                        "auto-execution",
-                        worker_id,
-                        pulse,
-                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
-                    )
                     broker_poll = _run_pulsed_job(
                         service,
                         "broker-poll",
@@ -262,6 +245,21 @@ def main(argv: list[str] | None = None) -> int:
                             worker_id,
                             pulse,
                             scheduled_for=snapshot_schedule,
+                        )
+                    auto = _run_pulsed_job(
+                        service,
+                        "auto-execution",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
+                    )
+                    for job_name, scheduled_for in _research_worker_jobs(due_jobs):
+                        scheduled_results[job_name] = _run_pulsed_job(
+                            service,
+                            job_name,
+                            worker_id,
+                            pulse,
+                            scheduled_for=scheduled_for,
                         )
                     pulse.set_job("learning")
                     learning = process_learning_outbox(settings.db_path, worker_id=worker_id, limit=10)
@@ -544,6 +542,11 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     if minutes >= 17 * 60:
         due.append(("daily-report", f"{day}T17:00:00-04:00"))
     return due
+
+
+def _research_worker_jobs(due_jobs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Defer slow research until operational truth has been published."""
+    return [(name, scheduled_for) for name, scheduled_for in due_jobs if name != "evidence-snapshot"]
 
 
 def _time_bucket(now: datetime, interval_seconds: int) -> str:
