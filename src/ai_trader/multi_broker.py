@@ -450,7 +450,17 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
             for item in trades:
                 external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
                 status = str(item.get("status") or item.get("type") or "unknown")
-                now = utc_now_iso()
+                event_timestamp = (
+                    item.get("updated_at")
+                    or item.get("transaction_time")
+                    or item.get("filled_at")
+                    or item.get("closed_at")
+                    or item.get("closetm")
+                    or item.get("created_at")
+                    or item.get("opentm")
+                    or item.get("time")
+                    or "broker-event-without-timestamp"
+                )
                 cursor = conn.execute(
                     """
                     INSERT INTO BROKER_TRADE_HISTORY (
@@ -472,20 +482,12 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
                         status,
                         item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
                         item.get("closed_at") or item.get("closetm"),
-                        item.get("updated_at") or item.get("transaction_time") or now,
+                        event_timestamp,
                         json.dumps(item, sort_keys=True, default=str),
                     ),
                 )
                 if cursor.rowcount:
                     newly_inserted.append({**item, "status": status})
-    if newly_inserted and broker.lower() in {"alpaca", "kraken"}:
-        try:
-            from .operational_truth import reconcile_broker_trade_rows
-
-            reconcile_broker_trade_rows(db_path, broker, newly_inserted)
-        except Exception:
-            # Broker history must not fail just because the secondary evidence spine needs review.
-            pass
     return newly_inserted
 
 

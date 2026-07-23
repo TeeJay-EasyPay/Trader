@@ -895,3 +895,23 @@ Current status:
   memory.
 - No risk limit, broker permission, strategy gate, position sizing rule or
   autonomous trading control was weakened.
+
+## Status Update - 2026-07-23 Bounded Broker Reconciliation
+
+- Alpaca account activities are now requested in bounded newest-first pages.
+- Broker polling keeps current orders first, removes duplicate observations and
+  reconciles no more than 100 recent events per cycle.
+- Only newly persisted broker-history rows enter canonical reconciliation;
+  previously stored rows are no longer normalized again on every poll.
+- Broker events without a source timestamp use a stable identity marker rather
+  than the current time, so an unchanged event cannot be inserted repeatedly.
+- Hosted Postgres hot paths rely on startup migrations and no longer execute
+  repeated schema DDL for every canonical, learning or production-evidence row.
+- A production worker job that exceeds its execution boundary records the
+  timeout and incident, then exits so Render can restart a clean process. Local
+  and test callers retain the non-terminating timeout result by default.
+- Focused verification passed 31 tests, including timestamp-less idempotency,
+  event bounding and production worker restart behavior.
+- Hosted verification remains required after deployment: a broker poll and
+  evidence snapshot must complete, and the Founder payload must contain current
+  Alpaca portfolio and rich recommendation evidence.

@@ -55,6 +55,20 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 10. Multi-period snapshot generation previously rebuilt the same evidence
     projection four times. The worker now loads one bounded maximum-period
     evidence set and derives each display period from that shared read.
+11. Repeated broker polling replayed an unbounded activity history and then
+    normalized both new and already persisted rows. Polling now selects a
+    bounded newest-first set, de-duplicates it deterministically and sends only
+    newly inserted rows into canonical reconciliation.
+12. Some broker records do not carry a usable event timestamp. Substituting the
+    polling time made the same record appear new on every cycle. Such records
+    now use a stable explicit marker in their identity.
+13. Canonical, learning and evidence hot paths previously repeated schema DDL
+    in hosted Postgres. Production processes now rely on their startup migration
+    contract; isolated SQLite databases continue to initialize themselves.
+14. Python threads cannot be safely terminated after a network-bound job
+    exceeds its deadline. A timed-out production job now persists the timeout
+    and incident and terminates the worker process, allowing Render supervision
+    to restart without retaining the unfinished thread.
 
 ## Truth boundaries
 
@@ -67,7 +81,7 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 
 ## Residual limitations
 
-Legacy domain tables remain SQLite-oriented. The production evidence tables are the shared Founder projection while deliberate schema-by-schema Postgres migration continues. Exact closed-trade attribution still depends on broker history quality and canonical reconciliation. Historical recommendation records cannot gain evidence that was never stored; newly generated research records carry the rich dossier. Live hosted proof requires deployment of this commit and observation of at least one worker research cycle.
+Legacy domain tables remain SQLite-oriented. The production evidence tables are the shared Founder projection while deliberate schema-by-schema Postgres migration continues. Exact closed-trade attribution still depends on broker history quality and canonical reconciliation. Historical recommendation records cannot gain evidence that was never stored; newly generated research records carry the rich dossier. Live hosted proof requires deployment of this commit and observation of completed broker-poll and evidence-snapshot jobs followed by current Alpaca portfolio evidence in `/founder-evidence`.
 
 ## Snapshot Performance Boundary
 

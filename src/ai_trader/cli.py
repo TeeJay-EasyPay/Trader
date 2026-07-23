@@ -34,6 +34,10 @@ from .production_evidence import record_learning_evidence
 DEMO_MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
 
+class WorkerJobTimeout(RuntimeError):
+    """A timed-out daemon job requires process restart to stop residual work."""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ai-trader")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -280,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
                             "learning": _job_summary(learning),
                         },
                     )
+                except WorkerJobTimeout:
+                    pulse.set_status("restarting", current_job="timed-out-job")
+                    raise
                 except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
                     pulse.set_status("degraded", current_job="background-cycle")
                     record_worker_heartbeat(
@@ -390,6 +397,7 @@ def _run_worker_cycle_job(
     *,
     scheduled_for: str | None = None,
     timeout_seconds: int | None = None,
+    restart_worker_on_timeout: bool = False,
 ) -> dict:
     scheduled_for = scheduled_for or datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
     claim = claim_scheduled_job(
@@ -436,6 +444,8 @@ def _run_worker_cycle_job(
                     message=message,
                     payload={"worker_id": worker_id, "job": timed_out},
                 )
+                if restart_worker_on_timeout:
+                    raise WorkerJobTimeout(f"{job_name}: {message}")
                 return {"status": "timed_out", "job_name": job_name, "reason": message}
             if outcome_type == "error":
                 raise value
@@ -444,6 +454,8 @@ def _run_worker_cycle_job(
             result = _run_named_job(service, job_name, limit=0)
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="completed", result=result)
         return result
+    except WorkerJobTimeout:
+        raise
     except Exception as exc:
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=str(exc))
         raise
@@ -457,6 +469,7 @@ def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartb
         worker_id,
         scheduled_for=scheduled_for,
         timeout_seconds=service.settings.worker_job_timeout_seconds,
+        restart_worker_on_timeout=True,
     )
 
 

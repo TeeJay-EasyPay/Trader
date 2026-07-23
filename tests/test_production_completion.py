@@ -19,7 +19,7 @@ from ai_trader.canonical_trades import (
     reconcile_canonical_broker_event,
     register_execution_intent,
 )
-from ai_trader.cli import _run_worker_cycle_job
+from ai_trader.cli import WorkerJobTimeout, _run_worker_cycle_job
 from ai_trader.database import connect, selected_backend
 from ai_trader.models import TradeProposal
 from ai_trader.sprint6 import enqueue_learning_workflow, initialize_sprint6_schema, process_learning_outbox
@@ -208,6 +208,31 @@ class ProductionCompletionTests(unittest.TestCase):
                     timeout_seconds=1,
                 )
             self.assertEqual(result["status"], "timed_out")
+
+    def test_production_worker_timeout_requests_clean_process_restart(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"AI_TRADER_DATABASE_BACKEND": "sqlite"},
+            clear=True,
+        ):
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            service = SimpleNamespace(settings=SimpleNamespace(db_path=db_path))
+
+            def slow_job(*args, **kwargs):
+                time.sleep(1.5)
+                return {"status": "completed"}
+
+            with patch("ai_trader.cli._run_named_job", side_effect=slow_job):
+                with self.assertRaises(WorkerJobTimeout):
+                    _run_worker_cycle_job(
+                        service,
+                        "broker-poll",
+                        "production-worker",
+                        scheduled_for="2026-07-20T10:01:00+00:00",
+                        timeout_seconds=1,
+                        restart_worker_on_timeout=True,
+                    )
 
 
 if __name__ == "__main__":

@@ -70,8 +70,15 @@ class AlpacaPaperClient:
         query = urlencode({"status": status, "limit": limit})
         return self._request("GET", f"/v2/orders?{query}")
 
-    def get_activities(self, activity_type: str = "FILL") -> list[dict[str, Any]]:
-        return self._request("GET", f"/v2/account/activities/{activity_type}")
+    def get_activities(
+        self,
+        activity_type: str = "FILL",
+        *,
+        page_size: int = 100,
+        direction: str = "desc",
+    ) -> list[dict[str, Any]]:
+        query = urlencode({"page_size": max(1, min(int(page_size), 100)), "direction": direction})
+        return self._request("GET", f"/v2/account/activities/{activity_type}?{query}")
 
     def get_latest_bars(self, symbols: list[str]) -> dict[str, Any]:
         query = urlencode({"symbols": ",".join(symbols), "feed": "iex"})

@@ -10,7 +10,12 @@ from unittest.mock import call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.api import LocalApiService, _kraken_balance_summary, _kraken_trading_allocation_gbp
+from ai_trader.api import (
+    LocalApiService,
+    _kraken_balance_summary,
+    _kraken_trading_allocation_gbp,
+    _recent_unique_broker_events,
+)
 from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
@@ -123,6 +128,36 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0]
             self.assertEqual(count, 1)
+
+    def test_broker_history_without_timestamp_remains_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            event = {
+                "id": "alpaca-order-without-time",
+                "symbol": "MSFT",
+                "side": "buy",
+                "status": "filled",
+                "qty": "1",
+                "filled_avg_price": "500.00",
+            }
+
+            first = record_broker_trade_history(db_path, "alpaca", [event])
+            second = record_broker_trade_history(db_path, "alpaca", [event])
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+
+    def test_recent_broker_events_are_deduplicated_bounded_and_orders_first(self):
+        order = {"id": "order-1", "status": "filled", "qty": "1"}
+        history = [
+            dict(order),
+            {"id": "trade-1", "status": "filled", "qty": "2"},
+            {"id": "trade-2", "status": "filled", "qty": "3"},
+        ]
+
+        selected = _recent_unique_broker_events([order], history, limit=2)
+
+        self.assertEqual([row["id"] for row in selected], ["order-1", "trade-1"])
 
     def test_crypto_research_score_stores_numeric_due_diligence(self):
         with tempfile.TemporaryDirectory() as tmp:

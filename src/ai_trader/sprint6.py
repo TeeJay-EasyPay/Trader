@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .always_on import uses_postgres
 from .canonical_trades import reconcile_canonical_broker_event
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
@@ -216,8 +217,13 @@ def initialize_sprint6_schema(db_path: Path) -> None:
             )
 
 
+def _ensure_sprint6_schema(db_path: Path) -> None:
+    if not uses_postgres():
+        initialize_sprint6_schema(db_path)
+
+
 def seed_default_strategy_registry(db_path: Path) -> None:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     now = utc_now_iso()
     next_review = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     with closing(connect(db_path)) as conn:
@@ -285,7 +291,7 @@ def record_operational_event(
     success: bool = True,
     correlation_id: str | None = None,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     correlation = correlation_id or str(uuid4())
     with closing(connect(db_path)) as conn:
         with conn:
@@ -327,7 +333,7 @@ def pre_execution_decision_packet(
     guardrails: GuardrailConfig | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     seed_default_strategy_registry(db_path)
     proposal_payload = proposal.to_dict()
     proposal_payload["broker"] = broker.lower()
@@ -443,7 +449,7 @@ def pre_execution_decision_packet(
 
 
 def strategy_entitlement_decision(db_path: Path, *, proposal: TradeProposal, broker: str, mode: str) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     strategy_id = _strategy_id(proposal)
     row = _row(db_path, "SELECT * FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?", (strategy_id,))
     if row is None:
@@ -513,7 +519,7 @@ def production_risk_sentinel_decision(
     account: AccountContext,
     market_data_quality: str | None = None,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     kill = _row(db_path, "SELECT * FROM KILL_SWITCH_STATE WHERE id = 1", ())
     issues: list[str] = []
     evidence = {
@@ -563,7 +569,7 @@ def production_risk_sentinel_decision(
 
 
 def set_kill_switch(db_path: Path, *, active: bool, reason: str, activated_by: str = "system") -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
@@ -592,7 +598,7 @@ def normalize_broker_events(
     events: list[dict[str, Any]],
     source_endpoint: str,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     canonical_events: list[dict[str, Any]] = []
     terminal_trades: dict[str, dict[str, Any]] = {}
     inserted = 0
@@ -670,7 +676,7 @@ def normalize_broker_events(
 
 
 def enqueue_learning_workflow(db_path: Path, *, logical_trade_id: str, broker: str, payload: dict[str, Any]) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     key = f"closed-loop-learning:{broker.lower()}:{logical_trade_id}"
     workflow_id = str(uuid4())
     try:
@@ -710,7 +716,7 @@ def process_learning_outbox(
     and never left in an indefinite manual-review queue.
     """
 
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     now = utc_now_iso()
     claimed: list[dict[str, Any]] = []
     with closing(connect(db_path)) as conn:
@@ -871,7 +877,7 @@ def upsert_incident(
     affected_entity: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
@@ -924,7 +930,7 @@ def generate_founder_operational_report(
     period_start: str | None = None,
     period_end: str | None = None,
 ) -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     now = datetime.now(timezone.utc)
     end = period_end or now.isoformat()
     if period_start:
@@ -999,7 +1005,7 @@ def generate_founder_operational_report(
 
 
 def sprint6_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
-    initialize_sprint6_schema(db_path)
+    _ensure_sprint6_schema(db_path)
     seed_default_strategy_registry(db_path)
     strategies = _rows(db_path, "SELECT strategy_id, current_stage, suspended, permitted_modes_json FROM STRATEGY_MATURITY_REGISTRY ORDER BY updated_at DESC", ())
     latest_events = _rows(db_path, "SELECT created_at, component, event_type, severity, summary FROM OPERATIONAL_EVENTS ORDER BY event_id DESC LIMIT 5", ())

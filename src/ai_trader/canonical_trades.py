@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .always_on import uses_postgres
 from .database import connect
 from .models import TradeProposal, utc_now_iso
 
@@ -86,6 +87,11 @@ def initialize_canonical_trade_schema(db_path: Path) -> None:
             conn.executescript(CANONICAL_TRADE_SCHEMA)
 
 
+def _ensure_canonical_trade_schema(db_path: Path) -> None:
+    if not uses_postgres():
+        initialize_canonical_trade_schema(db_path)
+
+
 def register_execution_intent(
     db_path: Path,
     *,
@@ -95,7 +101,7 @@ def register_execution_intent(
 ) -> str:
     """Create the immutable logical identity before broker submission."""
 
-    initialize_canonical_trade_schema(db_path)
+    _ensure_canonical_trade_schema(db_path)
     logical_trade_id = proposal.proposal_id
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
@@ -156,7 +162,7 @@ def record_canonical_event(
     event_time: str | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    initialize_canonical_trade_schema(db_path)
+    _ensure_canonical_trade_schema(db_path)
     key = idempotency_key or _event_key(logical_trade_id, stage, payload)
     try:
         with closing(connect(db_path)) as conn:
@@ -216,7 +222,7 @@ def resolve_logical_trade_id(
     broker: str,
     event: dict[str, Any],
 ) -> str:
-    initialize_canonical_trade_schema(db_path)
+    _ensure_canonical_trade_schema(db_path)
     supplied = event.get("logical_trade_id") or event.get("proposal_id")
     if supplied:
         return str(supplied)
@@ -252,7 +258,7 @@ def resolve_logical_trade_id(
 
 
 def canonical_trade(db_path: Path, logical_trade_id: str) -> dict[str, Any] | None:
-    initialize_canonical_trade_schema(db_path)
+    _ensure_canonical_trade_schema(db_path)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
@@ -268,7 +274,7 @@ def reconcile_canonical_broker_event(
 ) -> dict[str, Any]:
     """Fold one broker event into one logical trade without reconstructing by symbol."""
 
-    initialize_canonical_trade_schema(db_path)
+    _ensure_canonical_trade_schema(db_path)
     logical_trade_id = resolve_logical_trade_id(db_path, broker=broker, event=event)
     symbol = str(event.get("symbol") or event.get("pair") or "unknown").upper()
     side = str(event.get("side") or event.get("type") or "buy").lower()

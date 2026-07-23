@@ -286,7 +286,11 @@ def record_broker_snapshot(db_path: Path, panel: dict[str, Any], *, captured_at:
 
 
 def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) -> None:
-    initialize_production_evidence_schema(db_path)
+    # Hosted startup owns additive Postgres migrations. Re-running the complete
+    # schema script for every broker event turns a bounded poll into hundreds of
+    # DDL round trips and can starve Founder-facing snapshots.
+    if not uses_postgres():
+        initialize_production_evidence_schema(db_path)
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
     status = str(_first(event, "status", "order_status", "type") or "observed").lower()

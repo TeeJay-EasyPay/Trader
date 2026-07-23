@@ -53,7 +53,12 @@ class AlpacaBrokerAdapter:
         return self.client.get_orders(status="all", limit=50)
 
     def get_trade_history(self) -> list[dict[str, Any]]:
-        return self.client.get_activities("FILL")
+        try:
+            return self.client.get_activities("FILL", page_size=100, direction="desc")
+        except TypeError:
+            # Preserve compatibility with local/demo clients that implement the
+            # original single-argument interface.
+            return self.client.get_activities("FILL")
 
     def get_supported_markets(self) -> list[str]:
         return ["NYSE", "NASDAQ", "AMEX", "ARCA", "OTC"]

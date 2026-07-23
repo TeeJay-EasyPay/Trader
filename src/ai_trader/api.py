@@ -113,6 +113,43 @@ from .trading_intelligence import calculate_performance_metrics, initialize_trad
 logger = logging.getLogger("ai_trader.api")
 
 
+def _recent_unique_broker_events(
+    orders: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Keep current orders first, then bounded recent history, without replays."""
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for event in [*orders, *history]:
+        if not isinstance(event, dict):
+            continue
+        identity = (
+            str(event.get("id") or event.get("order_id") or event.get("ordertxid") or event.get("txid") or event.get("trade_id") or ""),
+            str(event.get("status") or event.get("type") or ""),
+            str(
+                event.get("updated_at")
+                or event.get("transaction_time")
+                or event.get("filled_at")
+                or event.get("closed_at")
+                or event.get("closetm")
+                or event.get("created_at")
+                or event.get("opentm")
+                or event.get("time")
+                or ""
+            ),
+            str(event.get("filled_qty") or event.get("cum_qty") or event.get("qty") or event.get("vol") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(event)
+        if len(selected) >= max(1, int(limit)):
+            break
+    return selected
+
+
 def configure_logging(output_dir: Path) -> None:
     root = logging.getLogger()
     if root.handlers:
@@ -2820,14 +2857,17 @@ This report explains available evidence. It does not automatically change strate
                     payload={"broker": broker_name},
                 )
                 continue
-            new_rows = record_broker_trade_history(self.settings.db_path, broker_name, list(orders) + list(history))
-            for event in list(orders) + list(history):
+            events = _recent_unique_broker_events(list(orders), list(history), limit=100)
+            new_rows = record_broker_trade_history(self.settings.db_path, broker_name, events)
+            for event in events:
                 if isinstance(event, dict):
                     record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
             reconciliation = normalize_broker_events(
                 self.settings.db_path,
                 broker=broker_name,
-                events=list(orders) + list(history),
+                # Stable history rows are already persisted. Canonical work is
+                # only required for new or changed broker evidence.
+                events=new_rows,
                 source_endpoint="poll_broker_activity",
             )
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
@@ -2849,6 +2889,7 @@ This report explains available evidence. It does not automatically change strate
             results[broker_name] = {
                 "orders": len(orders),
                 "history": len(history),
+                "events_processed": len(events),
                 "new_records": len(new_rows),
                 "reconciliation": reconciliation,
             }

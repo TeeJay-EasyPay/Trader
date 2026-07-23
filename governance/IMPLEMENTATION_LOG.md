@@ -1357,3 +1357,31 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   rows once and filter the four display periods in memory.
 - Added regression coverage for duplicate immutable experience records and
   one-load multi-period snapshot generation.
+
+## 2026-07-23 - Bounded Incremental Broker Reconciliation
+
+- Production evidence showed `broker-poll`, `evidence-snapshot` and
+  `auto-execution` exceeding the worker's 180-second boundary despite healthy
+  API and worker heartbeats.
+- Root cause: broker activity was replayed without a hard bound, all historical
+  rows were normalized on every cycle, missing event timestamps were replaced
+  by the current time, and hosted hot paths repeatedly attempted idempotent
+  schema initialization.
+- Bounded Alpaca activity retrieval and broker-event selection to the 100 most
+  relevant unique observations, preserving current orders before history.
+- Changed canonical normalization to process only rows newly inserted into
+  broker history.
+- Assigned a deterministic timestamp marker to broker events that genuinely
+  lack a broker timestamp, preserving idempotency across polling cycles.
+- Removed duplicate legacy reconciliation from the broker-history insert path;
+  the broker poll now owns the single canonical normalization pass.
+- Removed repeated schema DDL from Postgres canonical-trade, Sprint 6 and
+  production-evidence hot paths. Hosted startup migration remains authoritative.
+- Added clean worker-process restart semantics after a timed-out production
+  job, preventing unfinished daemon work from accumulating across cycles.
+- Added focused regression tests for timestamp-less duplicate events, bounded
+  event ordering and timeout-triggered process restart.
+- Verification: focused suite passed 31 tests. Full-suite and hosted Render
+  verification follow before the recovery is marked complete.
+- No guardrail, strategy threshold, broker authority, risk limit or allocation
+  rule changed.
