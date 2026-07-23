@@ -229,8 +229,14 @@ def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, b
         except ValueError:
             expires_at = None
     reasoning = str(proposal.get("plain_english_reasoning") or "")
-    strongest_for = proposal.get("strongest_argument_for") or reasoning or None
-    strongest_against = proposal.get("strongest_argument_against") or _risk_argument(proposal)
+    intelligence = proposal.get("intelligence") if isinstance(proposal.get("intelligence"), dict) else {}
+    committee = intelligence.get("committee") if isinstance(intelligence.get("committee"), dict) else {}
+    strongest_for = proposal.get("strongest_argument_for") or committee.get("strongest_argument_for") or reasoning or None
+    strongest_against = (
+        proposal.get("strongest_argument_against")
+        or committee.get("strongest_argument_against")
+        or _risk_argument(proposal)
+    )
     values = (
         recommendation_id, created_at, expires_at, broker.lower(), str(proposal.get("symbol") or "").upper(),
         str(proposal.get("asset_type") or "stock").lower(), str(proposal.get("side") or "buy").lower(),
@@ -914,6 +920,43 @@ def _recommendation_payload(row: dict[str, Any]) -> dict[str, Any]:
         "freshness_status": "Fresh" if not row.get("expires_at") or str(row.get("expires_at")) > utc_now_iso() else "Expired",
         "suggested_broker": row.get("broker"),
     }
+    intelligence = result.get("intelligence") if isinstance(result.get("intelligence"), dict) else {}
+    strategy = intelligence.get("strategy") if isinstance(intelligence.get("strategy"), dict) else {}
+    probability = intelligence.get("probability") if isinstance(intelligence.get("probability"), dict) else {}
+    committee = intelligence.get("committee") if isinstance(intelligence.get("committee"), dict) else {}
+    trade_setup = intelligence.get("trade_setup") if isinstance(intelligence.get("trade_setup"), dict) else {}
+    explainability = intelligence.get("explainability") if isinstance(intelligence.get("explainability"), dict) else {}
+    regime = intelligence.get("regime") if isinstance(intelligence.get("regime"), dict) else {}
+
+    def set_missing(key: str, value: Any) -> None:
+        if result.get(key) is None and value is not None:
+            result[key] = value
+
+    # Trading Intelligence is persisted as one immutable evidence packet. The
+    # Founder contract deliberately exposes the most important dossier fields
+    # as stable top-level aliases while retaining the complete packet for
+    # evidence drill-down.
+    set_missing("strategy", strategy or None)
+    set_missing("strategy_id", strategy.get("strategy_id") or committee.get("strategy_id") or probability.get("strategy_id"))
+    set_missing("strategy_name", strategy.get("name"))
+    set_missing("probability", probability or None)
+    set_missing("probability_of_success", probability.get("probability_of_success"))
+    set_missing("expected_return_r", probability.get("expected_return_r"))
+    set_missing("expected_r_multiple", trade_setup.get("expected_r_multiple"))
+    set_missing("probability_interval_low", probability.get("confidence_interval_low"))
+    set_missing("probability_interval_high", probability.get("confidence_interval_high"))
+    set_missing("calibration_status", probability.get("calibration_status"))
+    set_missing("committee", committee or None)
+    set_missing("committee_result", committee.get("committee_result"))
+    set_missing("market_regime", regime or None)
+    set_missing("trade_setup", trade_setup or None)
+    set_missing("signals", intelligence.get("signals") if isinstance(intelligence.get("signals"), list) else [])
+    set_missing(
+        "invalidation",
+        explainability.get("invalidation_conditions") or trade_setup.get("invalidation_conditions") or [],
+    )
+    set_missing("strongest_argument_for", committee.get("strongest_argument_for"))
+    set_missing("strongest_argument_against", committee.get("strongest_argument_against"))
     # Older production rows contain a valid proposal but predate the full
     # Founder dossier handoff. Preserve their truth while giving the app stable
     # aliases instead of blank sections.

@@ -115,3 +115,64 @@ Broker snapshot
 This boundary preserves complete broker evidence without turning stable broker
 history into repeated Postgres writes. It also keeps reconciliation and
 Founder portfolio capture independently observable.
+
+## Hosted Verification Result
+
+The deployed incremental broker path has now been verified from authenticated
+production evidence:
+
+- operations health reported shared Postgres and a healthy worker;
+- `broker-poll` completed within its execution boundary;
+- `evidence-snapshot` completed and refreshed the Founder read model;
+- Alpaca was connected with portfolio value, cash, buying power and one open
+  position present in the shared projection;
+- Kraken remained independently connected with its own account values.
+
+This closes the Alpaca connection and portfolio-evidence incident. It does not
+by itself prove that every recommendation contains an institutional dossier.
+
+## Recommendation Intelligence Handoff
+
+The rich recommendation defect was a distinct ownership break:
+
+```text
+Trading Intelligence calculates immutable packet
+  -> strategy
+  -> probability and expected R
+  -> committee arguments and decision
+  -> market regime and signals
+  -> invalidation conditions
+
+Previous handoff
+  -> packet written to local audit event
+  -> returned TradeProposal omitted packet
+  -> shared Postgres stored thin proposal
+  -> mobile correctly rendered sparse card
+
+Corrected handoff
+  -> validated TradeProposal retains packet
+  -> production research persists complete proposal evidence
+  -> Founder projection retains nested packet
+  -> stable top-level aliases feed concise mobile dossier fields
+```
+
+The proposal's execution fields remain authoritative. Intelligence evidence
+cannot change the symbol, side, prices, position size, guardrail result or
+broker authority during projection.
+
+The Founder projection exposes:
+
+- strategy ID and name;
+- probability of success and confidence interval;
+- expected return in R and planned R multiple;
+- calibration status;
+- committee result and strongest arguments for and against;
+- market regime;
+- signal evidence;
+- invalidation conditions;
+- the complete original intelligence packet for evidence drill-down.
+
+Historical records remain immutable. A recommendation generated before this
+handoff may still be sparse because its missing packet cannot be reconstructed
+without using future information. Recommendations generated after deployment
+carry the packet produced at decision time.

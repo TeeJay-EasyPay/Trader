@@ -933,3 +933,27 @@ Current status:
 - Deployment proof is still required before this recovery is marked complete:
   `broker-poll` and `evidence-snapshot` must complete and the current Alpaca
   portfolio must appear in the persisted Founder projection.
+
+## Status Update - 2026-07-23 Hosted Alpaca Proof and Recommendation Dossier Handoff
+
+- Hosted Render verification completed successfully for the broker evidence
+  recovery. The shared Postgres projection reported a healthy worker, completed
+  broker polling and a completed evidence snapshot.
+- The hosted Founder payload reported Alpaca as connected with portfolio value
+  `100098.67`, cash and buying power `89868.82`, and one open position. Kraken
+  remained connected and independently reported its own account evidence.
+- The remaining thin recommendation cards had a separate root cause: Trading
+  Intelligence calculated strategy, probability, expected return, committee
+  review, regime, signals and invalidation evidence, but the returned
+  `TradeProposal` discarded that packet before the shared Postgres handoff.
+- `TradeProposal` now carries an optional immutable intelligence packet.
+  Equity and crypto proposal paths attach the packet after deterministic
+  validation, and the production Founder projection exposes stable top-level
+  dossier fields while retaining the complete packet for evidence inspection.
+- Historical recommendation rows remain unchanged and honestly sparse. The
+  platform does not fabricate strategy or probability evidence that was not
+  stored when those recommendations were generated.
+- Verification passed: compileall, 46 focused tests, and the complete 171-test
+  Python suite.
+- No risk limit, broker permission, execution authority, strategy gate,
+  position sizing rule or autonomous trading control changed.

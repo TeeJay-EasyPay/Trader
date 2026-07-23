@@ -1406,3 +1406,33 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Focused verification passed 40 tests.
 - No execution permission, portfolio rule, risk limit, strategy threshold or
   broker safety control changed.
+
+## 2026-07-23 - Hosted Alpaca Verification and Intelligence Dossier Preservation
+
+- Verified the deployed broker evidence recovery against the authenticated
+  hosted operations and Founder evidence contracts.
+- Confirmed a completed bounded broker poll and completed evidence snapshot in
+  shared Postgres. The Founder projection now contains the current Alpaca
+  account, portfolio value, cash, buying power and open-position count.
+- Inspected the hosted recommendation contract and proved that the remaining
+  sparse cards were not a mobile rendering fault. The persisted proposal
+  contained price, stop, target, thesis and confidence, but omitted the
+  structured Trading Intelligence packet.
+- Traced the loss to both AI proposal paths: the intelligence packet was
+  calculated and written to the local audit event, then omitted from the
+  `TradeProposal` returned to production evidence.
+- Added optional intelligence evidence to the normalized proposal model and
+  attached it after guardrail validation for equities and crypto.
+- Updated recommendation projection to retain the complete immutable packet
+  and expose strategy, probability, expected return, confidence interval,
+  committee result, strongest arguments, regime, signals and invalidation as
+  stable Founder-facing aliases.
+- Added an end-to-end regression test using the real nested packet shape,
+  proving it survives recommendation storage and Founder projection.
+- Historical thin recommendations are not backfilled with invented facts.
+  Rich fields become available on recommendations generated after deployment.
+- Verification: compilation passed; focused suite passed 46 tests; complete
+  suite passed 171 tests.
+- Safety boundary: this change transports and presents existing evidence only.
+  It does not alter portfolio approval, Risk Engine approval, broker
+  permissions, execution eligibility, sizing, stops, targets or guardrails.

@@ -41,6 +41,57 @@ def settings_for(tmp: str) -> Settings:
 
 
 class ProductionEvidenceTests(unittest.TestCase):
+    def test_nested_trading_intelligence_survives_shared_evidence_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_recommendation_evidence(
+                db_path,
+                {
+                    "proposal_id": "proposal-intelligence",
+                    "symbol": "AAPL",
+                    "side": "buy",
+                    "entry_price": 210.0,
+                    "stop_loss": 205.0,
+                    "take_profit": 220.0,
+                    "position_size": 2.0,
+                    "confidence_score": 0.64,
+                    "intelligence": {
+                        "strategy": {"strategy_id": "evidence-trend", "name": "Evidence Trend"},
+                        "probability": {
+                            "probability_of_success": 0.64,
+                            "expected_return_r": 0.92,
+                            "confidence_interval_low": 0.54,
+                            "confidence_interval_high": 0.72,
+                            "calibration_status": "provisional",
+                        },
+                        "committee": {
+                            "committee_result": "approved",
+                            "strongest_argument_for": "Trend and catalyst evidence align.",
+                            "strongest_argument_against": "An earnings event could invalidate the setup.",
+                        },
+                        "trade_setup": {
+                            "expected_r_multiple": 2.0,
+                            "invalidation_conditions": ["Price closes below support."],
+                        },
+                        "regime": {"regime": "fragile_upward_trend"},
+                        "signals": [{"name": "trend", "direction": "bullish"}],
+                    },
+                },
+                broker="alpaca",
+            )
+
+            recommendation = founder_evidence_payload(db_path)["recommendations"][0]
+
+            self.assertEqual(recommendation["strategy_name"], "Evidence Trend")
+            self.assertEqual(recommendation["strategy_id"], "evidence-trend")
+            self.assertEqual(recommendation["probability_of_success"], 0.64)
+            self.assertEqual(recommendation["expected_return_r"], 0.92)
+            self.assertEqual(recommendation["expected_r_multiple"], 2.0)
+            self.assertEqual(recommendation["committee_result"], "approved")
+            self.assertIn("earnings event", recommendation["strongest_argument_against"])
+            self.assertEqual(recommendation["invalidation"], ["Price closes below support."])
+            self.assertEqual(recommendation["intelligence"]["strategy"]["name"], "Evidence Trend")
+
     def test_production_research_merges_rich_recommendation_dossier(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = LocalApiService(settings_for(tmp))
