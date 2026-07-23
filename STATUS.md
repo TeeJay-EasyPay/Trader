@@ -1,5 +1,22 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-23 Render API Port-Binding Recovery
+
+Status: **root cause corrected; deployment verification pending**.
+
+- Render built commit `511207c2` but killed the web container after detecting no
+  listening port.
+- `cli.main()` eagerly initialized `AuditDatabase` for every command, including
+  `serve-api`. In hosted Postgres mode that database work occurred before the
+  HTTP server bound to Render's `PORT`.
+- API and configuration commands now avoid unnecessary audit initialization.
+  Commands that consume the audit store initialize it only inside their own
+  execution branch.
+- The production worker remains responsible for schema initialization and
+  durable Founder evidence generation.
+- Regression tests prove `serve-api` and `config` dispatch without constructing
+  the audit database.
+
 ## 2026-07-22 Founder Evidence Snapshot Recovery
 
 Status: **repository gate passed; Render deployment verification pending**.

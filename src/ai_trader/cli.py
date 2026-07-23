@@ -98,25 +98,27 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     settings = load_settings()
-    audit = AuditDatabase(settings.db_path, settings.trading_log_path)
 
     if args.command == "config":
         print(_safe_config(settings))
         return 0
 
     if args.command == "propose":
+        audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         proposals = _propose(args, settings, audit)
         save_proposals(Path(args.output), proposals)
         print(json.dumps({"proposals": len(proposals), "output": args.output}, indent=2))
         return 0
 
     if args.command == "execute":
+        audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         proposals = load_proposals(Path(args.proposals))
         results = _execute(args, settings, audit, proposals)
         print(json.dumps(results, indent=2, sort_keys=True))
         return 0
 
     if args.command == "run-once":
+        audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         proposals = _propose(args, settings, audit)
         save_proposals(Path(args.output), proposals)
         results = _execute(args, settings, audit, proposals)
@@ -124,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "briefing":
+        audit = AuditDatabase(settings.db_path, settings.trading_log_path)
         report = generate_daily_briefing(audit, date.fromisoformat(args.date), settings.output_dir)
         print(report)
         return 0

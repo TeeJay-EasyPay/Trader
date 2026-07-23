@@ -1,5 +1,19 @@
 # Implementation Log
 
+## 2026-07-23 Render API Port-Binding Recovery
+
+- Reviewed the failed `511207c2` Render deployment logs.
+- Confirmed Render built the image successfully but detected no open port before
+  timing out.
+- Traced startup to eager `AuditDatabase` construction in `cli.main()` before
+  the `serve-api` branch dispatched to `run_server`.
+- Moved audit initialization into only the CLI commands that consume it:
+  `propose`, `execute`, `run-once`, and `briefing`.
+- Added regression coverage proving `serve-api` and `config` do not initialize
+  the audit database before dispatch.
+- Restored the intended production boundary: the API binds promptly; the worker
+  owns production schema/bootstrap writes and Founder snapshot generation.
+
 ## 2026-07-19 Production Evidence Activation Sprint
 
 - Audited the paid Render worker, research ownership, shared database boundaries and six Founder screens before implementation.

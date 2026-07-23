@@ -1,5 +1,13 @@
 # Founder Read Model Architecture
 
+## Hosted startup boundary
+
+The hosted API must bind Render's `PORT` before performing optional database
+work. CLI dispatch therefore does not construct `AuditDatabase` for
+`serve-api`. Production schema initialization and Founder snapshot generation
+belong to the background worker. This prevents database latency or migration
+locks from making Render classify the web service as having no open port.
+
 ## Purpose
 
 `GET /founder-evidence` is the bounded production read model for the six Founder screens. It joins shared operational evidence without making live broker calls during mobile startup.
