@@ -3793,6 +3793,12 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
             "All POST trading/control commands will be rejected until the token is configured.",
             host,
         )
+    # Bind before database-backed initialization. Render detects readiness by
+    # scanning for an open port, so schema work must never prevent the web
+    # process from proving that it started.
+    server = ThreadingHTTPServer((host, port), ApiHandler)
+    logger.info("AI Trader API socket bound on http://%s:%s; initializing runtime.", host, port)
+
     # The production worker owns schema/bootstrap writes. Repeating every migration,
     # seed and reconciliation operation before binding the HTTP socket made a sleeping
     # Render API take minutes to wake. Local and combined-process deployments retain
@@ -3931,8 +3937,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
     ApiHandler.service = service
     ApiHandler.api_token = api_token
     ApiHandler.hosted_read_only = hosted_read_only
-    server = ThreadingHTTPServer((host, port), ApiHandler)
-    logger.info("AI Trader local API listening on http://%s:%s", host, port)
+    logger.info("AI Trader API runtime initialized; accepting requests on http://%s:%s", host, port)
     server.serve_forever()
 
 

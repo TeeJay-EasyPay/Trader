@@ -249,7 +249,7 @@ The mobile app correctly displays unknown states rather than fabricating data. T
 
 ### Core production variables
 
-`DATABASE_URL` or `SUPABASE_DATABASE_URL`, `AI_TRADER_DATABASE_BACKEND`, `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED`, `AI_TRADER_PROCESS_ROLE`, `AI_TRADER_DISABLE_BACKGROUND_WORKERS`, `AI_TRADER_API_TOKEN`, `OPENAI_API_KEY`, `OPENAI_MODEL`, Alpaca credentials/base URLs, Kraken credentials/base URL, broker-specific auto-trading/live approval/real-order flags, research/worker/broker-poll/auto-execution intervals, risk limits and allocation limits.
+`DATABASE_URL` or `SUPABASE_DATABASE_URL`, `AI_TRADER_DATABASE_BACKEND`, `AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED`, `AI_TRADER_PROCESS_ROLE`, `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS`, `AI_TRADER_API_TOKEN`, `OPENAI_API_KEY`, `OPENAI_MODEL`, Alpaca credentials/base URLs, Kraken credentials/base URL, broker-specific auto-trading/live approval/real-order flags, research/worker/broker-poll/auto-execution intervals, risk limits and allocation limits.
 
 ### Problems
 

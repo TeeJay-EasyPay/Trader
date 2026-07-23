@@ -1,5 +1,25 @@
 # Implementation Log
 
+## 2026-07-23 - Render web-service environment compatibility recovery
+
+- Investigated repeated Render failures after both the Dockerfile command and
+  explicit `python -m ai_trader.cli serve-api` command produced no open port.
+- Root cause: the deployed web service used
+  `AI_TRADER_DISABLE_BACKGROUND_WORKERS=true`, but runtime configuration read
+  `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS`. The API therefore incorrectly
+  assumed it owned schema initialization and background loops.
+- Added backward-compatible handling for the legacy environment-variable name.
+- Changed API startup ordering so `ThreadingHTTPServer` binds before
+  database-backed service initialization.
+- Corrected the inconsistent variable name in the production architecture
+  audit.
+- Added tests proving:
+  - the legacy variable safely disables API background workers;
+  - the API socket binds before `LocalApiService` initialization.
+- Operational action still required: set the canonical
+  `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true` on the Render web service and
+  deploy the resulting commit.
+
 ## 2026-07-23 Render API Port-Binding Recovery
 
 - Reviewed the failed `511207c2` Render deployment logs.

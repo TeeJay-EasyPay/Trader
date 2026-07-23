@@ -150,6 +150,9 @@ def load_settings() -> Settings:
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
         broker_poll_interval_seconds=_int_env("AI_TRADER_BROKER_POLL_INTERVAL_SECONDS", 600),
         process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),
-        disable_api_background_workers=_bool_env("AI_TRADER_DISABLE_API_BACKGROUND_WORKERS", False),
+        disable_api_background_workers=_bool_env(
+            "AI_TRADER_DISABLE_API_BACKGROUND_WORKERS",
+            _bool_env("AI_TRADER_DISABLE_BACKGROUND_WORKERS", False),
+        ),
         require_postgres_in_hosted=_bool_env("AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED", True),
     )

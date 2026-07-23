@@ -1,5 +1,24 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-23 Render Environment Compatibility Recovery
+
+Status: **root cause corrected; deployment verification pending**.
+
+- Confirmed the manually configured Render web service used the legacy
+  `AI_TRADER_DISABLE_BACKGROUND_WORKERS` variable while the API expected
+  `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS`.
+- The mismatch caused the API to run the full Postgres schema/bootstrap path
+  before opening its HTTP port, leading Render to time out with
+  `No open ports detected`.
+- Configuration now accepts the legacy variable as a compatibility fallback.
+  The canonical production variable remains
+  `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true`.
+- The API now binds its HTTP socket before database-backed runtime
+  initialization, so Render can detect the service even when initialization is
+  slow.
+- Added regression tests for both the environment alias and bind-before-init
+  startup ordering.
+
 ## 2026-07-23 Render API Port-Binding Recovery
 
 Status: **root cause corrected; deployment verification pending**.
