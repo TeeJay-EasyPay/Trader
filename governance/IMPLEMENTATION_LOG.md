@@ -1295,6 +1295,28 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 
 - Bumped the mobile release to `1.0.3` / Android build `4` so the two-row navigation and native dark status bar are embedded in a fresh APK rather than depending on an existing installation accepting an OTA update.
 - No trading, broker, governance, portfolio or risk behavior changed in this release.
+
+## 2026-07-23 - Alpaca Portfolio and Rich Recommendation Recovery
+
+- Traced the hosted Alpaca connection failure to duplicate broker-history
+  observations aborting a shared Postgres transaction before the portfolio
+  snapshot could be stored.
+- Replaced exception-driven duplicate handling with database-level
+  `ON CONFLICT DO NOTHING` idempotency for broker-history and managed-exit
+  history writes.
+- Added regression coverage proving a duplicate Alpaca broker event is ignored
+  and does not create a second history row.
+- Enriched production research handoff records with the existing structured
+  recommendation dossier while preserving authoritative proposal execution
+  fields.
+- Added compatibility aliases for historical recommendation evidence without
+  fabricating absent strategy, probability, committee or due-diligence facts.
+- Added regression coverage for rich dossier persistence and authoritative
+  execution-field precedence.
+- Verification: Python compileall passed; focused suite passed 30 tests; full
+  suite passed 164 tests.
+- No risk limits, broker permissions, strategy gates, position sizing rules or
+  autonomous trading controls were weakened.
 ## 2026-07-22 - Founder Evidence Snapshot Recovery
 
 - Investigated installed-app evidence showing Dashboard, Activity, Portfolio, Market, and Learning all failing together on an 18-second `/founder-evidence` timeout.

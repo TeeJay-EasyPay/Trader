@@ -2052,6 +2052,7 @@ This report explains available evidence. It does not automatically change strate
         symbols: list[str],
         result: dict[str, Any],
     ) -> None:
+        result = self._enrich_production_recommendations(result)
         record_research_evidence(
             self.settings.db_path,
             idempotency_key=f"{broker}:{trigger_type}:{started_at}",
@@ -2063,6 +2064,52 @@ This report explains available evidence. It does not automatically change strate
             result=result,
             provider="Kraken" if broker == "kraken" else "Alpaca Market Data",
         )
+
+    def _enrich_production_recommendations(self, result: dict[str, Any]) -> dict[str, Any]:
+        proposals = result.get("proposals")
+        if not isinstance(proposals, list) or not proposals:
+            return result
+        proposal_ids = {
+            str(proposal.get("proposal_id") or proposal.get("recommendation_id") or "")
+            for proposal in proposals
+            if isinstance(proposal, dict)
+        }
+        try:
+            rich_recommendations = {
+                str(recommendation.get("proposal_id") or ""): recommendation
+                for recommendation in self.recommendations(limit=max(100, len(proposal_ids) * 4))
+                if str(recommendation.get("proposal_id") or "") in proposal_ids
+            }
+        except Exception:
+            logger.exception("Could not enrich production recommendation evidence; preserving the base proposals.")
+            return result
+        enriched = []
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                continue
+            proposal_id = str(proposal.get("proposal_id") or proposal.get("recommendation_id") or "")
+            rich = rich_recommendations.get(proposal_id) or {}
+            # The proposal remains authoritative for execution fields. The richer
+            # audit projection supplies strategy, committee, probability and
+            # explainability fields for the Founder dossier.
+            merged = {**proposal, **rich}
+            for key in (
+                "proposal_id",
+                "recommendation_id",
+                "symbol",
+                "side",
+                "entry_price",
+                "stop_loss",
+                "take_profit",
+                "position_size",
+                "risk_percentage",
+                "asset_type",
+                "exchange",
+            ):
+                if proposal.get(key) is not None:
+                    merged[key] = proposal[key]
+            enriched.append(merged)
+        return {**result, "proposals": enriched}
 
     def _bootstrap_crypto_universe_from_kraken_permissions(self, *, limit: int) -> list[str]:
         allowed_pairs = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")

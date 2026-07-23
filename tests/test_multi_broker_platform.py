@@ -22,6 +22,7 @@ from ai_trader.multi_broker import (
     initialize_multi_broker_schema,
     latest_recommendation_set,
     list_performance_attribution,
+    record_broker_trade_history,
     record_crypto_research_score,
     record_managed_trade_exit,
     record_recommendation_set,
@@ -100,6 +101,28 @@ class MultiBrokerPlatformTests(unittest.TestCase):
 
             self.assertEqual(latest["broker"], "kraken")
             self.assertEqual(latest["proposal_ids"], ["p1", "p2"])
+
+    def test_broker_history_poll_is_idempotent_without_integrity_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            event = {
+                "id": "alpaca-order-1",
+                "symbol": "AAPL",
+                "side": "buy",
+                "status": "filled",
+                "qty": "2",
+                "filled_avg_price": "210.50",
+                "updated_at": "2026-07-23T14:00:00+00:00",
+            }
+
+            first = record_broker_trade_history(db_path, "alpaca", [event])
+            second = record_broker_trade_history(db_path, "alpaca", [event])
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            with closing(sqlite3.connect(db_path)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0]
+            self.assertEqual(count, 1)
 
     def test_crypto_research_score_stores_numeric_due_diligence(self):
         with tempfile.TemporaryDirectory() as tmp:

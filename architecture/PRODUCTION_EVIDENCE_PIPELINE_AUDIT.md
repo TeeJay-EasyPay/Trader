@@ -26,6 +26,16 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 4. Cached evidence renders immediately while fresh evidence is requested.
 5. Long implementation-phase diagnostic cards were removed from the primary Founder experience.
 6. Live verification exposed Kraken `EQuery:Unknown asset pair`: research selected general active crypto records instead of only Founder-approved Kraken pairs. Autonomous Kraken research is now constrained to approved pairs, and an unavailable pair is recorded/skipped without aborting the remaining cycle.
+7. Live Founder evidence exposed an Alpaca Postgres failure after repeated
+   broker observations. Expected duplicates are now resolved by
+   `ON CONFLICT DO NOTHING` inside the insert statement, preventing a duplicate
+   from aborting the transaction that also records the current portfolio
+   snapshot.
+8. The worker's production research handoff now merges each base proposal with
+   the existing rich recommendation dossier before refreshing Founder
+   snapshots. Proposal identifiers, prices, position size and risk remain
+   authoritative; strategy, probability, committee, signal, argument,
+   invalidation and due-diligence evidence are added when genuinely available.
 
 ## Truth boundaries
 
@@ -38,4 +48,4 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 
 ## Residual limitations
 
-Legacy domain tables remain SQLite-oriented. The production evidence tables are the shared Founder projection while deliberate schema-by-schema Postgres migration continues. Exact closed-trade attribution still depends on broker history quality and canonical reconciliation. Live hosted proof requires deployment of this commit and observation of at least one worker research cycle.
+Legacy domain tables remain SQLite-oriented. The production evidence tables are the shared Founder projection while deliberate schema-by-schema Postgres migration continues. Exact closed-trade attribution still depends on broker history quality and canonical reconciliation. Historical recommendation records cannot gain evidence that was never stored; newly generated research records carry the rich dossier. Live hosted proof requires deployment of this commit and observation of at least one worker research cycle.

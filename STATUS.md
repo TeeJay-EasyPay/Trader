@@ -1,5 +1,24 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-23 Alpaca Portfolio and Recommendation Evidence Recovery
+
+Status: **implemented and locally verified; hosted deployment verification pending**.
+
+- Corrected Postgres broker-history idempotency so repeated Alpaca order and
+  fill observations use `ON CONFLICT DO NOTHING` rather than leaving the
+  surrounding transaction aborted.
+- This addresses the hosted Alpaca portfolio error:
+  `current transaction is aborted, commands ignored until end of transaction block`.
+- Production research evidence now merges each executable proposal with its
+  rich recommendation dossier before the worker refreshes Founder snapshots.
+- New recommendations can therefore carry strategy, probability, committee,
+  signal, strongest-for, strongest-against, invalidation, no-action and due
+  diligence evidence into the Recommendations screen.
+- Historical recommendation rows receive stable compatibility aliases where
+  the underlying evidence exists. Missing historical evidence is not invented.
+- Verification: Python compileall passed; the complete Python suite passed
+  with 164 tests.
+
 ## 2026-07-23 Render Environment Compatibility Recovery
 
 Status: **root cause corrected; deployment verification pending**.

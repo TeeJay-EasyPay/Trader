@@ -82,3 +82,40 @@ The background worker is the sole projection builder. Its existing evidence-snap
 The table is a derived read model, not a duplicate system of record. Authoritative research, recommendation, broker, trade, learning, heartbeat, job, and funnel rows remain in their existing tables. A stale or absent projection is labelled explicitly and never replaced with synthetic data.
 
 Production connections use bounded defaults: five seconds to establish a connection and eight seconds per SQL statement. Both are configurable through `AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS` and `AI_TRADER_DB_STATEMENT_TIMEOUT_MS`.
+
+## Broker History Idempotency
+
+Broker polling is deliberately repetitive. The same broker order or fill may
+be observed on many consecutive polls. Expected duplicates must therefore be
+handled by the insert statement with `ON CONFLICT DO NOTHING`.
+
+Application-level handling of a Postgres uniqueness exception is insufficient:
+once Postgres raises the exception, the transaction remains aborted until it
+is rolled back. Any later write in that transaction, including the current
+broker portfolio snapshot, will fail. Broker-history and managed-exit history
+writes now use database-level conflict handling and only report rows that were
+actually inserted.
+
+The corresponding SQLite unique constraints and Postgres indexes remain the
+authoritative idempotency boundary:
+
+- broker;
+- external broker record ID;
+- broker status;
+- broker update timestamp.
+
+This preserves repeated polling while preventing duplicate history records and
+transaction poisoning.
+
+## Recommendation Evidence Handoff
+
+The production research handoff stores a merged recommendation record:
+
+- execution-critical proposal fields remain authoritative;
+- strategy qualification, probability, committee, signal and due-diligence
+  fields are copied from the existing recommendation dossier when available;
+- compatibility aliases support older mobile field names;
+- absent historical evidence remains absent and is never synthesized.
+
+This record feeds the bounded Founder evidence projection used by the mobile
+Recommendations screen.

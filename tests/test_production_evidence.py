@@ -40,6 +40,51 @@ def settings_for(tmp: str) -> Settings:
 
 
 class ProductionEvidenceTests(unittest.TestCase):
+    def test_production_research_merges_rich_recommendation_dossier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            base = {
+                "proposal_id": "proposal-rich",
+                "symbol": "AAPL",
+                "side": "buy",
+                "entry_price": 210.0,
+                "stop_loss": 205.0,
+                "take_profit": 220.0,
+                "position_size": 2.0,
+                "strongest_argument_for": "Base proposal argument.",
+            }
+            rich = {
+                "proposal_id": "proposal-rich",
+                "symbol": "AAPL",
+                "strategy_name": "Evidence Trend",
+                "probability_of_success": 0.64,
+                "expected_return_r": 2.0,
+                "committee": {"committee_result": "approved"},
+                "strongest_argument_for": "Committee found trend and catalyst alignment.",
+                "strongest_argument_against": "Earnings event risk could invalidate the setup.",
+                "invalidation": ["Price closes below support."],
+            }
+
+            with (
+                patch.object(service, "recommendations", return_value=[rich]),
+                patch("ai_trader.api.record_research_evidence") as record_evidence,
+            ):
+                service._record_production_research(
+                    "2026-07-23T14:00:00+00:00",
+                    "alpaca",
+                    "stock",
+                    "scheduled",
+                    ["AAPL"],
+                    {"status": "completed", "proposals": [base]},
+                )
+
+            stored = record_evidence.call_args.kwargs["result"]["proposals"][0]
+            self.assertEqual(stored["entry_price"], 210.0)
+            self.assertEqual(stored["strategy_name"], "Evidence Trend")
+            self.assertEqual(stored["probability_of_success"], 0.64)
+            self.assertEqual(stored["committee"]["committee_result"], "approved")
+            self.assertIn("Earnings event risk", stored["strongest_argument_against"])
+
     def test_founder_snapshot_is_served_without_rebuilding_projection(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

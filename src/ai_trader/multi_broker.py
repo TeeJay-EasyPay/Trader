@@ -451,34 +451,33 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
                 external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
                 status = str(item.get("status") or item.get("type") or "unknown")
                 now = utc_now_iso()
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO BROKER_TRADE_HISTORY (
-                            broker, external_id, symbol, asset_type, side, quantity,
-                            price, notional, status, opened_at, closed_at, updated_at,
-                            payload_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            broker.lower(),
-                            external_id or None,
-                            item.get("symbol") or item.get("pair"),
-                            item.get("asset_type"),
-                            item.get("side") or item.get("type"),
-                            safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
-                            safe_float(item.get("price")),
-                            safe_float(item.get("notional")),
-                            status,
-                            item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
-                            item.get("closed_at") or item.get("closetm"),
-                            item.get("updated_at") or item.get("transaction_time") or now,
-                            json.dumps(item, sort_keys=True, default=str),
-                        ),
-                    )
+                cursor = conn.execute(
+                    """
+                    INSERT INTO BROKER_TRADE_HISTORY (
+                        broker, external_id, symbol, asset_type, side, quantity,
+                        price, notional, status, opened_at, closed_at, updated_at,
+                        payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING
+                    """,
+                    (
+                        broker.lower(),
+                        external_id or None,
+                        item.get("symbol") or item.get("pair"),
+                        item.get("asset_type"),
+                        item.get("side") or item.get("type"),
+                        safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
+                        safe_float(item.get("price")),
+                        safe_float(item.get("notional")),
+                        status,
+                        item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
+                        item.get("closed_at") or item.get("closetm"),
+                        item.get("updated_at") or item.get("transaction_time") or now,
+                        json.dumps(item, sort_keys=True, default=str),
+                    ),
+                )
+                if cursor.rowcount:
                     newly_inserted.append({**item, "status": status})
-                except sqlite3.IntegrityError:
-                    continue
     if newly_inserted and broker.lower() in {"alpaca", "kraken"}:
         try:
             from .operational_truth import reconcile_broker_trade_rows
@@ -880,32 +879,30 @@ def close_managed_exit_and_record(
                 """,
                 (now, exit_order_id, exit_reason, now, json.dumps(order_payload or {}, sort_keys=True, default=str), managed_exit_id),
             )
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO BROKER_TRADE_HISTORY (
-                        broker, external_id, symbol, asset_type, side, quantity,
-                        price, notional, status, opened_at, closed_at, updated_at,
-                        payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?)
-                    """,
-                    (
-                        broker.lower(),
-                        exit_order_id,
-                        symbol.upper(),
-                        asset_type,
-                        side.lower(),
-                        quantity,
-                        price,
-                        (price or 0.0) * quantity,
-                        now,
-                        now,
-                        now,
-                        json.dumps(trade_payload, sort_keys=True, default=str),
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                pass
+            conn.execute(
+                """
+                INSERT INTO BROKER_TRADE_HISTORY (
+                    broker, external_id, symbol, asset_type, side, quantity,
+                    price, notional, status, opened_at, closed_at, updated_at,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?)
+                ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING
+                """,
+                (
+                    broker.lower(),
+                    exit_order_id,
+                    symbol.upper(),
+                    asset_type,
+                    side.lower(),
+                    quantity,
+                    price,
+                    (price or 0.0) * quantity,
+                    now,
+                    now,
+                    now,
+                    json.dumps(trade_payload, sort_keys=True, default=str),
+                ),
+            )
             if entry_price is not None and price is not None:
                 conn.execute(
                     """

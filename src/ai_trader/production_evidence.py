@@ -813,7 +813,28 @@ def _portfolio_payload(brokers: list[dict[str, Any]]) -> dict[str, Any]:
 def _recommendation_payload(row: dict[str, Any]) -> dict[str, Any]:
     payload = _decode_row(row, {"payload_json"})
     raw = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-    return {**raw, **{key: value for key, value in payload.items() if key not in {"payload_json", "payload"}}, "proposal_id": row.get("recommendation_id"), "confidence_score": row.get("confidence"), "freshness_status": "Fresh" if not row.get("expires_at") or str(row.get("expires_at")) > utc_now_iso() else "Expired", "suggested_broker": row.get("broker")}
+    result = {
+        **raw,
+        **{key: value for key, value in payload.items() if key not in {"payload_json", "payload"}},
+        "proposal_id": row.get("recommendation_id"),
+        "confidence_score": row.get("confidence"),
+        "freshness_status": "Fresh" if not row.get("expires_at") or str(row.get("expires_at")) > utc_now_iso() else "Expired",
+        "suggested_broker": row.get("broker"),
+    }
+    # Older production rows contain a valid proposal but predate the full
+    # Founder dossier handoff. Preserve their truth while giving the app stable
+    # aliases instead of blank sections.
+    result.setdefault("ticker", result.get("symbol"))
+    result.setdefault("reason_for_recommendation", result.get("plain_english_reasoning"))
+    result.setdefault("investment_thesis", result.get("plain_english_reasoning"))
+    result.setdefault("key_risks", result.get("strongest_argument_against"))
+    result.setdefault("suggested_stop_loss", result.get("stop_loss"))
+    result.setdefault("suggested_take_profit", result.get("take_profit"))
+    result.setdefault("suggested_position_size", result.get("position_size"))
+    result.setdefault("recommended_position_size", result.get("position_size"))
+    result.setdefault("guardrails_passed", result.get("ai_guardrails_passed"))
+    result.setdefault("guardrail_failures", result.get("ai_guardrail_failures") or [])
+    return result
 
 
 def _timeline(research: list[dict[str, Any]], trades: list[dict[str, Any]], learning: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
