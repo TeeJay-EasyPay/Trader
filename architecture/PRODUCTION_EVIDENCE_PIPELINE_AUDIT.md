@@ -90,3 +90,28 @@ requested period. It then filters that immutable in-memory row set for the
 one-hour, 24-hour, seven-day and 30-day snapshots. Broker capture still occurs
 before projection refresh so the read model includes the latest available
 account evidence, but SQL projection work is not repeated for every period.
+
+## Broker Evidence Ownership Boundary
+
+The first hosted run after bounded reconciliation proved worker restart
+recovery but exposed a second source of write amplification: production trade
+evidence was still upserted for every selected historical event, and broker
+snapshot capture repeated the same event writes.
+
+```text
+Broker poll
+  -> fetch bounded orders and history
+  -> persist broker history
+  -> identify new or changed rows
+  -> persist trade evidence for changed rows only
+  -> canonical reconciliation for changed rows only
+
+Broker snapshot
+  -> fetch account, cash, buying power and positions
+  -> persist one account snapshot
+  -> no order-history or trade-evidence replay
+```
+
+This boundary preserves complete broker evidence without turning stable broker
+history into repeated Postgres writes. It also keeps reconciliation and
+Founder portfolio capture independently observable.

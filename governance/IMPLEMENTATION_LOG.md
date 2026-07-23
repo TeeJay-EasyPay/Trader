@@ -1385,3 +1385,24 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   verification follow before the recovery is marked complete.
 - No guardrail, strategy threshold, broker authority, risk limit or allocation
   rule changed.
+
+## 2026-07-23 - Broker Evidence Write Ownership Recovery
+
+- Hosted verification of the bounded reconciliation release proved that worker
+  timeout evidence and clean Render restart behavior worked, but `broker-poll`
+  still exceeded 180 seconds.
+- Traced the remaining write amplification to production trade evidence being
+  rewritten for every selected historical broker event on every poll.
+- Changed broker polling to write production trade evidence only for rows that
+  broker-history persistence classified as new or changed.
+- Removed order and fill evidence writes from broker snapshot capture. Broker
+  polling now owns order/trade evidence; snapshot capture owns balances,
+  buying power and positions.
+- Removed production-schema initialization calls from hosted evidence hot
+  paths. Production startup remains the migration authority; isolated SQLite
+  development and test databases still bootstrap themselves.
+- Added regression coverage proving unchanged broker events are not rewritten
+  and broker snapshots do not duplicate trade evidence.
+- Focused verification passed 40 tests.
+- No execution permission, portfolio rule, risk limit, strategy threshold or
+  broker safety control changed.

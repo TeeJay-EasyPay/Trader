@@ -158,6 +158,12 @@ def initialize_production_evidence_schema(db_path: Path) -> None:
         _INITIALIZED_SCHEMA_KEYS.add(schema_key)
 
 
+def _ensure_local_production_evidence_schema(db_path: Path) -> None:
+    """Bootstrap isolated SQLite databases without running hosted DDL in hot paths."""
+    if not uses_postgres():
+        initialize_production_evidence_schema(db_path)
+
+
 def record_research_evidence(
     db_path: Path,
     *,
@@ -170,7 +176,7 @@ def record_research_evidence(
     result: dict[str, Any],
     provider: str,
 ) -> dict[str, Any]:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     completed_at = utc_now_iso()
     proposals = result.get("proposals") if isinstance(result.get("proposals"), list) else []
     status = str(result.get("status") or "unknown")
@@ -211,7 +217,7 @@ def record_research_evidence(
 
 
 def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, broker: str) -> None:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     recommendation_id = str(proposal.get("proposal_id") or proposal.get("recommendation_id") or "").strip()
     if not recommendation_id:
         return
@@ -252,7 +258,7 @@ def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, b
 
 
 def record_broker_snapshot(db_path: Path, panel: dict[str, Any], *, captured_at: str | None = None) -> None:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     broker = str(panel.get("broker") or "").lower()
     if broker not in {"alpaca", "kraken"}:
         return
@@ -289,8 +295,7 @@ def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) 
     # Hosted startup owns additive Postgres migrations. Re-running the complete
     # schema script for every broker event turns a bounded poll into hundreds of
     # DDL round trips and can starve Founder-facing snapshots.
-    if not uses_postgres():
-        initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
     status = str(_first(event, "status", "order_status", "type") or "observed").lower()
@@ -325,7 +330,7 @@ def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) 
 
 
 def record_learning_evidence(db_path: Path, result: dict[str, Any], *, worker_id: str) -> None:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     completed_at = utc_now_iso()
     key = f"{worker_id}:{completed_at[:16]}:{result.get('processed', 0)}"
     summary = f"Learning processor completed; {int(result.get('processed') or 0)} item(s) processed."
@@ -491,7 +496,7 @@ def _assemble_founder_evidence_payload(
 
 
 def persist_founder_evidence_snapshot(db_path: Path, payload: dict[str, Any], *, period: str) -> None:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     generated_at = str(payload.get("generated_at") or utc_now_iso())
     values = (period, generated_at, _json(payload))
     _upsert(
@@ -555,7 +560,7 @@ def refresh_founder_evidence_snapshots(
     """Build and persist worker-owned Founder projections for mobile reads."""
     if not uses_postgres():
         initialize_always_on_schema(db_path)
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     refreshed: list[str] = []
     failures: dict[str, str] = {}
     oldest_since = min((_period_start(period) for period in periods), default=_period_start("24h"))
@@ -688,7 +693,7 @@ def _snapshot_not_ready_payload(period: str) -> dict[str, Any]:
 
 
 def list_production_trade_evidence(db_path: Path, *, broker: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-    initialize_production_evidence_schema(db_path)
+    _ensure_local_production_evidence_schema(db_path)
     if broker and broker.lower() != "all":
         rows = _query(db_path, "SELECT * FROM PRODUCTION_TRADE_EVIDENCE WHERE broker = {x} ORDER BY observed_at DESC LIMIT {n}", (broker.lower(),), limit=limit)
     else:

@@ -2859,7 +2859,11 @@ This report explains available evidence. It does not automatically change strate
                 continue
             events = _recent_unique_broker_events(list(orders), list(history), limit=100)
             new_rows = record_broker_trade_history(self.settings.db_path, broker_name, events)
-            for event in events:
+            # Broker history is the change detector. Persist production evidence
+            # only for new or changed rows; rewriting the broker's full recent
+            # history on every poll caused hundreds of Postgres transactions and
+            # allowed one broker cycle to exceed the worker timeout.
+            for event in new_rows:
                 if isinstance(event, dict):
                     record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
             reconciliation = normalize_broker_events(
@@ -2903,9 +2907,10 @@ This report explains available evidence. It does not automatically change strate
                 panel = self._live_alpaca_portfolio() if broker_name == "alpaca" else self._exchange_portfolio(broker_name)
                 panel = {**panel, "broker": broker_name}
                 record_broker_snapshot(self.settings.db_path, panel)
-                for event in list(panel.get("recent_orders") or []) + list(panel.get("recent_activities") or []):
-                    if isinstance(event, dict):
-                        record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
+                # Broker polling owns order/trade evidence. Snapshot capture owns
+                # account, balance, and position truth only. Keeping ownership
+                # separate prevents duplicate writes and preserves one clear
+                # reconciliation path.
                 results[broker_name] = {
                     "status": "captured",
                     "connection_status": panel.get("connection_status"),

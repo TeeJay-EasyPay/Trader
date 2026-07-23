@@ -915,3 +915,21 @@ Current status:
 - Hosted verification remains required after deployment: a broker poll and
   evidence snapshot must complete, and the Founder payload must contain current
   Alpaca portfolio and rich recommendation evidence.
+
+## Status Update - 2026-07-23 Broker Evidence Write Recovery
+
+- Hosted verification confirmed that timed-out worker jobs now produce evidence
+  and trigger a clean Render worker restart.
+- The same run showed `broker-poll` still exceeding 180 seconds because stable
+  broker history was being rewritten into production trade evidence.
+- Broker polling now writes trade evidence and canonical lifecycle changes only
+  for new or changed broker-history rows.
+- Account snapshot capture no longer duplicates order and fill persistence; it
+  records portfolio, cash, buying power and positions only.
+- Hosted production evidence paths no longer attempt schema initialization.
+  Startup migrations remain authoritative for Postgres, while local SQLite
+  tests and demos retain automatic schema setup.
+- Focused broker and evidence verification passed 40 tests.
+- Deployment proof is still required before this recovery is marked complete:
+  `broker-poll` and `evidence-snapshot` must complete and the current Alpaca
+  portfolio must appear in the persisted Founder projection.

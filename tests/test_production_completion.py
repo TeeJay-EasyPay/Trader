@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.always_on import initialize_always_on_schema
+from ai_trader.api import LocalApiService
 from ai_trader.canonical_trades import (
     canonical_trade,
     link_broker_order,
@@ -50,6 +51,59 @@ def proposal() -> TradeProposal:
 
 
 class ProductionCompletionTests(unittest.TestCase):
+    def test_broker_poll_writes_production_evidence_only_for_changed_rows(self):
+        event = {"id": "order-1", "status": "new", "symbol": "AAPL"}
+        changed = {**event, "status": "filled"}
+        adapter = SimpleNamespace(
+            configured=True,
+            get_orders=lambda: [event],
+            get_trade_history=lambda: [event],
+        )
+        service = LocalApiService.__new__(LocalApiService)
+        service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
+        service.orchestrator = SimpleNamespace(adapters={"alpaca": adapter})
+
+        with (
+            patch("ai_trader.api.record_broker_trade_history", return_value=[changed]),
+            patch("ai_trader.api.record_trade_evidence") as evidence,
+            patch("ai_trader.api.normalize_broker_events", return_value={"status": "reconciled"}),
+            patch("ai_trader.api.record_notification"),
+        ):
+            result = service.poll_broker_activity()
+
+        evidence.assert_called_once_with(
+            Path("unused.sqlite3"),
+            broker="alpaca",
+            event=changed,
+        )
+        self.assertEqual(result["alpaca"]["events_processed"], 1)
+        self.assertEqual(result["alpaca"]["new_records"], 1)
+
+    def test_broker_snapshot_does_not_duplicate_trade_evidence(self):
+        service = LocalApiService.__new__(LocalApiService)
+        service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
+        service._live_alpaca_portfolio = lambda: {
+            "connection_status": "Connected",
+            "portfolio_value": 100_000,
+            "recent_orders": [{"id": "order-1"}],
+        }
+        service._exchange_portfolio = lambda broker: {
+            "connection_status": "Connected",
+            "portfolio_value": 4_000,
+            "recent_activities": [{"id": "trade-1"}],
+        }
+
+        with (
+            patch("ai_trader.api.record_broker_snapshot") as snapshot,
+            patch("ai_trader.api.record_trade_evidence") as evidence,
+        ):
+            result = service.capture_production_broker_snapshots()
+
+        self.assertEqual(snapshot.call_count, 2)
+        evidence.assert_not_called()
+        self.assertEqual(result["alpaca"]["status"], "captured")
+        self.assertEqual(result["kraken"]["status"], "captured")
+
     def test_hosted_runtime_refuses_sqlite(self):
         with patch.dict(
             os.environ,
