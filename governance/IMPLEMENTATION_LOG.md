@@ -1330,3 +1330,18 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Added regression tests for snapshot reads, stale evidence, worker projection refresh, and unavailable hosted snapshots.
 - Verification: `python -m compileall -q src` passed; `pytest -q` passed 158 tests.
 - Hosted proof remains pending deployment. Render free-tier API wake time remains a separate provider constraint.
+
+## 2026-07-23 - Postgres Lifecycle and Founder Projection Recovery
+
+- Identified the remaining Alpaca evidence failure as a canonical lifecycle
+  duplicate insert handled by catching a uniqueness exception inside an active
+  Postgres transaction. PostgreSQL then rejected the later portfolio snapshot
+  write with `current transaction is aborted`.
+- Replaced lifecycle exception handling with atomic
+  `ON CONFLICT(idempotency_key) DO NOTHING` and deterministic duplicate lookup.
+- Applied the same correction to immutable Experience Engine records so
+  repeated terminal-learning inputs cannot poison a Postgres transaction.
+- Changed multi-period Founder snapshot generation to load shared evidence
+  rows once and filter the four display periods in memory.
+- Added regression coverage for duplicate immutable experience records and
+  one-load multi-period snapshot generation.

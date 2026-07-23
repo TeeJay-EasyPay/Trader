@@ -170,6 +170,18 @@ class WorldClassTransformationTests(unittest.TestCase):
                 decision_context={"strongest_argument_for": "trend", "strongest_argument_against": "volatility"},
             )
             self.assertEqual(experience["status"], "recorded")
+            duplicate = record_experience(
+                db_path,
+                proposal_id="p1",
+                broker="kraken",
+                symbol="SOLGBP",
+                asset_type="crypto",
+                strategy_id="trend",
+                regime_id="transition",
+                decision_context={"strongest_argument_for": "trend", "strongest_argument_against": "volatility"},
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            self.assertEqual(duplicate["experience_id"], experience["experience_id"])
             review = generate_post_trade_review(
                 db_path,
                 {"proposal_id": "p1", "broker": "kraken", "symbol": "SOLGBP", "profit_loss": -1.0, "net_r": -0.5},

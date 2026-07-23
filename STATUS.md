@@ -865,3 +865,21 @@ Current status:
 - Trade lifecycle records now support fees, slippage, R-multiple, MAE, MFE, and holding time fields.
 - Recommendation API now merges normalized intelligence rows with the richer audit payload so strategy/regime/market evidence remains visible.
 - Automated Python suite passed: 96 tests.
+
+## Status Update - 2026-07-23 Alpaca Evidence Recovery
+
+- Broker-history, canonical lifecycle and immutable Experience Engine
+  idempotency now use atomic `ON CONFLICT DO NOTHING` writes. Repeated broker
+  observations no longer abort the Postgres transaction that stores current
+  Alpaca portfolio evidence.
+- Production research now persists the existing structured recommendation
+  dossier while retaining proposal prices, sizing, risk and identifiers as the
+  authoritative execution fields.
+- Historical thin recommendations receive compatibility field aliases only;
+  missing strategy, probability, committee or due-diligence evidence is not
+  fabricated.
+- Multi-period Founder snapshots now load one bounded maximum-period evidence
+  set and derive the one-hour, 24-hour, seven-day and 30-day projections in
+  memory.
+- No risk limit, broker permission, strategy gate, position sizing rule or
+  autonomous trading control was weakened.

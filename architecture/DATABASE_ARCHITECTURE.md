@@ -119,3 +119,20 @@ The production research handoff stores a merged recommendation record:
 
 This record feeds the bounded Founder evidence projection used by the mobile
 Recommendations screen.
+
+## Transaction-Safe Domain Idempotency
+
+Postgres marks a transaction failed after a uniqueness violation until that
+transaction is rolled back. Expected duplicates must therefore be resolved by
+the write statement rather than by catching an exception and continuing to
+query in the same transaction.
+
+The following shared production paths now use atomic conflict handling:
+
+- broker trade-history observations;
+- managed-exit history observations;
+- canonical lifecycle events by `idempotency_key`;
+- immutable Experience Engine records by `immutable_hash`.
+
+This preserves SQLite compatibility and prevents repetitive broker polling or
+learning retries from blocking subsequent writes in the same unit of work.

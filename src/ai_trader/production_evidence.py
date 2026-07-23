@@ -365,8 +365,21 @@ def _build_founder_evidence_payload(db_path: Path, *, period: str, trade_limit: 
     if not uses_postgres():
         initialize_always_on_schema(db_path)
         initialize_production_evidence_schema(db_path)
-    since = _period_start(period)
-    research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = _query_batch(
+    rows = _load_founder_evidence_rows(
+        db_path,
+        since=_period_start(period),
+        trade_limit=trade_limit,
+    )
+    return _assemble_founder_evidence_payload(rows, period=period)
+
+
+def _load_founder_evidence_rows(
+    db_path: Path,
+    *,
+    since: str,
+    trade_limit: int,
+) -> tuple[list[dict[str, Any]], ...]:
+    return tuple(_query_batch(
         db_path,
         [
             ("""SELECT evidence_id, created_at, completed_at, broker, asset_type, trigger_type,
@@ -407,7 +420,15 @@ def _build_founder_evidence_payload(db_path: Path, *, period: str, trade_limit: 
                 FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC""", ()),
         ],
         limit=trade_limit,
-    )
+    ))
+
+
+def _assemble_founder_evidence_payload(
+    rows: tuple[list[dict[str, Any]], ...],
+    *,
+    period: str,
+) -> dict[str, Any]:
+    research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = rows
     snapshots = _latest_per(snapshots_all, "broker")
     realized_pnl = sum(_number(row.get("realized_pnl")) or 0.0 for row in trades)
     fees = sum(_number(row.get("fee")) or 0.0 for row in trades)
@@ -528,12 +549,29 @@ def refresh_founder_evidence_snapshots(
     trade_limit: int = 100,
 ) -> dict[str, Any]:
     """Build and persist worker-owned Founder projections for mobile reads."""
+    if not uses_postgres():
+        initialize_always_on_schema(db_path)
     initialize_production_evidence_schema(db_path)
     refreshed: list[str] = []
     failures: dict[str, str] = {}
+    oldest_since = min((_period_start(period) for period in periods), default=_period_start("24h"))
+    try:
+        shared_rows = _load_founder_evidence_rows(
+            db_path,
+            since=oldest_since,
+            trade_limit=trade_limit,
+        )
+    except Exception as exc:  # noqa: BLE001 - expose complete projection failure
+        return {
+            "status": "failed",
+            "refreshed_periods": [],
+            "failed_periods": {period: str(exc) for period in periods},
+            "generated_at": utc_now_iso(),
+        }
     for period in periods:
         try:
-            payload = _build_founder_evidence_payload(db_path, period=period, trade_limit=trade_limit)
+            period_rows = _filter_founder_evidence_rows(shared_rows, since=_period_start(period))
+            payload = _assemble_founder_evidence_payload(period_rows, period=period)
             persist_founder_evidence_snapshot(db_path, payload, period=period)
             refreshed.append(period)
         except Exception as exc:  # noqa: BLE001 - retain partial snapshots and expose failure evidence
@@ -544,6 +582,52 @@ def refresh_founder_evidence_snapshots(
         "failed_periods": failures,
         "generated_at": utc_now_iso(),
     }
+
+
+def _filter_founder_evidence_rows(
+    rows: tuple[list[dict[str, Any]], ...],
+    *,
+    since: str,
+) -> tuple[list[dict[str, Any]], ...]:
+    research, recommendations, snapshots, trades, learning, jobs, funnels, workers = rows
+    return (
+        _rows_since(research, since=since, fields=("completed_at", "created_at")),
+        recommendations,
+        snapshots,
+        _rows_since(trades, since=since, fields=("observed_at",)),
+        _rows_since(learning, since=since, fields=("completed_at",)),
+        _rows_since(jobs, since=since, fields=("started_at", "scheduled_for")),
+        _rows_since(funnels, since=since, fields=("created_at",)),
+        workers,
+    )
+
+
+def _rows_since(
+    rows: list[dict[str, Any]],
+    *,
+    since: str,
+    fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    cutoff = _as_utc_datetime(since)
+    if cutoff is None:
+        return list(rows)
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        timestamp = next((row.get(field) for field in fields if row.get(field)), None)
+        observed = _as_utc_datetime(timestamp)
+        if observed is not None and observed >= cutoff:
+            selected.append(row)
+    return selected
+
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
 
 
 def _snapshot_not_ready_payload(period: str) -> dict[str, Any]:

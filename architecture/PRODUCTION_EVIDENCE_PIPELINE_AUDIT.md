@@ -36,6 +36,14 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
    snapshots. Proposal identifiers, prices, position size and risk remain
    authoritative; strategy, probability, committee, signal, argument,
    invalidation and due-diligence evidence are added when genuinely available.
+9. Canonical lifecycle duplicates previously raised a uniqueness exception
+   inside an active Postgres transaction. A later portfolio snapshot write in
+   that transaction then failed with `current transaction is aborted`.
+   Lifecycle and immutable experience idempotency now use atomic conflict
+   handling, so repeated polling is harmless.
+10. Multi-period snapshot generation previously rebuilt the same evidence
+    projection four times. The worker now loads one bounded maximum-period
+    evidence set and derives each display period from that shared read.
 
 ## Truth boundaries
 
@@ -49,3 +57,11 @@ The projection does not replace the Investment Orchestrator, Risk Engine, canoni
 ## Residual limitations
 
 Legacy domain tables remain SQLite-oriented. The production evidence tables are the shared Founder projection while deliberate schema-by-schema Postgres migration continues. Exact closed-trade attribution still depends on broker history quality and canonical reconciliation. Historical recommendation records cannot gain evidence that was never stored; newly generated research records carry the rich dossier. Live hosted proof requires deployment of this commit and observation of at least one worker research cycle.
+
+## Snapshot Performance Boundary
+
+The snapshot worker performs one bounded evidence load for the longest
+requested period. It then filters that immutable in-memory row set for the
+one-hour, 24-hour, seven-day and 30-day snapshots. Broker capture still occurs
+before projection refresh so the read model includes the latest available
+account evidence, but SQL projection work is not repeated for every period.

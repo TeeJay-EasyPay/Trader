@@ -10,6 +10,7 @@ from ai_trader.always_on import record_research_funnel, record_worker_heartbeat
 from ai_trader.api import LocalApiService
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
+import ai_trader.production_evidence as production_evidence
 from ai_trader.production_evidence import (
     founder_evidence_payload,
     persist_founder_evidence_snapshot,
@@ -125,10 +126,15 @@ class ProductionEvidenceTests(unittest.TestCase):
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
-            result = refresh_founder_evidence_snapshots(db_path, periods=("1h", "24h"))
+            with patch(
+                "ai_trader.production_evidence._load_founder_evidence_rows",
+                wraps=production_evidence._load_founder_evidence_rows,
+            ) as load_rows:
+                result = refresh_founder_evidence_snapshots(db_path, periods=("1h", "24h"))
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["refreshed_periods"], ["1h", "24h"])
+            self.assertEqual(load_rows.call_count, 1)
             self.assertEqual(founder_evidence_payload(db_path, period="1h")["snapshot"]["served_from"], "worker_projection")
 
     def test_hosted_read_returns_warmup_state_instead_of_slow_live_rebuild(self):

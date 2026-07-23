@@ -113,31 +113,31 @@ def record_experience(
     immutable_hash = _hash(immutable_payload)
     with closing(connect(db_path)) as conn:
         with conn:
-            try:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO EXPERIENCE_RECORDS (
-                        created_at, proposal_id, recommendation_id, broker, symbol,
-                        asset_type, strategy_id, regime_id, decision_context_json,
-                        execution_context_json, result_context_json, immutable_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        utc_now_iso(),
-                        proposal_id,
-                        recommendation_id,
-                        broker.lower() if broker else None,
-                        symbol.upper(),
-                        asset_type,
-                        strategy_id,
-                        regime_id,
-                        json.dumps(decision_context, sort_keys=True, default=str),
-                        json.dumps(execution_context, sort_keys=True, default=str),
-                        json.dumps(result_context, sort_keys=True, default=str),
-                        immutable_hash,
-                    ),
-                )
-            except sqlite3.IntegrityError:
+            cursor = conn.execute(
+                """
+                INSERT INTO EXPERIENCE_RECORDS (
+                    created_at, proposal_id, recommendation_id, broker, symbol,
+                    asset_type, strategy_id, regime_id, decision_context_json,
+                    execution_context_json, result_context_json, immutable_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(immutable_hash) DO NOTHING
+                """,
+                (
+                    utc_now_iso(),
+                    proposal_id,
+                    recommendation_id,
+                    broker.lower() if broker else None,
+                    symbol.upper(),
+                    asset_type,
+                    strategy_id,
+                    regime_id,
+                    json.dumps(decision_context, sort_keys=True, default=str),
+                    json.dumps(execution_context, sort_keys=True, default=str),
+                    json.dumps(result_context, sort_keys=True, default=str),
+                    immutable_hash,
+                ),
+            )
+            if not cursor.rowcount:
                 row = conn.execute("SELECT experience_id FROM EXPERIENCE_RECORDS WHERE immutable_hash = ?", (immutable_hash,)).fetchone()
                 return {"status": "duplicate", "experience_id": row[0] if row else None, "immutable_hash": immutable_hash}
     return {"status": "recorded", "experience_id": cursor.lastrowid, "immutable_hash": immutable_hash}

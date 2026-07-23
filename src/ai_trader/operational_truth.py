@@ -259,37 +259,37 @@ def record_lifecycle_event(
         )
     with closing(connect(db_path)) as conn:
         with conn:
-            try:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO CANONICAL_TRADE_LIFECYCLE (
-                        created_at, proposal_id, recommendation_id, strategy_id, regime_id,
-                        broker, broker_order_id, broker_trade_id, broker_fill_id, symbol,
-                        asset_type, side, stage, event_source, event_reason, payload_json,
-                        idempotency_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        utc_now_iso(),
-                        proposal_id,
-                        recommendation_id,
-                        strategy_id,
-                        regime_id,
-                        broker.lower() if broker else None,
-                        broker_order_id,
-                        broker_trade_id,
-                        broker_fill_id,
-                        symbol,
-                        asset_type,
-                        side.lower() if side else None,
-                        normalized_stage,
-                        event_source,
-                        event_reason or normalized_stage,
-                        json.dumps(payload, sort_keys=True, default=str),
-                        key,
-                    ),
-                )
-            except sqlite3.IntegrityError:
+            cursor = conn.execute(
+                """
+                INSERT INTO CANONICAL_TRADE_LIFECYCLE (
+                    created_at, proposal_id, recommendation_id, strategy_id, regime_id,
+                    broker, broker_order_id, broker_trade_id, broker_fill_id, symbol,
+                    asset_type, side, stage, event_source, event_reason, payload_json,
+                    idempotency_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    utc_now_iso(),
+                    proposal_id,
+                    recommendation_id,
+                    strategy_id,
+                    regime_id,
+                    broker.lower() if broker else None,
+                    broker_order_id,
+                    broker_trade_id,
+                    broker_fill_id,
+                    symbol,
+                    asset_type,
+                    side.lower() if side else None,
+                    normalized_stage,
+                    event_source,
+                    event_reason or normalized_stage,
+                    json.dumps(payload, sort_keys=True, default=str),
+                    key,
+                ),
+            )
+            if not cursor.rowcount:
                 existing = conn.execute(
                     "SELECT * FROM CANONICAL_TRADE_LIFECYCLE WHERE idempotency_key = ?",
                     (key,),
