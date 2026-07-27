@@ -236,7 +236,7 @@ def resolve_logical_trade_id(
                 """,
                 (order_id,),
             ).fetchone()
-            if not row:
+            if not row and broker.lower() != "kraken":
                 try:
                     row = conn.execute(
                         """
@@ -286,8 +286,10 @@ def reconcile_canonical_broker_event(
                 """
                 INSERT INTO LOGICAL_TRADES (
                     logical_trade_id, proposal_id, recommendation_id, broker, symbol,
-                    asset_type, side, state, decision_context_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+                    asset_type, side, state, intended_quantity, original_stop,
+                    intended_target, intended_entry_price, remaining_quantity,
+                    decision_context_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(logical_trade_id) DO NOTHING
                 """,
                 (
@@ -299,6 +301,12 @@ def reconcile_canonical_broker_event(
                     event.get("asset_type") or ("crypto" if broker.lower() == "kraken" else "stock"),
                     side,
                     stage,
+                    _number(event.get("intended_quantity") or event.get("quantity")),
+                    _number(event.get("original_stop") or event.get("stop_loss")),
+                    _number(event.get("intended_target") or event.get("take_profit")),
+                    _number(event.get("intended_entry_price") or event.get("entry_price")),
+                    _number(event.get("intended_quantity") or event.get("quantity")),
+                    json.dumps(event.get("decision_context") or {}, sort_keys=True, default=str),
                     now,
                     now,
                 ),
@@ -350,6 +358,8 @@ def _record_fill_if_present(
     side: str,
     filled_at: str,
 ) -> dict[str, Any]:
+    if broker.lower() == "kraken" and str(event.get("record_type") or "").lower() != "trade_fill":
+        return {"status": "not_a_fill", "reason": "kraken_trade_fill_evidence_required"}
     quantity = _number(event.get("filled_quantity") or event.get("filled_qty") or event.get("vol_exec") or event.get("quantity"))
     price = _number(event.get("average_fill_price") or event.get("filled_avg_price") or event.get("avg_price") or event.get("price"))
     if not fill_id or not quantity or quantity <= 0 or not price or price <= 0:
@@ -357,6 +367,8 @@ def _record_fill_if_present(
     fill_role = str(event.get("fill_role") or "").lower()
     if fill_role not in {"entry", "exit"}:
         fill_role = _fill_role_from_order(db_path, broker=broker, order_id=order_id, logical_trade_id=logical_trade_id)
+    if fill_role not in {"entry", "exit"}:
+        return {"status": "unresolved_fill_role"}
     try:
         with closing(connect(db_path)) as conn:
             with conn:
@@ -391,6 +403,18 @@ def _record_fill_if_present(
 def _fill_role_from_order(db_path: Path, *, broker: str, order_id: str | None, logical_trade_id: str) -> str:
     if order_id:
         with closing(connect(db_path)) as conn:
+            if broker.lower() == "kraken":
+                try:
+                    owned = conn.execute(
+                        """
+                        SELECT order_role FROM KRAKEN_AI_ORDER_OWNERSHIP
+                        WHERE broker_order_id = ? AND logical_trade_id = ?
+                        """,
+                        (order_id, logical_trade_id),
+                    ).fetchone()
+                except Exception:
+                    owned = None
+                return str(owned[0]) if owned and str(owned[0]) in {"entry", "exit"} else "unknown"
             try:
                 row = conn.execute(
                     """

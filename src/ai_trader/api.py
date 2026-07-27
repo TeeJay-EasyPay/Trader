@@ -69,7 +69,7 @@ from .multi_broker import (
     list_performance_attribution,
     mark_notifications_read,
     mark_push_sent,
-    close_managed_exit_and_record,
+    mark_managed_exit_submitted,
     open_managed_exits,
     pending_push_notifications,
     record_broker_trade_history,
@@ -84,6 +84,17 @@ from .multi_broker import (
     update_trailing_water_marks,
 )
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
+from .kraken_reconciliation import (
+    initialize_kraken_reconciliation_schema,
+    kraken_capital_ledger_summary,
+    kraken_reconciliation_status,
+    reconciliation_control,
+    register_kraken_order_ownership,
+    replay_kraken_evidence,
+    replay_persisted_kraken_evidence,
+    resume_kraken_entries_after_verification,
+    verify_kraken_reconciliation,
+)
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema
@@ -262,6 +273,10 @@ class LocalApiService:
         initialize_production_evidence_schema(settings.db_path)
         initialize_production_spine_schema(settings.db_path)
         initialize_sprint6_schema(settings.db_path)
+        initialize_kraken_reconciliation_schema(
+            settings.db_path,
+            allocation_gbp=_float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0),
+        )
         seed_default_strategy_registry(settings.db_path)
         self._initialize_report_schema()
         self._apply_env_broker_auto_defaults()
@@ -573,6 +588,10 @@ class LocalApiService:
             return 200, self.phase5_status()
         if path == "/sprint6-status":
             return 200, self.sprint6_status()
+        if path == "/kraken-reconciliation":
+            return 200, kraken_reconciliation_status(self.settings.db_path)
+        if path == "/kraken-reconciliation/verify":
+            return 200, verify_kraken_reconciliation(self.settings.db_path)
         if path == "/autonomous-activity":
             return 200, self.production_activity(query)
         if path == "/activity/status":
@@ -637,6 +656,15 @@ class LocalApiService:
             return 200, self.monitor_managed_exits()
         if path == "/force-managed-exit":
             return 200, self.force_managed_exit(body)
+        if path == "/kraken-reconciliation/replay":
+            return 200, replay_persisted_kraken_evidence(
+                self.settings.db_path,
+                limit=_int_or_default(body.get("limit"), 1000),
+            )
+        if path == "/kraken-reconciliation/verify":
+            return 200, verify_kraken_reconciliation(self.settings.db_path)
+        if path == "/kraken-reconciliation/resume":
+            return 200, resume_kraken_entries_after_verification(self.settings.db_path)
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/generate-operational-report":
@@ -2730,25 +2758,24 @@ This report explains available evidence. It does not automatically change strate
             if result.get("status") in {"accepted", "submitted"}:
                 entry_payload = _json_loads_safe(item.get("payload_json")) or {}
                 proposal_id = entry_payload.get("proposal_id")
-                investment_score = latest_investment_score(self.settings.db_path, proposal_id) if proposal_id else None
-                close_managed_exit_and_record(
+                exit_order_id = str(result.get("id") or result.get("order_id") or "")
+                mark_managed_exit_submitted(
                     self.settings.db_path,
                     int(item["managed_exit_id"]),
-                    broker=broker,
-                    symbol=item["symbol"],
-                    asset_type="crypto",
-                    side=exit_side,
-                    quantity=float(item["quantity"]),
-                    price=price,
-                    exit_order_id=str(result.get("id") or result.get("order_id") or ""),
+                    exit_order_id=exit_order_id,
                     exit_reason=reason or "exit_triggered",
-                    order_payload={"price": price, "order": result},
-                    entry_price=safe_float(item.get("entry_price")),
-                    entry_side=side,
-                    opened_at=item.get("created_at"),
+                    payload={"price": price, "order": result},
+                )
+                register_kraken_order_ownership(
+                    self.settings.db_path,
+                    broker_order_id=exit_order_id,
+                    logical_trade_id=proposal_id or f"kraken-managed-exit:{item['managed_exit_id']}",
                     proposal_id=proposal_id,
-                    entry_reason=entry_payload.get("entry_reason"),
-                    primary_factors=(investment_score or {}).get("reasoning"),
+                    managed_exit_id=int(item["managed_exit_id"]),
+                    order_role="exit",
+                    symbol=item["symbol"],
+                    side=exit_side,
+                    source="managed_exit_monitor",
                 )
                 record_notification(
                     self.settings.db_path,
@@ -2801,25 +2828,24 @@ This report explains available evidence. It does not automatically change strate
             return {"status": "rejected", "message": f"Kraken exit order was not accepted: {result.get('reason') or result.get('status')}", "order": result}
         entry_payload = _json_loads_safe(item.get("payload_json")) or {}
         proposal_id = entry_payload.get("proposal_id")
-        investment_score = latest_investment_score(self.settings.db_path, proposal_id) if proposal_id else None
-        close_managed_exit_and_record(
+        exit_order_id = str(result.get("id") or result.get("order_id") or "")
+        mark_managed_exit_submitted(
             self.settings.db_path,
             managed_exit_id,
-            broker=broker,
-            symbol=item["symbol"],
-            asset_type="crypto",
-            side=exit_side,
-            quantity=quantity,
-            price=price,
-            exit_order_id=str(result.get("id") or result.get("order_id") or ""),
+            exit_order_id=exit_order_id,
             exit_reason="founder_forced_exit",
-            order_payload={"price": price, "order": result, "forced_by": "founder"},
-            entry_price=safe_float(item.get("entry_price")),
-            entry_side=entry_side,
-            opened_at=item.get("created_at"),
+            payload={"price": price, "order": result, "forced_by": "founder"},
+        )
+        register_kraken_order_ownership(
+            self.settings.db_path,
+            broker_order_id=exit_order_id,
+            logical_trade_id=proposal_id or f"kraken-managed-exit:{managed_exit_id}",
             proposal_id=proposal_id,
-            entry_reason=entry_payload.get("entry_reason"),
-            primary_factors=(investment_score or {}).get("reasoning"),
+            managed_exit_id=managed_exit_id,
+            order_role="exit",
+            symbol=item["symbol"],
+            side=exit_side,
+            source="founder_forced_exit",
         )
         record_notification(
             self.settings.db_path,
@@ -2866,28 +2892,46 @@ This report explains available evidence. It does not automatically change strate
             for event in new_rows:
                 if isinstance(event, dict):
                     record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
-            reconciliation = normalize_broker_events(
-                self.settings.db_path,
-                broker=broker_name,
-                # Stable history rows are already persisted. Canonical work is
-                # only required for new or changed broker evidence.
-                events=new_rows,
-                source_endpoint="poll_broker_activity",
-            )
+            if broker_name == "kraken":
+                reconciliation = replay_kraken_evidence(
+                    self.settings.db_path,
+                    events=new_rows,
+                    source="poll_broker_activity",
+                )
+            else:
+                reconciliation = normalize_broker_events(
+                    self.settings.db_path,
+                    broker=broker_name,
+                    # Stable history rows are already persisted. Canonical work is
+                    # only required for new or changed broker evidence.
+                    events=new_rows,
+                    source_endpoint="poll_broker_activity",
+                )
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
             for row in new_rows:
                 status = str(row.get("status") or "").lower()
                 if status not in terminal_statuses:
                     continue
-                event_type = "trade_filled" if status == "filled" else "trade_closed"
+                record_type = str(row.get("kraken_record_type") or "")
+                if broker_name == "kraken" and record_type == "closed_order":
+                    event_type = "broker_order_completed"
+                    title = "Broker Order Completed"
+                    message = (
+                        f"Kraken order for {row.get('symbol') or row.get('pair') or 'unknown'} "
+                        f"is no longer open ({status}). This does not by itself mean the investment was sold."
+                    )
+                else:
+                    event_type = "trade_filled" if status == "filled" else "trade_closed"
+                    title = event_type.replace("_", " ").title()
+                    message = f"{broker_name.title()} order for {row.get('symbol') or row.get('pair') or 'unknown'} is now {status}."
                 symbol = row.get("symbol") or row.get("pair") or "unknown"
                 record_notification(
                     self.settings.db_path,
                     event_type=event_type,
                     broker=broker_name,
                     symbol=symbol,
-                    title=event_type.replace("_", " ").title(),
-                    message=f"{broker_name.title()} order for {symbol} is now {status}.",
+                    title=title,
+                    message=message,
                     payload=row,
                 )
             results[broker_name] = {
@@ -3021,7 +3065,17 @@ This report explains available evidence. It does not automatically change strate
             max_open_trades = _int_env("KRAKEN_MAX_OPEN_TRADES", 1)
             ai_managed_open_trades = self._ai_managed_open_trade_count(key)
             buy_only_entries = _bool_env("KRAKEN_BUY_ONLY_ENTRIES", True)
-            can_submit_real_orders = bool(auto_enabled and trading_enabled and live_approved and submit_real_orders and ai_managed_open_trades < max_open_trades)
+            reconciliation = reconciliation_control(self.settings.db_path)
+            ledger = self._kraken_ai_capital_ledger()
+            hold_active = bool(reconciliation.get("hold_new_entries"))
+            can_submit_real_orders = bool(
+                auto_enabled
+                and trading_enabled
+                and live_approved
+                and submit_real_orders
+                and not hold_active
+                and ai_managed_open_trades < max_open_trades
+            )
             return {
                 "broker": key,
                 "status": "Real Kraken orders enabled" if can_submit_real_orders else "Real Kraken orders blocked or dry-run only",
@@ -3030,6 +3084,10 @@ This report explains available evidence. It does not automatically change strate
                 "live_trading_approved": live_approved,
                 "submit_real_orders": submit_real_orders,
                 "can_submit_real_orders": can_submit_real_orders,
+                "reconciliation_hold_active": hold_active,
+                "reconciliation_status": reconciliation.get("status"),
+                "reconciliation_hold_reason": reconciliation.get("hold_reason"),
+                "ai_capital_ledger": ledger,
                 "trading_allocation_gbp": _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0),
                 "max_order_gbp": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
                 "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
@@ -3042,6 +3100,8 @@ This report explains available evidence. It does not automatically change strate
                     "New Kraken entries are capped by trading allocation, max order size, allowed pairs, and AI Trader-managed open-trade limit.",
                     "Existing Kraken holdings are reported separately and do not count against the AI Trader-managed open-trade limit.",
                     "Existing managed exits remain monitored even when new auto trading is disabled.",
+                    "Kraken entry reconciliation may temporarily pause new entries without disabling managed exits.",
+                    "The AI capital ledger excludes all personal and pre-existing Kraken holdings.",
                     "Real orders require Auto Trading, KRAKEN_TRADING_ENABLED, KRAKEN_LIVE_TRADING_APPROVED, and KRAKEN_SUBMIT_REAL_ORDERS.",
                 ],
             }
@@ -3095,6 +3155,27 @@ This report explains available evidence. It does not automatically change strate
 
     def _ai_managed_open_trade_count(self, broker: str) -> int:
         return len(open_managed_exits(self.settings.db_path, broker))
+
+    def _kraken_ai_capital_ledger(self) -> dict[str, Any]:
+        ledger = kraken_capital_ledger_summary(self.settings.db_path)
+        symbols = list(ledger.get("unpriced_open_symbols") or [])
+        adapter = self.orchestrator.adapters.get("kraken")
+        if not symbols or adapter is None or not hasattr(adapter, "current_prices"):
+            return ledger
+        price_map: dict[str, float] = {}
+        try:
+            pairs = [_kraken_pair(symbol) for symbol in symbols]
+            prices = adapter.current_prices(pairs)
+            for symbol, pair in zip(symbols, pairs):
+                price = _kraken_last_price(prices, pair)
+                if price is not None:
+                    price_map[symbol] = float(price)
+        except Exception as exc:
+            return {
+                **ledger,
+                "unrealized_pnl_status": f"Unavailable because current Kraken pricing failed: {exc}",
+            }
+        return kraken_capital_ledger_summary(self.settings.db_path, current_prices=price_map)
 
     def _broker_managed_trade_capacity(self, broker: str) -> dict[str, Any]:
         key = broker.lower()

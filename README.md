@@ -741,6 +741,35 @@ Mechanical live-execution seatbelts:
 
 Disabling Kraken auto trading stops new entries. Existing managed exits remain eligible for protective exit submission.
 
+### Kraken Reconciliation Recovery
+
+Kraken new entries are additionally protected by a reconciliation hold. The
+hold is independent of the normal auto-trading switches and remains active
+until shared production evidence has been replayed, verified, and explicitly
+resumed by the Founder.
+
+The recovery:
+
+- keeps the existing £100 AI Trader allocation separate from personal Kraken
+  holdings;
+- uses explicit broker order IDs rather than symbol matching;
+- treats Kraken closed orders as order-state evidence, not fills;
+- uses trade-history fills for quantities, fees, P&L, and terminal state;
+- keeps realised and unrealised P&L separate;
+- queues exactly one learning workflow for each genuine completed trade;
+- cannot submit orders while replaying historical evidence.
+
+Authenticated operations are available at:
+
+- `GET /kraken-reconciliation`
+- `POST /kraken-reconciliation/replay`
+- `POST /kraken-reconciliation/verify`
+- `POST /kraken-reconciliation/resume`
+
+The Kraken broker panel shows the reconciliation hold and the AI-managed
+capital ledger. A successful verification does not resume entries
+automatically.
+
 ## Autonomous Trading Readiness Sprint
 
 This sprint made continuous autonomous operation actually continuous, not manual-demand-only, and closed the gaps identified in the Go-Live Readiness Review. Full detail: `governance/IMPLEMENTATION_LOG.md` and `STATUS.md`.

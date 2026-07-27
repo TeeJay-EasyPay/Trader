@@ -29,6 +29,7 @@ from .always_on import (
 )
 from .sprint6 import process_learning_outbox
 from .production_evidence import record_learning_evidence
+from .kraken_reconciliation import replay_persisted_kraken_evidence
 
 
 DEMO_MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -221,6 +222,28 @@ def main(argv: list[str] | None = None) -> int:
             worker_id,
             interval_seconds=settings.worker_heartbeat_interval_seconds,
         ) as pulse:
+            pulse.set_job("kraken-startup-reconciliation")
+            try:
+                startup_reconciliation = replay_persisted_kraken_evidence(settings.db_path)
+            except Exception as exc:  # noqa: BLE001 - preserve worker availability and surface the fault
+                startup_reconciliation = {
+                    "status": "failed",
+                    "error": str(exc),
+                    "broker_orders_submitted": 0,
+                }
+                pulse.set_status("degraded", current_job="kraken-startup-reconciliation")
+                record_operations_incident(
+                    settings.db_path,
+                    severity="warning",
+                    component="kraken-reconciliation",
+                    title="Kraken startup reconciliation failed",
+                    message=str(exc),
+                    payload={
+                        "worker_id": worker_id,
+                        "new_entries_remain_paused": True,
+                        "broker_orders_submitted": 0,
+                    },
+                )
             while True:
                 try:
                     pulse.set_job("starting")
@@ -282,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                             "auto_execution": _job_summary(auto),
                             "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
                             "learning": _job_summary(learning),
+                            "kraken_startup_reconciliation": _job_summary(startup_reconciliation),
                         },
                     )
                 except WorkerJobTimeout:

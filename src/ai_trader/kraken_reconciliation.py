@@ -1,0 +1,1072 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .always_on import uses_postgres
+from .canonical_trades import (
+    canonical_trade,
+    initialize_canonical_trade_schema,
+    reconcile_canonical_broker_event,
+)
+from .database import connect
+from .models import utc_now_iso
+from .multi_broker import initialize_multi_broker_schema
+from .sprint6 import enqueue_learning_workflow, initialize_sprint6_schema
+
+
+KRAKEN_RECONCILIATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS KRAKEN_RECONCILIATION_CONTROL (
+    id INTEGER PRIMARY KEY,
+    hold_new_entries INTEGER NOT NULL,
+    hold_reason TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_replay_at TEXT,
+    last_verified_at TEXT,
+    unresolved_count INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS KRAKEN_AI_ORDER_OWNERSHIP (
+    broker_order_id TEXT PRIMARY KEY,
+    logical_trade_id TEXT NOT NULL,
+    proposal_id TEXT,
+    managed_exit_id INTEGER,
+    order_role TEXT NOT NULL,
+    symbol TEXT,
+    side TEXT,
+    source TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS KRAKEN_AI_CAPITAL_LEDGER (
+    ledger_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    event_time TEXT NOT NULL,
+    logical_trade_id TEXT,
+    broker_order_id TEXT,
+    broker_fill_id TEXT,
+    entry_type TEXT NOT NULL,
+    amount_gbp REAL NOT NULL,
+    quantity REAL,
+    price REAL,
+    fee_gbp REAL NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS KRAKEN_RECONCILIATION_CASES (
+    case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    raw_event_hash TEXT NOT NULL UNIQUE,
+    broker_order_id TEXT,
+    broker_fill_id TEXT,
+    logical_trade_id TEXT,
+    classification TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS KRAKEN_RECONCILED_RESULTS (
+    logical_trade_id TEXT PRIMARY KEY,
+    proposal_id TEXT,
+    symbol TEXT,
+    side TEXT,
+    status TEXT NOT NULL,
+    entry_time TEXT,
+    exit_time TEXT,
+    holding_seconds REAL,
+    quantity REAL,
+    intended_entry REAL,
+    actual_entry REAL,
+    original_stop REAL,
+    target_price REAL,
+    actual_exit REAL,
+    broker_fee REAL NOT NULL DEFAULT 0,
+    exchange_fee REAL NOT NULL DEFAULT 0,
+    gross_pnl REAL,
+    net_pnl REAL,
+    initial_risk REAL,
+    planned_r REAL,
+    gross_r REAL,
+    net_r REAL,
+    entry_slippage REAL,
+    exit_slippage REAL,
+    reconciliation_confidence REAL NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_kraken_ownership_trade
+ON KRAKEN_AI_ORDER_OWNERSHIP(logical_trade_id, order_role);
+CREATE INDEX IF NOT EXISTS idx_kraken_ledger_trade
+ON KRAKEN_AI_CAPITAL_LEDGER(logical_trade_id, event_time);
+CREATE INDEX IF NOT EXISTS idx_kraken_cases_classification
+ON KRAKEN_RECONCILIATION_CASES(classification, updated_at);
+CREATE INDEX IF NOT EXISTS idx_kraken_results_status
+ON KRAKEN_RECONCILED_RESULTS(status, updated_at);
+"""
+
+
+def initialize_kraken_reconciliation_schema(db_path: Path, *, allocation_gbp: float = 100.0) -> None:
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.executescript(KRAKEN_RECONCILIATION_SCHEMA)
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_RECONCILIATION_CONTROL (
+                    id, hold_new_entries, hold_reason, status, started_at,
+                    updated_at, unresolved_count, payload_json
+                ) VALUES (1, 1, ?, 'verification_required', ?, ?, 0, '{}')
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    "Kraken entry reconciliation and the AI-managed capital ledger require verification.",
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_AI_CAPITAL_LEDGER (
+                    created_at, event_time, logical_trade_id, broker_order_id,
+                    broker_fill_id, entry_type, amount_gbp, quantity, price,
+                    fee_gbp, idempotency_key, payload_json
+                ) VALUES (?, ?, NULL, NULL, NULL, 'founder_allocation', ?, NULL, NULL, 0, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    now,
+                    now,
+                    float(allocation_gbp),
+                    "kraken-founder-allocation-v1",
+                    json.dumps({"allocation_gbp": float(allocation_gbp)}, sort_keys=True),
+                ),
+            )
+
+
+def _ensure_schema(db_path: Path) -> None:
+    if not uses_postgres():
+        initialize_canonical_trade_schema(db_path)
+        initialize_multi_broker_schema(db_path)
+        initialize_sprint6_schema(db_path)
+        initialize_kraken_reconciliation_schema(db_path)
+
+
+def reconciliation_control(db_path: Path) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM KRAKEN_RECONCILIATION_CONTROL WHERE id = 1").fetchone()
+    if not row:
+        return {
+            "hold_new_entries": True,
+            "status": "verification_required",
+            "hold_reason": "Kraken reconciliation control has not been initialized.",
+        }
+    result = dict(row)
+    result["hold_new_entries"] = bool(result["hold_new_entries"])
+    result["payload"] = _json(result.pop("payload_json", "{}"))
+    return result
+
+
+def set_reconciliation_hold(
+    db_path: Path,
+    *,
+    active: bool,
+    reason: str,
+    status: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE KRAKEN_RECONCILIATION_CONTROL
+                SET hold_new_entries = ?, hold_reason = ?, status = ?,
+                    updated_at = ?, payload_json = ?
+                WHERE id = 1
+                """,
+                (int(active), reason, status, now, json.dumps(payload or {}, sort_keys=True, default=str)),
+            )
+    return reconciliation_control(db_path)
+
+
+def register_kraken_order_ownership(
+    db_path: Path,
+    *,
+    broker_order_id: str,
+    logical_trade_id: str,
+    order_role: str,
+    proposal_id: str | None = None,
+    managed_exit_id: int | None = None,
+    symbol: str | None = None,
+    side: str | None = None,
+    source: str = "investment_orchestrator",
+    confidence: float = 1.0,
+) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    if not broker_order_id:
+        return {"status": "ignored", "reason": "broker_order_id_missing"}
+    if order_role not in {"entry", "exit"}:
+        raise ValueError("Kraken order ownership role must be entry or exit.")
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_AI_ORDER_OWNERSHIP (
+                    broker_order_id, logical_trade_id, proposal_id, managed_exit_id,
+                    order_role, symbol, side, source, confidence, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker_order_id) DO UPDATE SET
+                    logical_trade_id = excluded.logical_trade_id,
+                    proposal_id = COALESCE(excluded.proposal_id, KRAKEN_AI_ORDER_OWNERSHIP.proposal_id),
+                    managed_exit_id = COALESCE(excluded.managed_exit_id, KRAKEN_AI_ORDER_OWNERSHIP.managed_exit_id),
+                    order_role = excluded.order_role,
+                    symbol = COALESCE(excluded.symbol, KRAKEN_AI_ORDER_OWNERSHIP.symbol),
+                    side = COALESCE(excluded.side, KRAKEN_AI_ORDER_OWNERSHIP.side),
+                    source = excluded.source,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    broker_order_id,
+                    logical_trade_id,
+                    proposal_id,
+                    managed_exit_id,
+                    order_role,
+                    symbol,
+                    side,
+                    source,
+                    float(confidence),
+                    now,
+                    now,
+                ),
+            )
+    return {"status": "registered", "broker_order_id": broker_order_id, "logical_trade_id": logical_trade_id}
+
+
+def bootstrap_kraken_order_ownership(db_path: Path) -> dict[str, int]:
+    """Recover explicit order ownership from durable IDs, never from symbol similarity."""
+
+    _ensure_schema(db_path)
+    inserted = 0
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            intents = conn.execute(
+                """
+                SELECT result_order_id, client_order_id, symbol, side
+                FROM ORDER_INTENT_LOCKS
+                WHERE broker = 'kraken' AND result_order_id IS NOT NULL AND result_order_id <> ''
+                """
+            ).fetchall()
+        except Exception:
+            intents = []
+        try:
+            exits = conn.execute(
+                """
+                SELECT managed_exit_id, entry_order_id, exit_order_id, symbol, side, payload_json
+                FROM MANAGED_TRADE_EXITS
+                WHERE broker = 'kraken'
+                """
+            ).fetchall()
+        except Exception:
+            exits = []
+    for row in intents:
+        result = register_kraken_order_ownership(
+            db_path,
+            broker_order_id=str(row["result_order_id"]),
+            logical_trade_id=str(row["client_order_id"]),
+            proposal_id=str(row["client_order_id"]),
+            order_role="entry",
+            symbol=row["symbol"],
+            side=row["side"],
+            source="order_intent_lock",
+        )
+        inserted += int(result["status"] == "registered")
+    for row in exits:
+        payload = _json(row["payload_json"])
+        proposal_id = str(payload.get("proposal_id") or "")
+        logical_trade_id = proposal_id or f"kraken-managed-exit:{row['managed_exit_id']}"
+        if row["entry_order_id"]:
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id=str(row["entry_order_id"]),
+                logical_trade_id=logical_trade_id,
+                proposal_id=proposal_id or None,
+                managed_exit_id=int(row["managed_exit_id"]),
+                order_role="entry",
+                symbol=row["symbol"],
+                side=row["side"],
+                source="managed_exit_entry_id",
+            )
+        if row["exit_order_id"]:
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id=str(row["exit_order_id"]),
+                logical_trade_id=logical_trade_id,
+                proposal_id=proposal_id or None,
+                managed_exit_id=int(row["managed_exit_id"]),
+                order_role="exit",
+                symbol=row["symbol"],
+                side="sell" if str(row["side"]).lower() == "buy" else "buy",
+                source="managed_exit_exit_id",
+            )
+    return {"records_seen": len(intents) + len(exits), "registrations": inserted}
+
+
+def replay_kraken_evidence(
+    db_path: Path,
+    *,
+    events: list[dict[str, Any]],
+    source: str = "kraken_evidence_replay",
+) -> dict[str, Any]:
+    """Reconcile persisted Kraken evidence. This function has no broker client or order path."""
+
+    _ensure_schema(db_path)
+    bootstrap_kraken_order_ownership(db_path)
+    counts = {
+        "owned_reconciled": 0,
+        "unmanaged_excluded": 0,
+        "ambiguous": 0,
+        "duplicates": 0,
+        "terminal_trades": 0,
+        "learning_queued": 0,
+    }
+    terminals: set[str] = set()
+    for raw in events:
+        event = normalize_kraken_evidence(raw)
+        raw_hash = _stable_hash(raw)
+        owner = _ownership(db_path, event["order_id"])
+        if owner is None:
+            _record_case(
+                db_path,
+                raw_hash=raw_hash,
+                event=event,
+                classification="unmanaged_excluded",
+                reason="No explicit AI Trader order ownership record matched this Kraken order ID; personal/manual evidence was excluded.",
+                confidence=1.0,
+            )
+            counts["unmanaged_excluded"] += 1
+            continue
+        if not event["symbol"] or event["record_type"] == "unknown":
+            _record_case(
+                db_path,
+                raw_hash=raw_hash,
+                event=event,
+                owner=owner,
+                classification="ambiguous",
+                reason="The owned Kraken event lacked deterministic symbol or record-type evidence.",
+                confidence=0.3,
+            )
+            counts["ambiguous"] += 1
+            continue
+        event.update(
+            {
+                "logical_trade_id": owner["logical_trade_id"],
+                "proposal_id": owner.get("proposal_id"),
+                "fill_role": owner["order_role"],
+            }
+        )
+        reconciled = reconcile_canonical_broker_event(
+            db_path,
+            broker="kraken",
+            event=event,
+            source=source,
+        )
+        duplicate = reconciled["event"].get("status") == "duplicate"
+        counts["duplicates"] += int(duplicate)
+        counts["owned_reconciled"] += int(not duplicate)
+        if event["record_type"] == "trade_fill":
+            _record_ledger_fill(db_path, event=event, owner=owner)
+        _record_case(
+            db_path,
+            raw_hash=raw_hash,
+            event=event,
+            owner=owner,
+            classification="owned_reconciled",
+            reason="Kraken evidence matched an explicit AI Trader broker order ID.",
+            confidence=float(owner["confidence"]),
+        )
+        if reconciled.get("terminal"):
+            terminals.add(str(reconciled["logical_trade_id"]))
+        _refresh_reconciled_result(db_path, str(reconciled["logical_trade_id"]))
+    for logical_trade_id in terminals:
+        trade = canonical_trade(db_path, logical_trade_id) or {}
+        result = _refresh_reconciled_result(db_path, logical_trade_id)
+        _mark_managed_exit_reconciled(db_path, logical_trade_id=logical_trade_id, result=result)
+        learning = enqueue_learning_workflow(
+            db_path,
+            logical_trade_id=logical_trade_id,
+            broker="kraken",
+            payload=_learning_payload(trade, result),
+        )
+        counts["terminal_trades"] += 1
+        counts["learning_queued"] += int(learning["status"] == "queued")
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE KRAKEN_RECONCILIATION_CONTROL
+                SET last_replay_at = ?, updated_at = ?, unresolved_count = ?,
+                    status = ?, payload_json = ?
+                WHERE id = 1
+                """,
+                (
+                    now,
+                    now,
+                    counts["ambiguous"],
+                    "manual_review_required" if counts["ambiguous"] else "replayed_awaiting_verification",
+                    json.dumps(counts, sort_keys=True),
+                ),
+            )
+    return {"status": "completed", **counts, "ledger": kraken_capital_ledger_summary(db_path)}
+
+
+def replay_persisted_kraken_evidence(db_path: Path, *, limit: int = 1000) -> dict[str, Any]:
+    """Replay durable broker evidence without contacting Kraken or submitting orders."""
+
+    _ensure_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT payload_json, external_id, symbol, side, quantity, price,
+                   status, opened_at, closed_at, updated_at
+            FROM BROKER_TRADE_HISTORY
+            WHERE broker = 'kraken'
+            ORDER BY trade_history_id
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _json(row["payload_json"])
+        payload.setdefault("id", row["external_id"])
+        payload.setdefault("symbol", row["symbol"])
+        payload.setdefault("side", row["side"])
+        payload.setdefault("quantity", row["quantity"])
+        payload.setdefault("price", row["price"])
+        payload.setdefault("status", row["status"])
+        payload.setdefault("updated_at", row["updated_at"] or row["closed_at"] or row["opened_at"])
+        events.append(payload)
+    result = replay_kraken_evidence(db_path, events=events, source="persisted_kraken_evidence_replay")
+    return {**result, "persisted_rows_read": len(rows), "broker_orders_submitted": 0}
+
+
+def kraken_reconciliation_status(db_path: Path) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    control = reconciliation_control(db_path)
+    ledger = kraken_capital_ledger_summary(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        ownership = int(conn.execute("SELECT COUNT(*) FROM KRAKEN_AI_ORDER_OWNERSHIP").fetchone()[0])
+        cases = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT classification, reason, COUNT(*) AS count, MAX(updated_at) AS latest_at
+                FROM KRAKEN_RECONCILIATION_CASES
+                GROUP BY classification, reason
+                ORDER BY count DESC, latest_at DESC
+                """
+            ).fetchall()
+        ]
+        results = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM KRAKEN_RECONCILED_RESULTS ORDER BY updated_at DESC LIMIT 100"
+            ).fetchall()
+        ]
+    return {
+        "control": control,
+        "capital_ledger": ledger,
+        "explicit_order_ownership_count": ownership,
+        "case_summary": cases,
+        "reconciled_trades": results,
+        "personal_holdings_included": False,
+        "replay_can_submit_orders": False,
+    }
+
+
+def normalize_kraken_evidence(raw: dict[str, Any]) -> dict[str, Any]:
+    descr = raw.get("descr") if isinstance(raw.get("descr"), dict) else {}
+    record_type = str(raw.get("kraken_record_type") or "")
+    if not record_type:
+        record_type = "trade_fill" if raw.get("ordertxid") or raw.get("trade_id") else "closed_order" if descr else "unknown"
+    order_id = str(
+        raw.get("order_id")
+        or raw.get("ordertxid")
+        or (raw.get("id") if record_type == "closed_order" else "")
+        or ""
+    )
+    fill_id = str(raw.get("fill_id") or raw.get("trade_id") or (raw.get("id") if record_type == "trade_fill" else "") or "")
+    symbol = str(raw.get("symbol") or raw.get("pair") or descr.get("pair") or "").upper()
+    side = str(raw.get("side") or raw.get("type") or descr.get("type") or "").lower()
+    status = str(raw.get("status") or ("filled" if record_type == "trade_fill" else "unknown")).lower()
+    stage = _kraken_stage(record_type, status)
+    quantity = _number(raw.get("quantity") or raw.get("qty") or raw.get("vol_exec") or raw.get("vol"))
+    price = _number(raw.get("average_fill_price") or raw.get("avg_price") or raw.get("price"))
+    timestamp = raw.get("transaction_time") or raw.get("time") or raw.get("closetm") or raw.get("updated_at") or utc_now_iso()
+    return {
+        "kraken_record_type": record_type,
+        "record_type": record_type,
+        "order_id": order_id,
+        "ordertxid": order_id,
+        "trade_id": fill_id or None,
+        "fill_id": fill_id or None,
+        "status": status,
+        "stage": stage,
+        "symbol": symbol,
+        "pair": symbol,
+        "side": side,
+        "asset_type": "crypto",
+        "quantity": quantity if record_type == "trade_fill" else None,
+        "filled_quantity": quantity if record_type == "trade_fill" else None,
+        "average_fill_price": price if record_type == "trade_fill" else None,
+        "price": price if record_type == "trade_fill" else None,
+        "exchange_fee": _number(raw.get("fee")) if record_type == "trade_fill" else None,
+        "timestamp": str(timestamp),
+        "raw": raw,
+    }
+
+
+def kraken_capital_ledger_summary(
+    db_path: Path,
+    *,
+    current_prices: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    normalized_prices = {
+        str(symbol).upper(): float(price)
+        for symbol, price in (current_prices or {}).items()
+        if _number(price) is not None and float(price) > 0
+    }
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT entry_type, amount_gbp, fee_gbp FROM KRAKEN_AI_CAPITAL_LEDGER ORDER BY ledger_id"
+        ).fetchall()
+        trades = conn.execute(
+            """
+            SELECT gross_pnl, net_pnl, remaining_quantity, terminal
+            FROM LOGICAL_TRADES WHERE broker = 'kraken'
+              AND logical_trade_id IN (SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP)
+            """
+        ).fetchall()
+        results = conn.execute(
+            """
+            SELECT * FROM KRAKEN_RECONCILED_RESULTS
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+        open_trades = conn.execute(
+            """
+            SELECT logical_trade_id, symbol, side, average_entry_price,
+                   remaining_quantity, exchange_fee, broker_fee
+            FROM LOGICAL_TRADES
+            WHERE broker = 'kraken' AND terminal = 0
+              AND remaining_quantity > 0
+              AND logical_trade_id IN (
+                  SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP
+              )
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+    allocation = sum(float(row["amount_gbp"]) for row in rows if row["entry_type"] == "founder_allocation")
+    cash = sum(float(row["amount_gbp"]) for row in rows)
+    realized_gross = sum(float(row["gross_pnl"] or 0) for row in trades if row["terminal"])
+    realized_net = sum(float(row["net_pnl"] or 0) for row in trades if row["terminal"])
+    deployed = max(0.0, allocation + realized_net - cash)
+    unrealized = 0.0
+    marked_positions: list[dict[str, Any]] = []
+    unpriced_symbols: list[str] = []
+    for row in open_trades:
+        symbol = str(row["symbol"] or "").upper()
+        entry_price = _number(row["average_entry_price"])
+        quantity = _number(row["remaining_quantity"])
+        current_price = normalized_prices.get(symbol)
+        if not symbol or entry_price is None or quantity is None or current_price is None:
+            if symbol:
+                unpriced_symbols.append(symbol)
+            continue
+        multiplier = 1 if str(row["side"] or "buy").lower() == "buy" else -1
+        position_pnl = (current_price - entry_price) * quantity * multiplier
+        unrealized += position_pnl
+        marked_positions.append(
+            {
+                "logical_trade_id": row["logical_trade_id"],
+                "symbol": symbol,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "unrealized_pnl_gbp": round(position_pnl, 8),
+            }
+        )
+    all_open_positions_marked = len(marked_positions) == len(open_trades)
+    return {
+        "allocation_gbp": round(allocation, 8),
+        "available_cash_gbp": round(cash, 8),
+        "deployed_capital_gbp": round(deployed, 8),
+        "realized_gross_pnl_gbp": round(realized_gross, 8),
+        "realized_net_pnl_gbp": round(realized_net, 8),
+        "unrealized_pnl_gbp": round(unrealized, 8) if all_open_positions_marked else None,
+        "unrealized_pnl_status": (
+            "Calculated from current Kraken prices for every AI-managed open position."
+            if all_open_positions_marked
+            else "Unavailable because current Kraken prices were not captured for: "
+            + ", ".join(sorted(set(unpriced_symbols)))
+        ),
+        "marked_open_positions": marked_positions,
+        "unpriced_open_symbols": sorted(set(unpriced_symbols)),
+        "personal_holdings_included": False,
+        "reconciled_results": [dict(row) for row in results],
+    }
+
+
+def verify_kraken_reconciliation(db_path: Path) -> dict[str, Any]:
+    _ensure_schema(db_path)
+    ledger = kraken_capital_ledger_summary(db_path)
+    with closing(connect(db_path)) as conn:
+        unresolved = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM KRAKEN_RECONCILIATION_CASES WHERE classification = 'ambiguous'"
+            ).fetchone()[0]
+        )
+        owned = int(conn.execute("SELECT COUNT(*) FROM KRAKEN_AI_ORDER_OWNERSHIP").fetchone()[0])
+        terminal = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM LOGICAL_TRADES
+                WHERE broker = 'kraken' AND terminal = 1
+                  AND logical_trade_id IN (SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP)
+                """
+            ).fetchone()[0]
+        )
+        learning = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM SPRINT6_WORKFLOW_OUTBOX WHERE workflow_type = 'closed_loop_learning' AND entity_id IN (SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP)"
+            ).fetchone()[0]
+        )
+        results = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM KRAKEN_RECONCILED_RESULTS WHERE status = 'closed'"
+            ).fetchone()[0]
+        )
+    checks = {
+        "explicit_order_ownership_exists": owned > 0,
+        "no_ambiguous_owned_evidence": unresolved == 0,
+        "personal_holdings_excluded": ledger["personal_holdings_included"] is False,
+        "realized_and_unrealized_separated": "realized_net_pnl_gbp" in ledger and "unrealized_pnl_gbp" in ledger,
+        "terminal_learning_idempotent": learning == terminal,
+        "terminal_results_complete": results == terminal,
+        "allocation_is_finite": ledger["allocation_gbp"] > 0 and ledger["available_cash_gbp"] <= ledger["allocation_gbp"] + max(0.0, ledger["realized_net_pnl_gbp"]) + 1e-6,
+    }
+    passed = all(checks.values())
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE KRAKEN_RECONCILIATION_CONTROL
+                SET last_verified_at = ?, updated_at = ?, unresolved_count = ?,
+                    status = ?, payload_json = ?
+                WHERE id = 1
+                """,
+                (
+                    now,
+                    now,
+                    unresolved,
+                    "verified_hold_active" if passed else "verification_failed",
+                    json.dumps({"checks": checks, "ledger": ledger}, sort_keys=True, default=str),
+                ),
+            )
+    return {"status": "verified" if passed else "failed", "passed": passed, "checks": checks, "ledger": ledger}
+
+
+def resume_kraken_entries_after_verification(db_path: Path) -> dict[str, Any]:
+    verification = verify_kraken_reconciliation(db_path)
+    if not verification["passed"]:
+        return {
+            "status": "rejected",
+            "message": "Kraken entries remain paused because reconciliation verification failed.",
+            "verification": verification,
+        }
+    control = set_reconciliation_hold(
+        db_path,
+        active=False,
+        status="verified",
+        reason="Founder-authorized reconciliation verification passed; new Kraken entries may resume.",
+        payload={"verification": verification},
+    )
+    return {"status": "resumed", "control": control, "verification": verification}
+
+
+def _ownership(db_path: Path, order_id: str) -> dict[str, Any] | None:
+    if not order_id:
+        return None
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM KRAKEN_AI_ORDER_OWNERSHIP WHERE broker_order_id = ?",
+            (order_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _record_ledger_fill(db_path: Path, *, event: dict[str, Any], owner: dict[str, Any]) -> None:
+    quantity = _number(event.get("filled_quantity"))
+    price = _number(event.get("average_fill_price"))
+    if not quantity or not price:
+        return
+    fee = _number(event.get("exchange_fee")) or 0.0
+    role = str(owner["order_role"])
+    amount = -(quantity * price + fee) if role == "entry" else quantity * price - fee
+    fill_id = str(event.get("fill_id") or "")
+    key = f"kraken-fill:{fill_id}:{role}"
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_AI_CAPITAL_LEDGER (
+                    created_at, event_time, logical_trade_id, broker_order_id,
+                    broker_fill_id, entry_type, amount_gbp, quantity, price,
+                    fee_gbp, idempotency_key, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    utc_now_iso(),
+                    event["timestamp"],
+                    owner["logical_trade_id"],
+                    event["order_id"],
+                    fill_id,
+                    f"{role}_fill",
+                    amount,
+                    quantity,
+                    price,
+                    fee,
+                    key,
+                    json.dumps(event, sort_keys=True, default=str),
+                ),
+            )
+
+
+def _record_case(
+    db_path: Path,
+    *,
+    raw_hash: str,
+    event: dict[str, Any],
+    classification: str,
+    reason: str,
+    confidence: float,
+    owner: dict[str, Any] | None = None,
+) -> None:
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_RECONCILIATION_CASES (
+                    created_at, updated_at, raw_event_hash, broker_order_id,
+                    broker_fill_id, logical_trade_id, classification, reason,
+                    confidence, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(raw_event_hash) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    classification = excluded.classification,
+                    reason = excluded.reason,
+                    confidence = excluded.confidence,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    now,
+                    now,
+                    raw_hash,
+                    event.get("order_id"),
+                    event.get("fill_id"),
+                    owner.get("logical_trade_id") if owner else None,
+                    classification,
+                    reason,
+                    confidence,
+                    json.dumps(event, sort_keys=True, default=str),
+                ),
+            )
+
+
+def _refresh_reconciled_result(db_path: Path, logical_trade_id: str) -> dict[str, Any]:
+    trade = canonical_trade(db_path, logical_trade_id) or {}
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        fills = conn.execute(
+            """
+            SELECT fill_role, side, quantity, price, broker_fee, exchange_fee, filled_at
+            FROM LOGICAL_TRADE_FILLS
+            WHERE logical_trade_id = ?
+            ORDER BY filled_at, fill_id
+            """,
+            (logical_trade_id,),
+        ).fetchall()
+    entries = [row for row in fills if row["fill_role"] == "entry"]
+    exits = [row for row in fills if row["fill_role"] == "exit"]
+    entry_time = entries[0]["filled_at"] if entries else None
+    exit_time = exits[-1]["filled_at"] if exits else None
+    entry_price = _number(trade.get("average_entry_price"))
+    exit_price = _number(trade.get("average_exit_price"))
+    intended_entry = _number(trade.get("intended_entry_price"))
+    stop = _number(trade.get("original_stop"))
+    target = _number(trade.get("intended_target"))
+    quantity = _number(trade.get("entry_filled_quantity"))
+    initial_risk = abs((intended_entry or entry_price or 0) - (stop or 0)) * (quantity or 0) if stop else None
+    gross = _number(trade.get("gross_pnl"))
+    net = _number(trade.get("net_pnl"))
+    holding_seconds = _elapsed_seconds(entry_time, exit_time)
+    planned_r = (
+        abs(target - (intended_entry or entry_price)) / abs((intended_entry or entry_price) - stop)
+        if target is not None and stop is not None and (intended_entry or entry_price) is not None
+        and abs((intended_entry or entry_price) - stop) > 0
+        else None
+    )
+    side_factor = 1 if str(trade.get("side") or "buy").lower() == "buy" else -1
+    result = {
+        "logical_trade_id": logical_trade_id,
+        "proposal_id": trade.get("proposal_id"),
+        "symbol": trade.get("symbol"),
+        "side": trade.get("side"),
+        "status": "closed" if trade.get("terminal") else "holding" if entries else "awaiting_fill",
+        "entry_time": entry_time,
+        "exit_time": exit_time,
+        "holding_seconds": holding_seconds,
+        "quantity": quantity,
+        "intended_entry": intended_entry,
+        "actual_entry": entry_price,
+        "original_stop": stop,
+        "target_price": target,
+        "actual_exit": exit_price,
+        "broker_fee": _number(trade.get("broker_fee")) or 0.0,
+        "exchange_fee": _number(trade.get("exchange_fee")) or 0.0,
+        "gross_pnl": gross,
+        "net_pnl": net,
+        "initial_risk": initial_risk,
+        "planned_r": planned_r,
+        "gross_r": gross / initial_risk if gross is not None and initial_risk else None,
+        "net_r": net / initial_risk if net is not None and initial_risk else None,
+        "entry_slippage": (
+            (entry_price - intended_entry) * side_factor
+            if entry_price is not None and intended_entry is not None
+            else None
+        ),
+        "exit_slippage": (
+            (target - exit_price) * side_factor
+            if exit_price is not None and target is not None
+            else None
+        ),
+        "reconciliation_confidence": _number(trade.get("reconciliation_confidence")) or 0.0,
+    }
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_RECONCILED_RESULTS (
+                    logical_trade_id, proposal_id, symbol, side, status,
+                    entry_time, exit_time, holding_seconds, quantity,
+                    intended_entry, actual_entry, original_stop, target_price,
+                    actual_exit, broker_fee, exchange_fee, gross_pnl, net_pnl,
+                    initial_risk, planned_r, gross_r, net_r, entry_slippage,
+                    exit_slippage, reconciliation_confidence, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(logical_trade_id) DO UPDATE SET
+                    proposal_id = excluded.proposal_id,
+                    symbol = excluded.symbol,
+                    side = excluded.side,
+                    status = excluded.status,
+                    entry_time = excluded.entry_time,
+                    exit_time = excluded.exit_time,
+                    holding_seconds = excluded.holding_seconds,
+                    quantity = excluded.quantity,
+                    intended_entry = excluded.intended_entry,
+                    actual_entry = excluded.actual_entry,
+                    original_stop = excluded.original_stop,
+                    target_price = excluded.target_price,
+                    actual_exit = excluded.actual_exit,
+                    broker_fee = excluded.broker_fee,
+                    exchange_fee = excluded.exchange_fee,
+                    gross_pnl = excluded.gross_pnl,
+                    net_pnl = excluded.net_pnl,
+                    initial_risk = excluded.initial_risk,
+                    planned_r = excluded.planned_r,
+                    gross_r = excluded.gross_r,
+                    net_r = excluded.net_r,
+                    entry_slippage = excluded.entry_slippage,
+                    exit_slippage = excluded.exit_slippage,
+                    reconciliation_confidence = excluded.reconciliation_confidence,
+                    updated_at = excluded.updated_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    result["logical_trade_id"],
+                    result["proposal_id"],
+                    result["symbol"],
+                    result["side"],
+                    result["status"],
+                    result["entry_time"],
+                    result["exit_time"],
+                    result["holding_seconds"],
+                    result["quantity"],
+                    result["intended_entry"],
+                    result["actual_entry"],
+                    result["original_stop"],
+                    result["target_price"],
+                    result["actual_exit"],
+                    result["broker_fee"],
+                    result["exchange_fee"],
+                    result["gross_pnl"],
+                    result["net_pnl"],
+                    result["initial_risk"],
+                    result["planned_r"],
+                    result["gross_r"],
+                    result["net_r"],
+                    result["entry_slippage"],
+                    result["exit_slippage"],
+                    result["reconciliation_confidence"],
+                    now,
+                    json.dumps(result, sort_keys=True, default=str),
+                ),
+            )
+    return result
+
+
+def _mark_managed_exit_reconciled(
+    db_path: Path,
+    *,
+    logical_trade_id: str,
+    result: dict[str, Any],
+) -> None:
+    """Close only explicitly linked managed exits after the canonical exit fill is terminal."""
+
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE MANAGED_TRADE_EXITS
+                SET status = 'closed',
+                    updated_at = ?,
+                    last_checked_at = ?
+                WHERE broker = 'kraken'
+                  AND status IN ('open', 'exit_submitted')
+                  AND managed_exit_id IN (
+                      SELECT managed_exit_id
+                      FROM KRAKEN_AI_ORDER_OWNERSHIP
+                      WHERE logical_trade_id = ?
+                        AND order_role = 'exit'
+                        AND managed_exit_id IS NOT NULL
+                  )
+                """,
+                (
+                    now,
+                    now,
+                    logical_trade_id,
+                ),
+            )
+
+
+def _learning_payload(trade: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = result or {}
+    return {
+        "symbol": trade.get("symbol"),
+        "attribution": {
+            "proposal_id": trade.get("proposal_id"),
+            "symbol": trade.get("symbol"),
+            "side": trade.get("side"),
+            "quantity": trade.get("entry_filled_quantity"),
+            "entry_price": trade.get("average_entry_price"),
+            "exit_price": trade.get("average_exit_price"),
+            "broker_fee": trade.get("broker_fee"),
+            "exchange_fee": trade.get("exchange_fee"),
+            "gross_realized_pnl": trade.get("gross_pnl"),
+            "profit_loss": trade.get("gross_pnl"),
+            "net_realized_pnl": trade.get("net_pnl"),
+            "entry_time": result.get("entry_time"),
+            "exit_time": result.get("exit_time"),
+            "holding_seconds": result.get("holding_seconds"),
+            "initial_risk": result.get("initial_risk"),
+            "planned_r": result.get("planned_r"),
+            "gross_r": result.get("gross_r"),
+            "net_r": result.get("net_r"),
+            "entry_slippage": result.get("entry_slippage"),
+            "exit_slippage": result.get("exit_slippage"),
+            "original_stop": result.get("original_stop"),
+            "target_price": result.get("target_price"),
+        },
+        "decision_context": _json(trade.get("decision_context_json")),
+    }
+
+
+def _kraken_stage(record_type: str, status: str) -> str:
+    if record_type == "trade_fill":
+        return "fully_filled"
+    if status in {"canceled", "cancelled"}:
+        return "cancelled"
+    if status in {"rejected", "expired"}:
+        return status
+    if record_type == "closed_order":
+        # Kraken ClosedOrders describes an order that is no longer open. It does
+        # not prove that an investment position has been exited.
+        return "broker_acknowledged"
+    return "broker_acknowledged"
+
+
+def _stable_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return None if value in {None, ""} else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _elapsed_seconds(start: Any, end: Any) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (end_dt - start_dt).total_seconds())
+    except (TypeError, ValueError):
+        return None

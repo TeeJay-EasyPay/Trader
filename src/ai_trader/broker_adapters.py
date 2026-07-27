@@ -240,12 +240,18 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         history: list[dict[str, Any]] = []
         try:
             closed = self._private_request("/0/private/ClosedOrders").get("result", {}).get("closed", {})
-            history.extend({"id": key, **value, "status": value.get("status", "closed")} for key, value in closed.items())
+            history.extend(
+                {"id": key, **value, "status": value.get("status", "closed"), "kraken_record_type": "closed_order"}
+                for key, value in closed.items()
+            )
         except Exception:
             pass
         try:
             trades = self._private_request("/0/private/TradesHistory").get("result", {}).get("trades", {})
-            history.extend({"id": key, **value, "status": "filled"} for key, value in trades.items())
+            history.extend(
+                {"id": key, **value, "status": "filled", "kraken_record_type": "trade_fill"}
+                for key, value in trades.items()
+            )
         except Exception:
             pass
         return history

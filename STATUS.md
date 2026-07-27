@@ -1,5 +1,38 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-23 Kraken Reconciliation and Learning Recovery
+
+Status: **implemented and locally verified; Kraken new entries remain paused
+pending hosted replay and Founder verification**.
+
+- Added a dedicated reconciliation hold that blocks new Kraken entries while
+  preserving monitoring and protective managed exits.
+- Separated the £100 AI-managed Kraken allocation from all pre-existing
+  personal holdings.
+- Corrected Kraken evidence semantics: a closed order is not treated as a fill
+  or proof that an investment was sold.
+- Reconstructs trades only from explicit AI Trader order IDs; symbol guessing
+  is prohibited.
+- Reconciles actual entry, exit, quantity, fees, realised and unrealised P&L,
+  holding time, slippage, and R where persisted evidence supports them.
+- Added a broker-read-only, idempotent replay that reports zero order
+  submissions.
+- Genuine terminal trades queue exactly one closed-loop learning workflow.
+- Added authenticated reconciliation, verification, and Founder-controlled
+  resume endpoints plus a Kraken ledger panel in the mobile app.
+- Verification: Python compile passed; 6 focused Kraken tests passed; 32
+  production-spine tests passed; complete suite passed 177 tests; Expo Doctor
+  passed all 17 checks.
+
+Production boundary:
+
+- deploy the API and worker;
+- replay shared Postgres Kraken evidence;
+- review excluded and ambiguous records;
+- prove the £100 ledger against Kraken;
+- process and inspect terminal learning;
+- verify, then resume only with Founder approval.
+
 ## 2026-07-23 Worker Operational-Priority Recovery
 
 Status: **implemented and locally verified; hosted deployment verification pending**.

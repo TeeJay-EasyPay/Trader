@@ -1019,6 +1019,13 @@ function BrokerPanel({ broker, onCommand, onReport }) {
         <Button label={`Daily Report (${label})`} onPress={() => onReport({ type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
         <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
         <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
+        {broker.broker === 'kraken' ? (
+          <Button
+            label="Reconcile Kraken Evidence"
+            onPress={() => onCommand('/kraken-reconciliation/replay', { limit: 1000 })}
+            tone="neutral"
+          />
+        ) : null}
       </View>
     </View>
   );
@@ -1454,6 +1461,28 @@ function TradingPermissions({ permissions }) {
       {permissions.remaining_ai_trade_slots !== undefined ? <Metric label="Remaining AI Trade Slots" value={permissions.remaining_ai_trade_slots} /> : null}
       {permissions.buy_only_entries !== undefined ? <Metric label="Buy-only Entries" value={enabledDisabled(permissions.buy_only_entries)} /> : null}
       <Metric label="Allowed Pairs / Symbols" value={formatListInline(permissions.allowed_pairs)} />
+      {permissions.broker === 'kraken' ? (
+        <View style={styles.textBlock}>
+          <Text style={styles.cardTitle}>Kraken Reconciliation & £100 Ledger</Text>
+          <Metric label="New Entries Paused" value={yesNo(permissions.reconciliation_hold_active)} />
+          <Metric label="Reconciliation Status" value={permissions.reconciliation_status} />
+          <TextBlock label="Hold Reason" value={permissions.reconciliation_hold_reason} />
+          <Metric label="Founder Allocation" value={gbpOrText(permissions.ai_capital_ledger?.allocation_gbp)} />
+          <Metric label="Available AI Cash" value={gbpOrText(permissions.ai_capital_ledger?.available_cash_gbp)} />
+          <Metric label="AI Capital Deployed" value={gbpOrText(permissions.ai_capital_ledger?.deployed_capital_gbp)} />
+          <Metric label="Realised Gross P&L" value={gbpOrText(permissions.ai_capital_ledger?.realized_gross_pnl_gbp)} />
+          <Metric label="Realised Net P&L" value={gbpOrText(permissions.ai_capital_ledger?.realized_net_pnl_gbp)} />
+          <Metric
+            label="Unrealised P&L"
+            value={
+              permissions.ai_capital_ledger?.unrealized_pnl_gbp === null
+                ? permissions.ai_capital_ledger?.unrealized_pnl_status
+                : gbpOrText(permissions.ai_capital_ledger?.unrealized_pnl_gbp)
+            }
+          />
+          <Metric label="Personal Holdings Included" value={yesNo(permissions.ai_capital_ledger?.personal_holdings_included)} />
+        </View>
+      ) : null}
       {permissions.notes?.length ? <TextBlock label="Notes" value={permissions.notes.map((item) => `- ${item}`).join('\n')} /> : null}
     </View>
   );

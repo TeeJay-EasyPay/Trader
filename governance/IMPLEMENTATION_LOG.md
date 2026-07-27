@@ -1436,3 +1436,44 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Safety boundary: this change transports and presents existing evidence only.
   It does not alter portfolio approval, Risk Engine approval, broker
   permissions, execution eligibility, sizing, stops, targets or guardrails.
+
+## 2026-07-23 - Kraken Reconciliation and Closed-Loop Learning Recovery
+
+- Activated a reconciliation hold for new Kraken entries. Existing managed
+  exits continue to be monitored and may still submit their protective exit.
+- Added an explicit Kraken order-ownership registry populated from durable
+  order-intent and managed-exit identifiers and from new orchestrator
+  submissions.
+- Prohibited symbol-based ownership and entry/exit inference for Kraken.
+  Unlinked evidence is classified as personal/unmanaged and excluded.
+- Corrected Kraken API semantics so `ClosedOrders` records order state while
+  only `TradesHistory` records create canonical fills.
+- Prevented a closed order with executed-volume fields from being treated as a
+  closed investment.
+- Added a £100 AI-managed capital ledger separate from the Founder's existing
+  Kraken assets.
+- Added canonical result projection for entry, exit, quantities, fees,
+  realised and unrealised P&L, holding time, planned/gross/net R, slippage,
+  and reconciliation confidence.
+- Added read-only persisted evidence replay. It has no broker client or
+  submission path and explicitly reports zero broker orders submitted.
+- Added idempotent learning recovery: a genuinely terminal logical trade queues
+  one closed-loop learning workflow and repeated replay does not queue it
+  again.
+- Changed managed exits to `exit_submitted` after broker submission. They are
+  marked closed only after a matching canonical exit fill proves terminal
+  state.
+- Added authenticated replay, status, verification, and Founder-controlled
+  resume endpoints.
+- Added a Kraken reconciliation and £100 ledger section to the mobile broker
+  panel.
+- Verification passed:
+  - Python compilation for all changed modules;
+  - 6 focused Kraken reconciliation tests;
+  - 32 production-spine and institutional-control tests;
+  - complete Python suite: 177 tests;
+  - Expo Doctor: 17/17 checks.
+- The entry hold remains active. Hosted Supabase replay, evidence review, and
+  Founder approval are required before Kraken entries resume.
+- No broker permission, risk limit, strategy gate, allocation limit, stop,
+  target, or governance threshold was weakened.

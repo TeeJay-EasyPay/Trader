@@ -69,6 +69,34 @@ Do not duplicate runtime state between SQLite and Postgres.
 
 Each future migration should move one schema family at a time, prove compatibility, and then switch that family to the production database.
 
+## Kraken Reconciliation and Capital Ledger
+
+The Kraken recovery adds four additive shared-runtime tables:
+
+- `KRAKEN_RECONCILIATION_CONTROL`: the new-entry hold, verification state,
+  replay timestamps, unresolved count, and evidence payload.
+- `KRAKEN_AI_ORDER_OWNERSHIP`: deterministic linkage between a Kraken order ID
+  and one logical AI Trader trade, including entry/exit role.
+- `KRAKEN_AI_CAPITAL_LEDGER`: the £100 Founder allocation plus explicitly
+  owned entry/exit fills and fees.
+- `KRAKEN_RECONCILIATION_CASES`: immutable-hash evidence classification for
+  owned, excluded, and ambiguous Kraken records.
+- `KRAKEN_RECONCILED_RESULTS`: Founder-facing terminal or holding result with
+  price, time, cost, P&L, risk, R, slippage, and confidence fields.
+
+These are runtime control and read-model tables over canonical evidence. The
+authoritative execution truth remains `LOGICAL_TRADES`,
+`LOGICAL_TRADE_EVENTS`, and `LOGICAL_TRADE_FILLS`.
+
+Existing personal Kraken assets never enter the AI capital ledger. A row is
+eligible only when the broker order ID is explicitly registered. Symbol
+matching is prohibited.
+
+The persisted replay is read-only with respect to the broker. Database writes
+are idempotent and may update canonical reconciliation, the capital ledger,
+case classification, the reconciled result, and the exactly-once learning
+outbox. It cannot contact Kraken or submit an order.
+
 ## Founder Evidence Projection
 
 `PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS` is the durable read projection used by all six Founder screens. It contains one row per supported period:

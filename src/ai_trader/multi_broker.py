@@ -835,6 +835,38 @@ def close_managed_exit(
             )
 
 
+def mark_managed_exit_submitted(
+    db_path: Path,
+    managed_exit_id: int,
+    *,
+    exit_order_id: str,
+    exit_reason: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Record an accepted exit order without falsely declaring the position closed."""
+
+    initialize_multi_broker_schema(db_path)
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE MANAGED_TRADE_EXITS
+                SET updated_at = ?, status = 'exit_submitted', exit_order_id = ?,
+                    exit_reason = ?, last_checked_at = ?, payload_json = ?
+                WHERE managed_exit_id = ?
+                """,
+                (
+                    now,
+                    exit_order_id,
+                    exit_reason,
+                    now,
+                    json.dumps(payload or {}, sort_keys=True, default=str),
+                    managed_exit_id,
+                ),
+            )
+
+
 def close_managed_exit_and_record(
     db_path: Path,
     managed_exit_id: int,

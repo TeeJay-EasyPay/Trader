@@ -21,6 +21,10 @@ from .foundation import (
     validate_investment_universe,
 )
 from .guardrails import validate_trade_proposal
+from .kraken_reconciliation import (
+    reconciliation_control,
+    register_kraken_order_ownership,
+)
 from .models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, OrchestratorDecision, TradeProposal, utc_now_iso
 from .multi_broker import (
     acquire_order_intent_lock,
@@ -220,6 +224,10 @@ class InvestmentOrchestrator:
                     float(allocation["approved_notional"]),
                     float(production_packet["approved_notional"]),
                 )
+        if selected and selected.name == "kraken":
+            kraken_control = reconciliation_control(self.db_path)
+            if kraken_control.get("hold_new_entries"):
+                failures.append("kraken_reconciliation_hold")
         failures = list(dict.fromkeys(failures))
         record_broker_decision(
             self.db_path,
@@ -290,6 +298,16 @@ class InvestmentOrchestrator:
                         broker_order_id=broker_order_id,
                         payload=order,
                     )
+                    if selected.name == "kraken":
+                        register_kraken_order_ownership(
+                            self.db_path,
+                            broker_order_id=broker_order_id,
+                            logical_trade_id=logical_trade_id,
+                            proposal_id=p.proposal_id,
+                            order_role="entry",
+                            symbol=p.symbol,
+                            side=p.side,
+                        )
                 complete_order_intent_lock(
                     self.db_path,
                     broker=selected.name,
@@ -323,6 +341,16 @@ class InvestmentOrchestrator:
                         take_profit=p.take_profit,
                         payload={**order, "proposal_id": p.proposal_id, "entry_reason": p.plain_english_reasoning},
                         trailing_stop_pct=policy.trailing_stop_pct if policy.trailing_stop_enabled else None,
+                    )
+                    register_kraken_order_ownership(
+                        self.db_path,
+                        broker_order_id=order_id,
+                        logical_trade_id=logical_trade_id,
+                        proposal_id=p.proposal_id,
+                        managed_exit_id=int(managed["managed_exit_id"]),
+                        order_role="entry",
+                        symbol=p.symbol,
+                        side=p.side,
                     )
                     record_notification(
                         self.db_path,
