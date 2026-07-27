@@ -289,6 +289,23 @@ class ProductionCompletionTests(unittest.TestCase):
             self.assertEqual(result["status"], "timed_out")
             self.assertIn("execution boundary", result["reason"])
 
+    def test_kraken_startup_reconciliation_is_a_bounded_named_job(self):
+        service = SimpleNamespace(settings=SimpleNamespace(db_path=Path("runtime.sqlite3")))
+        expected = {"status": "completed", "persisted_rows_read": 4}
+        with patch(
+            "ai_trader.cli.replay_persisted_kraken_evidence",
+            return_value=expected,
+        ) as replay:
+            from ai_trader.cli import _run_named_job
+
+            result = _run_named_job(
+                service,
+                "kraken-startup-reconciliation",
+                limit=0,
+            )
+        self.assertEqual(result, expected)
+        replay.assert_called_once_with(service.settings.db_path)
+
     def test_isolated_worker_job_returns_persisted_completion(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ,

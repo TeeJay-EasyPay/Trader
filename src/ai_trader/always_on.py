@@ -1010,6 +1010,7 @@ def scheduler_status(db_path: Path) -> dict[str, Any]:
             "auto-execution",
             "broker-poll",
             "managed-exits",
+            "kraken-startup-reconciliation",
         ],
     }
 

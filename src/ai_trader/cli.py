@@ -229,7 +229,16 @@ def main(argv: list[str] | None = None) -> int:
         ) as pulse:
             pulse.set_job("kraken-startup-reconciliation")
             try:
-                startup_reconciliation = replay_persisted_kraken_evidence(settings.db_path)
+                startup_reconciliation = _run_pulsed_job(
+                    service,
+                    "kraken-startup-reconciliation",
+                    worker_id,
+                    pulse,
+                    scheduled_for=_time_bucket(
+                        datetime.now(timezone.utc),
+                        max(60, settings.worker_job_timeout_seconds),
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001 - preserve worker availability and surface the fault
                 startup_reconciliation = {
                     "status": "failed",
@@ -420,6 +429,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.capture_production_broker_snapshots()
     if job_name == "managed-exits":
         return service.monitor_managed_exits()
+    if job_name == "kraken-startup-reconciliation":
+        return replay_persisted_kraken_evidence(service.settings.db_path)
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 

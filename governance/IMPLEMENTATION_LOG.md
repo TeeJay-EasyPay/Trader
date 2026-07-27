@@ -1500,3 +1500,19 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   stop-loss, take-profit, portfolio gate or Risk Engine rule changed.
 - Production remains paused until the new worker release is deployed and the
   suspended Render worker is manually resumed and verified.
+
+## 2026-07-27 - Startup Reconciliation Isolation
+
+- Queried the protected hosted scheduler and job endpoints using the locally
+  configured command token without exposing it.
+- Confirmed deployment `0f063e02` was alive and heartbeating, but had remained
+  in `kraken-startup-reconciliation` and had created no new scheduled job rows.
+- Confirmed the visible job history ended on 26 July and therefore did not
+  prove that the timeout-isolation release had entered its normal worker loop.
+- Converted Kraken startup reconciliation into a durable, process-isolated,
+  time-bounded worker job.
+- A stalled reconciliation can no longer indefinitely prevent managed exits,
+  broker polling, research, evidence snapshots, execution evaluation, or
+  learning from running.
+- Kraken entries remain paused when startup reconciliation does not complete;
+  no broker permission or trading guardrail was weakened.

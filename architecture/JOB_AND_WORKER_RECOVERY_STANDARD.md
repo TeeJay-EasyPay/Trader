@@ -54,6 +54,12 @@ A timeout must not terminate the Render background-worker service. Repeated
 process exits are treated by Render as crashes and can result in automatic
 service suspension.
 
+Kraken startup reconciliation follows the same isolation rule. It is a
+durable scheduled job with a bounded child process. If replay cannot complete
+within the configured timeout, Kraken entries remain paused, the timeout is
+persisted, and the supervisor proceeds to managed exits, broker polling,
+research, evidence snapshots, auto-execution evaluation, and learning.
+
 ## Incident Policy
 
 Failures create `OPERATIONS_INCIDENTS`, not silent logs only.
