@@ -1,8 +1,11 @@
 # AI Trader Current Operations Recovery Report
 
-**Report date:** 27 July 2026  
-**Environment:** Render production, Supabase/Postgres, Android Founder app  
-**Current deployed recovery commit:** `c67b22f93bb1cfd8d45e138f5fb9b1a4b4844b1c`  
+**Report date:** 27 July 2026
+
+**Environment:** Render production, Supabase/Postgres, Android Founder app
+
+**Current deployed recovery commit:** `c67b22f93bb1cfd8d45e138f5fb9b1a4b4844b1c`
+
 **Report purpose:** Explain what has been investigated, what has been changed, what production evidence proves, what remains unresolved, and what should happen next.
 
 ## 1. Executive Summary
