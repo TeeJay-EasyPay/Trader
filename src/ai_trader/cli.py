@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import subprocess
+import sys
 import threading
 import time
 from datetime import date, datetime, timezone
@@ -24,6 +26,7 @@ from .always_on import (
     claim_scheduled_job,
     complete_scheduled_job,
     default_worker_id,
+    get_scheduled_job_run,
     record_operations_incident,
     record_worker_heartbeat,
 )
@@ -36,7 +39,7 @@ DEMO_MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York
 
 
 class WorkerJobTimeout(RuntimeError):
-    """A timed-out daemon job requires process restart to stop residual work."""
+    """Backward-compatible timeout type retained for external imports."""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     run_job.add_argument("--scheduled-for", default=None)
     run_job.add_argument("--limit", default=30, type=int)
     run_job.add_argument("--report-type", default="daily")
+    run_job.add_argument("--claimed-job-run-id", default=None, type=int, help=argparse.SUPPRESS)
+    run_job.add_argument("--worker-id", default=None, help=argparse.SUPPRESS)
 
     migrate_database = sub.add_parser("migrate-sqlite-to-postgres")
     migrate_database.add_argument("--source", required=True)
@@ -308,9 +313,6 @@ def main(argv: list[str] | None = None) -> int:
                             "kraken_startup_reconciliation": _job_summary(startup_reconciliation),
                         },
                     )
-                except WorkerJobTimeout:
-                    pulse.set_status("restarting", current_job="timed-out-job")
-                    raise
                 except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
                     pulse.set_status("degraded", current_job="background-cycle")
                     record_worker_heartbeat(
@@ -338,18 +340,25 @@ def main(argv: list[str] | None = None) -> int:
 
         _raise_if_invalid_hosted_runtime(settings)
         service = LocalApiService(settings)
-        worker_id = default_worker_id("scheduled-job")
-        claim = claim_scheduled_job(
-            settings.db_path,
-            job_name=args.job_name,
-            scheduled_for=args.scheduled_for,
-            worker_id=worker_id,
-            assets_requested=args.limit,
-            payload={"limit": args.limit},
-        )
-        if not claim.get("claimed"):
-            print(json.dumps(claim, indent=2, sort_keys=True))
-            return 0
+        worker_id = args.worker_id or default_worker_id("scheduled-job")
+        if args.claimed_job_run_id is not None:
+            claim = {
+                "claimed": True,
+                "job_run_id": int(args.claimed_job_run_id),
+                "message": "Executing a job already claimed by the worker supervisor.",
+            }
+        else:
+            claim = claim_scheduled_job(
+                settings.db_path,
+                job_name=args.job_name,
+                scheduled_for=args.scheduled_for,
+                worker_id=worker_id,
+                assets_requested=args.limit,
+                payload={"limit": args.limit},
+            )
+            if not claim.get("claimed"):
+                print(json.dumps(claim, indent=2, sort_keys=True))
+                return 0
         try:
             result = _run_named_job(service, args.job_name, limit=args.limit, report_type=args.report_type)
             status = "completed_no_action" if result.get("status") in {"skipped", "manual_required", "not_available"} else "completed"
@@ -434,6 +443,46 @@ def _run_worker_cycle_job(
         return {"status": "skipped_duplicate", "job_name": job_name}
     record_worker_heartbeat(service.settings.db_path, worker_id=worker_id, worker_type="background-worker", current_job=job_name)
     try:
+        if restart_worker_on_timeout and timeout_seconds and timeout_seconds > 0:
+            process_result = _run_claimed_job_process(
+                job_name=job_name,
+                job_run_id=int(claim["job_run_id"]),
+                worker_id=worker_id,
+                timeout_seconds=max(1, int(timeout_seconds)),
+            )
+            if process_result["status"] == "timed_out":
+                message = f"Worker job exceeded its {int(timeout_seconds)} second execution boundary."
+                timed_out = complete_scheduled_job(
+                    service.settings.db_path,
+                    int(claim["job_run_id"]),
+                    status="timed_out",
+                    result={},
+                    failure_reason=message,
+                )
+                record_operations_incident(
+                    service.settings.db_path,
+                    severity="error",
+                    component="background-worker",
+                    title=f"Worker job timed out: {job_name}",
+                    message=message,
+                    payload={
+                        "worker_id": worker_id,
+                        "job": timed_out,
+                        "child_process_terminated": True,
+                    },
+                )
+                return {"status": "timed_out", "job_name": job_name, "reason": message}
+            if process_result["status"] != "completed":
+                raise RuntimeError(
+                    f"{job_name}: isolated job process exited with code "
+                    f"{process_result.get('returncode')}."
+                )
+            completed = get_scheduled_job_run(service.settings.db_path, int(claim["job_run_id"]))
+            if completed.get("status") == "failed":
+                raise RuntimeError(
+                    f"{job_name}: {completed.get('failure_reason') or 'isolated job failed'}"
+                )
+            return completed
         if timeout_seconds and timeout_seconds > 0:
             outcome: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
 
@@ -468,8 +517,6 @@ def _run_worker_cycle_job(
                     message=message,
                     payload={"worker_id": worker_id, "job": timed_out},
                 )
-                if restart_worker_on_timeout:
-                    raise WorkerJobTimeout(f"{job_name}: {message}")
                 return {"status": "timed_out", "job_name": job_name, "reason": message}
             if outcome_type == "error":
                 raise value
@@ -478,11 +525,51 @@ def _run_worker_cycle_job(
             result = _run_named_job(service, job_name, limit=0)
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="completed", result=result)
         return result
-    except WorkerJobTimeout:
-        raise
     except Exception as exc:
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=str(exc))
         raise
+
+
+def _run_claimed_job_process(
+    *,
+    job_name: str,
+    job_run_id: int,
+    worker_id: str,
+    timeout_seconds: int,
+) -> dict:
+    """Run one already-claimed job in a process that can be stopped safely."""
+    command = [
+        sys.executable,
+        "-m",
+        "ai_trader",
+        "run-job",
+        job_name,
+        "--claimed-job-run-id",
+        str(int(job_run_id)),
+        "--worker-id",
+        worker_id,
+        "--limit",
+        "0",
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        returncode = process.wait(timeout=max(1, int(timeout_seconds)))
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        return {"status": "timed_out", "returncode": process.returncode}
+    return {
+        "status": "completed" if returncode == 0 else "failed",
+        "returncode": returncode,
+    }
 
 
 def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartbeatPulse", *, scheduled_for: str) -> dict:

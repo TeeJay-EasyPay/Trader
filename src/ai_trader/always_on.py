@@ -454,6 +454,24 @@ def complete_scheduled_job(
     return dict(row) if row else {"job_run_id": job_run_id, "status": "missing"}
 
 
+def get_scheduled_job_run(db_path: Path, job_run_id: int) -> dict[str, Any]:
+    """Return one durable job record without changing its lifecycle."""
+    initialize_always_on_schema(db_path)
+    if _use_postgres():
+        with _postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = %s", (int(job_run_id),))
+                row = cur.fetchone()
+        return dict(row) if row else {"job_run_id": int(job_run_id), "status": "missing"}
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = ?",
+            (int(job_run_id),),
+        ).fetchone()
+    return dict(row) if row else {"job_run_id": int(job_run_id), "status": "missing"}
+
+
 def record_worker_heartbeat(
     db_path: Path,
     *,

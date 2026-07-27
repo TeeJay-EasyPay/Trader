@@ -1,5 +1,24 @@
 # AI Trading Assistant V1 Status
 
+## 2026-07-27 Render Worker Crash-Loop Recovery
+
+Status: **implemented and locally verified; hosted worker resume is pending**.
+
+- Render's 24-hour logs proved repeated `auto-execution` and
+  `overnight-crypto` 180-second timeouts were escaping the worker supervisor.
+- Every escaped timeout exited the container. Render restarted it repeatedly
+  and ultimately suspended the background worker for repeated crashes.
+- Bounded worker jobs now run in an isolated child process. An overrun
+  terminates the child, persists a `timed_out` job and operational incident,
+  and leaves the supervisor heartbeat running.
+- Durable job claims and idempotency keys remain unchanged. Risk, portfolio,
+  strategy, broker-permission and execution guardrails remain unchanged.
+- Local focused verification passed 24 worker and production-completion tests;
+  the complete Python suite passed 179 tests.
+- Hosted recovery is not yet proven. Render must deploy this commit and the
+  worker must be manually resumed before healthy heartbeats and new job rows
+  can be verified.
+
 ## 2026-07-23 Kraken Reconciliation and Learning Recovery
 
 Status: **implemented and locally verified; Kraken new entries remain paused

@@ -1477,3 +1477,26 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   Founder approval are required before Kraken entries resume.
 - No broker permission, risk limit, strategy gate, allocation limit, stop,
   target, or governance threshold was weakened.
+
+## 2026-07-27 - Render Worker Timeout Isolation
+
+- Reviewed the persisted 24-hour Render worker log rather than inferring
+  health from source code.
+- Confirmed the worker repeatedly exited when `auto-execution` or
+  `overnight-crypto` exceeded the configured 180-second job boundary.
+- Confirmed repeated container restarts caused Render to suspend the paid
+  background worker after repeated crashes.
+- Replaced supervisor termination with process-isolated job execution.
+- The supervisor now claims each durable job, starts a child process for the
+  bounded operation, terminates only that child on timeout, records
+  `timed_out`, creates an operational incident and continues running.
+- Added a read-only durable job lookup so the supervisor reports the child
+  process's persisted result rather than inventing an outcome.
+- Added regression coverage for timeout survival, child-process termination
+  and persisted completion outcomes.
+- Focused verification passed 24 tests; the complete Python suite passed 179
+  tests.
+- No trading threshold, broker permission, allocation, position limit,
+  stop-loss, take-profit, portfolio gate or Risk Engine rule changed.
+- Production remains paused until the new worker release is deployed and the
+  suspended Render worker is manually resumed and verified.

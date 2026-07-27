@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -8,11 +9,11 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.always_on import initialize_always_on_schema
+from ai_trader.always_on import complete_scheduled_job, initialize_always_on_schema
 from ai_trader.api import LocalApiService
 from ai_trader.canonical_trades import (
     canonical_trade,
@@ -20,7 +21,7 @@ from ai_trader.canonical_trades import (
     reconcile_canonical_broker_event,
     register_execution_intent,
 )
-from ai_trader.cli import WorkerJobTimeout, _run_worker_cycle_job
+from ai_trader.cli import _run_claimed_job_process, _run_worker_cycle_job
 from ai_trader.database import connect, selected_backend
 from ai_trader.models import TradeProposal
 from ai_trader.sprint6 import enqueue_learning_workflow, initialize_sprint6_schema, process_learning_outbox
@@ -263,7 +264,7 @@ class ProductionCompletionTests(unittest.TestCase):
                 )
             self.assertEqual(result["status"], "timed_out")
 
-    def test_production_worker_timeout_requests_clean_process_restart(self):
+    def test_production_worker_timeout_stops_only_job_and_preserves_supervisor(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ,
             {"AI_TRADER_DATABASE_BACKEND": "sqlite"},
@@ -273,20 +274,73 @@ class ProductionCompletionTests(unittest.TestCase):
             initialize_always_on_schema(db_path)
             service = SimpleNamespace(settings=SimpleNamespace(db_path=db_path))
 
-            def slow_job(*args, **kwargs):
-                time.sleep(1.5)
-                return {"status": "completed"}
+            with patch(
+                "ai_trader.cli._run_claimed_job_process",
+                return_value={"status": "timed_out", "returncode": -15},
+            ):
+                result = _run_worker_cycle_job(
+                    service,
+                    "broker-poll",
+                    "production-worker",
+                    scheduled_for="2026-07-20T10:01:00+00:00",
+                    timeout_seconds=1,
+                    restart_worker_on_timeout=True,
+                )
+            self.assertEqual(result["status"], "timed_out")
+            self.assertIn("execution boundary", result["reason"])
 
-            with patch("ai_trader.cli._run_named_job", side_effect=slow_job):
-                with self.assertRaises(WorkerJobTimeout):
-                    _run_worker_cycle_job(
-                        service,
-                        "broker-poll",
-                        "production-worker",
-                        scheduled_for="2026-07-20T10:01:00+00:00",
-                        timeout_seconds=1,
-                        restart_worker_on_timeout=True,
-                    )
+    def test_isolated_worker_job_returns_persisted_completion(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"AI_TRADER_DATABASE_BACKEND": "sqlite"},
+            clear=True,
+        ):
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            service = SimpleNamespace(settings=SimpleNamespace(db_path=db_path))
+
+            def complete_child(**kwargs):
+                complete_scheduled_job(
+                    db_path,
+                    kwargs["job_run_id"],
+                    status="completed_no_action",
+                    result={"status": "no_action"},
+                )
+                return {"status": "completed", "returncode": 0}
+
+            with patch("ai_trader.cli._run_claimed_job_process", side_effect=complete_child):
+                result = _run_worker_cycle_job(
+                    service,
+                    "auto-execution",
+                    "production-worker",
+                    scheduled_for="2026-07-20T10:02:00+00:00",
+                    timeout_seconds=1,
+                    restart_worker_on_timeout=True,
+                )
+            self.assertEqual(result["status"], "completed_no_action")
+
+    def test_isolated_job_process_is_terminated_after_timeout(self):
+        process = SimpleNamespace(returncode=-15)
+        process.wait = Mock(
+            side_effect=[
+                subprocess.TimeoutExpired(cmd="ai-trader", timeout=1),
+                -15,
+            ]
+        )
+        process.terminate = Mock()
+        process.kill = Mock()
+
+        with patch("ai_trader.cli.subprocess.Popen", return_value=process):
+            result = _run_claimed_job_process(
+                job_name="auto-execution",
+                job_run_id=42,
+                worker_id="production-worker",
+                timeout_seconds=1,
+            )
+
+        self.assertEqual(result["status"], "timed_out")
+        process.terminate.assert_called_once_with()
+        process.kill.assert_not_called()
 
 
 if __name__ == "__main__":
