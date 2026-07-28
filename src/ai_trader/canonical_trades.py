@@ -3,13 +3,33 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from contextlib import closing
+import threading
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from .always_on import uses_postgres
-from .database import connect
+from .database import connect, selected_backend
 from .models import TradeProposal, utc_now_iso
+
+
+@contextmanager
+def _connection(db_path: Path, conn: Any = None) -> Iterator[Any]:
+    """Reuse a caller-supplied connection, or open and close a fresh one.
+
+    Every function in this module that touches the database accepts an
+    optional ``conn`` so a caller processing many events in one loop (see
+    ``kraken_reconciliation.replay_kraken_evidence``) can share a single
+    physical connection across the whole batch instead of opening a new one
+    per row -- the confirmed dominant cost of that job's production timeouts
+    (PRODUCTION_TIMEOUT_ROOT_CAUSE_ANALYSIS.md). Callers that don't pass a
+    connection keep the exact previous per-call-connection behaviour.
+    """
+
+    if conn is not None:
+        yield conn
+        return
+    with closing(connect(db_path)) as new_conn:
+        yield new_conn
 
 
 CANONICAL_TRADE_SCHEMA = """
@@ -87,9 +107,36 @@ def initialize_canonical_trade_schema(db_path: Path) -> None:
             conn.executescript(CANONICAL_TRADE_SCHEMA)
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def _ensure_canonical_trade_schema(db_path: Path) -> None:
-    if not uses_postgres():
+    """Create the canonical-trade schema on first use, on every backend.
+
+    Unconditional on both SQLite and Postgres -- unlike an earlier version of
+    this function, it no longer skips schema creation when Postgres is the
+    active backend. It is cached per-process (matching the pattern already
+    used by ``always_on.initialize_always_on_schema`` and
+    ``production_evidence``) so that the many call sites throughout this
+    module that defensively call it before every operation do not each pay
+    for a fresh database connection once the schema is known to exist.
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
         initialize_canonical_trade_schema(db_path)
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def register_execution_intent(
@@ -161,11 +208,12 @@ def record_canonical_event(
     broker_fill_id: str | None = None,
     event_time: str | None = None,
     idempotency_key: str | None = None,
+    conn: Any = None,
 ) -> dict[str, Any]:
     _ensure_canonical_trade_schema(db_path)
     key = idempotency_key or _event_key(logical_trade_id, stage, payload)
     try:
-        with closing(connect(db_path)) as conn:
+        with _connection(db_path, conn) as conn:
             with conn:
                 cursor = conn.execute(
                     """
@@ -221,6 +269,7 @@ def resolve_logical_trade_id(
     *,
     broker: str,
     event: dict[str, Any],
+    conn: Any = None,
 ) -> str:
     _ensure_canonical_trade_schema(db_path)
     supplied = event.get("logical_trade_id") or event.get("proposal_id")
@@ -228,7 +277,7 @@ def resolve_logical_trade_id(
         return str(supplied)
     order_id = str(event.get("order_id") or event.get("ordertxid") or event.get("id") or "")
     if order_id:
-        with closing(connect(db_path)) as conn:
+        with _connection(db_path, conn) as conn:
             row = conn.execute(
                 """
                 SELECT logical_trade_id FROM LOGICAL_TRADE_EVENTS
@@ -257,9 +306,9 @@ def resolve_logical_trade_id(
     return f"{broker.lower()}:{stable}"
 
 
-def canonical_trade(db_path: Path, logical_trade_id: str) -> dict[str, Any] | None:
+def canonical_trade(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any] | None:
     _ensure_canonical_trade_schema(db_path)
-    with closing(connect(db_path)) as conn:
+    with _connection(db_path, conn) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
     return dict(row) if row else None
@@ -271,18 +320,19 @@ def reconcile_canonical_broker_event(
     broker: str,
     event: dict[str, Any],
     source: str,
+    conn: Any = None,
 ) -> dict[str, Any]:
     """Fold one broker event into one logical trade without reconstructing by symbol."""
 
     _ensure_canonical_trade_schema(db_path)
-    logical_trade_id = resolve_logical_trade_id(db_path, broker=broker, event=event)
+    logical_trade_id = resolve_logical_trade_id(db_path, broker=broker, event=event, conn=conn)
     symbol = str(event.get("symbol") or event.get("pair") or "unknown").upper()
     side = str(event.get("side") or event.get("type") or "buy").lower()
     stage = str(event.get("stage") or event.get("status") or "broker_acknowledged").lower()
     now = str(event.get("timestamp") or event.get("time") or event.get("updated_at") or utc_now_iso())
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.execute(
+    with _connection(db_path, conn) as active:
+        with active:
+            active.execute(
                 """
                 INSERT INTO LOGICAL_TRADES (
                     logical_trade_id, proposal_id, recommendation_id, broker, symbol,
@@ -326,6 +376,7 @@ def reconcile_canonical_broker_event(
         broker_fill_id=fill_id,
         event_time=now,
         idempotency_key=_event_key(logical_trade_id, stage, event),
+        conn=conn,
     )
     fill_result = _record_fill_if_present(
         db_path,
@@ -336,8 +387,9 @@ def reconcile_canonical_broker_event(
         fill_id=fill_id,
         side=side,
         filled_at=now,
+        conn=conn,
     )
-    aggregate = _refresh_trade_aggregate(db_path, logical_trade_id)
+    aggregate = _refresh_trade_aggregate(db_path, logical_trade_id, conn=conn)
     return {
         "logical_trade_id": logical_trade_id,
         "event": event_result,
@@ -357,6 +409,7 @@ def _record_fill_if_present(
     fill_id: str | None,
     side: str,
     filled_at: str,
+    conn: Any = None,
 ) -> dict[str, Any]:
     if broker.lower() == "kraken" and str(event.get("record_type") or "").lower() != "trade_fill":
         return {"status": "not_a_fill", "reason": "kraken_trade_fill_evidence_required"}
@@ -366,13 +419,13 @@ def _record_fill_if_present(
         return {"status": "not_a_fill"}
     fill_role = str(event.get("fill_role") or "").lower()
     if fill_role not in {"entry", "exit"}:
-        fill_role = _fill_role_from_order(db_path, broker=broker, order_id=order_id, logical_trade_id=logical_trade_id)
+        fill_role = _fill_role_from_order(db_path, broker=broker, order_id=order_id, logical_trade_id=logical_trade_id, conn=conn)
     if fill_role not in {"entry", "exit"}:
         return {"status": "unresolved_fill_role"}
     try:
-        with closing(connect(db_path)) as conn:
-            with conn:
-                conn.execute(
+        with _connection(db_path, conn) as active:
+            with active:
+                active.execute(
                     """
                     INSERT INTO LOGICAL_TRADE_FILLS (
                         logical_trade_id, broker, broker_fill_id, broker_order_id,
@@ -400,9 +453,11 @@ def _record_fill_if_present(
         return {"status": "duplicate", "fill_role": fill_role}
 
 
-def _fill_role_from_order(db_path: Path, *, broker: str, order_id: str | None, logical_trade_id: str) -> str:
+def _fill_role_from_order(
+    db_path: Path, *, broker: str, order_id: str | None, logical_trade_id: str, conn: Any = None
+) -> str:
     if order_id:
-        with closing(connect(db_path)) as conn:
+        with _connection(db_path, conn) as conn:
             if broker.lower() == "kraken":
                 try:
                     owned = conn.execute(
@@ -444,36 +499,35 @@ def _fill_role_from_order(db_path: Path, *, broker: str, order_id: str | None, l
     return "entry" if not float(trade.get("entry_filled_quantity") or 0) else "exit"
 
 
-def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str) -> dict[str, Any] | None:
-    with closing(connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        fills = conn.execute(
+def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any] | None:
+    with _connection(db_path, conn) as active:
+        active.row_factory = sqlite3.Row
+        fills = active.execute(
             "SELECT * FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id",
             (logical_trade_id,),
         ).fetchall()
-        trade_row = conn.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
-    if not trade_row:
-        return None
-    entries = [row for row in fills if row["fill_role"] == "entry"]
-    exits = [row for row in fills if row["fill_role"] == "exit"]
-    entry_qty = sum(float(row["quantity"]) for row in entries)
-    exit_qty = sum(float(row["quantity"]) for row in exits)
-    avg_entry = _weighted_average(entries)
-    avg_exit = _weighted_average(exits)
-    broker_fee = sum(float(row["broker_fee"] or 0) for row in fills)
-    exchange_fee = sum(float(row["exchange_fee"] or 0) for row in fills)
-    side = str(trade_row["side"] or "buy").lower()
-    gross_pnl = None
-    if avg_entry is not None and avg_exit is not None and exit_qty > 0:
-        matched = min(entry_qty, exit_qty)
-        gross_pnl = (avg_exit - avg_entry) * matched * (1 if side == "buy" else -1)
-    net_pnl = gross_pnl - broker_fee - exchange_fee if gross_pnl is not None else None
-    terminal = bool(entry_qty > 0 and exit_qty >= entry_qty - 1e-9)
-    state = "closed" if terminal else "open" if entry_qty > 0 else str(trade_row["state"])
-    confidence = 1.0 if terminal and all(row["broker_fill_id"] for row in fills) else 0.85 if fills else 0.5
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.execute(
+        trade_row = active.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
+        if not trade_row:
+            return None
+        entries = [row for row in fills if row["fill_role"] == "entry"]
+        exits = [row for row in fills if row["fill_role"] == "exit"]
+        entry_qty = sum(float(row["quantity"]) for row in entries)
+        exit_qty = sum(float(row["quantity"]) for row in exits)
+        avg_entry = _weighted_average(entries)
+        avg_exit = _weighted_average(exits)
+        broker_fee = sum(float(row["broker_fee"] or 0) for row in fills)
+        exchange_fee = sum(float(row["exchange_fee"] or 0) for row in fills)
+        side = str(trade_row["side"] or "buy").lower()
+        gross_pnl = None
+        if avg_entry is not None and avg_exit is not None and exit_qty > 0:
+            matched = min(entry_qty, exit_qty)
+            gross_pnl = (avg_exit - avg_entry) * matched * (1 if side == "buy" else -1)
+        net_pnl = gross_pnl - broker_fee - exchange_fee if gross_pnl is not None else None
+        terminal = bool(entry_qty > 0 and exit_qty >= entry_qty - 1e-9)
+        state = "closed" if terminal else "open" if entry_qty > 0 else str(trade_row["state"])
+        confidence = 1.0 if terminal and all(row["broker_fill_id"] for row in fills) else 0.85 if fills else 0.5
+        with active:
+            active.execute(
                 """
                 UPDATE LOGICAL_TRADES SET
                     state = ?, average_entry_price = ?, average_exit_price = ?,
@@ -500,7 +554,7 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str) -> dict[str, 
                     logical_trade_id,
                 ),
             )
-    return canonical_trade(db_path, logical_trade_id)
+        return canonical_trade(db_path, logical_trade_id, conn=active)
 
 
 def _weighted_average(rows: list[Any]) -> float | None:

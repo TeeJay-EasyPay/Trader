@@ -127,45 +127,21 @@ services:
     dockerCommand: python -m ai_trader run-worker --sleep-seconds 60
     envVars: *ai_trader_env
 
-  - type: cron
-    name: ai-trader-premarket-equity
-    env: docker
-    schedule: "30 12 * * 1-5"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job premarket-equity --limit 30
-    envVars: *ai_trader_env
-
-  - type: cron
-    name: ai-trader-market-open-equity
-    env: docker
-    schedule: "45 13 * * 1-5"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job market-open-equity --limit 30
-    envVars: *ai_trader_env
-
-  - type: cron
-    name: ai-trader-midday-equity
-    env: docker
-    schedule: "30 16 * * 1-5"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job midday-equity --limit 30
-    envVars: *ai_trader_env
-
-  - type: cron
-    name: ai-trader-market-close-equity
-    env: docker
-    schedule: "50 19 * * 1-5"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job market-close-equity --limit 30
-    envVars: *ai_trader_env
-
-  - type: cron
-    name: ai-trader-overnight-crypto
-    env: docker
-    schedule: "15 */2 * * *"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job overnight-crypto --limit 20
-    envVars: *ai_trader_env
+  # NOTE: premarket-equity, market-open-equity, midday-equity, market-close-equity,
+  # overnight-crypto, and daily-report were REMOVED from here on 2026-07-27 (Phase 0 /
+  # CRITICAL_REMEDIATION_PLAN.md P0-3). The always-on worker's own internal scheduler
+  # (`cli.py:_due_worker_jobs`) already triggers every one of these jobs on its own
+  # cadence. Running both a Render cron service and the worker loop for the same job
+  # name double-scheduled research (most visibly `overnight-crypto`, which the worker
+  # ran hourly on top of the cron's own 2-hourly schedule) and was a confirmed
+  # contributor to the job timeouts investigated in
+  # architecture/PRODUCTION_TIMEOUT_ROOT_CAUSE_ANALYSIS.md, because the two schedulers
+  # compute different `scheduled_for` idempotency keys and never deduplicate against
+  # each other. Do not re-add a cron service for any of these six job names without
+  # also removing the corresponding entry from `_due_worker_jobs`, or the double
+  # scheduling will return. `midday-equity` specifically has no worker-loop equivalent
+  # by name, but its entire trading-hours window is already covered by the worker's
+  # hourly `market-open-equity` research cadence, so no replacement job was added.
 
   - type: cron
     name: ai-trader-daily-learning
@@ -173,14 +149,6 @@ services:
     schedule: "10 21 * * *"
     dockerfilePath: ./Dockerfile
     dockerCommand: python -m ai_trader run-job daily-learning
-    envVars: *ai_trader_env
-
-  - type: cron
-    name: ai-trader-daily-report
-    env: docker
-    schedule: "20 21 * * *"
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m ai_trader run-job daily-report --report-type daily
     envVars: *ai_trader_env
 
   - type: cron

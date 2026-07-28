@@ -734,6 +734,29 @@ def complete_order_intent_lock(
             )
 
 
+def release_order_intent_lock(
+    db_path: Path,
+    *,
+    broker: str,
+    client_order_id: str,
+) -> None:
+    """Free a lock after a definite, non-ambiguous broker rejection.
+
+    Must only be called when the broker synchronously returned a clear
+    "no order was placed" result. If the outcome is unknown (network loss,
+    process termination, an exception before this point), the lock must
+    stay in place so the position is never resubmitted blind.
+    """
+
+    initialize_multi_broker_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                "DELETE FROM ORDER_INTENT_LOCKS WHERE broker = ? AND client_order_id = ?",
+                (broker.lower(), client_order_id),
+            )
+
+
 def record_managed_trade_exit(
     db_path: Path,
     *,

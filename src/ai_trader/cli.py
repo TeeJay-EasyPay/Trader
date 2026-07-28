@@ -294,6 +294,18 @@ def main(argv: list[str] | None = None) -> int:
                         pulse,
                         scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
                     )
+                    # Runs in the worker's own job loop, not the API's background-worker
+                    # set, because AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true on every
+                    # hosted service means that set never starts in production -- without
+                    # this, no incident or trade notification the system records ever
+                    # actually reaches the Founder's phone (CRITICAL_REMEDIATION_PLAN.md P0-5).
+                    push = _run_pulsed_job(
+                        service,
+                        "push-dispatch",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, 30),
+                    )
                     for job_name, scheduled_for in _research_worker_jobs(due_jobs):
                         scheduled_results[job_name] = _run_pulsed_job(
                             service,
@@ -317,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                             "broker_poll": _job_summary(broker_poll),
                             "managed_exits": _job_summary(exits),
                             "auto_execution": _job_summary(auto),
+                            "push_dispatch": _job_summary(push),
                             "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
                             "learning": _job_summary(learning),
                             "kraken_startup_reconciliation": _job_summary(startup_reconciliation),
@@ -431,6 +444,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.monitor_managed_exits()
     if job_name == "kraken-startup-reconciliation":
         return replay_persisted_kraken_evidence(service.settings.db_path)
+    if job_name == "push-dispatch":
+        return service.dispatch_pending_push_notifications()
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 

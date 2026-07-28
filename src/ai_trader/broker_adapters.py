@@ -209,8 +209,9 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
     def get_balances(self) -> dict[str, Any]:
         return self.get_account()
 
-    def get_positions(self) -> list[dict[str, Any]]:
-        account = self.get_account()
+    def get_positions(self, account: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        if account is None:
+            account = self.get_account()
         balances = account.get("balances") if isinstance(account, dict) else None
         if not isinstance(balances, dict):
             return []

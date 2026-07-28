@@ -1,5 +1,72 @@
 # Implementation Log
 
+## 2026-07-28 Founder Implementation Programme - Phase 0 (mandatory safety gate)
+
+Implements the five P0 items in `architecture/CRITICAL_REMEDIATION_PLAN.md`, approved by
+the Founder as the mandatory gate before Seven Pillars work begins (see
+`architecture/FOUNDER_IMPLEMENTATION_PLAN.md`). All five originate from the 2026-07-27
+independent architecture review (`architecture/CLAUDE_INDEPENDENT_ARCHITECTURE_REVIEW.md`).
+
+- **P0-1 - `LOGICAL_TRADES` schema never created on Postgres.** `canonical_trades.py` and
+  `kraken_reconciliation.py` both skipped canonical-trade schema creation whenever
+  `uses_postgres()` was true, and no other code path created it there either. Removed the
+  skip; schema creation is now unconditional on both backends and cached once per process
+  (the same `_INITIALIZED_SCHEMA_KEYS` pattern already used by `always_on.py` and
+  `production_evidence.py`) so the fix does not reintroduce per-call connection overhead.
+  Wired `initialize_canonical_trade_schema` into `LocalApiService.__init__`'s startup
+  sequence in `api.py`.
+- **P0-2 - exit orders had no duplicate-submission protection.** `monitor_managed_exits`
+  and `force_managed_exit` in `api.py` now acquire the same DB-level
+  `acquire_order_intent_lock` entries already use, before calling the broker, sharing one
+  lock key per managed position so an automatic exit and a founder-forced exit can never
+  both submit an order for the same position. Added `release_order_intent_lock` to
+  `multi_broker.py`, called only on a definite, synchronous broker rejection, so a
+  legitimate retry remains possible without ever auto-retrying an ambiguous outcome
+  (process killed mid-flight).
+- **P0-3 - duplicate scheduling between Render cron and the always-on worker.** Confirmed
+  the worker's own `_due_worker_jobs` already independently schedules
+  `premarket-equity`, `overnight-crypto`, `market-open-equity`, `market-close-equity`, and
+  `daily-report` on its own cadence, and the two schedulers' idempotency keys never
+  collide. Removed the six overlapping Render cron services from `render.yaml` (including
+  `midday-equity`, whose window is already covered by the worker's hourly
+  `market-open-equity` cadence); kept `daily-learning`, `weekly-report`, `monthly-report`,
+  which the worker loop does not schedule.
+- **P0-4 - timeout root causes.** (a) `kraken_reconciliation.replay_kraken_evidence` and
+  its full call graph (including the shared `canonical_trades.py` reconciliation
+  functions) now thread one shared database connection through an entire replay batch
+  instead of opening a fresh connection per row per helper -- the confirmed dominant cost
+  of the Kraken startup reconciliation timeout. (b) `capture_production_broker_snapshots`
+  now fetches the Alpaca and Kraken portfolios concurrently (Postgres only, to avoid
+  SQLite lock contention in local/test runs) instead of sequentially, and Kraken's
+  `get_positions()` no longer makes a redundant second `get_account()` call.
+- **P0-5 - push notifications structurally unreachable in production.** Added a
+  `push-dispatch` named job (`cli.py:_run_named_job`) and scheduled it every 30s inside
+  the always-on worker's own job loop, alongside `managed-exits`/`broker-poll`. Previously
+  `dispatch_pending_push_notifications` was only registered inside the API service's
+  background-worker set, which `AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true` (set on
+  every Render service) disables in production -- no incident or trade notification the
+  system recorded ever actually reached the Founder's phone.
+
+**Testing:** full local suite passes (185 tests, including 5 new tests added for this
+work covering P0-2's duplicate-lock behaviour on both the automatic and founder-forced
+exit paths, the lock-release-on-definite-rejection retry path, and P0-5's job wiring).
+Compiled all modified files with no errors. One unrelated, pre-existing, non-reproducible
+flaky test (`test_phase5_production_spine.py`, worker-supervision heartbeat timing) was
+observed once in five full-suite runs and confirmed unaffected by this change (same
+result on unmodified code; passes in isolation and when bisected).
+
+**Not verified by this work, and explicitly required before Phase 0 is considered
+complete per the Founder's completion standard:** hosted-production evidence. This
+environment has no Postgres/Docker access, so P0-1's Postgres-specific behaviour and
+P0-4's connection-count reduction could not be measured against a real deployment.
+Deploy this commit and confirm, from hosted evidence, before proceeding to Seven Pillars
+work: (1) `LOGICAL_TRADES`/`LOGICAL_TRADE_EVENTS`/`LOGICAL_TRADE_FILLS` exist on the live
+Postgres database; (2) `SCHEDULED_JOB_RUNS` shows no more double-triggering of the six
+removed-cron job names; (3) `premarket-equity`, `overnight-crypto`, `evidence-snapshot`,
+and Kraken startup reconciliation complete within their 180s boundary across several
+consecutive cycles; (4) a test notification reaches the Founder's phone without opening
+the app; (5) a deliberately-simulated duplicate exit attempt is refused.
+
 ## 2026-07-23 - Worker operational-priority recovery
 
 - Confirmed from hosted job evidence that the final worker was healthy but

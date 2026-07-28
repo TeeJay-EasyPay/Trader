@@ -7,10 +7,11 @@ import logging
 import os
 import socket
 import sqlite3
-from .database import connect
+from .database import connect, selected_backend
 import sys
 import time
 from collections import Counter, defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -58,9 +59,11 @@ from .market_intelligence_platform import initialize_market_intelligence_schema
 from .intelligence import InvestmentIntelligenceDatabase
 from .models import AccountContext, OrderRequest, Position, TradeProposal, utc_now_iso
 from .multi_broker import (
+    acquire_order_intent_lock,
     all_broker_runtime,
     broker_auto_settings,
     broker_auto_trading_enabled,
+    complete_order_intent_lock,
     initialize_multi_broker_schema,
     active_push_tokens,
     latest_broker_trades,
@@ -77,13 +80,15 @@ from .multi_broker import (
     record_notification,
     record_recommendation_set,
     register_push_token,
+    release_order_intent_lock,
     send_expo_push,
     set_broker_auto_trading,
     today_runtime_counts,
     update_broker_runtime,
     update_trailing_water_marks,
 )
-from .orchestrator import InvestmentOrchestrator, OrchestratorContext, next_research_run
+from .orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run
+from .canonical_trades import initialize_canonical_trade_schema
 from .kraken_reconciliation import (
     initialize_kraken_reconciliation_schema,
     kraken_capital_ledger_summary,
@@ -273,6 +278,7 @@ class LocalApiService:
         initialize_production_evidence_schema(settings.db_path)
         initialize_production_spine_schema(settings.db_path)
         initialize_sprint6_schema(settings.db_path)
+        initialize_canonical_trade_schema(settings.db_path)
         initialize_kraken_reconciliation_schema(
             settings.db_path,
             allocation_gbp=_float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0),
@@ -2741,6 +2747,7 @@ This report explains available evidence. It does not automatically change strate
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "open", "price": price})
                 continue
             exit_side = "sell" if side == "buy" else "buy"
+            client_order_id = f"exit-{item['managed_exit_id']}"
             order_request = OrderRequest(
                 symbol=item["symbol"],
                 side=exit_side,
@@ -2750,11 +2757,37 @@ This report explains available evidence. It does not automatically change strate
                 stop_loss=0,
                 take_profit=0,
                 notional_amount=price * float(item["quantity"]),
-                client_order_id=f"exit-{item['managed_exit_id']}-{reason}",
+                client_order_id=client_order_id,
                 quote_currency="GBP",
                 broker_pair=pair,
             )
+            lock_acquired = acquire_order_intent_lock(
+                self.settings.db_path,
+                broker=broker,
+                client_order_id=client_order_id,
+                symbol=item["symbol"],
+                side=exit_side,
+                notional=order_request.notional_amount,
+            )
+            if not lock_acquired:
+                checked.append(
+                    {
+                        "managed_exit_id": item["managed_exit_id"],
+                        "status": "duplicate_exit_intent",
+                        "reason": "An exit order intent for this managed position is already locked; skipping to avoid a duplicate broker submission.",
+                        "price": price,
+                    }
+                )
+                continue
             result = adapter.place_exit_order(order_request)
+            complete_order_intent_lock(
+                self.settings.db_path,
+                broker=broker,
+                client_order_id=client_order_id,
+                status=str(result.get("status", "unknown")),
+                result_order_id=str(result.get("id") or result.get("order_id") or "") or None,
+                notes=json_safe(result),
+            )
             if result.get("status") in {"accepted", "submitted"}:
                 entry_payload = _json_loads_safe(item.get("payload_json")) or {}
                 proposal_id = entry_payload.get("proposal_id")
@@ -2788,6 +2821,10 @@ This report explains available evidence. It does not automatically change strate
                 )
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_submitted", "reason": reason, "price": price})
             else:
+                # Broker synchronously and definitively declined the order (no ambiguity
+                # about whether it reached the exchange) -- safe to release the intent
+                # lock so the next cycle can retry instead of being permanently blocked.
+                release_order_intent_lock(self.settings.db_path, broker=broker, client_order_id=client_order_id)
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_failed", "reason": result.get("reason"), "price": price})
         return {"status": "checked", "managed_exits": checked}
 
@@ -2810,6 +2847,10 @@ This report explains available evidence. It does not automatically change strate
         entry_side = str(item["side"]).lower()
         exit_side = "sell" if entry_side == "buy" else "buy"
         quantity = float(item["quantity"])
+        # Shares the same lock key as monitor_managed_exits' automatic trigger for this
+        # managed_exit_id, so a founder-forced exit and an automatic stop-loss/take-profit
+        # exit can never both submit an order for the same position.
+        client_order_id = f"exit-{managed_exit_id}"
         order_request = OrderRequest(
             symbol=item["symbol"],
             side=exit_side,
@@ -2819,12 +2860,34 @@ This report explains available evidence. It does not automatically change strate
             stop_loss=0,
             take_profit=0,
             notional_amount=price * quantity,
-            client_order_id=f"manual-exit-{managed_exit_id}",
+            client_order_id=client_order_id,
             quote_currency="GBP",
             broker_pair=pair,
         )
+        lock_acquired = acquire_order_intent_lock(
+            self.settings.db_path,
+            broker=broker,
+            client_order_id=client_order_id,
+            symbol=item["symbol"],
+            side=exit_side,
+            notional=order_request.notional_amount,
+        )
+        if not lock_acquired:
+            return {
+                "status": "rejected",
+                "message": "An exit order intent for this managed position is already locked; a previous forced exit may still be in flight or was already submitted. Refusing to submit a duplicate.",
+            }
         result = adapter.place_exit_order(order_request)
+        complete_order_intent_lock(
+            self.settings.db_path,
+            broker=broker,
+            client_order_id=client_order_id,
+            status=str(result.get("status", "unknown")),
+            result_order_id=str(result.get("id") or result.get("order_id") or "") or None,
+            notes=json_safe(result),
+        )
         if result.get("status") not in {"accepted", "submitted"}:
+            release_order_intent_lock(self.settings.db_path, broker=broker, client_order_id=client_order_id)
             return {"status": "rejected", "message": f"Kraken exit order was not accepted: {result.get('reason') or result.get('status')}", "order": result}
         entry_payload = _json_loads_safe(item.get("payload_json")) or {}
         proposal_id = entry_payload.get("proposal_id")
@@ -2946,10 +3009,40 @@ This report explains available evidence. It does not automatically change strate
     def capture_production_broker_snapshots(self) -> dict[str, Any]:
         """Capture Founder-facing broker truth in the shared production datastore."""
         results: dict[str, Any] = {}
-        for broker_name in ("alpaca", "kraken"):
-            try:
-                panel = self._live_alpaca_portfolio() if broker_name == "alpaca" else self._exchange_portfolio(broker_name)
-                panel = {**panel, "broker": broker_name}
+        broker_names = ("alpaca", "kraken")
+
+        def fetch(broker_name: str) -> Any:
+            return self._live_alpaca_portfolio() if broker_name == "alpaca" else self._exchange_portfolio(broker_name)
+
+        panels: dict[str, Any] = {}
+        # Alpaca and Kraken are independent brokers with no shared state or data
+        # dependency between them; fetching their portfolios sequentially was a
+        # confirmed dominant cost of the evidence-snapshot job's timeouts (up to
+        # ~9 sequential broker HTTP round-trips -- see
+        # PRODUCTION_TIMEOUT_ROOT_CAUSE_ANALYSIS.md). Running them concurrently
+        # bounds the job's wall-clock time to the slower of the two brokers
+        # instead of the sum of both. Only done against Postgres: SQLite (local
+        # dev/tests) has no busy-timeout configured, so concurrent writers to
+        # the same file can raise "database is locked" -- a real production
+        # win is not worth introducing flakiness into the local/test backend.
+        if selected_backend() == "postgres":
+            with ThreadPoolExecutor(max_workers=len(broker_names)) as pool:
+                futures = {broker_name: pool.submit(fetch, broker_name) for broker_name in broker_names}
+                for broker_name, future in futures.items():
+                    try:
+                        panels[broker_name] = ("ok", future.result())
+                    except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
+                        panels[broker_name] = ("error", exc)
+        else:
+            for broker_name in broker_names:
+                try:
+                    panels[broker_name] = ("ok", fetch(broker_name))
+                except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
+                    panels[broker_name] = ("error", exc)
+        for broker_name in broker_names:
+            status, payload = panels[broker_name]
+            if status == "ok":
+                panel = {**payload, "broker": broker_name}
                 record_broker_snapshot(self.settings.db_path, panel)
                 # Broker polling owns order/trade evidence. Snapshot capture owns
                 # account, balance, and position truth only. Keeping ownership
@@ -2961,8 +3054,9 @@ This report explains available evidence. It does not automatically change strate
                     "portfolio_value": panel.get("portfolio_value"),
                     "open_positions": panel.get("open_positions_summary"),
                 }
-            except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
-                logger.exception("Failed to capture %s production broker snapshot.", broker_name)
+            else:
+                exc = payload
+                logger.exception("Failed to capture %s production broker snapshot.", broker_name, exc_info=exc)
                 record_broker_snapshot(
                     self.settings.db_path,
                     {
@@ -3411,7 +3505,12 @@ This report explains available evidence. It does not automatically change strate
             }
         if not configured:
             return self._unconfigured_exchange_portfolio(broker)
-        positions = adapter.get_positions()
+        # Pass the account payload already fetched above instead of letting
+        # get_positions() re-fetch it -- Kraken's get_positions() derives
+        # positions from account balances, so re-fetching was a confirmed
+        # redundant private API call on every evidence-snapshot cycle
+        # (PRODUCTION_TIMEOUT_ROOT_CAUSE_ANALYSIS.md).
+        positions = adapter.get_positions(account) if broker == "kraken" else adapter.get_positions()
         orders = adapter.get_orders()
         history = adapter.get_trade_history()
         record_broker_trade_history(self.settings.db_path, broker, orders + history)
@@ -4049,6 +4148,14 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
         )
 
     if service.settings.disable_api_background_workers:
+        # This is the branch that actually runs in hosted production --
+        # AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true on every Render service
+        # (render.yaml). Everything in the `else` below, including the push-dispatch
+        # IntervalWorker, is dead code there; the always-on worker's own job loop
+        # (cli.py run-worker) is what must own autonomous operations, including push
+        # dispatch (see the "push-dispatch" job, CRITICAL_REMEDIATION_PLAN.md P0-5).
+        # The `else` branch below only executes for a local/dev API process run with
+        # this flag unset.
         logger.info(
             "API background workers are disabled by AI_TRADER_DISABLE_API_BACKGROUND_WORKERS; "
             "Render worker/cron services own autonomous operations."

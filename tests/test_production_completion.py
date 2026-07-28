@@ -306,6 +306,22 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertEqual(result, expected)
         replay.assert_called_once_with(service.settings.db_path)
 
+    def test_push_dispatch_is_a_named_job_reachable_from_the_worker_loop(self):
+        """CRITICAL_REMEDIATION_PLAN.md P0-5: push notifications were previously
+        wired only into the API service's background-worker set, which
+        AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true (set on every Render
+        service) disables in production -- so no incident/trade notification
+        ever reached the Founder's phone. push-dispatch must be dispatchable as
+        a named worker job, the same mechanism managed-exits/broker-poll use."""
+        service = SimpleNamespace(dispatch_pending_push_notifications=Mock(return_value={"dispatched": 2, "devices": 1}))
+
+        from ai_trader.cli import _run_named_job
+
+        result = _run_named_job(service, "push-dispatch", limit=0)
+
+        self.assertEqual(result, {"dispatched": 2, "devices": 1})
+        service.dispatch_pending_push_notifications.assert_called_once_with()
+
     def test_isolated_worker_job_returns_persisted_completion(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ,

@@ -22,6 +22,7 @@ from ai_trader.broker_adapters import KrakenAdapter
 from ai_trader.foundation import load_trading_policy
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
 from ai_trader.multi_broker import (
+    acquire_order_intent_lock,
     broker_auto_trading_enabled,
     close_managed_exit_and_record,
     initialize_multi_broker_schema,
@@ -691,6 +692,163 @@ def restore_env(previous):
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
+    """CRITICAL_REMEDIATION_PLAN.md P0-2: exit orders must have the same
+    duplicate-submission protection entry orders already had. These tests
+    exercise LocalApiService.monitor_managed_exits / force_managed_exit
+    directly (previously untested anywhere in this suite)."""
+
+    def _env(self):
+        return {
+            key: os.environ.get(key)
+            for key in ["KRAKEN_API_KEY", "KRAKEN_PRIVATE_KEY", "KRAKEN_LIVE_TRADING_APPROVED", "KRAKEN_SUBMIT_REAL_ORDERS"]
+        }
+
+    def _activate_kraken(self):
+        os.environ["KRAKEN_API_KEY"] = "key"
+        os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+        os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+        os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+
+    def _open_position(self, service, *, entry_price=50_000.0, stop_loss=49_000.0, take_profit=52_000.0):
+        entry = record_managed_trade_exit(
+            service.settings.db_path,
+            broker="kraken",
+            symbol="BTC",
+            side="buy",
+            quantity=0.1,
+            entry_order_id="entry-dup-test",
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            payload={"proposal_id": "prop-dup-test"},
+        )
+        return int(entry["managed_exit_id"])
+
+    def test_monitor_managed_exits_submits_and_closes_the_lock_on_success(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}  # below stop_loss -> triggers exit
+                service.orchestrator.adapters["kraken"] = adapter
+                self._open_position(service)
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(len(adapter.submitted_orders), 1, "Exactly one exit order must reach the broker.")
+                self.assertEqual(result["managed_exits"][0]["status"], "exit_submitted")
+
+                # A second cycle must see the position no longer 'open' (it was marked
+                # exit_submitted) and therefore must not re-evaluate or resubmit it.
+                second = service.monitor_managed_exits()
+                self.assertEqual(len(adapter.submitted_orders), 1, "A second cycle must not submit a second exit order.")
+                self.assertEqual(second["managed_exits"], [])
+        finally:
+            restore_env(previous)
+
+    def test_monitor_managed_exits_refuses_to_resubmit_while_a_prior_attempt_is_still_locked(self):
+        """Simulates the exact P0-2 failure mode: the worker's own timeout-kill
+        mechanism can terminate a job after the broker already accepted an exit
+        order but before the local DB write confirming it completes, leaving
+        the intent lock 'locked' with no result recorded. The next cycle must
+        refuse to submit a second order for the same position rather than
+        blindly retrying."""
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+
+                # Pre-acquire the lock the way orchestrator.py's entry path already
+                # does, and the way the exit path now does before calling the broker --
+                # simulating that a prior process died after acquiring it.
+                locked = acquire_order_intent_lock(
+                    service.settings.db_path,
+                    broker="kraken",
+                    client_order_id=f"exit-{managed_exit_id}",
+                    symbol="BTC",
+                    side="sell",
+                    notional=4800.0,
+                )
+                self.assertTrue(locked, "Precondition: the lock must be acquirable exactly once.")
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(adapter.submitted_orders, [], "No broker call may happen while the prior intent lock is unresolved.")
+                self.assertEqual(result["managed_exits"][0]["status"], "duplicate_exit_intent")
+        finally:
+            restore_env(previous)
+
+    def test_force_managed_exit_and_monitor_managed_exits_share_one_lock_for_the_same_position(self):
+        """A founder-forced exit and the automatic stop-loss/take-profit monitor
+        must not be able to both submit an order for the same managed position."""
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+
+                first = service.force_managed_exit({"managed_exit_id": managed_exit_id})
+                self.assertEqual(first["status"], "submitted")
+                self.assertEqual(len(adapter.submitted_orders), 1)
+
+                # The position is no longer 'open' (mark_managed_exit_submitted already
+                # ran), so monitor_managed_exits should not even see it -- but exercise
+                # the lock directly to prove it would refuse a same-key resubmission too.
+                relocked = acquire_order_intent_lock(
+                    service.settings.db_path,
+                    broker="kraken",
+                    client_order_id=f"exit-{managed_exit_id}",
+                    symbol="BTC",
+                    side="sell",
+                    notional=4800.0,
+                )
+                self.assertFalse(relocked, "The lock acquired by force_managed_exit must still be held.")
+        finally:
+            restore_env(previous)
+
+    def test_definite_broker_rejection_releases_the_lock_for_a_legitimate_retry(self):
+        """A synchronous, unambiguous broker rejection (e.g. Kraken trading not
+        yet approved) must not permanently strand a position with no way to
+        ever exit it -- the lock must be released so the next cycle can retry."""
+        previous = self._env()
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "false"  # definite, synchronous rejection
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+                service.orchestrator.adapters["kraken"] = adapter
+                self._open_position(service)
+
+                first = service.monitor_managed_exits()
+                self.assertEqual(first["managed_exits"][0]["status"], "exit_failed")
+                self.assertEqual(adapter.submitted_orders, [])
+
+                # Now approve trading and retry -- the earlier rejection must not have
+                # left the position permanently locked out of ever exiting.
+                os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+                os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+                second = service.monitor_managed_exits()
+                self.assertEqual(second["managed_exits"][0]["status"], "exit_submitted")
+                self.assertEqual(len(adapter.submitted_orders), 1)
+        finally:
+            restore_env(previous)
 
 
 if __name__ == "__main__":
