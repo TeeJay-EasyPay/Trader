@@ -375,6 +375,28 @@ class ProductionCompletionTests(unittest.TestCase):
         process.terminate.assert_called_once_with()
         process.kill.assert_not_called()
 
+    def test_child_job_process_no_longer_discards_stdout_and_stderr(self):
+        # Regression guard: child job output must reach Render's log viewer, not /dev/null.
+        # Before this fix, subprocess.Popen was called with stdout=DEVNULL, stderr=DEVNULL,
+        # which meant no job - however heavily instrumented - could ever produce visible logs.
+        process = SimpleNamespace(returncode=0)
+        process.wait = Mock(return_value=0)
+
+        with patch("ai_trader.cli.subprocess.Popen", return_value=process) as popen:
+            result = _run_claimed_job_process(
+                job_name="overnight-crypto",
+                job_run_id=7,
+                worker_id="production-worker",
+                timeout_seconds=180,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        _, kwargs = popen.call_args
+        self.assertNotIn("stdout", kwargs)
+        self.assertNotIn("stderr", kwargs)
+        command = popen.call_args[0][0]
+        self.assertIn("-u", command)  # unbuffered, so output survives a later kill on timeout
+
 
 if __name__ == "__main__":
     unittest.main()

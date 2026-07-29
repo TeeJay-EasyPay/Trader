@@ -565,9 +565,18 @@ def _run_claimed_job_process(
     worker_id: str,
     timeout_seconds: int,
 ) -> dict:
-    """Run one already-claimed job in a process that can be stopped safely."""
+    """Run one already-claimed job in a process that can be stopped safely.
+
+    Child stdout/stderr are inherited (not discarded) so job output reaches Render's log
+    viewer, and "-u" keeps the child unbuffered so output is flushed as it happens rather than
+    lost if the process is later killed on timeout. This function itself only logs the
+    started/completed/failed/timed-out envelope around the child process, since it is the only
+    place that actually observes a timeout firing; job-internal detail (symbols processed,
+    proposals generated, etc.) is logged by the job's own code, inside the child.
+    """
     command = [
         sys.executable,
+        "-u",
         "-m",
         "ai_trader",
         "run-job",
@@ -579,11 +588,9 @@ def _run_claimed_job_process(
         "--limit",
         "0",
     ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    print(f"[worker] job={job_name} run_id={job_run_id} status=started timeout={int(timeout_seconds)}s", flush=True)
+    start = time.monotonic()
+    process = subprocess.Popen(command)
     try:
         returncode = process.wait(timeout=max(1, int(timeout_seconds)))
     except subprocess.TimeoutExpired:
@@ -593,9 +600,14 @@ def _run_claimed_job_process(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        elapsed = time.monotonic() - start
+        print(f"[worker] job={job_name} run_id={job_run_id} status=timed_out elapsed={elapsed:.1f}s", flush=True)
         return {"status": "timed_out", "returncode": process.returncode}
+    elapsed = time.monotonic() - start
+    status = "completed" if returncode == 0 else "failed"
+    print(f"[worker] job={job_name} run_id={job_run_id} status={status} elapsed={elapsed:.1f}s returncode={returncode}", flush=True)
     return {
-        "status": "completed" if returncode == 0 else "failed",
+        "status": status,
         "returncode": returncode,
     }
 

@@ -217,6 +217,47 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_run_crypto_analysis_no_longer_calls_auto_execute_recommendations_inline(self):
+        # Regression guard for the overnight-crypto timeout remediation: the dedicated,
+        # independently-scheduled auto-execution job must remain the sole autonomous execution
+        # path. run_crypto_analysis previously called self.auto_execute_recommendations()
+        # synchronously inside itself - redundant (the standalone job picks up the same
+        # proposals within its own ~60-90s cadence) and a major contributor to overnight-crypto's
+        # chronic timeouts.
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP,ETHGBP"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {
+                    "XBTGBP": {"c": ["50000.0"]},
+                    "ETHGBP": {"c": ["3000.0"]},
+                }
+                service.orchestrator.adapters["kraken"] = adapter
+
+                with patch.object(LocalApiService, "auto_execute_recommendations") as mock_auto_execute:
+                    result = service.run_crypto_analysis(limit=10)
+
+                mock_auto_execute.assert_not_called()
+                self.assertEqual(
+                    result["auto_execution"],
+                    {"status": "delegated", "message": "Handled by the independent auto-execution job."},
+                )
+                # No order was ever submitted directly from research - confirms there is no
+                # duplicate execution path hiding elsewhere in this call.
+                self.assertEqual(adapter.submitted_orders, [])
+        finally:
+            restore_env(previous)
+
     def test_kraken_live_switches_enable_crypto_policy(self):
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_TRADING_ENABLED",

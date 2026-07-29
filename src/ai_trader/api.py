@@ -517,6 +517,8 @@ class LocalApiService:
 
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
+        _crypto_research_t0 = time.monotonic()
+        print("[overnight-crypto] stage=research status=started", flush=True)
         record_operational_event(
             self.settings.db_path,
             component="research",
@@ -560,6 +562,7 @@ class LocalApiService:
             )
             self._record_production_research(started_at, "kraken", "crypto", "scheduled", [], result)
             return result
+        print(f"[overnight-crypto] stage=symbols_resolved count={len(symbols)} symbols={symbols}", flush=True)
         account = self._account_context_for_broker("kraken")
         proposals = propose_crypto_trades(
             self.settings.db_path,
@@ -572,7 +575,15 @@ class LocalApiService:
             requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
         )
-        auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No crypto proposals generated."}
+        print(f"[overnight-crypto] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
+        # Deliberately does not call auto_execute_recommendations() here. The dedicated,
+        # independently-scheduled "auto-execution" job is the sole autonomous execution path -
+        # it already picks up any proposal recorded here within its own ~60-90s cadence. Calling
+        # the full execution pipeline again inline, synchronously, inside every research cycle
+        # was redundant (the standalone job would evaluate the same candidates a minute later
+        # regardless) and was a major contributor to overnight-crypto's chronic timeouts.
+        auto_execution = {"status": "delegated", "message": "Handled by the independent auto-execution job."}
+        print("[overnight-crypto] stage=execution status=delegated", flush=True)
         for proposal in proposals:
             self._record_shadow_from_proposal(
                 proposal,
@@ -649,6 +660,12 @@ class LocalApiService:
         )
         result = {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
         self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols, result)
+        _crypto_research_elapsed = time.monotonic() - _crypto_research_t0
+        print(
+            f"[overnight-crypto] stage=evidence_persisted status=completed "
+            f"symbols={len(symbols)} proposals={len(proposals)} elapsed={_crypto_research_elapsed:.1f}s",
+            flush=True,
+        )
         return result
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
