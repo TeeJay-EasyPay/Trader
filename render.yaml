@@ -31,11 +31,11 @@ services:
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
       - key: AUTO_PAPER_TRADING
-        value: "false"
+        value: "true"
       - key: ALPACA_AUTO_TRADING
-        value: "false"
+        value: "true"
       - key: KRAKEN_AUTO_TRADING
-        value: "false"
+        value: "true"
       - key: COINBASE_AUTO_TRADING
         value: "false"
       - key: BINANCE_AUTO_TRADING
@@ -61,11 +61,11 @@ services:
       - key: KRAKEN_SANDBOX_MODE
         value: "true"
       - key: KRAKEN_TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: KRAKEN_LIVE_TRADING_APPROVED
-        value: "false"
+        value: "true"
       - key: KRAKEN_SUBMIT_REAL_ORDERS
-        value: "false"
+        value: "true"
       - key: KRAKEN_TRADING_ALLOCATION_GBP
         value: "100"
       - key: KRAKEN_MAX_ORDER_GBP

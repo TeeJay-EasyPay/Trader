@@ -114,6 +114,7 @@ from .production_evidence import (
     record_trade_evidence,
 )
 from .sprint6 import (
+    apply_founder_strategy_authorization,
     generate_founder_operational_report,
     initialize_sprint6_schema,
     normalize_broker_events,
@@ -297,6 +298,7 @@ class LocalApiService:
         seed_default_strategy_registry(settings.db_path)
         self._initialize_report_schema()
         self._apply_env_broker_auto_defaults()
+        self._apply_founder_kraken_live_authorization()
         self._initialize_control()
 
     def reconcile_on_startup(self) -> dict[str, Any]:
@@ -3802,6 +3804,42 @@ This report explains available evidence. It does not automatically change strate
         for broker, enabled in self.settings.auto_trade.broker_enabled.items():
             if enabled:
                 set_broker_auto_trading(self.settings.db_path, broker, True, updated_by="environment")
+
+    def _apply_founder_kraken_live_authorization(self) -> None:
+        """Applies the Founder's explicit authorization for autonomous Kraken execution.
+
+        Only when KRAKEN_AUTO_TRADING is actually on: the orchestrator's production governance
+        chain calls pre_execution_decision_packet() with mode="micro_live" for every non-Alpaca
+        broker, but every strategy's registry entitlement is capped at paper/shadow/manual by
+        design (see refresh_strategy_maturity's _MAX_AUTOMATIC_STAGE) - crossing into a real-money
+        mode is never done automatically. Without this, KRAKEN_AUTO_TRADING=true alone would not
+        submit any real order: every autonomous Kraken proposal would be rejected at Strategy
+        Entitlement with "not permitted for micro_live execution", regardless of the enablement
+        flags. This applies exactly one narrow, explicit authorization: crypto_trend_following_2r
+        is the only strategy trading_intelligence.STRATEGIES itself already labels
+        production_status="founder_controlled_live_kraken" (every other crypto-eligible strategy
+        is explicitly "research_only" and is deliberately left untouched - a research-only
+        strategy winning the scoring for a given proposal will still be correctly blocked from
+        real-money execution). The size/count/allocation guardrails
+        (KRAKEN_MAX_ORDER_GBP/KRAKEN_MAX_OPEN_TRADES/KRAKEN_TRADING_ALLOCATION_GBP/
+        KRAKEN_ALLOWED_PAIRS) are enforced independently in broker_adapters.KrakenAdapter and are
+        not affected by this.
+        """
+        if not self.settings.auto_trade.broker_enabled.get("kraken"):
+            return
+        apply_founder_strategy_authorization(
+            self.settings.db_path,
+            strategy_id="crypto_trend_following_2r",
+            target_stage="Micro Live",
+            additional_modes=["micro_live"],
+            reason=(
+                "Founder explicitly authorized autonomous Kraken execution (AT-ED-002 v2.0 "
+                "implementation session), bounded by the existing KRAKEN_MAX_ORDER_GBP/"
+                "KRAKEN_MAX_OPEN_TRADES/KRAKEN_TRADING_ALLOCATION_GBP/KRAKEN_ALLOWED_PAIRS "
+                "guardrails, which this authorization does not change."
+            ),
+            authorized_by="founder_via_ai_trader_engineering_session",
+        )
 
     def _continuous_research_status(self, brokers: list[dict[str, Any]]) -> dict[str, Any]:
         active = [broker for broker in brokers if broker.get("research_status") == "running"]

@@ -552,6 +552,69 @@ def strategy_entitlement_decision(db_path: Path, *, proposal: TradeProposal, bro
     return {"decision": decision, "strategy_id": strategy_id, "mode": mode, "broker": broker.lower(), "reason": reason, "evidence": evidence}
 
 
+def apply_founder_strategy_authorization(
+    db_path: Path,
+    *,
+    strategy_id: str,
+    target_stage: str,
+    additional_modes: list[str],
+    reason: str,
+    authorized_by: str = "founder",
+) -> dict[str, Any]:
+    """Direct, explicit human authorization to raise one strategy's entitlement ceiling.
+
+    This is deliberately separate from refresh_strategy_maturity()/strategy_promotion_decision(),
+    which promote strategies automatically from backtest/trade evidence and are capped at "Paper"
+    for exactly that reason (see _MAX_AUTOMATIC_STAGE below) - crossing into real-capital
+    entitlement (Micro Live/Production) is never done by that automatic path. This function is the
+    other side of that gate: it exists to record and apply a Founder decision made directly (in
+    conversation, review, or an approval UI), not evidence the system gathered itself. Every call
+    is idempotent and every application is logged to OPERATIONAL_EVENTS for audit.
+    """
+    _ensure_sprint6_schema(db_path)
+    row = _row(db_path, "SELECT current_stage, permitted_modes_json FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?", (strategy_id,))
+    if row is None:
+        return {"strategy_id": strategy_id, "status": "not_registered", "plain_english": f"Strategy '{strategy_id}' has no maturity registry row; cannot authorize."}
+    current_modes = set(_json_list(row["permitted_modes_json"]))
+    new_modes = current_modes | set(additional_modes)
+    already_applied = row["current_stage"] == target_stage and new_modes == current_modes
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE STRATEGY_MATURITY_REGISTRY SET
+                    current_stage = ?, permitted_modes_json = ?, suspended = 0,
+                    demotion_reason = NULL, qualification_date = ?, approval_authority = ?,
+                    updated_at = ?
+                WHERE strategy_id = ?
+                """,
+                (
+                    target_stage,
+                    json.dumps(sorted(new_modes), sort_keys=True),
+                    now,
+                    authorized_by,
+                    now,
+                    strategy_id,
+                ),
+            )
+    if not already_applied:
+        record_operational_event(
+            db_path,
+            component="strategy_maturity",
+            event_type="founder_strategy_authorization",
+            summary=f"'{strategy_id}' authorized for {target_stage} ({', '.join(sorted(new_modes))}) by {authorized_by}.",
+            details={"strategy_id": strategy_id, "target_stage": target_stage, "modes": sorted(new_modes), "reason": reason},
+        )
+    return {
+        "strategy_id": strategy_id,
+        "status": "already_applied" if already_applied else "applied",
+        "current_stage": target_stage,
+        "permitted_modes": sorted(new_modes),
+        "plain_english": f"Strategy '{strategy_id}' is entitled for {target_stage} ({', '.join(sorted(new_modes))}).",
+    }
+
+
 _MAX_AUTOMATIC_STAGE = "paper"  # highest stage this job may reach on its own authority
 
 

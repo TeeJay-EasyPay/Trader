@@ -14,6 +14,7 @@ from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, T
 from ai_trader.portfolio_intelligence import upsert_asset_metadata
 from ai_trader.trading_intelligence import STRATEGIES, record_historical_candle
 from ai_trader.sprint6 import (
+    apply_founder_strategy_authorization,
     enqueue_learning_workflow,
     generate_founder_operational_report,
     initialize_sprint6_schema,
@@ -177,6 +178,118 @@ class Sprint6InstitutionalSpineTests(unittest.TestCase):
             seed_default_strategy_registry(db_path)
             result = refresh_strategy_maturity(db_path, strategy_id="does_not_exist", evidence={})
             self.assertEqual(result["status"], "not_registered")
+
+    def test_founder_strategy_authorization_unblocks_only_the_authorized_strategy(self):
+        # Regression guard for the Kraken autonomous-execution gap found while enabling
+        # KRAKEN_AUTO_TRADING: orchestrator.py calls pre_execution_decision_packet with
+        # mode="micro_live" for every non-Alpaca broker, but every strategy is seeded at
+        # paper/shadow/manual only - so KRAKEN_AUTO_TRADING=true alone would still block every
+        # autonomous Kraken proposal at Strategy Entitlement. apply_founder_strategy_authorization
+        # is the explicit, human-authorized override that fixes this for exactly one strategy.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            crypto_proposal = proposal(strategy_id="crypto_trend_following_2r", asset_type="crypto", exchange="KRAKEN")
+            other_proposal = proposal(strategy_id="momentum", asset_type="crypto", exchange="KRAKEN")
+
+            before = strategy_entitlement_decision(db_path, proposal=crypto_proposal, broker="kraken", mode="micro_live")
+            self.assertEqual(before["decision"], "blocked")
+
+            result = apply_founder_strategy_authorization(
+                db_path,
+                strategy_id="crypto_trend_following_2r",
+                target_stage="Micro Live",
+                additional_modes=["micro_live"],
+                reason="test authorization",
+            )
+            self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["current_stage"], "Micro Live")
+            self.assertIn("micro_live", result["permitted_modes"])
+            # Existing paper/shadow/manual entitlement must survive being unioned, not replaced.
+            self.assertIn("manual", result["permitted_modes"])
+
+            after = strategy_entitlement_decision(db_path, proposal=crypto_proposal, broker="kraken", mode="micro_live")
+            self.assertEqual(after["decision"], "approved")
+
+            # A research_only strategy must remain blocked - this is not a blanket loosening.
+            still_blocked = strategy_entitlement_decision(db_path, proposal=other_proposal, broker="kraken", mode="micro_live")
+            self.assertEqual(still_blocked["decision"], "blocked")
+
+            # Idempotent: calling again with the same target must not duplicate an audit event
+            # or change the outcome.
+            second = apply_founder_strategy_authorization(
+                db_path,
+                strategy_id="crypto_trend_following_2r",
+                target_stage="Micro Live",
+                additional_modes=["micro_live"],
+                reason="test authorization",
+            )
+            self.assertEqual(second["status"], "already_applied")
+
+    def test_founder_strategy_authorization_reports_unregistered_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            result = apply_founder_strategy_authorization(
+                db_path, strategy_id="does_not_exist", target_stage="Micro Live",
+                additional_modes=["micro_live"], reason="test",
+            )
+            self.assertEqual(result["status"], "not_registered")
+
+    def test_api_startup_applies_kraken_authorization_only_when_kraken_auto_trading_is_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                alpaca_api_key=None,
+                alpaca_secret_key=None,
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=root / "audit.sqlite3",
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(broker_enabled={"alpaca": False, "kraken": True}),
+                database_backend="sqlite",
+            )
+            LocalApiService(settings)
+
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT current_stage, permitted_modes_json FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?",
+                    ("crypto_trend_following_2r",),
+                ).fetchone()
+            self.assertEqual(row["current_stage"], "Micro Live")
+            self.assertIn("micro_live", row["permitted_modes_json"])
+
+    def test_api_startup_does_not_apply_kraken_authorization_when_kraken_auto_trading_is_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                alpaca_api_key=None,
+                alpaca_secret_key=None,
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=root / "audit.sqlite3",
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(broker_enabled={"alpaca": False, "kraken": False}),
+                database_backend="sqlite",
+            )
+            LocalApiService(settings)
+
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT current_stage FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?",
+                    ("crypto_trend_following_2r",),
+                ).fetchone()
+            self.assertEqual(row["current_stage"], "Paper")
 
     def test_risk_sentinel_kill_switch_blocks_before_broker_submission(self):
         with tempfile.TemporaryDirectory() as tmp:

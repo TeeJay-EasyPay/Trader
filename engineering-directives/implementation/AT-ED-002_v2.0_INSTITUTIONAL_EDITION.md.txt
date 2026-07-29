@@ -1,0 +1,1607 @@
+# AI Trader Engineering Directive
+
+# AT-ED-002 v2.0 -- Institutional Edition
+
+# PART 1 -- Foundations
+
+**Status:** Draft for Founder Review
+
+------------------------------------------------------------------------
+
+# Executive Summary
+
+This Engineering Directive defines the institutional foundations for the
+next stage of AI Trader.
+
+AI Trader is not being engineered as a collection of trading algorithms
+or software modules. It is being engineered as a **continuously learning
+Digital Investment Organisation** that combines research, governance,
+engineering, portfolio management and operational excellence into a
+single cohesive platform.
+
+This directive establishes the philosophy, engineering standards,
+institutional principles, deployment objectives and autonomous
+operational model that will govern every subsequent implementation
+decision.
+
+The purpose of Part 1 is to ensure that every engineering decision
+contributes to a platform that compounds capability over time rather
+than accumulating disconnected features.
+
+------------------------------------------------------------------------
+
+# Founder Mission
+
+The Founder has established the following strategic objectives:
+
+1.  Deliver a robust, production-ready investment platform.
+2.  Operate safely under strong governance.
+3.  Continuously improve through evidence-based learning.
+4.  Preserve institutional knowledge.
+5.  Build reusable capabilities that support long-term evolution.
+6.  Ensure every significant engineering decision can be understood,
+    justified and audited.
+
+This directive therefore places equal importance on software quality,
+governance quality and organisational quality.
+
+------------------------------------------------------------------------
+
+# Engineering Manifesto
+
+Every engineer, AI agent and implementation team participating in AI
+Trader shall adopt the following philosophy.
+
+## Build an Institution
+
+Do not optimise for today's feature.
+
+Optimise for the institution that will still be learning and improving
+years from now.
+
+## Knowledge Compounds
+
+Knowledge is a permanent organisational asset.
+
+Every experiment, implementation, success and failure must improve the
+organisation.
+
+Nothing valuable should be forgotten.
+
+## Evidence Before Opinion
+
+No strategy, architectural decision or operational change should rely
+solely on opinion.
+
+Evidence is the currency of engineering decisions.
+
+## Governance Enables Autonomy
+
+Autonomy is only valuable when bounded by governance.
+
+The stronger the governance, the greater the confidence in autonomous
+operation.
+
+## Architecture Compounds
+
+Every new capability should strengthen the overall platform.
+
+Avoid isolated components, duplicated logic and fragmented ownership.
+
+## Explainability Matters
+
+Every recommendation, deployment and trading decision should be
+explainable to the Founder.
+
+------------------------------------------------------------------------
+
+# Institutional Principles
+
+1.  Founder authority is final.
+2.  Capital preservation takes priority over aggressive optimisation.
+3.  Risk has authority to stop unsafe behaviour.
+4.  Learning is continuous.
+5.  Research never ends.
+6.  Strategies earn promotion through evidence.
+7.  Engineering quality is never sacrificed for speed.
+8.  Documentation is part of the product.
+9.  Reusable organisational capability is preferred over tactical
+    implementation.
+10. Institutional memory must continuously grow.
+
+------------------------------------------------------------------------
+
+# Programme Vision
+
+AI Trader will evolve into a Digital Investment Organisation containing
+coordinated specialist capabilities including:
+
+-   Research
+-   Strategy Discovery
+-   Validation
+-   Portfolio Intelligence
+-   Risk Management
+-   Execution
+-   Performance Analysis
+-   Knowledge Management
+-   Governance
+-   Founder Reporting
+
+Each capability should be independently maintainable while operating as
+part of a single coherent architecture.
+
+------------------------------------------------------------------------
+
+# Engineering Philosophy
+
+The engineering organisation shall prefer:
+
+-   modular architecture
+-   clear interfaces
+-   low coupling
+-   high cohesion
+-   single sources of truth
+-   observable systems
+-   test-driven improvement
+-   documentation-first governance
+-   measurable outcomes
+
+Temporary solutions should be clearly identified and scheduled for
+replacement.
+
+------------------------------------------------------------------------
+
+# Architectural Principles
+
+Maintain the following principles throughout implementation:
+
+## Single Source of Truth
+
+Critical business logic should exist in one authoritative location.
+
+## Composability
+
+Capabilities should be reusable across multiple workflows.
+
+## Observability
+
+Every significant process should generate meaningful telemetry.
+
+## Auditability
+
+Important decisions should be reconstructable from logs and reports.
+
+## Security
+
+Protect credentials, secrets, capital and operational integrity.
+
+## Scalability
+
+Design for future growth in assets, exchanges, strategies and users.
+
+------------------------------------------------------------------------
+
+# Repository Standards
+
+The repository should remain organised around clear ownership.
+
+Engineering Directives define implementation missions.
+
+Governance defines organisational behaviour.
+
+Architecture documents describe system structure.
+
+Implementation Logs provide historical traceability.
+
+Founder Briefings communicate executive progress.
+
+No significant engineering change should be left undocumented.
+
+------------------------------------------------------------------------
+
+# Workstream 1 -- Deployment & Production Verification
+
+## Mission
+
+Deploy the approved implementation to the hosted environment.
+
+## Objectives
+
+-   Verify infrastructure.
+-   Verify services.
+-   Validate scheduled jobs.
+-   Validate monitoring.
+-   Validate historical data ingestion.
+-   Validate Alpaca connectivity.
+-   Validate Kraken connectivity.
+-   Verify operational telemetry.
+
+## Success Criteria
+
+Deployment is considered successful when:
+
+-   critical services operate correctly;
+-   health checks pass;
+-   scheduled processes execute;
+-   operational evidence is collected;
+-   issues are documented and remediated where possible.
+
+------------------------------------------------------------------------
+
+# Workstream 2 -- Autonomous Operations
+
+## Philosophy
+
+Operational autonomy exists to gather evidence and improve decision
+making.
+
+It must never bypass governance.
+
+## Alpaca Paper Trading
+
+Operate continuously using paper capital.
+
+Objectives:
+
+-   discover opportunities;
+-   execute safely;
+-   learn continuously;
+-   improve strategies;
+-   preserve complete audit trails.
+
+## Kraken Governed Trading
+
+Operate only within existing Founder-approved constraints.
+
+Maintain:
+
+-   exposure limits;
+-   trade-size limits;
+-   daily loss limits;
+-   emergency stop capability;
+-   complete audit history.
+
+Purpose:
+
+Gain operational experience while protecting capital.
+
+------------------------------------------------------------------------
+
+# Engineering Quality Gates
+
+Before considering work complete, verify:
+
+-   code quality;
+-   automated testing;
+-   architecture consistency;
+-   documentation updates;
+-   implementation logging;
+-   governance alignment;
+-   operational readiness.
+
+------------------------------------------------------------------------
+
+# Risks and Assumptions
+
+## Assumptions
+
+-   Existing repository architecture remains authoritative.
+-   Current governance remains valid unless intentionally superseded.
+-   Hosted infrastructure is available.
+-   Existing integrations remain functional.
+
+## Key Risks
+
+-   Deployment defects.
+-   Integration failures.
+-   External API instability.
+-   Model overfitting.
+-   Strategy degradation.
+-   Documentation drift.
+-   Governance inconsistencies.
+
+Document any newly identified risks.
+
+------------------------------------------------------------------------
+
+# Out of Scope
+
+This part does not require redesigning existing production-proven
+architecture unless evidence demonstrates a clear engineering benefit.
+
+Avoid speculative optimisation.
+
+Avoid unnecessary technology changes.
+
+------------------------------------------------------------------------
+
+# Completion Criteria
+
+Part 1 is complete when:
+
+-   deployment objectives are understood;
+-   operational philosophy is documented;
+-   engineering standards are established;
+-   institutional principles are accepted;
+-   architectural foundations are defined.
+
+The remaining implementation will build upon these foundations.
+
+-----------------------------------------------------------------------
+
+# AI Trader Engineering Directive
+
+# AT-ED-002 v2.0 -- Institutional Edition
+
+# PART 2 -- Autonomous Investment Intelligence Platform
+
+**Status:** Draft for Founder Review
+
+------------------------------------------------------------------------
+
+# Purpose
+
+This part defines the architecture, organisational capabilities and
+engineering expectations for the Autonomous Investment Intelligence
+Platform (AIIP).
+
+The objective is not to create isolated artificial intelligence
+features. The objective is to engineer a coordinated Digital Investment
+Organisation capable of continuously improving its investment
+decision-making through research, experimentation, validation,
+governance and institutional learning.
+
+Every capability should strengthen the organisation as a whole.
+
+------------------------------------------------------------------------
+
+# Strategic Objectives
+
+The platform shall:
+
+-   Discover investment opportunities.
+-   Generate evidence-based hypotheses.
+-   Validate every hypothesis scientifically.
+-   Learn continuously from outcomes.
+-   Improve portfolio quality over time.
+-   Preserve institutional knowledge.
+-   Operate within governance defined in Part 3.
+-   Produce transparent recommendations for Founder oversight.
+
+------------------------------------------------------------------------
+
+# Organisational Architecture
+
+The AIIP shall be organised as coordinated specialist divisions.
+
+Founder
+
+↓
+
+Chief Investment Officer
+
+↓
+
+Investment Committee
+
+↓
+
+Research Director
+
+↓
+
+Research Divisions
+
+↓
+
+Strategy Laboratory
+
+↓
+
+Validation Office
+
+↓
+
+Portfolio Management Office
+
+↓
+
+Risk Office
+
+↓
+
+Execution Office
+
+↓
+
+Performance Office
+
+↓
+
+Knowledge Management Office
+
+Each division shall expose clearly defined interfaces, responsibilities
+and deliverables.
+
+------------------------------------------------------------------------
+
+# Research Division
+
+## Mission
+
+Continuously increase the organisation's investment knowledge while
+maintaining evidence quality and traceability.
+
+## Research Domains
+
+Implement coordinated research capabilities for:
+
+-   Quantitative Research
+-   Technical Analysis
+-   Fundamental Analysis
+-   Macroeconomic Analysis
+-   Market Structure
+-   Alternative Data
+-   Behavioural Finance
+-   Portfolio Theory
+-   Execution Quality
+-   Risk Research
+
+## Responsibilities
+
+The Research Division shall:
+
+-   identify promising ideas;
+-   analyse market behaviour;
+-   study academic literature where appropriate;
+-   review broker and exchange documentation;
+-   evaluate public educational resources;
+-   identify research gaps;
+-   create reusable knowledge assets.
+
+All research shall be attributable to its source and stored within the
+institutional knowledge base.
+
+------------------------------------------------------------------------
+
+# Strategy Discovery Division
+
+## Mission
+
+Generate, refine and prioritise investment hypotheses.
+
+## Inputs
+
+-   Research findings
+-   Historical data
+-   Live market observations
+-   Existing strategies
+-   Portfolio performance
+-   Lessons learned
+-   Founder priorities
+
+## Responsibilities
+
+Discover:
+
+-   new strategies;
+-   execution improvements;
+-   indicator combinations;
+-   parameter optimisation opportunities;
+-   diversification opportunities;
+-   portfolio enhancements.
+
+Every strategy shall receive a unique Strategy ID and lifecycle record.
+
+------------------------------------------------------------------------
+
+# Strategy Laboratory
+
+## Mission
+
+Provide a controlled environment for objective evaluation.
+
+Every strategy shall complete an identical validation pipeline.
+
+### Stage 1
+
+Concept Review
+
+### Stage 2
+
+Implementation Review
+
+### Stage 3
+
+Historical Backtesting
+
+### Stage 4
+
+Walk-Forward Validation
+
+### Stage 5
+
+Monte Carlo Analysis
+
+### Stage 6
+
+Market Regime Validation
+
+### Stage 7
+
+Transaction Cost Analysis
+
+### Stage 8
+
+Slippage Analysis
+
+### Stage 9
+
+Portfolio Contribution Analysis
+
+### Stage 10
+
+Confidence Assessment
+
+Strategies failing objective quality thresholds shall not progress.
+
+------------------------------------------------------------------------
+
+# Validation Office
+
+The Validation Office is independent of the Research Division.
+
+Its purpose is to challenge assumptions rather than confirm them.
+
+Responsibilities include:
+
+-   reproducibility;
+-   robustness testing;
+-   sensitivity analysis;
+-   overfitting detection;
+-   survivorship bias review;
+-   data leakage detection;
+-   implementation verification.
+
+------------------------------------------------------------------------
+
+# Portfolio Management Office
+
+The platform shall optimise portfolios rather than individual trades.
+
+Evaluate:
+
+-   expected return;
+-   diversification;
+-   concentration;
+-   exposure;
+-   sector allocation;
+-   currency allocation;
+-   correlation;
+-   volatility;
+-   liquidity;
+-   drawdown.
+
+Recommendations should consider portfolio impact before individual trade
+attractiveness.
+
+------------------------------------------------------------------------
+
+# Risk Office
+
+Risk evaluation is continuous.
+
+Assess:
+
+-   market risk;
+-   liquidity risk;
+-   execution risk;
+-   operational risk;
+-   concentration risk;
+-   counterparty risk;
+-   model risk;
+-   technology risk.
+
+Risk assessments accompany every promotion recommendation.
+
+------------------------------------------------------------------------
+
+# Execution Office
+
+Translate approved strategies into executable trading behaviour.
+
+Responsibilities include:
+
+-   broker orchestration;
+-   order validation;
+-   execution monitoring;
+-   reconciliation;
+-   exception handling;
+-   audit logging;
+-   operational metrics.
+
+Execution quality shall be measured independently from strategy quality.
+
+------------------------------------------------------------------------
+
+# Performance Office
+
+Measure organisational effectiveness.
+
+Track:
+
+-   prediction accuracy;
+-   execution quality;
+-   strategy performance;
+-   portfolio performance;
+-   research productivity;
+-   learning velocity;
+-   innovation rate;
+-   risk-adjusted returns;
+-   drawdown recovery;
+-   capital efficiency.
+
+Performance metrics shall drive continuous improvement.
+
+------------------------------------------------------------------------
+
+# Learning Engine
+
+The Learning Engine coordinates organisational improvement.
+
+Inputs include:
+
+-   research;
+-   experiments;
+-   historical testing;
+-   paper trading;
+-   live observations;
+-   portfolio outcomes.
+
+Responsibilities:
+
+-   detect strategy decay;
+-   detect parameter drift;
+-   identify regime transitions;
+-   compare expected versus actual outcomes;
+-   recommend improvements;
+-   identify research priorities.
+
+Learning recommendations require supporting evidence.
+
+------------------------------------------------------------------------
+
+# Knowledge Management Office
+
+Knowledge is treated as a permanent institutional asset.
+
+Maintain:
+
+-   research catalogue;
+-   experiment register;
+-   strategy register;
+-   lessons learned;
+-   architecture decisions;
+-   validation reports;
+-   performance reports.
+
+Nothing of long-term value should be discarded.
+
+------------------------------------------------------------------------
+
+# Knowledge Graph
+
+Engineer an internal knowledge graph linking:
+
+Research ↔ Experiments ↔ Strategies ↔ Models ↔ Portfolios ↔ Trades ↔
+Outcomes ↔ Lessons Learned ↔ Market Regimes
+
+The graph shall support future discovery, traceability and
+organisational learning.
+
+------------------------------------------------------------------------
+
+# AI Capability Principles
+
+Select analytical techniques according to the problem being solved.
+
+The platform may employ statistical methods, optimisation techniques,
+machine learning, reinforcement learning, neural networks or other
+appropriate approaches where supported by evidence and engineering
+judgement.
+
+Avoid adopting techniques solely because they are fashionable.
+
+------------------------------------------------------------------------
+
+# Continuous Improvement
+
+Every completed activity shall answer:
+
+-   What happened?
+-   Why did it happen?
+-   Was the outcome expected?
+-   What evidence supports the conclusion?
+-   What should the organisation change?
+-   What knowledge has been gained?
+
+Every iteration should leave the organisation stronger than before.
+
+------------------------------------------------------------------------
+
+# Deliverables
+
+Produce and update documentation describing:
+
+-   research architecture;
+-   strategy lifecycle;
+-   validation architecture;
+-   portfolio intelligence;
+-   learning engine;
+-   knowledge graph;
+-   organisational responsibilities;
+-   implementation decisions.
+
+These artefacts become permanent institutional documentation for AI
+Trader.
+
+------------------------------------------------------------------------
+
+# Completion Criteria
+
+Part 2 is complete when the architecture, responsibilities, workflows
+and engineering expectations of the Autonomous Investment Intelligence
+Platform have been fully defined and documented, ready for governance
+implementation in Part 3.
+
+-----------------------------------------------------------------------
+
+
+# AI Trader Engineering Directive
+
+# AT-ED-002 v2.0 -- Institutional Edition
+
+# PART 3 -- Investment Governance
+
+**Status:** Draft for Founder Review
+
+------------------------------------------------------------------------
+
+# Purpose
+
+This part establishes the governance framework for the Autonomous
+Investment Intelligence Platform.
+
+Governance exists to ensure that research, strategy development,
+portfolio management and autonomous execution remain disciplined,
+evidence-based, transparent and aligned with the Founder's objectives.
+
+Autonomy is enabled by governance---not a replacement for it.
+
+------------------------------------------------------------------------
+
+# Governance Philosophy
+
+The platform shall operate according to the following principles:
+
+-   Evidence before opinion.
+-   Governance before autonomy.
+-   Capital preservation before return maximisation.
+-   Transparency before complexity.
+-   Institutional learning before individual optimisation.
+-   Explainability before automation.
+-   Long-term sustainability before short-term performance.
+
+------------------------------------------------------------------------
+
+# Investment Governance Repository
+
+Create the following repository:
+
+investment-governance/
+
+Containing:
+
+-   README.md
+-   CIO_CHARTER.md
+-   RESEARCH_CHARTER.md
+-   STRATEGY_PROMOTION_POLICY.md
+-   RISK_POLICY.md
+-   PORTFOLIO_POLICY.md
+-   KNOWLEDGE_POLICY.md
+-   MODEL_GOVERNANCE_POLICY.md
+-   EXPERIMENTATION_POLICY.md
+-   MARKET_REGIME_POLICY.md
+-   DATA_GOVERNANCE_POLICY.md
+-   EXECUTION_GOVERNANCE_POLICY.md
+-   PERFORMANCE_MEASUREMENT_POLICY.md
+
+Each document shall become part of the permanent governance framework
+and be maintained under version control.
+
+------------------------------------------------------------------------
+
+# README.md Specification
+
+The README shall describe:
+
+## Purpose
+
+Why investment governance exists and the problems it solves.
+
+## Relationship to Other Frameworks
+
+Describe relationships with:
+
+-   AI Trader Constitution
+-   Governance Framework
+-   Engineering Directives
+-   Software Architecture
+-   Repository Standards
+
+## Authority Hierarchy
+
+Define the order of authority:
+
+1.  Founder
+2.  Constitution
+3.  Governance Framework
+4.  Investment Governance
+5.  Engineering Directives
+6.  Architecture
+7.  Implementation
+
+## Decision-Making Hierarchy
+
+Describe how strategic, architectural, operational and implementation
+decisions are made.
+
+## Autonomous AI Responsibilities
+
+Define responsibilities and limits for autonomous agents.
+
+## Future Engineers
+
+Explain how future engineers should use and extend the framework without
+weakening governance.
+
+------------------------------------------------------------------------
+
+# Chief Investment Officer Charter
+
+The CIO owns the investment philosophy.
+
+Responsibilities include:
+
+-   investment strategy
+-   portfolio philosophy
+-   promotion approval recommendations
+-   evidence standards
+-   research priorities
+-   capital allocation recommendations
+-   investment committee leadership
+-   continuous organisational improvement
+
+The CIO is responsible for maintaining institutional consistency.
+
+------------------------------------------------------------------------
+
+# Research Charter
+
+The Research Charter shall define:
+
+Mission
+
+Objectives
+
+Responsibilities
+
+Quality standards
+
+Evidence standards
+
+Deliverables
+
+Required documentation
+
+Knowledge capture expectations
+
+Research Divisions include:
+
+-   Quantitative Research
+-   Technical Analysis
+-   Fundamental Analysis
+-   Macroeconomics
+-   Alternative Data
+-   Market Structure
+-   Portfolio Research
+-   Execution Research
+
+------------------------------------------------------------------------
+
+# Strategy Promotion Policy
+
+No strategy shall enter production without documented evidence.
+
+Each strategy dossier shall include:
+
+-   Strategy ID
+-   Version
+-   Parent Strategy
+-   Objective
+-   Supporting hypothesis
+-   Validation history
+-   Confidence score
+-   Evidence score
+-   Market regimes
+-   Win rate
+-   Drawdown
+-   Sharpe ratio
+-   Sortino ratio
+-   Paper trading duration
+-   Live trading duration
+-   Capital allocation recommendation
+-   Risk assessment
+-   Promotion recommendation
+
+Promotion pathway:
+
+Idea → Research → Prototype → Validation → Historical Testing → Walk
+Forward → Paper Trading → Founder Review → Micro Live → Production
+
+------------------------------------------------------------------------
+
+# Risk Policy
+
+The Risk Office has authority to recommend rejection of any strategy.
+
+Risk categories include:
+
+-   market
+-   liquidity
+-   operational
+-   technology
+-   counterparty
+-   execution
+-   concentration
+-   model
+-   regulatory
+
+Risk assessment is mandatory for every promotion.
+
+------------------------------------------------------------------------
+
+# Portfolio Policy
+
+Portfolio decisions shall consider:
+
+-   diversification
+-   exposure
+-   concentration
+-   correlation
+-   capital efficiency
+-   liquidity
+-   risk-adjusted return
+-   resilience across market regimes
+
+Portfolio optimisation takes precedence over isolated trade
+optimisation.
+
+------------------------------------------------------------------------
+
+# Knowledge Policy
+
+Knowledge is a permanent institutional asset.
+
+Maintain:
+
+-   lessons learned
+-   research library
+-   experiment register
+-   architecture decisions
+-   validation reports
+-   strategy history
+-   governance decisions
+
+Never discard valuable knowledge.
+
+Archive rather than delete.
+
+------------------------------------------------------------------------
+
+# Model Governance Policy
+
+Every analytical model shall have documented:
+
+-   purpose
+-   owner
+-   inputs
+-   outputs
+-   strengths
+-   weaknesses
+-   evaluation criteria
+-   review frequency
+-   fallback behaviour
+-   retirement criteria
+
+Models shall be periodically reassessed.
+
+------------------------------------------------------------------------
+
+# Experimentation Policy
+
+Every experiment shall follow the same lifecycle:
+
+Hypothesis → Design → Execution → Evidence Collection → Analysis →
+Conclusion → Knowledge Capture
+
+Experiments must be reproducible.
+
+Negative results are valuable and shall be retained.
+
+------------------------------------------------------------------------
+
+# Market Regime Policy
+
+Recognise and classify regimes such as:
+
+-   Bull
+-   Bear
+-   Sideways
+-   Trending
+-   Mean Reverting
+-   High Volatility
+-   Low Volatility
+-   Risk On
+-   Risk Off
+-   Liquidity Stress
+
+Strategies shall declare supported regimes.
+
+Regime changes shall trigger reassessment.
+
+------------------------------------------------------------------------
+
+# Data Governance Policy
+
+Classify data by:
+
+-   source
+-   quality
+-   timeliness
+-   completeness
+-   confidence
+-   licensing
+
+Prefer higher-quality evidence where available.
+
+Track provenance for research conclusions.
+
+------------------------------------------------------------------------
+
+# Execution Governance Policy
+
+Execution states:
+
+Observation → Simulation → Paper → Micro Live → Limited Live →
+Production
+
+Each stage requires explicit evidence before promotion.
+
+Emergency rollback procedures shall be documented.
+
+------------------------------------------------------------------------
+
+# Performance Measurement Policy
+
+Measure organisational performance using:
+
+Investment Metrics
+
+-   return
+-   drawdown
+-   Sharpe
+-   Sortino
+-   volatility
+
+Operational Metrics
+
+-   execution quality
+-   latency
+-   reliability
+-   reconciliation
+
+Research Metrics
+
+-   research productivity
+-   hypothesis conversion
+-   experiment completion
+
+Learning Metrics
+
+-   learning velocity
+-   knowledge growth
+-   recommendation quality
+
+Governance Metrics
+
+-   documentation completeness
+-   audit readiness
+-   policy compliance
+
+------------------------------------------------------------------------
+
+# Investment Committee
+
+The Investment Committee reviews major promotion proposals.
+
+Each submission shall include:
+
+-   Executive Summary
+-   Evidence Dossier
+-   Strategy Dossier
+-   Portfolio Impact
+-   Risk Assessment
+-   Regime Analysis
+-   Recommendation
+
+Committee decisions shall be documented.
+
+------------------------------------------------------------------------
+
+# Explainability Standard
+
+Every recommendation shall answer:
+
+Why?
+
+What evidence supports it?
+
+How confident is the platform?
+
+What are the principal risks?
+
+What alternatives were considered?
+
+Why was the chosen approach preferred?
+
+------------------------------------------------------------------------
+
+# Governance Reporting
+
+Maintain:
+
+-   governance decision register
+-   promotion register
+-   risk register
+-   model register
+-   experiment register
+-   committee minutes
+-   policy revisions
+
+These become permanent institutional records.
+
+------------------------------------------------------------------------
+
+# Completion Criteria
+
+Part 3 is complete when:
+
+-   the governance repository structure is fully specified;
+-   every governance document has a defined purpose;
+-   organisational authority is documented;
+-   promotion governance is defined;
+-   evidence standards are established;
+-   governance reporting requirements are documented.
+
+Part 4 will define Founder deliverables, programme reporting, acceptance
+criteria and long-term evolution.
+
+----------------------------------------------------------------------
+
+# AI Trader Engineering Directive
+
+# AT-ED-002 v2.0 -- Institutional Edition
+
+# PART 4 -- Founder Deliverables, Quality Standards & Appendices
+
+**Status:** Draft for Founder Review
+
+------------------------------------------------------------------------
+
+# Purpose
+
+This part defines how engineering work is concluded, documented,
+reviewed and transferred to the Founder.
+
+Engineering is not complete when code has been written.
+
+Engineering is complete only when the implementation, evidence,
+governance, documentation and operational readiness have been
+demonstrated.
+
+------------------------------------------------------------------------
+
+# Engineering Completion Philosophy
+
+Every engineering session must produce four outcomes:
+
+1.  Improved software.
+2.  Improved organisational knowledge.
+3.  Improved governance.
+4.  Improved documentation.
+
+No implementation should finish with undocumented decisions.
+
+------------------------------------------------------------------------
+
+# Documentation Standards
+
+Every significant engineering activity shall update documentation.
+
+Documentation is considered part of the product.
+
+Required documentation includes:
+
+-   Engineering Directives
+-   Founder Briefings
+-   Architecture Documentation
+-   Governance Documentation
+-   Implementation Log
+-   Deployment Reports
+-   Testing Reports
+-   Operational Readiness Reports
+-   Decision Registers
+-   Risk Registers
+
+Documentation shall describe:
+
+-   why a decision was made;
+-   what changed;
+-   expected benefits;
+-   known limitations;
+-   future recommendations.
+
+------------------------------------------------------------------------
+
+# Founder Briefing
+
+Produce an executive briefing suitable for Founder review.
+
+Sections shall include:
+
+-   Executive Summary
+-   Mission Objectives
+-   Engineering Activities
+-   Deployment Status
+-   Operational Status
+-   Research Progress
+-   Governance Changes
+-   Testing Summary
+-   Risks
+-   Recommendations
+-   Suggested Next Engineering Directive
+
+The briefing should prioritise strategic understanding over
+implementation detail.
+
+------------------------------------------------------------------------
+
+# Deployment Report
+
+Document:
+
+-   deployment approach;
+-   deployment outcome;
+-   verification activities;
+-   operational observations;
+-   production readiness;
+-   outstanding issues;
+-   rollback considerations.
+
+------------------------------------------------------------------------
+
+# Operational Readiness Report
+
+Assess:
+
+-   reliability;
+-   monitoring;
+-   observability;
+-   security;
+-   operational resilience;
+-   recovery capability;
+-   support readiness.
+
+Provide a readiness recommendation.
+
+------------------------------------------------------------------------
+
+# Architecture Report
+
+Summarise:
+
+-   architectural changes;
+-   new capabilities;
+-   modified components;
+-   design decisions;
+-   technical debt introduced or removed;
+-   opportunities for future improvement.
+
+------------------------------------------------------------------------
+
+# Investment Governance Report
+
+Summarise:
+
+-   governance documents created;
+-   governance improvements;
+-   committee responsibilities;
+-   evidence standards;
+-   policy recommendations.
+
+------------------------------------------------------------------------
+
+# Testing Report
+
+Document:
+
+-   automated testing;
+-   integration testing;
+-   deployment verification;
+-   operational validation;
+-   unresolved issues;
+-   future testing recommendations.
+
+Testing evidence should be objective and reproducible.
+
+------------------------------------------------------------------------
+
+# Remaining Work Report
+
+Clearly distinguish between:
+
+Completed
+
+In Progress
+
+Deferred
+
+Future Recommendations
+
+Known Limitations
+
+Suggested Future Engineering Directives
+
+This report becomes the starting point for future engineering missions.
+
+------------------------------------------------------------------------
+
+# Implementation Log
+
+Update the Implementation Log throughout the engineering session.
+
+Include:
+
+-   engineering decisions;
+-   architectural changes;
+-   governance additions;
+-   deployment milestones;
+-   completed tasks;
+-   unresolved issues.
+
+The log forms part of the permanent institutional history.
+
+------------------------------------------------------------------------
+
+# Founder Delivery Package
+
+Collect every updated document.
+
+Create:
+
+FOUNDER_PACKAGE_MANIFEST.md
+
+The manifest shall include:
+
+-   Engineering Directive
+-   Branch
+-   Commit
+-   Repository Status
+-   Deployment Status
+-   Test Results
+-   Documentation Included
+-   Governance Updates
+-   New Directories
+-   Known Issues
+-   Recommendations
+-   Proposed AT-ED-003
+
+------------------------------------------------------------------------
+
+# Founder Delivery ZIP
+
+Create:
+
+YYYY-MM-DD_AT-ED-002_FOUNDER_DELIVERY_PACKAGE.zip
+
+The ZIP shall contain documentation only.
+
+Include:
+
+-   Founder Briefing
+-   Architecture Reports
+-   Governance Reports
+-   Testing Reports
+-   Operational Reports
+-   Implementation Log
+-   Updated Engineering Directives
+-   README files
+-   Governance documents
+
+Exclude:
+
+-   source code;
+-   binaries;
+-   databases;
+-   build artefacts;
+-   log files;
+-   secrets;
+-   credentials.
+
+Report the ZIP location within the Founder Briefing.
+
+------------------------------------------------------------------------
+
+# Repository Standards
+
+The repository shall remain organised and understandable.
+
+Every new folder should contain an appropriate README where beneficial.
+
+Engineering artefacts should remain discoverable.
+
+Avoid redundant documentation.
+
+------------------------------------------------------------------------
+
+# Engineering Quality Gates
+
+Before concluding the engineering session verify:
+
+Architecture
+
+-   coherent
+-   modular
+-   maintainable
+
+Implementation
+
+-   complete
+-   tested
+-   documented
+
+Governance
+
+-   updated
+-   internally consistent
+
+Documentation
+
+-   complete
+-   understandable
+-   current
+
+Operations
+
+-   monitored
+-   observable
+-   resilient
+
+No quality gate should be bypassed without explicit justification.
+
+------------------------------------------------------------------------
+
+# Decision Registers
+
+Maintain:
+
+-   Architecture Decision Register
+-   Governance Decision Register
+-   Risk Register
+-   Promotion Register
+-   Experiment Register
+
+Every significant decision shall be traceable.
+
+------------------------------------------------------------------------
+
+# Success Criteria
+
+The engineering programme shall be considered successful when:
+
+-   deployment objectives have been achieved or clearly documented;
+-   autonomous operational capability has been improved;
+-   institutional governance has been strengthened;
+-   investment intelligence capability has advanced;
+-   documentation is complete;
+-   testing has been performed;
+-   Founder reporting has been produced.
+
+------------------------------------------------------------------------
+
+# Future Evolution Principles
+
+Future Engineering Directives should continue evolving AI Trader into a
+mature Digital Investment Organisation.
+
+Future priorities may include:
+
+-   expanded research capability;
+-   enhanced learning systems;
+-   additional exchanges;
+-   broader asset classes;
+-   institutional portfolio management;
+-   advanced analytics;
+-   improved explainability;
+-   stronger governance automation;
+-   richer knowledge graph capabilities.
+
+Future engineering should build upon existing institutional foundations
+rather than replacing them.
+
+------------------------------------------------------------------------
+
+# Appendix A -- Repository Structure
+
+The engineering programme should continue to organise documentation into
+clear functional areas including:
+
+-   engineering-directives/
+-   governance/
+-   investment-governance/
+-   architecture/
+-   founder-briefings/
+-   implementation-logs/
+-   testing/
+-   reports/
+
+Maintain clear ownership and purpose for each directory.
+
+------------------------------------------------------------------------
+
+# Appendix B -- Institutional Artefacts
+
+The following artefacts collectively define the organisation:
+
+-   Constitution
+-   Governance Framework
+-   Engineering Directives
+-   Investment Governance
+-   Architecture Documentation
+-   Implementation Log
+-   Founder Briefings
+-   Operational Reports
+
+These documents should remain aligned and mutually consistent.
+
+------------------------------------------------------------------------
+
+# Appendix C -- Closing Statement
+
+AI Trader is not being engineered as a traditional trading application.
+
+It is being engineered as a continuously learning Digital Investment
+Organisation.
+
+Every engineering session should leave the organisation more capable,
+more knowledgeable, better governed and better documented than before.
+
+The objective is not simply to create profitable software.
+
+The objective is to create an institution whose capabilities compound
+over time through disciplined engineering, evidence-based learning and
+responsible governance.
+
+End of AT-ED-002 v2.0 -- Institutional Edition.
+

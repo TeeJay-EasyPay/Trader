@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import tempfile
@@ -15,9 +16,11 @@ from ai_trader.broker_adapters import AlpacaBrokerAdapter, InteractiveBrokersAda
 from ai_trader.briefing import generate_session_brief
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, Position, TradeProposal, utc_now_iso
+from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.operational import initialize_operational_schema
 from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext
 from ai_trader.scheduler import ResearchScheduler
+from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry
 
 
 def seed_due_diligence_context(db_path: Path) -> None:
@@ -284,6 +287,79 @@ class OrchestratorTests(unittest.TestCase):
         decision = self.run_decision(proposal(), adapter=HypotheticalNewAdapter())
         self.assertEqual(decision.decision, "rejected")
         self.assertIn("not permitted for broker hypothetical_new_broker", decision.rejection_reason)
+
+    def test_kraken_autonomous_execution_requires_founder_authorization_end_to_end(self):
+        # End-to-end proof for the AT-ED-002 "restore and verify Kraken governed live trading"
+        # requirement, exercising the exact same three env vars render.yaml now enables
+        # (KRAKEN_TRADING_ENABLED/KRAKEN_LIVE_TRADING_APPROVED/KRAKEN_SUBMIT_REAL_ORDERS - see
+        # foundation._kraken_crypto_policy_approved()) together with the registry authorization.
+        # orchestrator.py routes every non-Alpaca broker through pre_execution_decision_packet
+        # with mode="micro_live". Before apply_founder_strategy_authorization() has run, this must
+        # reject the proposal outright (autonomous Kraken execution is not silently permitted);
+        # after it has run, for exactly the founder-authorized strategy, the same proposal must be
+        # approved and routed to the broker.
+        class FakeKrakenAdapter(FakeAdapter):
+            name = "kraken"
+            requires_production_governance = True
+
+            def get_supported_assets(self):
+                return ["crypto"]
+
+            def get_supported_markets(self):
+                return ["KRAKEN"]
+
+        env_keys = ("KRAKEN_TRADING_ENABLED", "KRAKEN_LIVE_TRADING_APPROVED", "KRAKEN_SUBMIT_REAL_ORDERS")
+        previous = {key: os.environ.get(key) for key in env_keys}
+        try:
+            for key in env_keys:
+                os.environ[key] = "true"
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "audit.sqlite3"
+                seed_due_diligence_context(db_path)
+                seed_default_strategy_registry(db_path)
+                initialize_foundation_schema(db_path)
+                with closing(sqlite3.connect(db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at) "
+                            "VALUES ('BTC', 'Bitcoin', 'layer1', 'test', 1, ?, ?)",
+                            (utc_now_iso(), utc_now_iso()),
+                        )
+                crypto_proposal = proposal(
+                    symbol="BTC", asset_type="crypto", exchange="KRAKEN", strategy_id="crypto_trend_following_2r",
+                )
+                adapter = FakeKrakenAdapter()
+                orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+                # This proposal also fails unrelated pre-existing gates in a from-scratch test
+                # database (no due-diligence/investment-score history, no reconciliation state
+                # yet) - those are real, legitimate, separate governance checks, not part of what
+                # this test isolates. What this test proves specifically: the "not permitted for
+                # micro_live execution" strategy-entitlement failure is present before
+                # authorization and gone after it - the exact mechanism that would otherwise
+                # silently block every autonomous Kraken order regardless of the render.yaml
+                # enablement flags.
+                before = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertEqual(before.decision, "rejected")
+                self.assertIn("not permitted for micro_live execution", before.rejection_reason)
+                self.assertEqual(len(adapter.orders), 0)
+
+                apply_founder_strategy_authorization(
+                    db_path,
+                    strategy_id="crypto_trend_following_2r",
+                    target_stage="Micro Live",
+                    additional_modes=["micro_live"],
+                    reason="test",
+                )
+
+                after = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertNotIn("not permitted for micro_live execution", after.rejection_reason or "")
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_alpaca_adapter_uses_standard_bracket_interface(self):
         adapter = AlpacaBrokerAdapter(FakeAlpacaClient())

@@ -76,7 +76,7 @@ Current repository evidence:
 | `KRAKEN_API_KEY` | Kraken API key. | None | Yes for Kraken account/broker activity | Kraken connection unavailable. |
 | `KRAKEN_PRIVATE_KEY` | Kraken API private key. | None | Yes | Kraken auth unavailable. |
 | `KRAKEN_API_SECRET` | Alternate/compatibility secret variable. | None | Optional alias depending adapter path | Kraken auth may fail if expected secret name absent. |
-| `KRAKEN_SANDBOX_MODE` | Sandbox/dry-run guard. | `true` in examples | Required safety flag | Real orders remain blocked if true. |
+| `KRAKEN_SANDBOX_MODE` | **Dead configuration as of 2026-07-29** - set in `render.yaml`/`.env.example` but never read by any Python code. Real order blocking is enforced entirely by `KRAKEN_TRADING_ENABLED`/`KRAKEN_LIVE_TRADING_APPROVED`/`KRAKEN_SUBMIT_REAL_ORDERS` below and by `broker_adapters.KrakenAdapter`'s own guardrail checks. This row previously (incorrectly) described it as an active safety guard. | `true` in examples | Not enforced anywhere | No effect either way. |
 | `KRAKEN_AUTO_TRADING` | Broker auto-trading switch. | `KRAKEN_TRADING_ENABLED` fallback | Required for auto entries | Auto executor skips Kraken. |
 | `KRAKEN_TRADING_ENABLED` | Broker trading permission. | `false` | Required for real orders | Real orders blocked. |
 | `KRAKEN_LIVE_TRADING_APPROVED` | Founder/governance live approval. | `false` | Required for real orders | Real orders blocked. |

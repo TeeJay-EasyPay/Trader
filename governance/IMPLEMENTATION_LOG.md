@@ -1,5 +1,96 @@
 # Implementation Log
 
+## 2026-07-29 AT-ED-002 v2.0 implementation session - restore continuous autonomous operation
+
+Executes `engineering-directives/implementation/AT-ED-002_v2.0_INSTITUTIONAL_EDITION.md.txt`,
+scoped per the Founder's explicit clarification to: restore/verify continuous operation, Alpaca
+paper trading, and Kraken governed live trading; keep market data/research/opportunity
+evaluation/learning/persistence/reporting running continuously; preserve every existing
+capability; expand evidence quality where safe and low-risk. Explicitly out of scope this session
+(per Founder instruction): the Knowledge Graph, Investment Committee workflow, Monte Carlo
+infrastructure, and the `investment-governance/` documentation set - these remain long-term-vision
+items, not attempted, and are not placeholder-implemented.
+
+**Critical finding #1 - autonomous execution was fully disabled in the hosted config.**
+`render.yaml` had `AUTO_PAPER_TRADING`, `ALPACA_AUTO_TRADING`, `KRAKEN_AUTO_TRADING`,
+`KRAKEN_TRADING_ENABLED`, `KRAKEN_LIVE_TRADING_APPROVED`, and `KRAKEN_SUBMIT_REAL_ORDERS` all set
+to `"false"`. Flagged to the Founder directly (not assumed) before changing anything, since Kraken
+enablement is a real-money decision. The Founder explicitly authorized enabling autonomous trading
+for both brokers, with Kraken's existing size/count/allocation guardrails
+(`KRAKEN_MAX_ORDER_GBP=5`, `KRAKEN_MIN_ORDER_GBP=1`, `KRAKEN_MAX_OPEN_TRADES=1`,
+`KRAKEN_TRADING_ALLOCATION_GBP=100`, `KRAKEN_ALLOWED_PAIRS`) explicitly preserved unchanged.
+Flipped exactly those six flags to `"true"` in `render.yaml`; verified via `git diff` that no
+other value changed. `KRAKEN_SANDBOX_MODE` was found to be dead configuration (referenced in
+`.env.example`/`ENVIRONMENT_VARIABLE_AUDIT.md` as an active safety guard but never read by any
+Python code) - left untouched, documented as a doc-vs-code drift for correction.
+
+**Critical finding #2 - flipping the flags alone would not have produced a single real Kraken
+order.** Traced the full autonomous-execution path and found `orchestrator.py` routes every
+non-Alpaca broker through `pre_execution_decision_packet()` with `mode="micro_live"`, but every
+strategy in `STRATEGY_MATURITY_REGISTRY` is deliberately capped at paper/shadow/manual
+entitlement (the Phase 1 promotion safety gate - see 2026-07-29 Phase 1 entry below). Verified
+empirically (not just by reading code) that `strategy_entitlement_decision()` returned `blocked`,
+`"Strategy is not permitted for micro_live execution"`, for the crypto strategy Kraken actually
+uses, before any fix. This is not a regression from Phase 1 - the same block existed identically
+before it, just never exercised because auto-trading was off and the one real Kraken strategy
+traded exclusively via founder-triggered "manual" mode. Added
+`sprint6.apply_founder_strategy_authorization()`: a direct, explicit, human-authorization path
+distinct from the evidence-based `refresh_strategy_maturity()` (which is deliberately capped below
+real-capital stages, per Phase 1). Applied it to exactly one strategy -
+`crypto_trend_following_2r`, the only strategy `trading_intelligence.STRATEGIES` itself already
+labels `production_status="founder_controlled_live_kraken"` - raising it to "Micro Live" with
+`micro_live` added to its permitted modes. Every other crypto-eligible strategy (8 others,
+including `crypto_infrastructure_trend`, `momentum`, `breakout`, etc.) is explicitly
+`production_status="research_only"` in its own definition and was deliberately left untouched: if
+the scoring engine selects one of them for a given Kraken proposal, that proposal is still
+correctly blocked from real-money execution. Wired the authorization to apply automatically and
+idempotently at API startup (`LocalApiService._apply_founder_kraken_live_authorization()`),
+alongside the existing `_apply_env_broker_auto_defaults()`, gated on `KRAKEN_AUTO_TRADING` being
+on - so it self-applies on the hosted database on next deploy, the same pattern already used for
+syncing broker auto-trading state from environment.
+
+**Verification performed (not just claimed):**
+- Continuous runtime: traced `cli.py run-worker`'s loop - runs `managed-exits`, `broker-poll`,
+  `auto-execution`, `push-dispatch` every cycle (~60s), plus all `_due_worker_jobs`-scheduled
+  research jobs, processes the learning outbox, records a heartbeat, and degrades gracefully
+  (records an incident, does not crash) on any exception.
+- Market data / research: `overnight-crypto` runs hourly regardless of weekday;
+  premarket/market-open/market-close-equity run during market hours; `strategy-lab-refresh`
+  (Phase 1) runs daily after close. `AI_TRADER_WORKER_RESEARCH_ENABLED=true` already in
+  `render.yaml`, unaffected by this session.
+- Learning: `enqueue_learning_workflow()` is called from real trade-closing reconciliation
+  (`kraken_reconciliation.py`, `sprint6.py`); `process_learning_outbox()` claims and processes
+  pending entries every worker cycle via `run_closed_loop_learning()`.
+- Alpaca: confirmed empirically (not just by reading code) that `strategy_entitlement_decision()`
+  approves `mode="paper"` for a representative strategy with no equivalent blocker.
+- Kraken: added an end-to-end orchestrator-level test
+  (`test_kraken_autonomous_execution_requires_founder_authorization_end_to_end`) proving the
+  specific `"not permitted for micro_live execution"` failure is present before authorization and
+  absent after it, using the real `InvestmentOrchestrator.evaluate_recommendation()` path with the
+  same three env vars `render.yaml` now sets.
+- Reporting: confirmed `daily_learning_update()` (performance attribution, win/loss, orchestrator
+  decisions, benchmark comparison) and `generate_founder_operational_report()` (events, decision
+  journal, incidents) both already scheduled and produce real content, not placeholders.
+
+**Evidence-quality expansion:** audited what already exists rather than adding new external
+provider integrations blind. ATR-based volatility, regime classification, and cross-market
+correlation (`load_return_series`, Phase 1) are already real, tested, non-placeholder capability
+feeding research and portfolio decisions. Genuinely new evidence sources requested in
+AT-ED-002 Part 2 (macroeconomic/central-bank data, funding rates, order-book depth, sentiment,
+academic literature) all require new external provider integrations that cannot be safely built
+and tested without credentials this environment does not have - deferred as explicit
+recommendations below rather than built untested, consistent with the same judgment applied to
+Kraken historical-candle ingestion in Phase 1.
+
+**Testing:** full suite grew from 210 to 215 tests, all passing. New tests specifically prove: the
+Kraken entitlement gap (blocked before, unblocked after, for the authorized strategy only, with a
+research-only strategy remaining correctly blocked); the API-startup wiring applies the
+authorization only when `KRAKEN_AUTO_TRADING` is on; idempotency of the authorization; and the
+full orchestrator-level path.
+
+**Files changed:** `render.yaml`, `src/ai_trader/sprint6.py`, `src/ai_trader/api.py`,
+`tests/test_sprint6_institutional_spine.py`, `tests/test_orchestrator.py`.
+
 ## 2026-07-29 Backend-selection hardening (pre-Phase-1-commit)
 
 Requested by the Founder before committing Phase 1, following the architectural clarification on
