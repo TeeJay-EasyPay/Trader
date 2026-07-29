@@ -29,6 +29,9 @@ MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
 class FakeAdapter:
     name = "fake"
+    # Synthetic test double, not a registered broker in STRATEGY_MATURITY_REGISTRY's
+    # permitted_brokers - see the matching note in test_orchestrator.py's FakeAdapter.
+    requires_production_governance = False
 
     def __init__(self):
         self.orders = []

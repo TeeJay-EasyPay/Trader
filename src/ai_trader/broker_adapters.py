@@ -17,6 +17,14 @@ from .models import OrderRequest
 
 class BrokerAdapter(Protocol):
     name: str
+    # Whether the orchestrator's production governance chain (Strategy Entitlement -> Portfolio
+    # Manager -> Risk Sentinel, via sprint6.pre_execution_decision_packet) must approve any trade
+    # routed to this broker before submission. Defaults True for every adapter; a broker can only
+    # skip governance by explicitly setting this False, never by omission - previously this was a
+    # hardcoded {"alpaca", "kraken"} name allowlist in orchestrator.py, so a new adapter that
+    # implemented this Protocol correctly would silently bypass governance unless a human
+    # separately remembered to edit that unrelated line.
+    requires_production_governance: bool
 
     def get_account(self) -> dict[str, Any]: ...
     def get_balances(self) -> dict[str, Any]: ...
@@ -35,6 +43,7 @@ class BrokerAdapter(Protocol):
 
 class AlpacaBrokerAdapter:
     name = "alpaca"
+    requires_production_governance = True
 
     def __init__(self, client: AlpacaPaperClient):
         self.client = client
@@ -118,6 +127,7 @@ class AlpacaBrokerAdapter:
 class PlaceholderBrokerAdapter:
     name: str
     required_env_vars: tuple[str, ...]
+    requires_production_governance: bool = True
 
     @property
     def configured(self) -> bool:

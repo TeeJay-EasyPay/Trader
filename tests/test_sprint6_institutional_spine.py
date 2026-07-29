@@ -12,6 +12,7 @@ from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, TradeProposal
 from ai_trader.portfolio_intelligence import upsert_asset_metadata
+from ai_trader.trading_intelligence import STRATEGIES, record_historical_candle
 from ai_trader.sprint6 import (
     enqueue_learning_workflow,
     generate_founder_operational_report,
@@ -20,6 +21,7 @@ from ai_trader.sprint6 import (
     pre_execution_decision_packet,
     process_learning_outbox,
     production_risk_sentinel_decision,
+    refresh_strategy_maturity,
     seed_default_strategy_registry,
     set_kill_switch,
     sprint6_status,
@@ -80,6 +82,101 @@ class Sprint6InstitutionalSpineTests(unittest.TestCase):
             self.assertEqual(paper["decision"], "approved")
             self.assertEqual(micro["decision"], "blocked")
             self.assertIn("not permitted for micro_live", micro["reason"])
+
+    def test_every_named_strategy_is_registered_and_entitled_for_paper(self):
+        # Regression guard for the strategy_id wiring: once TradeProposal carries the real
+        # strategy_id selected by Trading Intelligence (instead of always falling back to the
+        # single generic bucket), every one of the 14 named strategies must already have a
+        # STRATEGY_MATURITY_REGISTRY row, or every real proposal would suddenly be blocked with
+        # "not registered in the maturity registry".
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                registered = {row[0] for row in conn.execute("SELECT strategy_id FROM STRATEGY_MATURITY_REGISTRY").fetchall()}
+            for strategy_id in STRATEGIES:
+                self.assertIn(strategy_id, registered, f"{strategy_id} has no maturity registry row")
+
+            for strategy_id, definition in STRATEGIES.items():
+                asset_type = "crypto" if "crypto" in definition["supported_assets"] else "stock"
+                broker = "kraken" if asset_type == "crypto" else "alpaca"
+                decision = strategy_entitlement_decision(
+                    db_path,
+                    proposal=proposal(strategy_id=strategy_id, asset_type=asset_type, exchange="KRAKEN" if asset_type == "crypto" else "NYSE"),
+                    broker=broker,
+                    mode="paper",
+                )
+                self.assertEqual(decision["decision"], "approved", f"{strategy_id}: {decision['reason']}")
+                self.assertEqual(decision["strategy_id"], strategy_id)
+
+    def test_refresh_strategy_maturity_holds_on_thin_evidence_and_promotes_on_strong_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+
+            thin = refresh_strategy_maturity(db_path, strategy_id="trend_following", evidence={"sample_size": 3, "expectancy": 0.1, "profit_factor": 1.5, "max_drawdown": 0.05, "calibration_error": 0.02})
+            self.assertFalse(thin["stage_changed"])
+            self.assertEqual(thin["promotion"]["decision"], "hold")
+
+            # Bootstrap stage is "Paper"; the next stage in STRATEGY_STAGES is "Micro Live", which
+            # requires real capital. Even with strong evidence this must NOT auto-apply - it
+            # should surface as pending Founder approval instead (see _MAX_AUTOMATIC_STAGE).
+            strong = refresh_strategy_maturity(
+                db_path,
+                strategy_id="trend_following",
+                evidence={"sample_size": 120, "expectancy": 0.3, "profit_factor": 1.6, "max_drawdown": 0.05, "calibration_error": 0.02},
+            )
+            self.assertFalse(strong["stage_changed"])
+            self.assertTrue(strong["requires_founder_approval"])
+            self.assertEqual(strong["status"], "pending_founder_approval")
+            self.assertEqual(strong["promotion"]["proposed_stage"], "Micro Live")
+            self.assertEqual(strong["promotion"]["decision"], "promote")
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT * FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?", ("trend_following",)).fetchone()
+            # Registry stage is untouched - the promotion recommendation is fully logged in
+            # STRATEGY_PROMOTION_DECISIONS (asserted below) but not applied without a human.
+            self.assertEqual(row["current_stage"], "Paper")
+            self.assertEqual(row["sample_size"], 120)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                decisions = conn.execute(
+                    "SELECT * FROM STRATEGY_PROMOTION_DECISIONS WHERE strategy_id = ?",
+                    ("trend_following",),
+                ).fetchall()
+            self.assertTrue(any(row["decision"] == "promote" and row["proposed_stage"] == "Micro Live" for row in decisions))
+
+    def test_refresh_strategy_maturity_auto_applies_promotion_at_or_below_paper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("UPDATE STRATEGY_MATURITY_REGISTRY SET current_stage = 'Shadow' WHERE strategy_id = ?", ("momentum",))
+                conn.commit()
+
+            result = refresh_strategy_maturity(
+                db_path,
+                strategy_id="momentum",
+                evidence={"sample_size": 40, "expectancy": 0.2, "profit_factor": 1.4, "max_drawdown": 0.05, "calibration_error": 0.02},
+            )
+
+            self.assertTrue(result["stage_changed"])
+            self.assertFalse(result["requires_founder_approval"])
+            self.assertEqual(result["promotion"]["proposed_stage"], "Paper")
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT current_stage, qualification_date FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?", ("momentum",)).fetchone()
+            self.assertEqual(row["current_stage"], "Paper")
+            self.assertIsNotNone(row["qualification_date"])
+
+    def test_refresh_strategy_maturity_reports_unregistered_strategy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            result = refresh_strategy_maturity(db_path, strategy_id="does_not_exist", evidence={})
+            self.assertEqual(result["status"], "not_registered")
 
     def test_risk_sentinel_kill_switch_blocks_before_broker_submission(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +239,41 @@ class Sprint6InstitutionalSpineTests(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute("SELECT final_decision, execution_eligibility FROM DECISION_JOURNAL").fetchall()
             self.assertEqual(rows, [("approved", "eligible")])
+
+    def test_pre_execution_packet_activates_correlation_check_once_candle_history_exists(self):
+        # Regression guard for return_series wiring: before this, portfolio_manager_decision was
+        # always called with return_series=None, so correlation_warning() could never do anything
+        # but report "insufficient_history" regardless of how much price history actually existed.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            account = AccountContext(equity=10000, daily_realized_pnl=0, open_positions=[])
+            for symbol in ("AAPL", "MSFT"):
+                price = 100.0
+                for day in range(1, 26):
+                    price += 0.5 if day % 3 else -0.3
+                    record_historical_candle(
+                        db_path,
+                        symbol=symbol,
+                        asset_type="stock",
+                        timeframe="1d",
+                        observed_at=f"2026-06-{day:02d}T00:00:00Z",
+                        close=price,
+                        source="test",
+                    )
+
+            packet = pre_execution_decision_packet(
+                db_path,
+                proposal=proposal(symbol="AAPL"),
+                broker="alpaca",
+                mode="paper",
+                account=account,
+                positions=[{"symbol": "MSFT", "broker": "alpaca", "asset_type": "stock", "market_value": 2000}],
+            )
+
+            correlation = packet["portfolio_manager"]["evidence"]["correlation"]
+            self.assertEqual(correlation["status"], "complete")
+            self.assertEqual(correlation["pairs"][0]["sample_size"], 24)
 
     def test_broker_event_normalization_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -94,6 +94,7 @@ class AITradingAgent:
                 ai_guardrails_passed=validation.passed,
                 ai_guardrail_failures=validation.failures,
                 intelligence=intelligence.to_dict(),
+                strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
             )
             self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
@@ -264,6 +265,7 @@ def propose_crypto_trades(
                 ai_guardrails_passed=validation.passed,
                 ai_guardrail_failures=validation.failures,
                 intelligence=intelligence.to_dict(),
+                strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
             )
             audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:

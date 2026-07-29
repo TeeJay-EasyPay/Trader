@@ -28,6 +28,8 @@ class EndToEndTests(unittest.TestCase):
             agent = AITradingAgent(market_data=broker, audit=audit, guardrails=guardrails)
             proposals = agent.propose_trades(["AAPL"], broker.account_context(), demo=True, now=MARKET_TIME)
             self.assertEqual(len(proposals), 1)
+            self.assertTrue(proposals[0].strategy_id, "proposal must carry the strategy selected by Trading Intelligence")
+            self.assertEqual(proposals[0].strategy_id, proposals[0].intelligence["strategy"]["strategy_id"])
 
             proposal_path = Path(tmp) / "proposals.json"
             save_proposals(proposal_path, proposals)

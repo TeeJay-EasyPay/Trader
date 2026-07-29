@@ -1273,6 +1273,38 @@ def record_historical_candle(
             )
 
 
+def load_return_series(db_path: Path, symbols: list[str], *, timeframe: str = "1d") -> dict[str, list[float]]:
+    """Simple period-over-period returns per symbol from HISTORICAL_CANDLES, for
+    portfolio_intelligence.correlation_warning(). Asset-type-agnostic (a symbol's stock and
+    crypto rows, if both existed, would be combined) since callers here only need a return
+    series keyed by symbol, not a strategy-scoped candle set.
+    """
+    if not symbols:
+        return {}
+    initialize_trading_intelligence_schema(db_path)
+    series: dict[str, list[float]] = {}
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        for symbol in {str(item).upper() for item in symbols if item}:
+            rows = conn.execute(
+                """
+                SELECT close FROM HISTORICAL_CANDLES
+                WHERE UPPER(symbol) = ? AND timeframe = ? AND close IS NOT NULL
+                ORDER BY observed_at ASC
+                """,
+                (symbol, timeframe),
+            ).fetchall()
+            closes = [float(row["close"]) for row in rows]
+            returns = [
+                (closes[i] - closes[i - 1]) / closes[i - 1]
+                for i in range(1, len(closes))
+                if closes[i - 1]
+            ]
+            if returns:
+                series[symbol] = returns
+    return series
+
+
 def run_strategy_backtest(
     db_path: Path,
     *,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import connect
+from .database import POSTGRES_BACKENDS, connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -160,7 +160,7 @@ def initialize_production_spine_schema(db_path: Path) -> None:
 def production_database_spine_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
     initialize_production_spine_schema(db_path)
     tables = _sqlite_tables(db_path)
-    backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
+    backend_ready = database_backend in POSTGRES_BACKENDS
     migrated = {"always_on": backend_ready}
     for family in CRITICAL_RUNTIME_FAMILIES:
         if family != "always_on":
@@ -799,7 +799,7 @@ def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[st
     spine = production_database_spine_status(db_path, database_backend=database_backend)
     supervision = supervise_workers(db_path)
     worker_healthy = supervision["status"] == "healthy"
-    backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
+    backend_ready = database_backend in POSTGRES_BACKENDS
     operational = backend_ready and worker_healthy
     if spine["status"] == "production_ready" and operational:
         overall = "production_ready"

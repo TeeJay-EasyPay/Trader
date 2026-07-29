@@ -65,6 +65,11 @@ MARKET_TIME = datetime(2026, 7, 2, 10, 0, tzinfo=ZoneInfo("America/New_York"))
 
 class FakeAdapter:
     name = "fake"
+    # A synthetic test double for exercising the orchestrator's own allocation/guardrail logic in
+    # isolation - it is not a registered broker in STRATEGY_MATURITY_REGISTRY's permitted_brokers,
+    # so routing it through the real sprint6 production governance chain would only ever be
+    # rejected as "not permitted for broker fake", not exercise anything these tests are about.
+    requires_production_governance = False
 
     def __init__(self, *, market_open=True, asset_available=True):
         self.market_open = market_open
@@ -257,6 +262,28 @@ class OrchestratorTests(unittest.TestCase):
     def test_placeholder_adapters_are_not_configured(self):
         for adapter in [InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter()]:
             self.assertEqual(adapter.place_order(OrderRequest("AAPL", "buy", 1, "stock", "NYSE", 97, 106))["status"], "not_configured")
+
+    def test_broker_adapters_require_production_governance_by_default(self):
+        # Every real and placeholder adapter must default to requiring governance; a broker can
+        # only skip it by explicitly declaring requires_production_governance = False. This is
+        # the regression guard for orchestrator.py no longer using a hardcoded {"alpaca","kraken"}
+        # name allowlist.
+        for adapter in [AlpacaBrokerAdapter(FakeAlpacaClient()), InteractiveBrokersAdapter(), SaxoAdapter(), KrakenAdapter()]:
+            self.assertTrue(adapter.requires_production_governance, f"{adapter.name} must default to requiring governance")
+
+    def test_a_hypothetical_new_broker_still_routes_through_governance_by_default(self):
+        # Simulates the exact scenario the fix closes: a new adapter implementing the Protocol
+        # correctly, with nobody remembering to add its name anywhere - it must still be routed
+        # through Strategy Entitlement / Portfolio Manager / Risk Sentinel, and since it is not a
+        # permitted broker in STRATEGY_MATURITY_REGISTRY, it must be rejected, not silently
+        # auto-approved the way a pre-fix ungoverned broker would have been.
+        class HypotheticalNewAdapter(FakeAdapter):
+            name = "hypothetical_new_broker"
+            requires_production_governance = True
+
+        decision = self.run_decision(proposal(), adapter=HypotheticalNewAdapter())
+        self.assertEqual(decision.decision, "rejected")
+        self.assertIn("not permitted for broker hypothetical_new_broker", decision.rejection_reason)
 
     def test_alpaca_adapter_uses_standard_bracket_interface(self):
         adapter = AlpacaBrokerAdapter(FakeAlpacaClient())

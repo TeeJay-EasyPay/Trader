@@ -1,5 +1,188 @@
 # Implementation Log
 
+## 2026-07-29 Backend-selection hardening (pre-Phase-1-commit)
+
+Requested by the Founder before committing Phase 1, following the architectural clarification on
+SQLite presence given earlier the same day. That clarification surfaced a real inconsistency:
+`database.py:selected_backend()` correctly treats a configured `DATABASE_URL`/`SUPABASE_DATABASE_URL`
+as sufficient to select Postgres when `AI_TRADER_DATABASE_BACKEND` is unset, but
+`always_on.py:_use_postgres()` independently reimplemented the same decision and defaulted to
+`"sqlite"` in that exact case instead. In the currently deployed `render.yaml` this never
+manifested (every hosted service sets `AI_TRADER_DATABASE_BACKEND=postgres` explicitly), but it
+was a live risk for any future or ad-hoc environment that configured only `DATABASE_URL`.
+
+**Consolidation, `database.py` is now the single authoritative implementation:**
+
+- Split `selected_backend()`'s precedence logic out into a new `requested_backend()` - the one
+  place "what backend does this environment ask for" is decided (explicit
+  `AI_TRADER_DATABASE_BACKEND` wins; otherwise `DATABASE_URL`/`SUPABASE_DATABASE_URL` presence
+  implies Postgres). `selected_backend()` is now `requested_backend()` plus validation (raises if
+  hosted-and-not-postgres, or postgres-requested-without-a-url) - unchanged behaviour, just
+  factored so the precedence logic isn't duplicated inside it.
+- Added `database.uses_postgres() -> bool`: the same precedence logic, non-raising, for
+  status/diagnostic reporting and internal SQL-dialect branching.
+- **`always_on.py`**: deleted its independent `_database_url()` and `_use_postgres()`
+  implementations entirely. Now imports `database_url`, `requested_backend`, and `uses_postgres`
+  directly from `database.py` - `always_on.uses_postgres` is the literal same function object
+  other modules already import via `from .always_on import uses_postgres`
+  (`sprint6.py`, `production_evidence.py`), so those call sites now transitively use the
+  authoritative implementation with no import-path changes required. All ~20 internal
+  `if _use_postgres():` / dialect-branching call sites updated to call the imported
+  `uses_postgres()`. `database_backend_status()` (the Founder-facing diagnostic used by
+  `always_on_status()`) now reports `requested_backend` from `requested_backend()` instead of a
+  third independent raw `os.getenv("AI_TRADER_DATABASE_BACKEND", "sqlite")` read - it now
+  correctly reports `"postgres"` when only `DATABASE_URL` is set, consistent with
+  `active_backend`, instead of the previous self-contradictory `requested_backend: "sqlite"`,
+  `active_backend` potentially disagreeing.
+- **`config.py`**: `Settings.is_hosted_runtime` now ORs its existing `process_role` check with
+  `database.is_hosted_runtime()` instead of re-listing the three Render env vars inline.
+  `Settings.uses_postgres` now checks against the imported `database.POSTGRES_BACKENDS` constant
+  instead of a separately-written literal set. `Settings` remains a resolved-at-load-time
+  snapshot (it does not re-read env vars live), which is a legitimate, deliberately different
+  layer from `database.py`'s live resolution - not consolidated further than this.
+- **`production_spine.py`, `sprint6.py`**: both had a `database_backend in {"postgres", "postgresql", "supabase"}`
+  literal (checking an already-resolved string parameter, not re-reading env) duplicated from
+  `database.py:POSTGRES_BACKENDS`. Replaced with the imported constant so the set of Postgres
+  backend aliases is defined in exactly one place repository-wide.
+
+**Found but deliberately not touched (out of the "small" scope requested):**
+`always_on.py` also has its own parallel `_postgres_connection()`/`postgres_connection()` (a raw
+`psycopg.connect()`, separate from `database.py`'s `PostgresConnection`/`connect()` wrapper), and
+hand-writes dual-dialect SQL throughout (`"%s" if uses_postgres() else "?"`) instead of using the
+`?`-placeholder abstraction every other module uses via `connect()`. This is a real, separate
+architectural duplication - a second database-access pattern, not just a second backend-selection
+check - but consolidating it means rewriting ~20 call sites in safety-critical worker/scheduling
+code (job locking, heartbeats, incidents). That is a materially larger and riskier change than the
+backend-*selection* hardening requested here and was not attempted.
+
+**Deleted:** the untracked root-level `unused.sqlite3` artifact (a confirmed local `pytest` side
+effect from `test_production_completion.py`, already documented as such in
+`architecture/CRITICAL_REMEDIATION_PLAN.md`; not read by any production code path).
+
+**Testing:** new `tests/test_database.py` (8 tests) covers `database.py` directly: explicit
+Postgres backend, Postgres selected from `DATABASE_URL` alone (the exact bug fixed), Postgres
+selected from `SUPABASE_DATABASE_URL` alone, local SQLite with nothing configured, hosted runtime
+refusing SQLite, hosted runtime succeeding with Postgres configured, Postgres requested without a
+URL raising even when not hosted, and `postgresql`/`supabase` aliases normalizing to `"postgres"`.
+Added one test to `tests/test_always_on_operations.py` proving `database_backend_status()` now
+agrees with `database.py` when only `DATABASE_URL` is set. Full suite: 210 tests passing (up from
+201), no regressions. Nothing committed - working tree only, per standing instruction.
+
+## 2026-07-29 Phase 1 - Connect What Already Exists (integrated autonomous intelligence)
+
+Executes `engineering-directives/implementation/PHASE_1_INTEGRATED_AUTONOMOUS_INTELLIGENCE.md`,
+scoped to the eight-item "Phase 1" list in `architecture/FOUNDER_IMPLEMENTATION_PLAN.md`'s
+Proposed Implementation Order (items a-h), approved by the Founder 2026-07-28 alongside Phase 0.
+Plan document: `architecture/PHASE_1_INTEGRATED_IMPLEMENTATION_PLAN.md`.
+
+**Known risk carried into this session:** per `architecture/INTEGRATED_IMPLEMENTATION_STATUS.md`,
+Phase 0's five P0 items remained hosted-production-evidence outstanding as of 2026-07-28 - none of
+them have been hosted-verified from this environment (no Postgres/Render access). The Founder
+explicitly directed this session to proceed regardless, treating the gap as a tracked risk rather
+than a blocker. It is unchanged by this session and still needs closing.
+
+- **(a) `TradeProposal.strategy_id`.** The 14-strategy scoring engine's winning `strategy_id` never
+  reached the top-level `TradeProposal` the governance layer reads, so `sprint6._strategy_id()`
+  always fell back to a single generic bucket regardless of which strategy was actually selected.
+  Added `strategy_id: str = ""` to `TradeProposal` (`models.py`), populated from
+  `IntelligencePacket.strategy["strategy_id"]` in both proposal-construction paths in `agent.py`.
+- **(b) `STRATEGY_MATURITY_REGISTRY` per-strategy seeding.** Discovered while implementing (a):
+  shipping (a) alone without this would have made every real trade proposal blocked, because
+  `strategy_entitlement_decision()` returns `blocked` for any `strategy_id` with no registry row,
+  and the registry had exactly one row (`current_recommendation_process`). `seed_default_strategy_registry`
+  (`sprint6.py`) now seeds one row per strategy in `trading_intelligence.STRATEGIES`, each with the
+  exact same paper/shadow/manual entitlement scope the single generic bucket previously granted -
+  differentiates the registry without loosening or tightening current behaviour.
+- **(c) Historical-candle ingestion.** `record_historical_candle()` existed but was never called in
+  production, so `HISTORICAL_CANDLES` was permanently empty. Added `AlpacaPaperClient.get_daily_bars()`
+  (`alpaca.py`) - genuinely new integration, Alpaca's `/v2/stocks/{symbol}/bars` endpoint, not
+  previously wrapped - and `LocalApiService.refresh_strategy_lab()` (`api.py`), which ingests daily
+  bars for the COMPANY_MASTER equity universe. Equity-only: Kraken has no equivalent OHLC client
+  yet, and building one untested in the same session was judged higher-risk than the value of
+  including it now; tracked as a near-term follow-up, not an oversight.
+- **(d) Backtest + walk-forward scheduling.** `run_strategy_backtest`/`run_walk_forward_validation`
+  (`trading_intelligence.py`) existed, were unit-tested, and had zero production callers.
+  `refresh_strategy_lab()` now runs both for every stock-eligible named strategy against the
+  ingested candle history. Registered as worker job `strategy-lab-refresh`, scheduled once daily
+  after equity market close (`cli.py`).
+- **(e) `strategy_promotion_decision` scheduling + registry write-back, with a safety gate.**
+  `strategy_promotion_decision()` (`production_spine.py`) had no caller and the registry had no
+  write-back path. Added `refresh_strategy_maturity()` (`sprint6.py`), called per strategy from
+  `refresh_strategy_lab()` with backtest evidence (sample size, expectancy, profit factor, max
+  drawdown) plus real calibration evidence from `calculate_calibration_metrics()`. **Judgment call,
+  not in the original plan text:** demotions (including suspension) always apply automatically
+  since reducing entitlement never increases risk; promotions apply automatically only up to and
+  including "Paper" stage. A promotion that would cross into "Micro Live" or "Production" - real
+  capital entitlement - is fully logged in `STRATEGY_PROMOTION_DECISIONS` for visibility but is
+  **not** applied to the registry; it is surfaced as pending Founder approval instead. Reason: the
+  evidence feeding this job is backtest simulation, not a live trading track record, and the one
+  strategy already trading real capital (`crypto_trend_following_2r`) is explicitly documented as
+  founder-controlled, not self-promoting. Mirrors the Founder-approval pattern the Pillar 5
+  assessment already called for on learning proposals.
+- **(f) Portfolio correlation `return_series`.** `correlation_warning()` (`portfolio_intelligence.py`)
+  was real but always received `return_series={}` from `portfolio_manager_decision()`, so it could
+  only ever report `insufficient_history`. Added `load_return_series()` (`trading_intelligence.py`),
+  reading simple period-over-period returns from `HISTORICAL_CANDLES`; wired into
+  `pre_execution_decision_packet()` (`sprint6.py`). Activates automatically as (c) accumulates
+  history - does not change how correlation affects the decision (still logged only, per
+  `FOUNDER_IMPLEMENTATION_PLAN.md`'s explicit Phase 2 deferral of that design work).
+- **(g) `upsert_asset_metadata` wiring.** Sector/country/theme exposure bucketing
+  (`portfolio_intelligence.py:155-203`) always fell back to "Unknown" because nothing called
+  `upsert_asset_metadata()` outside tests, despite the source data already sitting in
+  `COMPANY_MASTER`. Added `LocalApiService._refresh_asset_metadata_from_company_master()`
+  (`api.py`), called from the existing equity research cycle (`run_analysis`) once symbols are
+  resolved. No new data source.
+- **(h) Broker governance capability flag.** `orchestrator.py:202` gated the entire production
+  governance chain (Strategy Entitlement -> Portfolio Manager -> Risk Sentinel) behind a hardcoded
+  `{"alpaca", "kraken"}` name allowlist - a correctly implemented new `BrokerAdapter` would
+  silently bypass governance unless a human separately remembered to edit that line. Added
+  `requires_production_governance: bool` to the `BrokerAdapter` Protocol (`broker_adapters.py`),
+  defaulted `True` on every concrete adapter (including placeholders); `orchestrator.py` now reads
+  the flag via `getattr(selected, "requires_production_governance", True)` instead of the name set.
+  Two pre-existing test-only `FakeAdapter` fixtures (`test_orchestrator.py`, `test_foundation_sprint.py`)
+  explicitly opted out (`requires_production_governance = False`) since they predate and are
+  orthogonal to the production governance chain; this was verified, not assumed, by running the
+  full suite and fixing the two fixtures the change correctly broke.
+
+**Testing:** full local suite grew from 185 to 201 tests, all passing (`pytest tests/`, this
+environment's `.venv`). New tests specifically prove: (a)+(b) shipped together safely (every named
+strategy is registered and entitled, not just the generic bucket); (e)'s safety gate holds under
+both thin and strong synthetic evidence, including that an applied stage change never lands on
+Micro Live/Production; (f) correlation status flips from `insufficient_history` to `complete` once
+candle history exists; (g) portfolio exposure stops defaulting to "Unknown" once metadata is
+refreshed; (h) a hypothetical new broker with no explicit governance opt-out is still routed
+through governance and correctly rejected as an unpermitted broker. No Postgres access in this
+environment - schema-affecting changes are written to run identically against both backends but
+are not hosted-verified from here.
+
+**Documentation:** added `architecture/PHASE_1_INTEGRATED_IMPLEMENTATION_PLAN.md` (the directive's
+required First Deliverable); corrected `architecture/MARKET_INTELLIGENCE_PLATFORM.md`, which
+described the still-disconnected Regime 2.0/multi-timeframe engine as live capability (that
+connection remains out of scope for this session - not in the approved Phase 1 item list).
+
+**Scope not attempted this session (Phase 2/3, per `FOUNDER_IMPLEMENTATION_PLAN.md`):** fitted/
+calibrated strategy weights; the Founder-facing learning-proposal approval mechanism; regime-aware,
+correlation-influenced portfolio decisioning; AI-provider abstraction; the hardcoded US-equity
+market-hours gate; Kraken/crypto historical-candle ingestion; sector-rotation/macro/earnings data
+ingestion; cross-broker capital view. All assessed and already described in
+`FOUNDER_IMPLEMENTATION_PLAN.md`; none were part of the approved Phase 1 scope.
+
+## 2026-07-29 Engineering Directives structure created
+
+- Added a permanent, version-controlled `engineering-directives/` folder to
+  hold lengthy prompts and governing AI engineering instructions for Claude
+  Code, Codex, and future AI engineering agents, replacing long clipboard
+  prompts wherever practical.
+- Structure: `README.md`; `implementation/`, `architecture/`, `operations/`,
+  `reviews/`, and `templates/` subfolders; reusable
+  `IMPLEMENTATION_TEMPLATE.md` and `REVIEW_TEMPLATE.md`.
+- Placed the Phase 1 "Integrated Autonomous Intelligence" directive at
+  `engineering-directives/implementation/PHASE_1_INTEGRATED_AUTONOMOUS_INTELLIGENCE.md`
+  for future execution. This entry records creation only; the directive has
+  not been executed.
+- Documentation-only change. No application code, tests, schema, or
+  production behaviour was modified.
+
 ## 2026-07-28 Founder Implementation Programme - Phase 0 (mandatory safety gate)
 
 Implements the five P0 items in `architecture/CRITICAL_REMEDIATION_PLAN.md`, approved by

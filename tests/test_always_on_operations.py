@@ -231,6 +231,32 @@ class AlwaysOnOperationsTests(unittest.TestCase):
                 else:
                     os.environ["DATABASE_URL"] = previous_database_url
 
+    def test_database_backend_status_selects_postgres_from_database_url_alone(self):
+        # Regression guard for the backend-selection consolidation: database_backend_status()
+        # must now agree with database.py:selected_backend() when only DATABASE_URL is set and
+        # AI_TRADER_DATABASE_BACKEND is absent. Before the fix, always_on.py's independent
+        # _use_postgres() defaulted to "sqlite" in exactly this scenario.
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_backend = os.environ.get("AI_TRADER_DATABASE_BACKEND")
+            previous_database_url = os.environ.get("DATABASE_URL")
+            try:
+                os.environ.pop("AI_TRADER_DATABASE_BACKEND", None)
+                os.environ["DATABASE_URL"] = "postgresql://example.invalid/db"
+                status = database_backend_status(Path(tmp) / "audit.sqlite3")
+
+                self.assertEqual(status["requested_backend"], "postgres")
+                self.assertEqual(status["active_backend"], "postgres")
+                self.assertTrue(status["postgres_configured"])
+            finally:
+                if previous_backend is None:
+                    os.environ.pop("AI_TRADER_DATABASE_BACKEND", None)
+                else:
+                    os.environ["AI_TRADER_DATABASE_BACKEND"] = previous_backend
+                if previous_database_url is None:
+                    os.environ.pop("DATABASE_URL", None)
+                else:
+                    os.environ["DATABASE_URL"] = previous_database_url
+
     def test_hosted_runtime_refuses_sqlite_startup(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = replace(

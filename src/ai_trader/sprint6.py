@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from .database import connect
+from .database import POSTGRES_BACKENDS, connect
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,7 +20,9 @@ from .production_spine import (
     portfolio_manager_decision,
     reconcile_logical_trade,
     run_closed_loop_learning,
+    strategy_promotion_decision,
 )
+from .trading_intelligence import STRATEGIES, load_return_series
 
 
 SPRINT6_SCHEMA = """
@@ -222,6 +224,54 @@ def _ensure_sprint6_schema(db_path: Path) -> None:
         initialize_sprint6_schema(db_path)
 
 
+_MATURITY_REGISTRY_INSERT = """
+    INSERT OR IGNORE INTO STRATEGY_MATURITY_REGISTRY (
+        strategy_id, version, current_stage, evidence_json, sample_size,
+        expectancy, avg_net_r, median_net_r, profit_factor, max_drawdown,
+        win_rate, calibration_error, permitted_asset_classes_json,
+        permitted_brokers_json, permitted_modes_json, max_capital_allocation,
+        max_risk_allocation, qualification_date, next_review_date, suspended,
+        demotion_reason, approval_authority, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _maturity_registry_bootstrap_row(
+    strategy_id: str,
+    *,
+    plain_english: str,
+    permitted_asset_classes: list[str],
+    max_risk_allocation: float,
+    now: str,
+    next_review: str,
+) -> tuple[Any, ...]:
+    return (
+        strategy_id,
+        "1",
+        "Paper",
+        json.dumps({"source": "Sprint 6 bootstrap", "plain_english": plain_english}, sort_keys=True),
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        json.dumps(sorted(set(permitted_asset_classes)) or ["stock"], sort_keys=True),
+        json.dumps(["alpaca", "kraken"], sort_keys=True),
+        json.dumps(["shadow", "paper", "manual"], sort_keys=True),
+        0.05,
+        max_risk_allocation,
+        now,
+        next_review,
+        0,
+        None,
+        "founder-governance-default",
+        now,
+    )
+
+
 def seed_default_strategy_registry(db_path: Path) -> None:
     _ensure_sprint6_schema(db_path)
     now = utc_now_iso()
@@ -229,51 +279,39 @@ def seed_default_strategy_registry(db_path: Path) -> None:
     with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
-                """
-                INSERT OR IGNORE INTO STRATEGY_MATURITY_REGISTRY (
-                    strategy_id, version, current_stage, evidence_json, sample_size,
-                    expectancy, avg_net_r, median_net_r, profit_factor, max_drawdown,
-                    win_rate, calibration_error, permitted_asset_classes_json,
-                    permitted_brokers_json, permitted_modes_json, max_capital_allocation,
-                    max_risk_allocation, qualification_date, next_review_date, suspended,
-                    demotion_reason, approval_authority, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
+                _MATURITY_REGISTRY_INSERT,
+                _maturity_registry_bootstrap_row(
                     "current_recommendation_process",
-                    "1",
-                    "Paper",
-                    json.dumps(
-                        {
-                            "source": "Sprint 6 bootstrap",
-                            "plain_english": (
-                                "The current recommendation process is allowed for paper/manual testing only. "
-                                "Micro-live and production promotion require governed evidence."
-                            ),
-                        },
-                        sort_keys=True,
+                    plain_english=(
+                        "The current recommendation process is allowed for paper/manual testing only. "
+                        "Micro-live and production promotion require governed evidence."
                     ),
-                    0,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    json.dumps(["stock", "crypto"], sort_keys=True),
-                    json.dumps(["alpaca", "kraken"], sort_keys=True),
-                    json.dumps(["shadow", "paper", "manual"], sort_keys=True),
-                    0.05,
-                    0.01,
-                    now,
-                    next_review,
-                    0,
-                    None,
-                    "founder-governance-default",
-                    now,
+                    permitted_asset_classes=["stock", "crypto"],
+                    max_risk_allocation=0.01,
+                    now=now,
+                    next_review=next_review,
                 ),
             )
+            # One row per real named strategy (trading_intelligence.STRATEGIES), each entitled
+            # to exactly the same paper/shadow/manual scope the single generic bucket previously
+            # granted everything indiscriminately — this differentiates the registry without
+            # loosening or tightening what is currently permitted. Promotion beyond this scope is
+            # strategy_promotion_decision()'s job once real evidence exists.
+            for strategy_id, definition in STRATEGIES.items():
+                conn.execute(
+                    _MATURITY_REGISTRY_INSERT,
+                    _maturity_registry_bootstrap_row(
+                        strategy_id,
+                        plain_english=(
+                            f"'{definition.get('name', strategy_id)}' is allowed for paper/shadow/manual "
+                            "testing only until promoted on governed evidence."
+                        ),
+                        permitted_asset_classes=list(definition.get("supported_assets") or ["stock"]),
+                        max_risk_allocation=float(definition.get("maximum_risk") or 0.01),
+                        now=now,
+                        next_review=next_review,
+                    ),
+                )
 
 
 def record_operational_event(
@@ -339,7 +377,10 @@ def pre_execution_decision_packet(
     proposal_payload["broker"] = broker.lower()
     proposal_payload["notional"] = proposal.entry_price * proposal.position_size
     strategy = strategy_entitlement_decision(db_path, proposal=proposal, broker=broker, mode=mode)
-    portfolio = portfolio_manager_decision(db_path, proposal=proposal_payload, positions=positions or _positions_from_account(account, broker))
+    resolved_positions = positions or _positions_from_account(account, broker)
+    correlation_symbols = [item.get("symbol") for item in resolved_positions if item.get("symbol")] + [proposal.symbol]
+    return_series = load_return_series(db_path, correlation_symbols)
+    portfolio = portfolio_manager_decision(db_path, proposal=proposal_payload, positions=resolved_positions, return_series=return_series)
     risk_validation = (
         validate_trade_proposal(proposal, account, guardrails, now=now)
         if guardrails is not None
@@ -509,6 +550,97 @@ def strategy_entitlement_decision(db_path: Path, *, proposal: TradeProposal, bro
                 ),
             )
     return {"decision": decision, "strategy_id": strategy_id, "mode": mode, "broker": broker.lower(), "reason": reason, "evidence": evidence}
+
+
+_MAX_AUTOMATIC_STAGE = "paper"  # highest stage this job may reach on its own authority
+
+
+def refresh_strategy_maturity(db_path: Path, *, strategy_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    """Runs strategy_promotion_decision() against fresh evidence and writes the outcome back to
+    STRATEGY_MATURITY_REGISTRY. Previously the promotion gate had no caller and the registry had
+    no write-back, so every strategy stayed frozen at its seed stage regardless of evidence.
+
+    Only actually moves `current_stage` when the decision is "promote" or "demote" (never on
+    "hold"), so a strategy with insufficient or thin evidence is left exactly where it was rather
+    than being nudged by a low-confidence run.
+
+    Safety gate: demotions (including suspension) always apply automatically, since reducing a
+    strategy's entitlement never increases risk. Promotions apply automatically only up to and
+    including "Paper" stage, which is the same paper/shadow/manual scope every strategy already
+    has today. A promotion that would cross into "Micro Live" or "Production" - real capital
+    entitlement - is recorded in STRATEGY_PROMOTION_DECISIONS for full visibility but is not
+    applied to the registry; it is surfaced as pending Founder approval instead. This mirrors the
+    Founder-approval pattern already required for learning proposals elsewhere in this programme,
+    and is a deliberate choice, not an oversight: the evidence feeding this job today is backtest
+    simulation, not a live trading track record, and the one strategy already trading real
+    capital (crypto_trend_following_2r) is explicitly documented as founder-controlled, not
+    self-promoting.
+    """
+    _ensure_sprint6_schema(db_path)
+    row = _row(db_path, "SELECT current_stage FROM STRATEGY_MATURITY_REGISTRY WHERE strategy_id = ?", (strategy_id,))
+    if row is None:
+        return {"strategy_id": strategy_id, "status": "not_registered", "plain_english": f"Strategy '{strategy_id}' has no maturity registry row; cannot evaluate promotion."}
+    current_stage = str(row["current_stage"])
+    promotion = strategy_promotion_decision(db_path, strategy_id=strategy_id, current_stage=current_stage, evidence=evidence)
+    now = utc_now_iso()
+    next_review = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    proposed_changed = promotion["decision"] in {"promote", "demote"} and promotion["proposed_stage"] != current_stage
+    requires_founder_approval = (
+        promotion["decision"] == "promote"
+        and proposed_changed
+        and _stage_rank(promotion["proposed_stage"]) > _stage_rank(_MAX_AUTOMATIC_STAGE)
+    )
+    stage_changed = proposed_changed and not requires_founder_approval
+    new_stage = promotion["proposed_stage"] if stage_changed else current_stage
+    suspended = 1 if new_stage == "Retired" else 0
+    demotion_reason = promotion["reason"] if promotion["decision"] == "demote" else None
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE STRATEGY_MATURITY_REGISTRY SET
+                    current_stage = ?, sample_size = ?, expectancy = ?, profit_factor = ?,
+                    max_drawdown = ?, win_rate = ?, calibration_error = ?,
+                    qualification_date = CASE WHEN ? THEN ? ELSE qualification_date END,
+                    next_review_date = ?, suspended = ?, demotion_reason = ?, updated_at = ?
+                WHERE strategy_id = ?
+                """,
+                (
+                    new_stage,
+                    evidence.get("sample_size"),
+                    evidence.get("expectancy"),
+                    evidence.get("profit_factor"),
+                    evidence.get("max_drawdown"),
+                    evidence.get("win_rate"),
+                    evidence.get("calibration_error"),
+                    1 if stage_changed and promotion["decision"] == "promote" else 0,
+                    now,
+                    next_review,
+                    suspended,
+                    demotion_reason,
+                    now,
+                    strategy_id,
+                ),
+            )
+    if requires_founder_approval:
+        plain_english = (
+            f"Strategy '{strategy_id}' cleared the evidence gates for {promotion['proposed_stage']}, "
+            "which requires real capital. This is recorded as pending Founder approval and was not "
+            "applied automatically."
+        )
+    elif stage_changed:
+        plain_english = f"Strategy '{strategy_id}' moved from {current_stage} to {new_stage}: {promotion['reason']}"
+    else:
+        plain_english = f"Strategy '{strategy_id}' stayed at {current_stage}."
+    return {
+        "strategy_id": strategy_id,
+        "status": "pending_founder_approval" if requires_founder_approval else "evaluated",
+        "previous_stage": current_stage,
+        "promotion": promotion,
+        "stage_changed": stage_changed,
+        "requires_founder_approval": requires_founder_approval,
+        "plain_english": plain_english,
+    }
 
 
 def production_risk_sentinel_decision(
@@ -1012,7 +1144,7 @@ def sprint6_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[s
     open_incidents = _rows(db_path, "SELECT * FROM INCIDENT_LIFECYCLE WHERE status = 'open' ORDER BY last_observed_at DESC LIMIT 10", ())
     kill = _row(db_path, "SELECT * FROM KILL_SWITCH_STATE WHERE id = 1", ())
     decisions = _rows(db_path, "SELECT final_decision, COUNT(*) AS count FROM DECISION_JOURNAL GROUP BY final_decision", ())
-    backend_ready = database_backend in {"postgres", "postgresql", "supabase"}
+    backend_ready = database_backend in POSTGRES_BACKENDS
     blocked = bool(open_incidents) or bool(kill and kill["active"])
     overall = "ready_for_controlled_operation" if backend_ready and not blocked else "attention_needed"
     if backend_ready and not blocked:

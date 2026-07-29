@@ -446,6 +446,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return replay_persisted_kraken_evidence(service.settings.db_path)
     if job_name == "push-dispatch":
         return service.dispatch_pending_push_notifications()
+    if job_name == "strategy-lab-refresh":
+        return service.refresh_strategy_lab()
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 
@@ -691,6 +693,7 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         due.append(("market-close-equity", f"{day}T16:00:00-04:00"))
     if minutes >= 17 * 60:
         due.append(("daily-report", f"{day}T17:00:00-04:00"))
+        due.append(("strategy-lab-refresh", f"{day}T17:30:00-04:00"))
     return due
 
 

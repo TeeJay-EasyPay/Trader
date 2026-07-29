@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .database import POSTGRES_BACKENDS, is_hosted_runtime as _database_is_hosted_runtime
 from .models import AutoTradeConfig, GuardrailConfig
 
 
@@ -74,13 +75,14 @@ class Settings:
 
     @property
     def uses_postgres(self) -> bool:
-        return self.database_backend in {"postgres", "postgresql", "supabase"} and bool(self.database_url)
+        return self.database_backend in POSTGRES_BACKENDS and bool(self.database_url)
 
     @property
     def is_hosted_runtime(self) -> bool:
-        return self.process_role in {"render", "api", "worker", "scheduled-job"} or bool(
-            os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_INSTANCE_ID")
-        )
+        # process_role is an explicit, Settings-specific signal (e.g. a local run configured with
+        # AI_TRADER_PROCESS_ROLE=worker for testing) in addition to database.py's authoritative
+        # Render-environment detection - the two are deliberately OR'd, not merged into one check.
+        return self.process_role in {"render", "api", "worker", "scheduled-job"} or _database_is_hosted_runtime()
 
     def production_startup_errors(self, *, host: str | None = None) -> list[str]:
         hosted_host = bool(host and host not in {"127.0.0.1", "localhost", "::1"})

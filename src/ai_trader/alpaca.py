@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -98,6 +99,39 @@ class AlpacaPaperClient:
                 return {"news": [], "unavailable_symbols": symbols, "error": str(exc)}
             raise
 
+    def get_daily_bars(self, symbols: list[str], *, days: int = 120) -> dict[str, Any]:
+        """Daily OHLCV history per symbol for the trailing `days` calendar days, keyed by symbol.
+
+        Used to populate HISTORICAL_CANDLES for the backtester/walk-forward validator, not the
+        live proposal path (which uses get_latest_bars). One paginated request per symbol because
+        Alpaca's multi-symbol bars endpoint truncates each symbol's page independently, which would
+        otherwise silently under-fill history for whichever symbol sorts last.
+        """
+        end = date.today()
+        start = end - timedelta(days=days)
+        bars: dict[str, list[dict[str, Any]]] = {}
+        unavailable: list[str] = []
+        for symbol in symbols:
+            query = urlencode(
+                {
+                    "timeframe": "1Day",
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "limit": 1000,
+                    "feed": "iex",
+                    "adjustment": "raw",
+                }
+            )
+            try:
+                response = self._request("GET", f"/v2/stocks/{symbol}/bars?{query}", data_api=True)
+            except AlpacaError as exc:
+                if "asset" in str(exc).lower() and "not found" in str(exc).lower():
+                    unavailable.append(symbol)
+                    continue
+                raise
+            bars[symbol] = response.get("bars") or []
+        return {"bars": bars, "unavailable_symbols": unavailable}
+
     def place_bracket_order(
         self,
         *,
@@ -175,3 +209,6 @@ class MockAlpacaPaperClient:
 
     def get_news(self, symbols: list[str], limit: int = 5) -> dict[str, Any]:
         return {"news": [{"symbols": symbols, "headline": "Mock market news", "summary": "Demo-only news context."}]}
+
+    def get_daily_bars(self, symbols: list[str], *, days: int = 120) -> dict[str, Any]:
+        return {"bars": {}, "unavailable_symbols": []}

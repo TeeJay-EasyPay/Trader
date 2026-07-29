@@ -73,6 +73,7 @@ class TradeProposal:
     exchange: str = "NYSE"
     philosophy_fit: float = 0.0
     intelligence: dict[str, Any] | None = None
+    strategy_id: str = ""
 
     def normalized(self) -> "TradeProposal":
         return TradeProposal(
@@ -96,6 +97,7 @@ class TradeProposal:
             exchange=self.exchange.upper().strip() or "NYSE",
             philosophy_fit=float(self.philosophy_fit or 0),
             intelligence=dict(self.intelligence) if isinstance(self.intelligence, dict) else None,
+            strategy_id=str(self.strategy_id or "").strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:

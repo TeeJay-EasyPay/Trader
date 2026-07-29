@@ -102,7 +102,7 @@ from .kraken_reconciliation import (
 )
 from .operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from .operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
-from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema
+from .portfolio_intelligence import calculate_portfolio_exposure, initialize_portfolio_intelligence_schema, upsert_asset_metadata
 from .production_spine import initialize_production_spine_schema, phase5_status
 from .production_evidence import (
     founder_evidence_payload,
@@ -118,12 +118,23 @@ from .sprint6 import (
     initialize_sprint6_schema,
     normalize_broker_events,
     record_operational_event,
+    refresh_strategy_maturity,
     seed_default_strategy_registry,
     sprint6_status,
     upsert_incident,
 )
 from .scheduler import IntervalWorker, ResearchScheduler
-from .trading_intelligence import calculate_performance_metrics, initialize_trading_intelligence_schema, latest_intelligence_packet, update_calibration_from_attribution
+from .trading_intelligence import (
+    STRATEGIES,
+    calculate_calibration_metrics,
+    calculate_performance_metrics,
+    initialize_trading_intelligence_schema,
+    latest_intelligence_packet,
+    record_historical_candle,
+    run_strategy_backtest,
+    run_walk_forward_validation,
+    update_calibration_from_attribution,
+)
 
 
 logger = logging.getLogger("ai_trader.api")
@@ -390,6 +401,116 @@ class LocalApiService:
         logger.info("Crypto universe refresh: %s", result)
         crypto_analysis = self.run_crypto_analysis()
         result["crypto_analysis"] = crypto_analysis
+        return result
+
+    def refresh_strategy_lab(self) -> dict[str, Any]:
+        """Ingests recent daily candles for the equity universe, backtests and walk-forward
+        validates every stock-eligible named strategy against that history, and evaluates each
+        for promotion.
+
+        This connects three subsystems that previously existed fully built and unit-tested but
+        had zero production callers: record_historical_candle (HISTORICAL_CANDLES was
+        permanently empty), the backtester/walk-forward validator, and
+        strategy_promotion_decision. Equity-only for now - crypto historical ingestion needs a
+        new Kraken OHLC client, which is a genuine new integration rather than a wiring fix and is
+        intentionally deferred as a near-term follow-up rather than shipped untested here.
+        """
+        seed_default_strategy_registry(self.settings.db_path)
+        if not self.settings.has_alpaca_credentials:
+            result = {"status": "not_available", "message": "Alpaca paper credentials are required for historical candle ingestion."}
+            record_operational_event(
+                self.settings.db_path,
+                component="strategy_lab",
+                event_type="strategy_lab_blocked_configuration",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        symbols = [row["ticker"] for row in self._rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT 30")]
+        if not symbols:
+            result = {"status": "not_available", "message": "No equity symbols available in COMPANY_MASTER."}
+            record_operational_event(
+                self.settings.db_path,
+                component="strategy_lab",
+                event_type="strategy_lab_completed_no_action",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        bars_response = self._broker().get_daily_bars(symbols)
+        candles_written = 0
+        symbols_with_history: set[str] = set()
+        for symbol, bars in (bars_response.get("bars") or {}).items():
+            for bar in bars:
+                observed_at = bar.get("t")
+                close = bar.get("c")
+                if not observed_at or close is None:
+                    continue
+                record_historical_candle(
+                    self.settings.db_path,
+                    symbol=symbol,
+                    asset_type="stock",
+                    timeframe="1d",
+                    observed_at=observed_at,
+                    close=float(close),
+                    open=bar.get("o"),
+                    high=bar.get("h"),
+                    low=bar.get("l"),
+                    volume=bar.get("v"),
+                    source="alpaca",
+                )
+                candles_written += 1
+                symbols_with_history.add(symbol)
+        strategy_results = []
+        for strategy_id, definition in STRATEGIES.items():
+            if "stock" not in (definition.get("supported_assets") or []):
+                continue
+            trades = 0
+            expectancy_values: list[float] = []
+            profit_factor_values: list[float] = []
+            max_drawdown = 0.0
+            for symbol in sorted(symbols_with_history):
+                backtest = run_strategy_backtest(self.settings.db_path, strategy_id=strategy_id, symbol=symbol, asset_type="stock", timeframe="1d")
+                run_walk_forward_validation(self.settings.db_path, strategy_id=strategy_id, symbol=symbol, asset_type="stock", timeframe="1d")
+                trades += int(backtest.get("trades") or 0)
+                if backtest.get("expectancy_r") is not None:
+                    expectancy_values.append(backtest["expectancy_r"])
+                if backtest.get("profit_factor") is not None:
+                    profit_factor_values.append(backtest["profit_factor"])
+                max_drawdown = max(max_drawdown, abs(backtest.get("max_drawdown_r") or 0.0))
+            calibration = calculate_calibration_metrics(self.settings.db_path, strategy_id)
+            evidence = {
+                "sample_size": trades,
+                "expectancy": (sum(expectancy_values) / len(expectancy_values)) if expectancy_values else None,
+                "profit_factor": (sum(profit_factor_values) / len(profit_factor_values)) if profit_factor_values else None,
+                "max_drawdown": max_drawdown,
+                "calibration_error": calibration.get("calibration_error"),
+                "recent_drawdown": max_drawdown,
+            }
+            maturity = refresh_strategy_maturity(self.settings.db_path, strategy_id=strategy_id, evidence=evidence)
+            strategy_results.append({"strategy_id": strategy_id, "evidence": evidence, "maturity": maturity})
+        pending_approval = [item["strategy_id"] for item in strategy_results if item["maturity"].get("requires_founder_approval")]
+        result = {
+            "status": "completed",
+            "symbols_requested": symbols,
+            "symbols_with_history": sorted(symbols_with_history),
+            "candles_written": candles_written,
+            "unavailable_symbols": bars_response.get("unavailable_symbols") or [],
+            "strategies_evaluated": len(strategy_results),
+            "strategy_results": strategy_results,
+            "pending_founder_approval": pending_approval,
+        }
+        record_operational_event(
+            self.settings.db_path,
+            component="strategy_lab",
+            event_type="strategy_lab_completed",
+            summary=f"Strategy lab refresh: {candles_written} candles across {len(symbols_with_history)} symbols; {len(strategy_results)} strategies evaluated; {len(pending_approval)} pending Founder approval.",
+            details={"candles_written": candles_written, "symbols_with_history": sorted(symbols_with_history), "pending_founder_approval": pending_approval},
+        )
         return result
 
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
@@ -1936,6 +2057,37 @@ This report explains available evidence. It does not automatically change strate
             "last_founder_brief": dict(founder) if founder else None,
         }
 
+    def _refresh_asset_metadata_from_company_master(self, symbols: list[str]) -> int:
+        """Copies sector/country/industry already sitting in COMPANY_MASTER into ASSET_METADATA
+        via upsert_asset_metadata(), so portfolio_intelligence's exposure bucketing stops
+        defaulting every position to "Unknown". No new data source: COMPANY_MASTER has carried
+        this data since the intelligence database was seeded, but nothing ever copied it into the
+        table calculate_portfolio_exposure() actually reads from. Runs on every equity research
+        cycle so metadata stays current as COMPANY_MASTER is updated.
+        """
+        if not symbols:
+            return 0
+        placeholders = ", ".join("?" for _ in symbols)
+        rows = self._rows(
+            f"SELECT ticker, sector, industry, country FROM COMPANY_MASTER WHERE UPPER(ticker) IN ({placeholders})",
+            tuple(symbol.upper() for symbol in symbols),
+        )
+        updated = 0
+        for row in rows:
+            upsert_asset_metadata(
+                self.settings.db_path,
+                symbol=row["ticker"],
+                source="company_master",
+                payload={
+                    "asset_class": "stock",
+                    "sector": row["sector"],
+                    "industry": row["industry"],
+                    "country": row["country"],
+                },
+            )
+            updated += 1
+        return updated
+
     def run_analysis(self, body: dict[str, Any]) -> dict[str, Any]:
         started_at = utc_now_iso()
         trigger_type = str(body.get("trigger_type") or "manual")
@@ -1995,6 +2147,7 @@ This report explains available evidence. It does not automatically change strate
             )
             self._record_production_research(started_at, "alpaca", "stock", trigger_type, [], result)
             return result
+        self._refresh_asset_metadata_from_company_master(symbols)
         if not self.settings.has_alpaca_credentials:
             result = {"status": "not_available", "message": "Alpaca paper credentials are required for market data analysis.", "symbols": symbols}
             self._record_research_from_result(started_at, result, symbols, trigger_type)

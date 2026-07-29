@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect
+from .database import connect, database_url, requested_backend, uses_postgres
 from .models import utc_now_iso
 from .operational import latest_research_run, safe_float
 
@@ -276,7 +276,7 @@ def initialize_always_on_schema(db_path: Path) -> None:
     with _SCHEMA_LOCK:
         if schema_key in _INITIALIZED_SCHEMA_KEYS:
             return
-        if _use_postgres():
+        if uses_postgres():
             with _postgres_connection() as conn:
                 with conn.cursor() as cur:
                     for statement in POSTGRES_ALWAYS_ON_SCHEMA.split(";"):
@@ -292,13 +292,13 @@ def initialize_always_on_schema(db_path: Path) -> None:
 
 
 def database_backend_status(db_path: Path) -> dict[str, Any]:
-    requested = os.getenv("AI_TRADER_DATABASE_BACKEND", "sqlite").strip().lower()
-    database_url = _database_url()
-    active = "postgres" if _use_postgres() else "sqlite"
+    requested = requested_backend()
+    configured_url = database_url()
+    active = "postgres" if uses_postgres() else "sqlite"
     return {
         "requested_backend": requested,
         "active_backend": active,
-        "postgres_configured": bool(database_url),
+        "postgres_configured": bool(configured_url),
         "sqlite_path": str(db_path),
         "plain_english": (
             "Always-On evidence is using Supabase/Postgres durable storage."
@@ -323,7 +323,7 @@ def claim_scheduled_job(
     idempotency_key = f"{job_name}:{scheduled_for}"
     now = utc_now_iso()
     payload_json = json.dumps(payload or {}, sort_keys=True)
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = %s", (idempotency_key,))
@@ -390,7 +390,7 @@ def complete_scheduled_job(
         raise ValueError(f"Unsupported scheduled job status: {status}")
     initialize_always_on_schema(db_path)
     result = result or {}
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -457,7 +457,7 @@ def complete_scheduled_job(
 def get_scheduled_job_run(db_path: Path, job_run_id: int) -> dict[str, Any]:
     """Return one durable job record without changing its lifecycle."""
     initialize_always_on_schema(db_path)
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = %s", (int(job_run_id),))
@@ -486,7 +486,7 @@ def record_worker_heartbeat(
     initialize_always_on_schema(db_path)
     now = utc_now_iso()
     deployment_commit = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT")
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT started_at FROM WORKER_HEARTBEATS WHERE worker_id = %s", (worker_id,))
@@ -609,7 +609,7 @@ def record_research_funnel(
         json.dumps(secondary_reasons or []),
         json.dumps(payload or {}, default=str, sort_keys=True),
     )
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -704,7 +704,7 @@ def record_shadow_trade(
         json.dumps(simulated_costs or {}, default=str, sort_keys=True),
         idempotency_key,
     )
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -773,7 +773,7 @@ def update_shadow_outcome(
         benchmark_outcome,
         shadow_trade_id,
     )
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -819,7 +819,7 @@ def record_operations_incident(
 ) -> dict[str, Any]:
     initialize_always_on_schema(db_path)
     values = (utc_now_iso(), severity, component, status, title, message, json.dumps(payload or {}, default=str))
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -854,14 +854,14 @@ def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None
     params: tuple[Any, ...]
     sql = "SELECT * FROM SCHEDULED_JOB_RUNS"
     if job_name:
-        sql += " WHERE job_name = %s" if _use_postgres() else " WHERE job_name = ?"
+        sql += " WHERE job_name = %s" if uses_postgres() else " WHERE job_name = ?"
         params = (job_name,)
     else:
         params = ()
     sql += " ORDER BY COALESCE(started_at, scheduled_for) DESC, job_run_id DESC LIMIT "
-    sql += "%s" if _use_postgres() else "?"
+    sql += "%s" if uses_postgres() else "?"
     params = (*params, int(limit))
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -873,7 +873,7 @@ def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None
 
 def list_worker_heartbeats(db_path: Path) -> list[dict[str, Any]]:
     initialize_always_on_schema(db_path)
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC")
@@ -888,12 +888,12 @@ def list_shadow_trades(db_path: Path, *, broker: str | None = None, limit: int =
     sql = "SELECT * FROM SHADOW_TRADES"
     params: tuple[Any, ...] = ()
     if broker:
-        sql += " WHERE intended_broker = %s" if _use_postgres() else " WHERE intended_broker = ?"
+        sql += " WHERE intended_broker = %s" if uses_postgres() else " WHERE intended_broker = ?"
         params = (broker.lower(),)
     sql += " ORDER BY created_at DESC, shadow_trade_id DESC LIMIT "
-    sql += "%s" if _use_postgres() else "?"
+    sql += "%s" if uses_postgres() else "?"
     params = (*params, int(limit))
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -908,12 +908,12 @@ def list_research_funnels(db_path: Path, *, broker: str | None = None, limit: in
     sql = "SELECT * FROM RESEARCH_FUNNELS"
     params: tuple[Any, ...] = ()
     if broker:
-        sql += " WHERE broker = %s" if _use_postgres() else " WHERE broker = ?"
+        sql += " WHERE broker = %s" if uses_postgres() else " WHERE broker = ?"
         params = (broker.lower(),)
     sql += " ORDER BY created_at DESC, funnel_id DESC LIMIT "
-    sql += "%s" if _use_postgres() else "?"
+    sql += "%s" if uses_postgres() else "?"
     params = (*params, int(limit))
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -1073,7 +1073,7 @@ def default_worker_id(worker_type: str) -> str:
 
 
 def _open_incidents(db_path: Path) -> list[dict[str, Any]]:
-    if _use_postgres():
+    if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1158,20 +1158,6 @@ def _broker_auto_state(db_path: Path, broker: str) -> dict[str, Any]:
         return {"broker": broker, "enabled": False, "source": "settings table unavailable"}
 
 
-def _database_url() -> str | None:
-    return os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL")
-
-
-def _use_postgres() -> bool:
-    requested = os.getenv("AI_TRADER_DATABASE_BACKEND", "sqlite").strip().lower()
-    return requested in {"postgres", "postgresql", "supabase"} and bool(_database_url())
-
-
-def uses_postgres() -> bool:
-    """Return whether durable production evidence is configured for Postgres."""
-    return _use_postgres()
-
-
 def _postgres_connection():
     try:
         import psycopg
@@ -1180,7 +1166,7 @@ def _postgres_connection():
         raise RuntimeError(
             "Postgres backend requested but psycopg is not installed. Install ai-trading-assistant with psycopg[binary]."
         ) from exc
-    url = _database_url()
+    url = database_url()
     if not url:
         raise RuntimeError("Postgres backend requested but DATABASE_URL/SUPABASE_DATABASE_URL is not configured.")
     connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
@@ -1199,6 +1185,6 @@ def postgres_connection():
 
 
 def _always_on_schema_key(db_path: Path) -> str:
-    if _use_postgres():
+    if uses_postgres():
         return "postgres"
     return f"sqlite:{db_path.resolve()}"

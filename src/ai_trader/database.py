@@ -19,12 +19,29 @@ def database_url() -> str | None:
     return os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DATABASE_URL")
 
 
-def selected_backend() -> str:
+def requested_backend() -> str:
+    """The backend the current environment asks for, before validating whether it can actually
+    be used.
+
+    This is the one place backend precedence is decided: an explicit `AI_TRADER_DATABASE_BACKEND`
+    wins; otherwise a configured `DATABASE_URL`/`SUPABASE_DATABASE_URL` implies Postgres. Every
+    other backend check in the codebase should be built on this function (or on
+    `selected_backend()`/`uses_postgres()` below), not reimplement this precedence independently -
+    a second implementation that used a different default when `AI_TRADER_DATABASE_BACKEND` was
+    unset previously caused `always_on.py` to silently disagree with this module about whether
+    Postgres was active.
+    """
     configured = os.getenv("AI_TRADER_DATABASE_BACKEND", "").strip().lower()
     if configured:
-        backend = "postgres" if configured in POSTGRES_BACKENDS else configured
-    else:
-        backend = "postgres" if database_url() else "sqlite"
+        return "postgres" if configured in POSTGRES_BACKENDS else configured
+    return "postgres" if database_url() else "sqlite"
+
+
+def selected_backend() -> str:
+    """The one authoritative, *validated* backend decision. Raises if a hosted runtime would
+    silently fall back to SQLite, or if Postgres was requested but no connection URL is
+    configured. This is what `connect()` uses to fail closed."""
+    backend = requested_backend()
     if is_hosted_runtime() and backend != "postgres":
         raise RuntimeError(
             "Hosted AI Trader requires Postgres. SQLite is supported only for local development and isolated tests."
@@ -34,6 +51,18 @@ def selected_backend() -> str:
     if backend not in {"sqlite", "postgres"}:
         raise RuntimeError(f"Unsupported AI Trader database backend: {backend}")
     return backend
+
+
+def uses_postgres() -> bool:
+    """Whether Postgres is both requested and actually usable (a connection URL is configured)
+    right now.
+
+    Unlike `selected_backend()`, this never raises - it exists for status/diagnostic reporting
+    and internal SQL-dialect branching, where crashing on a misconfiguration would be worse than
+    describing the (safe) SQLite fallback state. `connect()`/`selected_backend()` are what
+    actually enforce the fail-closed rule for real database access.
+    """
+    return requested_backend() == "postgres" and bool(database_url())
 
 
 def connect(db_path: str | Path | None = None, **sqlite_options: Any):

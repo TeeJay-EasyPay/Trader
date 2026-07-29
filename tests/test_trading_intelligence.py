@@ -21,6 +21,7 @@ from ai_trader.trading_intelligence import (
     evaluate_trade_intelligence,
     initialize_trading_intelligence_schema,
     latest_intelligence_packet,
+    load_return_series,
     record_lifecycle_stage,
     record_historical_candle,
     run_walk_forward_validation,
@@ -190,6 +191,33 @@ class TradingIntelligenceTests(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM STRATEGY_BACKTEST_RESULTS").fetchone()[0]
             self.assertEqual(count, 1)
+
+    def test_load_return_series_computes_period_over_period_returns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            for candle in rising_candles(30):
+                record_historical_candle(
+                    db_path,
+                    symbol="AAPL",
+                    asset_type="stock",
+                    timeframe="1d",
+                    observed_at=candle["observed_at"],
+                    open=candle["open"],
+                    high=candle["high"],
+                    low=candle["low"],
+                    close=candle["close"],
+                    volume=candle["volume"],
+                    source="unit_test",
+                )
+
+            series = load_return_series(db_path, ["aapl", "MSFT"])
+
+            self.assertIn("AAPL", series)
+            self.assertNotIn("MSFT", series)  # no candle history recorded for MSFT
+            self.assertEqual(len(series["AAPL"]), 29)
+            closes = [candle["close"] for candle in rising_candles(30)]
+            expected_first_return = (closes[1] - closes[0]) / closes[0]
+            self.assertAlmostEqual(series["AAPL"][0], expected_first_return, places=6)
 
     def test_strategy_selection_is_evidence_driven_and_records_alternatives(self):
         with tempfile.TemporaryDirectory() as tmp:

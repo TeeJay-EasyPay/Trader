@@ -199,7 +199,7 @@ class InvestmentOrchestrator:
         failures.extend(validation.failures)
 
         production_packet: dict[str, Any] | None = None
-        if selected and selected.name in {"alpaca", "kraken"}:
+        if selected and getattr(selected, "requires_production_governance", True):
             # One production pipeline: every real broker route passes the same
             # Strategy -> Portfolio -> Risk -> Sentinel decision chain here.
             from .sprint6 import pre_execution_decision_packet
