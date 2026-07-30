@@ -1,5 +1,123 @@
 # Implementation Log
 
+## 2026-07-30 AT-ED-003 implementation session - operational job splitting, broker status data contract, SQLite wording audit
+
+Executes `engineering-directives/implementation/AT-ED-003_OPERATIONAL_UI_CLEANUP_AND_REMEDIATION.md.txt`
+Sections 1, 3, 5, and a scoped portion of Section 2. Sections 2 (remaining), 4, 6, and 7
+(the full Command-screen operations-health redesign, Activity-screen regrouping, cross-screen
+recommendation/decision/trade/portfolio/learning ID linking, and broader mobile UI polish) were
+not attempted this session - see "Deferred" below.
+
+**Section 1 - operational fixes.**
+- Split `broker-poll` into `broker-poll-alpaca` / `broker-poll-kraken` and `auto-execution` into
+  `auto-execution-alpaca` / `auto-execution-kraken`, each with its own scheduled-job name (own
+  claim/idempotency/run-history row), so one broker's slow API or a transient failure cannot delay
+  or starve the other broker's cycle. The worker loop's automatic scheduling now calls only the
+  four new names; the old combined names remain dispatchable via `run-job` for manual/debug use
+  only, so there is no duplicate scheduling and no duplicate execution.
+- `poll_broker_activity(broker_filter=...)` and `auto_execute_recommendations(broker_filter=...)`
+  gained a broker filter. In auto-execution, the filter is applied in Python immediately after each
+  candidate's broker is resolved (before any governance-chain work), because `trade_audit` has no
+  broker/asset_type column to filter on in SQL. The full guardrail / kill-switch / strategy-
+  entitlement / Kraken-reconciliation-hold / order-intent-lock / duplicate-order chain is otherwise
+  completely unchanged - reviewed line-by-line, not weakened.
+- Added `record_trade_evidence_batch()`: one connection/transaction per broker-poll cycle instead
+  of one connection per broker event, with identical per-row idempotent ON CONFLICT semantics.
+- Evidence at deploy time: the previously-recorded `broker-poll` (combined) job had timed out on
+  three consecutive cycles immediately before this deploy (`SCHEDULED_JOB_RUNS`, 23:40/23:50/00:10
+  UTC on 2026-07-30) - direct confirmation the split was addressing a real, active production
+  problem, not a hypothetical one.
+
+**Section 3 - broker auto-trading status data contract.**
+- Root cause confirmed: `PRODUCTION_BROKER_SNAPSHOTS.payload_json` was never selected into the
+  Founder evidence projection, and the snapshot `panel` dict written by
+  `capture_production_broker_snapshots()` never carried `auto_trading_enabled` /
+  `trading_permissions` in the first place - so the mobile app's existing (already-written)
+  consumption code always saw `undefined` and coerced it to "Disabled", regardless of the true
+  DB-backed setting.
+- `capture_production_broker_snapshots()` now computes the same governance
+  (`_broker_trading_permissions()`) already used by the live `/brokers` endpoint and persists
+  `auto_trading_enabled`, `auto_trading_status`, `trading_permissions`, and a new
+  `block_reason` (plain-language, mirrors the exact gate that is blocking new entries) into every
+  snapshot. `_load_founder_evidence_rows()` now selects `payload_json`; `_assemble_founder_evidence_payload()`
+  lifts these fields to the top level of each broker row, defaulting to `None`/"Unknown" - never a
+  silent `false`/"Disabled" - when a snapshot has not captured them yet.
+- Mobile: `statusFromFounderEvidence()`'s broker-panel mapping, `BrokerPanel`, and
+  `ConnectionReadinessCard` now treat `auto_trading_enabled` as a true tri-state and render
+  `auto_trading_status` / a new "Block Reason" metric instead of coercing missing data to
+  "Disabled".
+
+**Section 5 - SQLite wording audit.**
+- Reviewed every user-facing string containing "SQLite" across the backend and mobile app.
+  Fixed three that named SQLite even though production runs Postgres and would have shown the
+  wrong storage technology to the Founder: the benchmark-brief unavailable-reason, the equity
+  research "no symbols" message, and the Recommendation History screen's description line.
+- Left the `sprint6`/`always_on` self-diagnostic strings ("SQLite is active; acceptable for
+  local/test/offline use...") unchanged - these are genuinely conditional on the active backend and
+  only ever say "SQLite" when that is true, which is the correct, honest behavior the directive
+  requires, not a defect.
+
+**Section 2 - scoped addition (24-Hour Operations).**
+- Added `_job_health_summary()`: backend classification of every scheduled job using the exact
+  Founder-facing vocabulary the directive specifies (Healthy / Delayed / Timed Out / Blocked / No
+  Eligible Action / Awaiting First Run / Disabled by Founder / Enabled but Blocked), computed from
+  each job's own `SCHEDULED_JOB_RUNS` history and the broker's true auto-trading setting - never
+  "Healthy" merely because a process exists. Exposed at
+  `founder-evidence.summary.operations.job_health` and rendered as a new "24-Hour Operations" card
+  on the Command screen.
+
+**Testing.**
+- Added/updated: `test_production_completion.py` (batched evidence-write contract, broker-filtered
+  poll isolation, broker-snapshot governance-field contract, a positive-path auto-trading-enabled/
+  disabled data-contract test), `test_multi_broker_platform.py` (auto-execution broker-filter
+  candidate isolation, updated the delegated-execution message assertion),
+  `test_production_evidence.py` (job-health vocabulary classification, including the
+  Disabled-by-Founder-takes-precedence-over-Delayed case and the Blocked-vs-No-Eligible-Action
+  distinction).
+- Full Python suite: 218 passed (2 pre-existing `test_cli_startup.py` failures are a local Windows
+  temp-directory permission error in the pytest fixture itself, unrelated to any file this session
+  touched, and unaffected by this diff).
+- Mobile: no test/lint/typecheck tooling exists in this project (`mobile/package.json` has no
+  test/lint scripts, no Jest, no ESLint, no TypeScript config) - not introduced this session, since
+  that is a larger tooling decision outside this directive's scope. Verified instead by parsing the
+  full `App.js` with `@babel/preset-react` after every edit (confirms valid JSX/syntax, not runtime
+  correctness).
+
+**Deployment.**
+- Branch `feature/at-ed-003-operational-ui-remediation`, fast-forward merged to `master` at
+  `27bc1d81`, pushed. Render redeployed; `/healthz` returned 200 after the push.
+- Mobile: `npx eas update --branch preview` published, commit `27bc1d81` (matches the deployed
+  backend commit), runtime version 1.0.3.
+- Post-deployment read-only verification used the locally configured `AI_TRADER_API_TOKEN`
+  (already present in `.env`/`mobile/.env.local` from prior sessions) against the hosted
+  `/founder-evidence` and `/job-runs` endpoints. Confirmed `broker-poll-alpaca` appearing in
+  `SCHEDULED_JOB_RUNS` for the first time immediately after deploy. Full confirmation that the
+  persisted founder-evidence snapshot reflects the new payload shape (`job_health` present,
+  `auto_trading_status` populated) was pending the next `evidence-snapshot` job cycle (~5 minute
+  cadence) at the time of writing - see the Founder briefing for the final result.
+
+**Deferred (not implemented this session) - AT-ED-003 Sections 2 (remainder), 4, 6, 7.**
+- Command screen: Command Summary card (single overall Normal/Degraded/Blocked/Critical state with
+  deployed-commit and heartbeat-freshness) is not built; the 24-Hour Operations card above is real
+  but partial.
+- Activity screen: the two-level (Founder view / Technical Detail view) redesign, duplicate/
+  heartbeat collapsing with counts, and category/broker/severity/date filtering are not built - the
+  existing Activity screen is unchanged.
+- Cross-screen lifecycle linking: recommendation/decision/trade/portfolio/learning ID propagation
+  and in-app navigation between them are not built, beyond what the existing data model already
+  carries (`proposal_id`, `broker`, `strategy_id` are already present on recommendation rows).
+- Broader UI polish (collapsible sections summary-first by default, empty/error/loading state
+  review across all six screens) is not attempted.
+- Reason: implementing a full rewrite of the Activity screen and cross-screen navigation in a
+  single-file, 3,600+ line, untested production mobile app carries real regression risk that this
+  session's time did not allow validating safely (no test/lint infrastructure exists to catch a
+  mistake before it reaches the Founder's phone). Next action: a follow-up, narrowly-scoped session
+  per remaining sub-section, each landed and verified independently rather than as one large
+  Activity-screen rewrite.
+- No trading, risk, governance, capital-allocation, kill-switch, strategy-maturity,
+  order-intent-lock, or duplicate-order control was touched, weakened, or bypassed. The Kraken
+  reconciliation hold was not cleared. No live Kraken order was submitted.
+
 ## 2026-07-29 AT-ED-002 v2.0 implementation session - restore continuous autonomous operation
 
 Executes `engineering-directives/implementation/AT-ED-002_v2.0_INSTITUTIONAL_EDITION.md.txt`,
