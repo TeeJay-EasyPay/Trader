@@ -121,41 +121,65 @@ ON KRAKEN_RECONCILED_RESULTS(status, updated_at);
 
 
 def initialize_kraken_reconciliation_schema(db_path: Path, *, allocation_gbp: float = 100.0) -> None:
+    """Create schema and seed the two fixed control/ledger rows exactly once.
+
+    The seed rows (control id=1, ledger idempotency_key below) are checked for
+    existence before inserting. Every job runs in its own fresh process, so the
+    per-process _INITIALIZED_SCHEMA_KEYS cache in _ensure_schema never prevents
+    concurrent processes from reaching this function at the same time -- and an
+    unconditional INSERT on every call meant every pair of concurrently-started
+    jobs contended for the same two rows, producing both explicit Postgres
+    deadlocks and (via lock-wait rather than deadlock) the evidence-snapshot
+    180s timeout when it blocked on a concurrent job's still-open transaction.
+    Skipping the INSERT once the row already exists (true for every call after
+    the database's first-ever bootstrap) removes that contention entirely.
+    """
+
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
             conn.executescript(KRAKEN_RECONCILIATION_SCHEMA)
-            conn.execute(
-                """
-                INSERT INTO KRAKEN_RECONCILIATION_CONTROL (
-                    id, hold_new_entries, hold_reason, status, started_at,
-                    updated_at, unresolved_count, payload_json
-                ) VALUES (1, 1, ?, 'verification_required', ?, ?, 0, '{}')
-                ON CONFLICT(id) DO NOTHING
-                """,
-                (
-                    "Kraken entry reconciliation and the AI-managed capital ledger require verification.",
-                    now,
-                    now,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO KRAKEN_AI_CAPITAL_LEDGER (
-                    created_at, event_time, logical_trade_id, broker_order_id,
-                    broker_fill_id, entry_type, amount_gbp, quantity, price,
-                    fee_gbp, idempotency_key, payload_json
-                ) VALUES (?, ?, NULL, NULL, NULL, 'founder_allocation', ?, NULL, NULL, 0, ?, ?)
-                ON CONFLICT(idempotency_key) DO NOTHING
-                """,
-                (
-                    now,
-                    now,
-                    float(allocation_gbp),
-                    "kraken-founder-allocation-v1",
-                    json.dumps({"allocation_gbp": float(allocation_gbp)}, sort_keys=True),
-                ),
-            )
+            control_exists = conn.execute(
+                "SELECT 1 FROM KRAKEN_RECONCILIATION_CONTROL WHERE id = 1"
+            ).fetchone()
+            if not control_exists:
+                conn.execute(
+                    """
+                    INSERT INTO KRAKEN_RECONCILIATION_CONTROL (
+                        id, hold_new_entries, hold_reason, status, started_at,
+                        updated_at, unresolved_count, payload_json
+                    ) VALUES (1, 1, ?, 'verification_required', ?, ?, 0, '{}')
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                    (
+                        "Kraken entry reconciliation and the AI-managed capital ledger require verification.",
+                        now,
+                        now,
+                    ),
+                )
+            ledger_idempotency_key = "kraken-founder-allocation-v1"
+            ledger_exists = conn.execute(
+                "SELECT 1 FROM KRAKEN_AI_CAPITAL_LEDGER WHERE idempotency_key = ?",
+                (ledger_idempotency_key,),
+            ).fetchone()
+            if not ledger_exists:
+                conn.execute(
+                    """
+                    INSERT INTO KRAKEN_AI_CAPITAL_LEDGER (
+                        created_at, event_time, logical_trade_id, broker_order_id,
+                        broker_fill_id, entry_type, amount_gbp, quantity, price,
+                        fee_gbp, idempotency_key, payload_json
+                    ) VALUES (?, ?, NULL, NULL, NULL, 'founder_allocation', ?, NULL, NULL, 0, ?, ?)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (
+                        now,
+                        now,
+                        float(allocation_gbp),
+                        ledger_idempotency_key,
+                        json.dumps({"allocation_gbp": float(allocation_gbp)}, sort_keys=True),
+                    ),
+                )
 
 
 _SCHEMA_LOCK = threading.Lock()
