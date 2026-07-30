@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
 from .briefing import generate_daily_briefing, generate_session_brief
 from .config import Settings, load_settings
+from .database import selected_backend
 from .execution import ExecutionEngine
 from .intelligence import InvestmentIntelligenceDatabase
 from .proposals import load_proposals, save_proposals
@@ -278,20 +280,22 @@ def main(argv: list[str] | None = None) -> int:
                     # 3-4). The old combined "broker-poll"/"auto-execution" job
                     # names are retired from this automatic loop; they remain
                     # dispatchable only for manual/debug `run-job` invocation.
-                    broker_poll_alpaca = _run_pulsed_job(
+                    # Alpaca and Kraken are independent brokers with no shared state,
+                    # so each pair runs as a controlled concurrent group (Postgres
+                    # only) instead of strictly sequentially -- this was confirmed to
+                    # roughly double worker-cycle wall-clock time when run
+                    # sequentially, delaying evidence-snapshot/managed-exits/etc. far
+                    # past their configured cadence (AT-ED-003 corrective session).
+                    broker_poll_results = _run_broker_job_group(
                         service,
-                        "broker-poll-alpaca",
+                        "broker-poll",
+                        ["broker-poll-alpaca", "broker-poll-kraken"],
                         worker_id,
                         pulse,
                         scheduled_for=_time_bucket(now, max(300, settings.broker_poll_interval_seconds)),
                     )
-                    broker_poll_kraken = _run_pulsed_job(
-                        service,
-                        "broker-poll-kraken",
-                        worker_id,
-                        pulse,
-                        scheduled_for=_time_bucket(now, max(300, settings.broker_poll_interval_seconds)),
-                    )
+                    broker_poll_alpaca = broker_poll_results["broker-poll-alpaca"]
+                    broker_poll_kraken = broker_poll_results["broker-poll-kraken"]
                     snapshot_schedule = next((value for name, value in due_jobs if name == "evidence-snapshot"), None)
                     if snapshot_schedule:
                         scheduled_results["evidence-snapshot"] = _run_pulsed_job(
@@ -301,20 +305,16 @@ def main(argv: list[str] | None = None) -> int:
                             pulse,
                             scheduled_for=snapshot_schedule,
                         )
-                    auto_alpaca = _run_pulsed_job(
+                    auto_execution_results = _run_broker_job_group(
                         service,
-                        "auto-execution-alpaca",
+                        "auto-execution",
+                        ["auto-execution-alpaca", "auto-execution-kraken"],
                         worker_id,
                         pulse,
                         scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
                     )
-                    auto_kraken = _run_pulsed_job(
-                        service,
-                        "auto-execution-kraken",
-                        worker_id,
-                        pulse,
-                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
-                    )
+                    auto_alpaca = auto_execution_results["auto-execution-alpaca"]
+                    auto_kraken = auto_execution_results["auto-execution-kraken"]
                     # Runs in the worker's own job loop, not the API's background-worker
                     # set, because AI_TRADER_DISABLE_API_BACKGROUND_WORKERS=true on every
                     # hosted service means that set never starts in production -- without
@@ -659,6 +659,70 @@ def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartb
         timeout_seconds=service.settings.worker_job_timeout_seconds,
         restart_worker_on_timeout=True,
     )
+
+
+def _run_broker_job_group(
+    service,
+    group_name: str,
+    job_names: list[str],
+    worker_id: str,
+    pulse: "WorkerHeartbeatPulse",
+    *,
+    scheduled_for: str,
+) -> dict[str, dict]:
+    """Run independent broker-specific jobs concurrently within one named group.
+
+    Each job keeps its own scheduled-job claim (own idempotency key job_name:scheduled_for),
+    own isolated subprocess, own timeout, own status, and own failure reason -- identical to
+    running _run_pulsed_job sequentially. Only the wait is concurrent: a slow or failed Kraken
+    job cannot block, delay, or change the completion status of the Alpaca job in the same
+    group, and vice versa (each job's timeout clock starts independently when its own thread
+    starts waiting on its own subprocess). Concurrency is only used to shrink worker-cycle
+    wall-clock time; it introduces no new shared mutable state between jobs, since each job
+    still runs in its own OS process exactly as before.
+
+    Postgres only: SQLite (local dev/tests) has no busy-timeout configured, so concurrent
+    writers from separate subprocesses can raise "database is locked". This mirrors the same
+    guard already used for the concurrent Alpaca/Kraken portfolio fetch in
+    capture_production_broker_snapshots().
+    """
+    pulse.set_job(f"{group_name}[{'+'.join(job_names)}]")
+    print(f"[worker] group={group_name} status=started jobs={','.join(job_names)}", flush=True)
+    group_start = time.monotonic()
+    results: dict[str, dict] = {}
+    if selected_backend() != "postgres":
+        for job_name in job_names:
+            job_start = time.monotonic()
+            results[job_name] = _run_worker_cycle_job(
+                service, job_name, worker_id,
+                scheduled_for=scheduled_for,
+                timeout_seconds=service.settings.worker_job_timeout_seconds,
+                restart_worker_on_timeout=True,
+            )
+            print(f"[worker] group={group_name} job={job_name} status={results[job_name].get('status')} elapsed={time.monotonic() - job_start:.1f}s", flush=True)
+    else:
+        job_starts = {job_name: time.monotonic() for job_name in job_names}
+        with ThreadPoolExecutor(max_workers=len(job_names)) as pool:
+            futures = {
+                pool.submit(
+                    _run_worker_cycle_job, service, job_name, worker_id,
+                    scheduled_for=scheduled_for,
+                    timeout_seconds=service.settings.worker_job_timeout_seconds,
+                    restart_worker_on_timeout=True,
+                ): job_name
+                for job_name in job_names
+            }
+            for future in as_completed(futures):
+                job_name = futures[future]
+                try:
+                    results[job_name] = future.result()
+                except Exception as exc:  # noqa: BLE001 - isolate one job's failure from the rest of the group
+                    results[job_name] = {"status": "failed", "job_name": job_name, "reason": str(exc)}
+                print(f"[worker] group={group_name} job={job_name} status={results[job_name].get('status')} elapsed={time.monotonic() - job_starts[job_name]:.1f}s", flush=True)
+    elapsed = time.monotonic() - group_start
+    summary = {job_name: results[job_name].get("status") for job_name in job_names}
+    print(f"[worker] group={group_name} status=completed elapsed={elapsed:.1f}s results={summary}", flush=True)
+    return results
 
 
 class WorkerHeartbeatPulse:

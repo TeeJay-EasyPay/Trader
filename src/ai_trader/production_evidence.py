@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .always_on import initialize_always_on_schema, postgres_connection, uses_postgres
+from .always_on import classify_worker_presence, initialize_always_on_schema, postgres_connection, uses_postgres
 from .database import connect
 from .models import utc_now_iso
 
@@ -570,6 +570,7 @@ def _assemble_founder_evidence_payload(
             "plain_english": _operating_sentence(workers, research, jobs, no_trade),
             "last_meaningful_activity": latest_activity,
             "worker_status": "healthy" if _worker_fresh(workers) else "stale_or_missing",
+            "worker": _live_worker_summary(workers),
             "scheduler_status": "active" if jobs else "no_recent_jobs",
             "database_status": "postgres" if uses_postgres() else "sqlite",
             "last_successful_research_run": research[0].get("completed_at") if research else None,
@@ -951,6 +952,30 @@ def _latest_per(rows: Iterable[dict[str, Any]], key: str) -> list[dict[str, Any]
 def _period_start(period: str) -> str:
     delta = {"1h": timedelta(hours=1), "24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}.get(period, timedelta(hours=24))
     return (datetime.now(timezone.utc) - delta).isoformat()
+
+
+def _live_worker_summary(workers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Identify the single currently-live worker by heartbeat freshness, not row presence.
+
+    Render's rolling deploys leave every past deployment generation's heartbeat row in the
+    table permanently (never deleted). Returning the freshest row unconditionally would let a
+    long-dead worker from a previous deploy be mistaken for "the" current scheduler. This
+    exposes exactly what the Command screen needs to show the true live deployment: which
+    worker, on which commit, and how stale it is (AT-ED-003 corrective session, Part 3).
+    """
+    classified = classify_worker_presence(workers)
+    if not classified:
+        return None
+    candidate = classified[0]
+    return {
+        "presence_status": candidate["presence_status"],
+        "worker_id": candidate.get("worker_id"),
+        "deployment_commit": candidate.get("deployment_commit"),
+        "last_heartbeat_at": candidate.get("last_heartbeat_at"),
+        "heartbeat_age_seconds": candidate.get("heartbeat_age_seconds"),
+        "current_job": candidate.get("current_job"),
+        "last_successful_job": candidate.get("last_successful_job"),
+    }
 
 
 def _worker_fresh(workers: list[dict[str, Any]]) -> bool:

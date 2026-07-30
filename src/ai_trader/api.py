@@ -3217,9 +3217,16 @@ This report explains available evidence. It does not automatically change strate
         return self.poll_broker_activity(broker_filter="kraken")
 
     def capture_production_broker_snapshots(self) -> dict[str, Any]:
-        """Capture Founder-facing broker truth in the shared production datastore."""
+        """Capture Founder-facing broker truth in the shared production datastore.
+
+        Stage timing is logged for each major phase (portfolio fetch, trading
+        permissions, broker snapshot persistence, founder evidence generation) so a
+        regression in any one stage is visible directly in the worker log rather
+        than only as a total job timeout (AT-ED-003 corrective session, Part 1).
+        """
         results: dict[str, Any] = {}
         broker_names = ("alpaca", "kraken")
+        stage_start = time.monotonic()
 
         def fetch(broker_name: str) -> Any:
             return self._live_alpaca_portfolio() if broker_name == "alpaca" else self._exchange_portfolio(broker_name)
@@ -3249,27 +3256,52 @@ This report explains available evidence. It does not automatically change strate
                     panels[broker_name] = ("ok", fetch(broker_name))
                 except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
                     panels[broker_name] = ("error", exc)
+        print(f"[evidence-snapshot] stage=portfolio_fetch status=completed elapsed={time.monotonic() - stage_start:.1f}s", flush=True)
+
         # The Command screen and broker panels must show the same auto-trading
         # truth. That truth is the DB-backed setting plus the same governance
         # computation _broker_trading_permissions() already produces for the
         # live /brokers endpoint -- captured here so it travels with the
         # persisted snapshot the Founder-facing evidence payload actually reads
-        # (AT-ED-003 Section 3).
+        # (AT-ED-003 Section 3). Kraken's ledger valuation reuses the prices the
+        # portfolio fetch above already obtained (live_pricing disabled here) so
+        # capturing governance never adds a second live Kraken API round trip to
+        # this job -- that redundant call was the confirmed cause of this job's
+        # 180s timeout regression (AT-ED-003 corrective session, Part 1).
+        permissions_stage_start = time.monotonic()
         broker_auto_enabled = broker_auto_settings(self.settings.db_path)
+        governance_by_broker: dict[str, dict[str, Any]] = {}
         for broker_name in broker_names:
             status, payload = panels[broker_name]
             auto_enabled = bool(broker_auto_enabled.get(broker_name, False))
+            broker_stage_start = time.monotonic()
+            price_hints = _kraken_price_hints_from_panel(payload) if broker_name == "kraken" and status == "ok" else None
+            ledger_stage_start = time.monotonic()
             try:
-                permissions = self._broker_trading_permissions(broker_name, auto_enabled)
+                permissions = self._broker_trading_permissions(
+                    broker_name,
+                    auto_enabled,
+                    kraken_price_hints=price_hints,
+                    allow_live_kraken_pricing=False,
+                )
             except Exception:
                 logger.exception("Failed to compute %s trading permissions for broker snapshot.", broker_name)
                 permissions = None
-            governance = {
+            if broker_name == "kraken":
+                print(f"[evidence-snapshot] stage=capital_ledger broker=kraken status=completed elapsed={time.monotonic() - ledger_stage_start:.1f}s priced_from_hints={bool(price_hints)}", flush=True)
+            governance_by_broker[broker_name] = {
                 "auto_trading_enabled": auto_enabled,
                 "auto_trading_status": "Enabled" if auto_enabled else "Disabled",
                 "trading_permissions": permissions,
                 "block_reason": _broker_block_reason(broker_name, auto_enabled, permissions),
             }
+            print(f"[evidence-snapshot] stage=trading_permissions broker={broker_name} status=completed elapsed={time.monotonic() - broker_stage_start:.1f}s", flush=True)
+        print(f"[evidence-snapshot] stage=trading_permissions status=completed elapsed={time.monotonic() - permissions_stage_start:.1f}s", flush=True)
+
+        persistence_stage_start = time.monotonic()
+        for broker_name in broker_names:
+            status, payload = panels[broker_name]
+            governance = governance_by_broker[broker_name]
             if status == "ok":
                 panel = {**payload, "broker": broker_name, **governance}
                 record_broker_snapshot(self.settings.db_path, panel)
@@ -3282,7 +3314,7 @@ This report explains available evidence. It does not automatically change strate
                     "connection_status": panel.get("connection_status"),
                     "portfolio_value": panel.get("portfolio_value"),
                     "open_positions": panel.get("open_positions_summary"),
-                    "auto_trading_enabled": auto_enabled,
+                    "auto_trading_enabled": governance["auto_trading_enabled"],
                     "block_reason": governance["block_reason"],
                 }
             else:
@@ -3299,7 +3331,12 @@ This report explains available evidence. It does not automatically change strate
                     },
                 )
                 results[broker_name] = {"status": "failed", "reason": str(exc)}
+        print(f"[evidence-snapshot] stage=broker_snapshot_persistence status=completed elapsed={time.monotonic() - persistence_stage_start:.1f}s", flush=True)
+
+        founder_stage_start = time.monotonic()
         results["founder_evidence"] = refresh_founder_evidence_snapshots(self.settings.db_path)
+        print(f"[evidence-snapshot] stage=founder_evidence_generation status=completed elapsed={time.monotonic() - founder_stage_start:.1f}s", flush=True)
+        print(f"[evidence-snapshot] stage=total status=completed elapsed={time.monotonic() - stage_start:.1f}s", flush=True)
         return results
 
     def broker_panels(self) -> list[dict[str, Any]]:
@@ -3381,7 +3418,14 @@ This report explains available evidence. It does not automatically change strate
             enriched.append(item)
         return enriched
 
-    def _broker_trading_permissions(self, broker: str, auto_enabled: bool) -> dict[str, Any]:
+    def _broker_trading_permissions(
+        self,
+        broker: str,
+        auto_enabled: bool,
+        *,
+        kraken_price_hints: dict[str, float] | None = None,
+        allow_live_kraken_pricing: bool = True,
+    ) -> dict[str, Any]:
         key = broker.lower()
         if key == "kraken":
             live_approved = _bool_env("KRAKEN_LIVE_TRADING_APPROVED", False)
@@ -3392,7 +3436,10 @@ This report explains available evidence. It does not automatically change strate
             ai_managed_open_trades = self._ai_managed_open_trade_count(key)
             buy_only_entries = _bool_env("KRAKEN_BUY_ONLY_ENTRIES", True)
             reconciliation = reconciliation_control(self.settings.db_path)
-            ledger = self._kraken_ai_capital_ledger()
+            ledger = self._kraken_ai_capital_ledger(
+                price_hints=kraken_price_hints,
+                allow_live_pricing=allow_live_kraken_pricing,
+            )
             hold_active = bool(reconciliation.get("hold_new_entries"))
             can_submit_real_orders = bool(
                 auto_enabled
@@ -3482,25 +3529,46 @@ This report explains available evidence. It does not automatically change strate
     def _ai_managed_open_trade_count(self, broker: str) -> int:
         return len(open_managed_exits(self.settings.db_path, broker))
 
-    def _kraken_ai_capital_ledger(self) -> dict[str, Any]:
+    def _kraken_ai_capital_ledger(
+        self,
+        *,
+        price_hints: dict[str, float] | None = None,
+        allow_live_pricing: bool = True,
+    ) -> dict[str, Any]:
+        """Value AI-managed Kraken positions, preferring prices already fetched this cycle.
+
+        price_hints is a symbol->GBP-price map the caller already obtained during the same
+        broker-snapshot cycle (e.g. from the wallet balance conversion already done in
+        _kraken_balance_summary) -- reusing it avoids a second live Kraken API round trip for
+        the same market data. Any symbol still unpriced after applying the hints falls back to
+        a fresh live lookup only when allow_live_pricing is True; scheduled evidence-snapshot
+        capture passes False so this can never push that job over its worker timeout budget
+        (AT-ED-003 corrective session, Part 1). When live pricing is unavailable or disabled,
+        the persisted ledger summary already labels unpriced positions clearly via
+        unrealized_pnl_status/unpriced_open_symbols -- no separate "unavailable" placeholder is
+        needed here.
+        """
         ledger = kraken_capital_ledger_summary(self.settings.db_path)
         symbols = list(ledger.get("unpriced_open_symbols") or [])
+        price_map: dict[str, float] = {
+            str(symbol).upper(): float(price)
+            for symbol, price in (price_hints or {}).items()
+            if price is not None
+        }
+        remaining = [symbol for symbol in symbols if symbol not in price_map]
         adapter = self.orchestrator.adapters.get("kraken")
-        if not symbols or adapter is None or not hasattr(adapter, "current_prices"):
+        if remaining and allow_live_pricing and adapter is not None and hasattr(adapter, "current_prices"):
+            try:
+                pairs = [_kraken_pair(symbol) for symbol in remaining]
+                prices = adapter.current_prices(pairs)
+                for symbol, pair in zip(remaining, pairs):
+                    price = _kraken_last_price(prices, pair)
+                    if price is not None:
+                        price_map[symbol] = float(price)
+            except Exception as exc:
+                logger.warning("Live Kraken pricing failed while valuing the AI capital ledger: %s", exc)
+        if not price_map:
             return ledger
-        price_map: dict[str, float] = {}
-        try:
-            pairs = [_kraken_pair(symbol) for symbol in symbols]
-            prices = adapter.current_prices(pairs)
-            for symbol, pair in zip(symbols, pairs):
-                price = _kraken_last_price(prices, pair)
-                if price is not None:
-                    price_map[symbol] = float(price)
-        except Exception as exc:
-            return {
-                **ledger,
-                "unrealized_pnl_status": f"Unavailable because current Kraken pricing failed: {exc}",
-            }
         return kraken_capital_ledger_summary(self.settings.db_path, current_prices=price_map)
 
     def _broker_managed_trade_capacity(self, broker: str) -> dict[str, Any]:
@@ -5400,6 +5468,27 @@ def _broker_block_reason(broker: str, auto_enabled: bool, permissions: dict[str,
     if permissions.get("can_submit_real_orders"):
         return None
     return "Blocked by broker trading permissions."
+
+
+def _kraken_price_hints_from_panel(panel: dict[str, Any]) -> dict[str, float]:
+    """Extract a symbol->GBP-price map from a Kraken portfolio panel's wallet balance
+    conversion, already computed during this same broker-snapshot cycle by
+    _kraken_balance_summary(). Reusing these prices lets the AI capital ledger value
+    open positions without a second live Kraken pricing call for the same market data
+    (AT-ED-003 corrective session, Part 1).
+    """
+    balance_summary = panel.get("balance_summary") if isinstance(panel, dict) else None
+    if not isinstance(balance_summary, dict):
+        return {}
+    hints: dict[str, float] = {}
+    for row in balance_summary.get("converted_assets") or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("normalized_asset")
+        price = row.get("price_gbp")
+        if symbol and price is not None:
+            hints[str(symbol).upper()] = float(price)
+    return hints
 
 
 def _sum_balances(balances: Any) -> float | None:

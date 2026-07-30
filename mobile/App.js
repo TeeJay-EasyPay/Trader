@@ -332,6 +332,7 @@ function statusFromFounderEvidence(evidence) {
     paper_live_mode: 'Alpaca paper; Kraken controlled live permissions',
     engine_health: operating.plain_english,
     job_health: evidence?.summary?.operations?.job_health || [],
+    live_worker: operating.worker || null,
     research_status: researchHealth,
     due_diligence_status: recommendations.length
       ? `${recommendations.length} persisted recommendation(s) available for review`
@@ -1252,7 +1253,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   return (
     <View>
       <ConnectionReadinessCard readiness={readiness} />
-      <OperationsHealthCard jobHealth={status?.job_health} />
+      <OperationsHealthCard jobHealth={status?.job_health} liveWorker={status?.live_worker} />
       {false && (
       <Section title={`Notifications${notifications?.length ? ` (${notifications.length} unread)` : ''}`}>
         {!notifications || !notifications.length ? (
@@ -1624,10 +1625,25 @@ function jobHealthTone(status) {
   return 'neutral';
 }
 
-function OperationsHealthCard({ jobHealth }) {
+function workerPresenceTone(status) {
+  if (status === 'Live') return 'good';
+  if (status === 'Stale') return 'warn';
+  return 'danger';
+}
+
+function OperationsHealthCard({ jobHealth, liveWorker }) {
   const jobs = jobHealth || [];
   return (
     <Section title="24-Hour Operations">
+      {liveWorker ? (
+        <View style={styles.compactRow}>
+          <Text style={styles.cardTitle}>Scheduler Worker</Text>
+          <StatusPill label={liveWorker.presence_status || 'Unknown'} tone={workerPresenceTone(liveWorker.presence_status)} />
+          <Metric label="Deployed Commit" value={liveWorker.deployment_commit ? String(liveWorker.deployment_commit).slice(0, 8) : null} />
+          <Metric label="Last Heartbeat" value={formatDateTime(liveWorker.last_heartbeat_at)} />
+          <Metric label="Current Job" value={liveWorker.current_job} />
+        </View>
+      ) : null}
       <Text style={styles.bodyText}>
         Each scheduled job below is classified from its own recorded run history - a job only
         reads "Healthy" when a recent run actually completed on schedule.

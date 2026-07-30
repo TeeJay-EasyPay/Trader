@@ -992,11 +992,50 @@ def operations_health(db_path: Path, *, expected_worker_interval_seconds: int = 
     }
 
 
+# Render's rolling deploys start a new worker container (new worker_id) on every
+# deploy without deleting the previous container's WORKER_HEARTBEATS row. Every
+# past deployment generation's row stays in the table as permanent history (never
+# deleted -- AT-ED-003 corrective session, Part 3), so "a row exists showing
+# current_job=X" is not proof anything is currently running X. A worker is only
+# "Live" if it is both the freshest row AND within this staleness threshold; 240s
+# is 4x the minimum 60s heartbeat pulse interval, enough headroom that a worker
+# mid-slow-job is never misclassified as dead.
+WORKER_LIVE_THRESHOLD_SECONDS = 240
+
+
+def classify_worker_presence(rows: list[dict[str, Any]], *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Label each worker heartbeat row Live/Stale/Historical using heartbeat freshness,
+    never merely row presence, so a dead process from a previous deployment can never
+    be presented as the currently active scheduler.
+
+    Rows are expected pre-sorted by last_heartbeat_at DESC (list_worker_heartbeats()
+    already orders this way). Only the single freshest row can ever be "Live"; every
+    other row is "Historical" regardless of how recent, since only one worker process
+    is meant to be running scheduled jobs at a time.
+    """
+    now = now or datetime.now(timezone.utc)
+    classified: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        item = dict(row)
+        age = _age_seconds(row.get("last_heartbeat_at"), now)
+        item["heartbeat_age_seconds"] = age
+        if index != 0:
+            item["presence_status"] = "Historical"
+        elif age is not None and age <= WORKER_LIVE_THRESHOLD_SECONDS:
+            item["presence_status"] = "Live"
+        else:
+            item["presence_status"] = "Stale"
+        classified.append(item)
+    return classified
+
+
 def scheduler_status(db_path: Path) -> dict[str, Any]:
     jobs = list_job_runs(db_path, limit=30)
-    workers = list_worker_heartbeats(db_path)
+    workers = classify_worker_presence(list_worker_heartbeats(db_path))
+    live_worker = next((row for row in workers if row["presence_status"] == "Live"), None)
     return {
-        "status": "active" if any(_age_seconds(row.get("last_heartbeat_at"), datetime.now(timezone.utc)) is not None for row in workers) else "not_proven",
+        "status": "active" if live_worker is not None else "not_proven",
+        "live_worker": live_worker,
         "workers": workers,
         "recent_jobs": jobs,
         "supported_jobs": [

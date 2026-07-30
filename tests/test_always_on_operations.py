@@ -2,17 +2,20 @@ import sqlite3
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.always_on import (
     alpaca_inactivity_diagnosis,
     claim_scheduled_job,
+    classify_worker_presence,
     complete_scheduled_job,
     database_backend_status,
     initialize_always_on_schema,
@@ -27,8 +30,9 @@ from ai_trader.always_on import (
 )
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
-from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs
+from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs, _run_broker_job_group
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
+from unittest.mock import MagicMock, patch
 
 
 def settings_for(tmp: str) -> Settings:
@@ -200,6 +204,176 @@ class AlwaysOnOperationsTests(unittest.TestCase):
 
             self.assertIn("premarket-equity", status["supported_jobs"])
             self.assertIn("overnight-crypto", status["supported_jobs"])
+            self.assertIn("broker-poll-alpaca", status["supported_jobs"])
+            self.assertIn("broker-poll-kraken", status["supported_jobs"])
+            self.assertIn("auto-execution-alpaca", status["supported_jobs"])
+            self.assertIn("auto-execution-kraken", status["supported_jobs"])
+            # The combined legacy names must not return to automatic scheduling.
+            self.assertNotIn("broker-poll", status["supported_jobs"])
+            self.assertNotIn("auto-execution", status["supported_jobs"])
+
+    def test_classify_worker_presence_distinguishes_live_stale_and_historical(self):
+        # AT-ED-003 corrective session, Part 3: Render never deletes a previous
+        # deployment's heartbeat row, so a dead worker from an old deploy must never
+        # be presented as the live scheduler merely because its row exists.
+        now = datetime.now(timezone.utc)
+        rows = [
+            {"worker_id": "w-live", "deployment_commit": "cccccccc", "last_heartbeat_at": (now - timedelta(seconds=30)).isoformat()},
+            {"worker_id": "w-recent-but-dead", "deployment_commit": "bbbbbbbb", "last_heartbeat_at": (now - timedelta(minutes=30)).isoformat()},
+            {"worker_id": "w-ancient", "deployment_commit": "aaaaaaaa", "last_heartbeat_at": (now - timedelta(days=2)).isoformat()},
+        ]
+
+        classified = classify_worker_presence(rows, now=now)
+
+        self.assertEqual(classified[0]["presence_status"], "Live")
+        self.assertEqual(classified[0]["worker_id"], "w-live")
+        self.assertEqual(classified[1]["presence_status"], "Historical")
+        self.assertEqual(classified[2]["presence_status"], "Historical")
+
+    def test_classify_worker_presence_marks_freshest_as_stale_when_no_worker_is_live(self):
+        now = datetime.now(timezone.utc)
+        rows = [
+            {"worker_id": "w-old", "deployment_commit": "aaaaaaaa", "last_heartbeat_at": (now - timedelta(hours=2)).isoformat()},
+        ]
+
+        classified = classify_worker_presence(rows, now=now)
+
+        self.assertEqual(classified[0]["presence_status"], "Stale")
+
+    def test_scheduler_status_exposes_live_worker_not_a_stale_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            now = datetime.now(timezone.utc)
+            old = (now - timedelta(hours=3)).isoformat()
+            fresh = now.isoformat()
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """INSERT INTO WORKER_HEARTBEATS (worker_id, worker_type, started_at, last_heartbeat_at, status, current_job, deployment_commit)
+                        VALUES ('worker-old-deploy', 'background-worker', ?, ?, 'running', 'auto-execution', 'aaaaaaaa')""",
+                        (old, old),
+                    )
+                    conn.execute(
+                        """INSERT INTO WORKER_HEARTBEATS (worker_id, worker_type, started_at, last_heartbeat_at, status, current_job, deployment_commit)
+                        VALUES ('worker-current-deploy', 'background-worker', ?, ?, 'running', 'auto-execution-alpaca', 'cccccccc')""",
+                        (fresh, fresh),
+                    )
+
+            status = scheduler_status(db_path)
+
+            self.assertEqual(status["status"], "active")
+            self.assertIsNotNone(status["live_worker"])
+            self.assertEqual(status["live_worker"]["worker_id"], "worker-current-deploy")
+            self.assertEqual(status["live_worker"]["deployment_commit"], "cccccccc")
+            self.assertEqual(status["live_worker"]["presence_status"], "Live")
+
+
+class BrokerJobGroupConcurrencyTests(unittest.TestCase):
+    """AT-ED-003 corrective session, Part 2: broker-poll-alpaca/-kraken and
+    auto-execution-alpaca/-kraken must run as a controlled concurrent group so one
+    broker's slow API cannot roughly double the worker cycle's wall-clock time, while
+    each job still keeps its own independent claim, timeout, status, and failure
+    reason exactly as when run sequentially."""
+
+    def test_group_runs_jobs_concurrently_on_postgres(self):
+        job_calls: list[tuple[str, str, float]] = []
+
+        def fake_run_worker_cycle_job(service, job_name, worker_id, *, scheduled_for, timeout_seconds, restart_worker_on_timeout):
+            job_calls.append(("start", job_name, time.monotonic()))
+            time.sleep(0.25)
+            job_calls.append(("end", job_name, time.monotonic()))
+            return {"status": "completed", "job_name": job_name}
+
+        service = SimpleNamespace(settings=SimpleNamespace(worker_job_timeout_seconds=180))
+        pulse = MagicMock()
+
+        with (
+            patch("ai_trader.cli.selected_backend", return_value="postgres"),
+            patch("ai_trader.cli._run_worker_cycle_job", side_effect=fake_run_worker_cycle_job),
+        ):
+            start = time.monotonic()
+            results = _run_broker_job_group(
+                service, "broker-poll", ["broker-poll-alpaca", "broker-poll-kraken"],
+                "worker-1", pulse, scheduled_for="2026-01-01T00:00:00+00:00",
+            )
+            elapsed = time.monotonic() - start
+
+        # Sequential would take ~0.5s (2 x 0.25s); concurrent stays close to 0.25s.
+        self.assertLess(elapsed, 0.45)
+        self.assertEqual(results["broker-poll-alpaca"]["status"], "completed")
+        self.assertEqual(results["broker-poll-kraken"]["status"], "completed")
+        # Both jobs must have started before either finished -- proof of real overlap,
+        # not two fast sequential calls that happen to land under the time budget.
+        starts = {name: t for kind, name, t in job_calls if kind == "start"}
+        ends = {name: t for kind, name, t in job_calls if kind == "end"}
+        self.assertLess(starts["broker-poll-kraken"], ends["broker-poll-alpaca"])
+
+    def test_group_isolates_one_jobs_timeout_from_the_others_result(self):
+        def fake_run_worker_cycle_job(service, job_name, worker_id, *, scheduled_for, timeout_seconds, restart_worker_on_timeout):
+            if job_name == "auto-execution-kraken":
+                time.sleep(0.05)
+                return {"status": "timed_out", "job_name": job_name, "reason": "Worker job exceeded its 180 second execution boundary."}
+            return {"status": "completed", "job_name": job_name, "eligible_count": 1}
+
+        service = SimpleNamespace(settings=SimpleNamespace(worker_job_timeout_seconds=180))
+        pulse = MagicMock()
+
+        with (
+            patch("ai_trader.cli.selected_backend", return_value="postgres"),
+            patch("ai_trader.cli._run_worker_cycle_job", side_effect=fake_run_worker_cycle_job),
+        ):
+            results = _run_broker_job_group(
+                service, "auto-execution", ["auto-execution-alpaca", "auto-execution-kraken"],
+                "worker-1", pulse, scheduled_for="2026-01-01T00:00:00+00:00",
+            )
+
+        # A timed-out Kraken job must not change Alpaca's own completed status.
+        self.assertEqual(results["auto-execution-alpaca"]["status"], "completed")
+        self.assertEqual(results["auto-execution-kraken"]["status"], "timed_out")
+
+    def test_group_falls_back_to_sequential_execution_off_postgres(self):
+        call_order: list[str] = []
+
+        def fake_run_worker_cycle_job(service, job_name, worker_id, *, scheduled_for, timeout_seconds, restart_worker_on_timeout):
+            call_order.append(job_name)
+            return {"status": "completed", "job_name": job_name}
+
+        service = SimpleNamespace(settings=SimpleNamespace(worker_job_timeout_seconds=180))
+        pulse = MagicMock()
+
+        with (
+            patch("ai_trader.cli.selected_backend", return_value="sqlite"),
+            patch("ai_trader.cli._run_worker_cycle_job", side_effect=fake_run_worker_cycle_job),
+        ):
+            results = _run_broker_job_group(
+                service, "broker-poll", ["broker-poll-alpaca", "broker-poll-kraken"],
+                "worker-1", pulse, scheduled_for="2026-01-01T00:00:00+00:00",
+            )
+
+        self.assertEqual(call_order, ["broker-poll-alpaca", "broker-poll-kraken"])
+        self.assertEqual(results["broker-poll-alpaca"]["status"], "completed")
+        self.assertEqual(results["broker-poll-kraken"]["status"], "completed")
+
+    def test_group_members_each_keep_independent_scheduled_job_claim(self):
+        # The real duplicate-prevention mechanism: claim_scheduled_job's idempotency
+        # key is job_name:scheduled_for, so each job in a group is claimed
+        # independently and a second concurrent attempt at the same job_name and
+        # scheduled_for is skipped as a duplicate, not run twice.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            scheduled_for = "2026-01-01T00:00:00+00:00"
+            first_alpaca = claim_scheduled_job(db_path, job_name="broker-poll-alpaca", scheduled_for=scheduled_for, worker_id="w1")
+            second_alpaca = claim_scheduled_job(db_path, job_name="broker-poll-alpaca", scheduled_for=scheduled_for, worker_id="w2")
+            first_kraken = claim_scheduled_job(db_path, job_name="broker-poll-kraken", scheduled_for=scheduled_for, worker_id="w1")
+
+            self.assertTrue(first_alpaca["claimed"])
+            self.assertFalse(second_alpaca["claimed"])
+            self.assertEqual(second_alpaca["status"], "skipped_duplicate")
+            # A different broker's job at the same scheduled_for is a distinct
+            # idempotency key and claims independently.
+            self.assertTrue(first_kraken["claimed"])
+            self.assertNotEqual(first_alpaca["job_run_id"], first_kraken["job_run_id"])
 
     def test_alpaca_inactivity_reports_fault_without_research(self):
         with tempfile.TemporaryDirectory() as tmp:

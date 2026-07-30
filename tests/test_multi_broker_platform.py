@@ -819,6 +819,114 @@ def restore_env(previous):
             os.environ[key] = value
 
 
+class KrakenCapitalLedgerPricingTests(unittest.TestCase):
+    """AT-ED-003 corrective session, Part 1: evidence-snapshot regressed to a chronic
+    180s timeout after capture_production_broker_snapshots() started calling
+    _broker_trading_permissions() per broker, because the Kraken branch made a fresh
+    live Kraken pricing API call every cycle. These tests prove the fix: the capital
+    ledger reuses prices already fetched this cycle and never makes a live call when
+    told not to, while still degrading gracefully (not crashing, not hiding governance
+    fields) when no pricing is available at all."""
+
+    def test_capital_ledger_reuses_price_hints_without_live_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = FakeKrakenAdapter()
+
+            def fail_if_called(symbols):
+                raise AssertionError("current_prices must not be called when hints cover every unpriced symbol")
+
+            adapter.current_prices = fail_if_called
+            service.orchestrator.adapters["kraken"] = adapter
+
+            unpriced_summary = {"unpriced_open_symbols": ["BTC"], "allocation_gbp": 100.0}
+            priced_summary = {"unpriced_open_symbols": [], "unrealized_pnl_gbp": 50.0}
+
+            with patch("ai_trader.api.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
+                ledger = service._kraken_ai_capital_ledger(price_hints={"BTC": 50000.0}, allow_live_pricing=False)
+
+            self.assertEqual(ledger, priced_summary)
+            self.assertEqual(mocked.call_count, 2)
+            _, kwargs = mocked.call_args_list[1]
+            self.assertEqual(kwargs.get("current_prices"), {"BTC": 50000.0})
+
+    def test_capital_ledger_degrades_gracefully_without_hints_or_live_pricing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = FakeKrakenAdapter()
+
+            def fail_if_called(symbols):
+                raise AssertionError("current_prices must not be called when allow_live_pricing is False")
+
+            adapter.current_prices = fail_if_called
+            service.orchestrator.adapters["kraken"] = adapter
+
+            unpriced_summary = {
+                "unpriced_open_symbols": ["BTC"],
+                "unrealized_pnl_gbp": None,
+                "unrealized_pnl_status": "Unavailable because current Kraken prices were not captured for: BTC",
+            }
+
+            with patch("ai_trader.api.kraken_capital_ledger_summary", return_value=unpriced_summary) as mocked:
+                ledger = service._kraken_ai_capital_ledger(price_hints=None, allow_live_pricing=False)
+
+            # The ledger is still returned, clearly labelled as unpriced -- not a crash,
+            # not a hidden/missing field, and no fabricated valuation.
+            self.assertEqual(ledger, unpriced_summary)
+            mocked.assert_called_once()
+
+    def test_capital_ledger_falls_back_to_live_pricing_when_explicitly_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = FakeKrakenAdapter()
+            adapter.prices = {"XBTGBP": {"c": ["50000.0"]}}
+            service.orchestrator.adapters["kraken"] = adapter
+
+            unpriced_summary = {"unpriced_open_symbols": ["BTC"]}
+            priced_summary = {"unpriced_open_symbols": [], "unrealized_pnl_gbp": 10.0}
+
+            with patch("ai_trader.api.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
+                ledger = service._kraken_ai_capital_ledger(price_hints=None, allow_live_pricing=True)
+
+            self.assertEqual(ledger, priced_summary)
+            self.assertEqual(mocked.call_count, 2)
+
+    def test_evidence_snapshot_never_calls_live_kraken_pricing(self):
+        """End-to-end: capture_production_broker_snapshots() must not trigger a live
+        Kraken price lookup even when the ledger has unpriced open positions and no
+        wallet-balance price hints are available for them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = FakeKrakenAdapter()
+
+            def fail_if_called(symbols):
+                raise AssertionError("evidence-snapshot must never make a live Kraken pricing call")
+
+            adapter.current_prices = fail_if_called
+            service.orchestrator.adapters["kraken"] = adapter
+            service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
+            service._exchange_portfolio = lambda broker: {
+                "connection_status": "Connected",
+                "portfolio_value": 4_000,
+                "balance_summary": {"converted_assets": []},
+            }
+
+            with (
+                patch("ai_trader.api.kraken_capital_ledger_summary", return_value={"unpriced_open_symbols": ["BTC"]}),
+                patch("ai_trader.api.record_broker_snapshot") as snapshot,
+            ):
+                result = service.capture_production_broker_snapshots()
+
+            self.assertEqual(result["alpaca"]["status"], "captured")
+            self.assertEqual(result["kraken"]["status"], "captured")
+            panels = {call.args[1]["broker"]: call.args[1] for call in snapshot.call_args_list}
+            # Governance fields must still be present even though the ledger valuation
+            # could not be fully priced.
+            self.assertIn("auto_trading_enabled", panels["kraken"])
+            self.assertIn("block_reason", panels["kraken"])
+            self.assertIsNotNone(panels["kraken"]["trading_permissions"])
+
+
 class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
     """CRITICAL_REMEDIATION_PLAN.md P0-2: exit orders must have the same
     duplicate-submission protection entry orders already had. These tests
