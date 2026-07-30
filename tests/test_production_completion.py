@@ -24,6 +24,7 @@ from ai_trader.canonical_trades import (
 from ai_trader.cli import _run_claimed_job_process, _run_worker_cycle_job
 from ai_trader.database import connect, selected_backend
 from ai_trader.models import TradeProposal
+from ai_trader.multi_broker import set_broker_auto_trading
 from ai_trader.sprint6 import enqueue_learning_workflow, initialize_sprint6_schema, process_learning_outbox
 
 
@@ -66,7 +67,7 @@ class ProductionCompletionTests(unittest.TestCase):
 
         with (
             patch("ai_trader.api.record_broker_trade_history", return_value=[changed]),
-            patch("ai_trader.api.record_trade_evidence") as evidence,
+            patch("ai_trader.api.record_trade_evidence_batch", return_value=1) as evidence,
             patch("ai_trader.api.normalize_broker_events", return_value={"status": "reconciled"}),
             patch("ai_trader.api.record_notification"),
         ):
@@ -75,10 +76,32 @@ class ProductionCompletionTests(unittest.TestCase):
         evidence.assert_called_once_with(
             Path("unused.sqlite3"),
             broker="alpaca",
-            event=changed,
+            events=[changed],
         )
         self.assertEqual(result["alpaca"]["events_processed"], 1)
         self.assertEqual(result["alpaca"]["new_records"], 1)
+        self.assertEqual(result["alpaca"]["evidence_rows_written"], 1)
+
+    def test_broker_poll_supports_broker_filter_for_split_jobs(self):
+        alpaca_adapter = SimpleNamespace(configured=True, get_orders=lambda: [], get_trade_history=lambda: [])
+        kraken_adapter = SimpleNamespace(configured=True, get_orders=lambda: [], get_trade_history=lambda: [])
+        service = LocalApiService.__new__(LocalApiService)
+        service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
+        service.orchestrator = SimpleNamespace(adapters={"alpaca": alpaca_adapter, "kraken": kraken_adapter})
+
+        with (
+            patch("ai_trader.api.record_broker_trade_history", return_value=[]),
+            patch("ai_trader.api.record_trade_evidence_batch", return_value=0),
+            patch("ai_trader.api.replay_kraken_evidence", return_value={"status": "reconciled"}),
+            patch("ai_trader.api.normalize_broker_events", return_value={"status": "reconciled"}),
+        ):
+            alpaca_only = service.poll_broker_activity_alpaca()
+            kraken_only = service.poll_broker_activity_kraken()
+
+        self.assertIn("alpaca", alpaca_only)
+        self.assertNotIn("kraken", alpaca_only)
+        self.assertIn("kraken", kraken_only)
+        self.assertNotIn("alpaca", kraken_only)
 
     def test_broker_snapshot_does_not_duplicate_trade_evidence(self):
         service = LocalApiService.__new__(LocalApiService)
@@ -95,15 +118,66 @@ class ProductionCompletionTests(unittest.TestCase):
         }
 
         with (
-            patch("ai_trader.api.record_broker_snapshot") as snapshot,
-            patch("ai_trader.api.record_trade_evidence") as evidence,
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"AI_TRADER_DATABASE_BACKEND": "sqlite"}, clear=True),
         ):
-            result = service.capture_production_broker_snapshots()
+            service.settings = SimpleNamespace(db_path=Path(tmp) / "snapshot.sqlite3")
+            with patch("ai_trader.api.record_broker_snapshot") as snapshot:
+                result = service.capture_production_broker_snapshots()
 
-        self.assertEqual(snapshot.call_count, 2)
-        evidence.assert_not_called()
-        self.assertEqual(result["alpaca"]["status"], "captured")
-        self.assertEqual(result["kraken"]["status"], "captured")
+            self.assertEqual(snapshot.call_count, 2)
+            self.assertEqual(result["alpaca"]["status"], "captured")
+            self.assertEqual(result["kraken"]["status"], "captured")
+            # Every snapshot write must carry the governance fields the Command
+            # screen and broker panels read (AT-ED-003 Section 3), even when -
+            # as here - the auto-trading DB tables and orchestrator adapters are
+            # not fully wired into this minimal service double and the true
+            # value cannot be computed (must degrade to Unknown, never a silent
+            # default of False/Disabled).
+            for call in snapshot.call_args_list:
+                panel = call.args[1]
+                self.assertIn("auto_trading_enabled", panel)
+                self.assertIn("auto_trading_status", panel)
+                self.assertIn("block_reason", panel)
+            self.assertIn("auto_trading_enabled", result["alpaca"])
+            self.assertIn("block_reason", result["alpaca"])
+
+    def test_broker_snapshot_captures_true_auto_trading_governance(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"AI_TRADER_DATABASE_BACKEND": "sqlite"}, clear=True
+        ):
+            db_path = Path(tmp) / "governance.sqlite3"
+            set_broker_auto_trading(db_path, "alpaca", True)
+            set_broker_auto_trading(db_path, "kraken", False)
+
+            service = LocalApiService.__new__(LocalApiService)
+            service.settings = SimpleNamespace(
+                db_path=db_path,
+                has_alpaca_credentials=True,
+                guardrails=SimpleNamespace(max_open_positions=5),
+            )
+            service.orchestrator = SimpleNamespace(adapters={})
+            service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
+            service._exchange_portfolio = lambda broker: {"connection_status": "Connected", "portfolio_value": 4_000}
+
+            with patch("ai_trader.api.record_broker_snapshot") as snapshot:
+                result = service.capture_production_broker_snapshots()
+
+            panels = {call.args[1]["broker"]: call.args[1] for call in snapshot.call_args_list}
+            # Alpaca: Founder-enabled, credentials present -> nothing blocks new entries.
+            self.assertTrue(panels["alpaca"]["auto_trading_enabled"])
+            self.assertEqual(panels["alpaca"]["auto_trading_status"], "Enabled")
+            self.assertIsNone(panels["alpaca"]["block_reason"])
+            # Kraken: Founder has not enabled auto trading -> block reason names that,
+            # not a silent/generic "Disabled" with no explanation.
+            self.assertFalse(panels["kraken"]["auto_trading_enabled"])
+            self.assertEqual(panels["kraken"]["auto_trading_status"], "Disabled")
+            self.assertEqual(
+                panels["kraken"]["block_reason"],
+                "Auto trading is disabled by the Founder for this broker.",
+            )
+            self.assertTrue(result["alpaca"]["auto_trading_enabled"])
+            self.assertFalse(result["kraken"]["auto_trading_enabled"])
 
     def test_hosted_runtime_refuses_sqlite(self):
         with patch.dict(

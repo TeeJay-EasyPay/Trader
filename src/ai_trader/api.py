@@ -111,7 +111,7 @@ from .production_evidence import (
     refresh_founder_evidence_snapshots,
     record_broker_snapshot,
     record_research_evidence,
-    record_trade_evidence,
+    record_trade_evidence_batch,
 )
 from .sprint6 import (
     apply_founder_strategy_authorization,
@@ -577,12 +577,13 @@ class LocalApiService:
         )
         print(f"[overnight-crypto] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
         # Deliberately does not call auto_execute_recommendations() here. The dedicated,
-        # independently-scheduled "auto-execution" job is the sole autonomous execution path -
-        # it already picks up any proposal recorded here within its own ~60-90s cadence. Calling
-        # the full execution pipeline again inline, synchronously, inside every research cycle
-        # was redundant (the standalone job would evaluate the same candidates a minute later
-        # regardless) and was a major contributor to overnight-crypto's chronic timeouts.
-        auto_execution = {"status": "delegated", "message": "Handled by the independent auto-execution job."}
+        # independently-scheduled auto-execution-alpaca/auto-execution-kraken jobs are the
+        # sole autonomous execution path - they already pick up any proposal recorded here
+        # within their own ~60-90s cadence. Calling the full execution pipeline again inline,
+        # synchronously, inside every research cycle was redundant (the standalone jobs would
+        # evaluate the same candidates a minute later regardless) and was a major contributor
+        # to overnight-crypto's chronic timeouts.
+        auto_execution = {"status": "delegated", "message": "Handled by the independent per-broker auto-execution jobs."}
         print("[overnight-crypto] stage=execution status=delegated", flush=True)
         for proposal in proposals:
             self._record_shadow_from_proposal(
@@ -2039,7 +2040,7 @@ This report explains available evidence. It does not automatically change strate
                 ]
                 reason = f"No benchmark rows for {brief_date}; showing latest seeded research from {latest}."
             else:
-                reason = "Benchmark seed data is unavailable in SQLite."
+                reason = "Benchmark seed data has not been loaded yet."
         summary = reason if reason and not rows else "Benchmark intelligence is for learning only. Do not copy trades automatically."
         return {"date": brief_date, "source_date": source_date, "summary": summary, "items": rows, "unavailable_reason": reason}
 
@@ -2142,7 +2143,7 @@ This report explains available evidence. It does not automatically change strate
             limit = max(1, min(limit, 30))
             symbols = [row["ticker"] for row in self._rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT ?", (limit,))]
         if not symbols:
-            result = {"status": "not_available", "message": "No symbols available in SQLite."}
+            result = {"status": "not_available", "message": "No symbols are available in the watchlist database."}
             self._record_research_from_result(started_at, result, [], trigger_type)
             self._record_research_funnel_from_result(
                 broker="alpaca",
@@ -2619,12 +2620,20 @@ This report explains available evidence. It does not automatically change strate
             crypto_max_stop_loss_pct=base.crypto_max_stop_loss_pct,
         )
 
-    def auto_execute_recommendations(self) -> dict[str, Any]:
+    def auto_execute_recommendations(self, broker_filter: str | None = None) -> dict[str, Any]:
         control = self._control_state()
         if control["trading_state"] != "running":
             return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
         broker_settings = broker_auto_settings(self.settings.db_path)
-        if not any(broker_settings.values()):
+        if broker_filter:
+            if not broker_settings.get(broker_filter):
+                return {
+                    "status": "manual_required",
+                    "message": f"Auto trading is disabled for {broker_filter}. Enable auto trading for {broker_filter} to allow new autonomous entries.",
+                    "eligible_count": 0,
+                    "skipped": [],
+                }
+        elif not any(broker_settings.values()):
             return {"status": "manual_required", "message": "No broker has auto trading enabled. Enable auto trading for an individual broker to allow new autonomous entries.", "eligible_count": 0, "skipped": []}
         if not self.settings.guardrails.paper_trading_only:
             return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
@@ -2689,6 +2698,12 @@ This report explains available evidence. It does not automatically change strate
             proposal = TradeProposal.from_dict(payload["proposal"])
             selected_broker = self.orchestrator._select_adapter(proposal)
             broker_name = selected_broker.name if selected_broker else "unknown"
+            # trade_audit has no broker/asset_type column to filter on in SQL, so
+            # broker-specific candidate pre-filtering happens here, in Python,
+            # right after the candidate's broker is resolved and before any
+            # governance-chain work is done for it (AT-ED-003 Section 1 item 4).
+            if broker_filter and broker_name != broker_filter:
+                continue
             if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -2763,6 +2778,12 @@ This report explains available evidence. It does not automatically change strate
             "result": decisions,
             "skipped": skipped[:10],
         }
+
+    def auto_execute_recommendations_alpaca(self) -> dict[str, Any]:
+        return self.auto_execute_recommendations(broker_filter="alpaca")
+
+    def auto_execute_recommendations_kraken(self) -> dict[str, Any]:
+        return self.auto_execute_recommendations(broker_filter="kraken")
 
     def _render_api_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.settings.render_api_key or not self.settings.render_service_id:
@@ -3093,13 +3114,18 @@ This report explains available evidence. It does not automatically change strate
         )
         return {"status": "submitted", "message": f"Exit submitted for {item['symbol']} at approximately {price}.", "order": result}
 
-    def poll_broker_activity(self) -> dict[str, Any]:
+    def poll_broker_activity(self, broker_filter: str | None = None) -> dict[str, Any]:
         """Continuously reconciles broker-reported order/trade status into SQLite and
         fires trade_filled/trade_closed notifications - this is what gives Alpaca (which
         has no other fill-confirmation loop) and Kraken order-level monitoring, distinct
-        from the price-driven managed-exit check in monitor_managed_exits."""
+        from the price-driven managed-exit check in monitor_managed_exits.
+
+        broker_filter restricts this cycle to one broker so Alpaca and Kraken can be
+        scheduled, timed out, and retried independently (AT-ED-003 Section 1)."""
         results: dict[str, Any] = {}
         for broker_name, adapter in self.orchestrator.adapters.items():
+            if broker_filter and broker_name != broker_filter:
+                continue
             if not getattr(adapter, "configured", True):
                 continue
             try:
@@ -3123,10 +3149,10 @@ This report explains available evidence. It does not automatically change strate
             # Broker history is the change detector. Persist production evidence
             # only for new or changed rows; rewriting the broker's full recent
             # history on every poll caused hundreds of Postgres transactions and
-            # allowed one broker cycle to exceed the worker timeout.
-            for event in new_rows:
-                if isinstance(event, dict):
-                    record_trade_evidence(self.settings.db_path, broker=broker_name, event=event)
+            # allowed one broker cycle to exceed the worker timeout. All new rows
+            # for this broker share one connection/transaction instead of one per
+            # event (AT-ED-003 Section 1 item 5).
+            evidence_written = record_trade_evidence_batch(self.settings.db_path, broker=broker_name, events=new_rows)
             if broker_name == "kraken":
                 reconciliation = replay_kraken_evidence(
                     self.settings.db_path,
@@ -3174,9 +3200,21 @@ This report explains available evidence. It does not automatically change strate
                 "history": len(history),
                 "events_processed": len(events),
                 "new_records": len(new_rows),
+                "evidence_rows_written": evidence_written,
                 "reconciliation": reconciliation,
             }
+            print(
+                f"[broker-poll:{broker_name}] orders={len(orders)} history={len(history)} "
+                f"new_records={len(new_rows)} evidence_rows_written={evidence_written}",
+                flush=True,
+            )
         return results
+
+    def poll_broker_activity_alpaca(self) -> dict[str, Any]:
+        return self.poll_broker_activity(broker_filter="alpaca")
+
+    def poll_broker_activity_kraken(self) -> dict[str, Any]:
+        return self.poll_broker_activity(broker_filter="kraken")
 
     def capture_production_broker_snapshots(self) -> dict[str, Any]:
         """Capture Founder-facing broker truth in the shared production datastore."""
@@ -3211,10 +3249,29 @@ This report explains available evidence. It does not automatically change strate
                     panels[broker_name] = ("ok", fetch(broker_name))
                 except Exception as exc:  # noqa: BLE001 - persist failure evidence for the Founder
                     panels[broker_name] = ("error", exc)
+        # The Command screen and broker panels must show the same auto-trading
+        # truth. That truth is the DB-backed setting plus the same governance
+        # computation _broker_trading_permissions() already produces for the
+        # live /brokers endpoint -- captured here so it travels with the
+        # persisted snapshot the Founder-facing evidence payload actually reads
+        # (AT-ED-003 Section 3).
+        broker_auto_enabled = broker_auto_settings(self.settings.db_path)
         for broker_name in broker_names:
             status, payload = panels[broker_name]
+            auto_enabled = bool(broker_auto_enabled.get(broker_name, False))
+            try:
+                permissions = self._broker_trading_permissions(broker_name, auto_enabled)
+            except Exception:
+                logger.exception("Failed to compute %s trading permissions for broker snapshot.", broker_name)
+                permissions = None
+            governance = {
+                "auto_trading_enabled": auto_enabled,
+                "auto_trading_status": "Enabled" if auto_enabled else "Disabled",
+                "trading_permissions": permissions,
+                "block_reason": _broker_block_reason(broker_name, auto_enabled, permissions),
+            }
             if status == "ok":
-                panel = {**payload, "broker": broker_name}
+                panel = {**payload, "broker": broker_name, **governance}
                 record_broker_snapshot(self.settings.db_path, panel)
                 # Broker polling owns order/trade evidence. Snapshot capture owns
                 # account, balance, and position truth only. Keeping ownership
@@ -3225,6 +3282,8 @@ This report explains available evidence. It does not automatically change strate
                     "connection_status": panel.get("connection_status"),
                     "portfolio_value": panel.get("portfolio_value"),
                     "open_positions": panel.get("open_positions_summary"),
+                    "auto_trading_enabled": auto_enabled,
+                    "block_reason": governance["block_reason"],
                 }
             else:
                 exc = payload
@@ -3235,6 +3294,7 @@ This report explains available evidence. It does not automatically change strate
                         "broker": broker_name,
                         "connection_status": "Connection error",
                         "error": str(exc),
+                        **governance,
                         "source": "broker snapshot worker",
                     },
                 )
@@ -5307,6 +5367,39 @@ def _broker_label(broker: str) -> str:
         "interactive_brokers": "Interactive Brokers",
     }
     return labels.get(broker.lower(), broker.replace("_", " ").title())
+
+
+def _broker_block_reason(broker: str, auto_enabled: bool, permissions: dict[str, Any] | None) -> str | None:
+    """Plain-language reason new entries are blocked, or None when nothing blocks them.
+
+    Mirrors the exact gates _broker_trading_permissions() already evaluates so the
+    Command screen and broker panels never show "Disabled" for a broker that is
+    actually enabled but blocked further down the governance chain (AT-ED-003
+    Section 3).
+    """
+    if permissions is None:
+        return "Trading permission data unavailable."
+    if not auto_enabled:
+        return "Auto trading is disabled by the Founder for this broker."
+    key = broker.lower()
+    if key == "alpaca":
+        if not permissions.get("trading_enabled"):
+            return "Alpaca paper credentials are not configured."
+        return None
+    if not permissions.get("trading_enabled"):
+        return f"{_broker_label(broker)} trading is disabled by environment configuration."
+    if permissions.get("reconciliation_hold_active"):
+        return permissions.get("reconciliation_hold_reason") or "New entries are paused pending reconciliation verification."
+    if not permissions.get("live_trading_approved"):
+        return "Live trading has not been approved for this broker."
+    if not permissions.get("submit_real_orders"):
+        return "Real order submission is not yet enabled for this broker."
+    remaining = permissions.get("remaining_ai_trade_slots")
+    if isinstance(remaining, int) and remaining <= 0:
+        return "AI-managed open-trade limit reached for this broker."
+    if permissions.get("can_submit_real_orders"):
+        return None
+    return "Blocked by broker trading permissions."
 
 
 def _sum_balances(balances: Any) -> float | None:

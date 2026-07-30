@@ -284,7 +284,13 @@ function statusFromFounderEvidence(evidence) {
       due_diligence_status: recommendations.some((item) => String(item.suggested_broker || item.broker).toLowerCase() === String(row.broker).toLowerCase())
         ? 'Completed - recommendation evidence is available'
         : 'No recommendation passed due diligence in the selected period',
-      auto_trading_enabled: Boolean(raw.auto_trading_enabled),
+      // raw.auto_trading_enabled is a true tri-state (true/false/undefined) from the
+      // backend snapshot payload - undefined means the governance snapshot has not
+      // captured this broker yet, and must never be shown as "Disabled" (AT-ED-003
+      // Section 3). auto_trading_status/block_reason carry the plain-language reason.
+      auto_trading_enabled: raw.auto_trading_enabled === undefined ? null : Boolean(raw.auto_trading_enabled),
+      auto_trading_status: raw.auto_trading_status || (raw.auto_trading_enabled === undefined ? 'Unknown' : (raw.auto_trading_enabled ? 'Enabled' : 'Disabled')),
+      block_reason: raw.block_reason ?? null,
       trading_permissions: raw.trading_permissions,
     };
   });
@@ -325,6 +331,7 @@ function statusFromFounderEvidence(evidence) {
     system_status: operating.state,
     paper_live_mode: 'Alpaca paper; Kraken controlled live permissions',
     engine_health: operating.plain_english,
+    job_health: evidence?.summary?.operations?.job_health || [],
     research_status: researchHealth,
     due_diligence_status: recommendations.length
       ? `${recommendations.length} persisted recommendation(s) available for review`
@@ -357,6 +364,7 @@ function statusFromFounderEvidence(evidence) {
           status: broker.connection_status,
           ready: String(broker.connection_status).toLowerCase() === 'connected',
           auto_trading_enabled: broker.auto_trading_enabled,
+          block_reason: broker.block_reason,
           detail: broker.latest_error || broker.source,
         })),
       ],
@@ -1012,7 +1020,8 @@ function BrokerPanel({ broker, onCommand, onReport }) {
       ) : null}
       <Metric label="Research Status" value={broker.research_status} />
       <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
-      <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
+      <Metric label="Auto Trading Status" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
+      {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
       <TradingPermissions permissions={broker.trading_permissions} />
       <View style={styles.buttonGrid}>
         <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
@@ -1243,6 +1252,7 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   return (
     <View>
       <ConnectionReadinessCard readiness={readiness} />
+      <OperationsHealthCard jobHealth={status?.job_health} />
       {false && (
       <Section title={`Notifications${notifications?.length ? ` (${notifications.length} unread)` : ''}`}>
         {!notifications || !notifications.length ? (
@@ -1376,7 +1386,8 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
               ) : null}
               <Metric label="Research Status" value={broker.research_status} />
               <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
-              <Metric label="Auto Trading Status" value={broker.auto_trading_enabled ? 'Enabled' : 'Disabled'} />
+              <Metric label="Auto Trading Status" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
+              {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
               <TradingPermissions permissions={broker.trading_permissions} />
               <View style={styles.buttonGrid}>
                 <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
@@ -1605,6 +1616,38 @@ function TradeDetail({ item, onForceExit }) {
   );
 }
 
+function jobHealthTone(status) {
+  if (status === 'Healthy' || status === 'No Eligible Action') return 'good';
+  if (status === 'Awaiting First Run' || status === 'Disabled by Founder') return 'neutral';
+  if (status === 'Delayed' || status === 'Enabled but Blocked') return 'warn';
+  if (status === 'Timed Out' || status === 'Blocked') return 'danger';
+  return 'neutral';
+}
+
+function OperationsHealthCard({ jobHealth }) {
+  const jobs = jobHealth || [];
+  return (
+    <Section title="24-Hour Operations">
+      <Text style={styles.bodyText}>
+        Each scheduled job below is classified from its own recorded run history - a job only
+        reads "Healthy" when a recent run actually completed on schedule.
+      </Text>
+      {!jobs.length ? (
+        <Empty />
+      ) : (
+        jobs.map((job) => (
+          <View key={job.job} style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{job.label}</Text>
+            <StatusPill label={job.status} tone={jobHealthTone(job.status)} />
+            <Metric label="Last Run" value={formatDateTime(job.last_run_at)} />
+            <Text style={styles.smallText}>{notAvailable(job.detail)}</Text>
+          </View>
+        ))
+      )}
+    </Section>
+  );
+}
+
 function ConnectionReadinessCard({ readiness }) {
   const checks = readiness?.checks || [];
   return (
@@ -1617,7 +1660,8 @@ function ConnectionReadinessCard({ readiness }) {
         checks.map((item) => (
           <View key={item.component} style={styles.compactRow}>
             <Metric label={item.component} value={`${item.ready ? 'OK' : 'Check'} - ${notAvailable(item.status)}`} />
-            {item.auto_trading_enabled !== undefined ? <Metric label="Auto Trading" value={item.auto_trading_enabled ? 'Enabled' : 'Disabled'} /> : null}
+            {item.auto_trading_enabled !== undefined ? <Metric label="Auto Trading" value={enabledDisabled(item.auto_trading_enabled)} /> : null}
+            {item.block_reason ? <Metric label="Block Reason" value={item.block_reason} /> : null}
             <Text style={styles.smallText}>{notAvailable(item.detail)}</Text>
           </View>
         ))
@@ -1642,7 +1686,8 @@ function localConnectionReadiness(status, brokerPanels) {
       component: broker.label || broker.broker || 'Broker',
       status: broker.connection_status || 'not connected',
       ready: connected,
-      auto_trading_enabled: !!broker.auto_trading_enabled,
+      auto_trading_enabled: broker.auto_trading_enabled === undefined ? undefined : broker.auto_trading_enabled,
+      block_reason: broker.block_reason,
       detail: broker.source || broker.connection_status || 'No broker detail returned.',
     });
   });
@@ -1707,7 +1752,7 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
     <View>
       <Section title="AI Recommendation History">
         <Text style={styles.bodyText}>
-          Showing saved SQLite recommendations, ordered from highest confidence to lowest. Expired ideas stay visible
+          Showing the live recommendation and governance record, ordered from highest confidence to lowest. Expired ideas stay visible
           for reference, but execution is blocked until fresh analysis creates a new trade idea.
         </Text>
       </Section>

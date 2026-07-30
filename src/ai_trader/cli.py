@@ -271,9 +271,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     scheduled_results = {}
                     due_jobs = _due_worker_jobs(settings, now)
-                    broker_poll = _run_pulsed_job(
+                    # broker-poll and auto-execution are scheduled per broker so
+                    # one broker's slow API or transient failure cannot delay or
+                    # starve the other broker's cycle, and each broker gets its
+                    # own run-history/idempotency trail (AT-ED-003 Section 1 items
+                    # 3-4). The old combined "broker-poll"/"auto-execution" job
+                    # names are retired from this automatic loop; they remain
+                    # dispatchable only for manual/debug `run-job` invocation.
+                    broker_poll_alpaca = _run_pulsed_job(
                         service,
-                        "broker-poll",
+                        "broker-poll-alpaca",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(300, settings.broker_poll_interval_seconds)),
+                    )
+                    broker_poll_kraken = _run_pulsed_job(
+                        service,
+                        "broker-poll-kraken",
                         worker_id,
                         pulse,
                         scheduled_for=_time_bucket(now, max(300, settings.broker_poll_interval_seconds)),
@@ -287,9 +301,16 @@ def main(argv: list[str] | None = None) -> int:
                             pulse,
                             scheduled_for=snapshot_schedule,
                         )
-                    auto = _run_pulsed_job(
+                    auto_alpaca = _run_pulsed_job(
                         service,
-                        "auto-execution",
+                        "auto-execution-alpaca",
+                        worker_id,
+                        pulse,
+                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
+                    )
+                    auto_kraken = _run_pulsed_job(
+                        service,
+                        "auto-execution-kraken",
                         worker_id,
                         pulse,
                         scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
@@ -326,9 +347,11 @@ def main(argv: list[str] | None = None) -> int:
                         current_job="idle",
                         last_successful_job="background-cycle",
                         payload={
-                            "broker_poll": _job_summary(broker_poll),
+                            "broker_poll_alpaca": _job_summary(broker_poll_alpaca),
+                            "broker_poll_kraken": _job_summary(broker_poll_kraken),
                             "managed_exits": _job_summary(exits),
-                            "auto_execution": _job_summary(auto),
+                            "auto_execution_alpaca": _job_summary(auto_alpaca),
+                            "auto_execution_kraken": _job_summary(auto_kraken),
                             "push_dispatch": _job_summary(push),
                             "scheduled": {name: _job_summary(value) for name, value in scheduled_results.items()},
                             "learning": _job_summary(learning),
@@ -435,9 +458,23 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         selected_type = {"weekly-report": "weekly", "monthly-report": "monthly"}.get(job_name, report_type or "daily")
         return service.trading_report(report_date=date.today().isoformat(), broker="all", report_type=selected_type, persist=True)
     if job_name == "auto-execution":
+        # Retired from automatic scheduling in favor of the broker-specific jobs
+        # below (AT-ED-003 Section 1 item 4). Left dispatchable for manual/debug
+        # `run-job` invocation only -- the worker loop never calls this name.
         return service.auto_execute_recommendations()
+    if job_name == "auto-execution-alpaca":
+        return service.auto_execute_recommendations_alpaca()
+    if job_name == "auto-execution-kraken":
+        return service.auto_execute_recommendations_kraken()
     if job_name == "broker-poll":
+        # Retired from automatic scheduling in favor of the broker-specific jobs
+        # below (AT-ED-003 Section 1 item 3). Left dispatchable for manual/debug
+        # `run-job` invocation only -- the worker loop never calls this name.
         return service.poll_broker_activity()
+    if job_name == "broker-poll-alpaca":
+        return service.poll_broker_activity_alpaca()
+    if job_name == "broker-poll-kraken":
+        return service.poll_broker_activity_kraken()
     if job_name == "evidence-snapshot":
         return service.capture_production_broker_snapshots()
     if job_name == "managed-exits":

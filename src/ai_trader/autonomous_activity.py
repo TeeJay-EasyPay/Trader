@@ -95,7 +95,7 @@ def current_autonomous_status(
     worker_health = health.get("worker_health") or "not_proven"
     scheduler_state = "active" if any(_timestamp(row.get("started_at") or row.get("scheduled_for")) for row in health.get("last_job_runs") or []) else "not_proven"
     last_research = _latest_event_time(all_events, {"Research"})
-    last_broker_poll = _latest_job_time(health.get("last_job_runs") or [], "broker-poll")
+    last_broker_poll = _latest_job_time_prefix(health.get("last_job_runs") or [], "broker-poll")
     last_report = _latest_event_time(all_events, {"Reports"})
     database_status = (health.get("database_backend") or {}).get("active_backend") or database_backend
 
@@ -169,7 +169,7 @@ def activity_summary(db_path: Path, *, period: str = "24h") -> dict[str, Any]:
             "trades_closed": closed,
         },
         "operations": {
-            "broker_polls": len([job for job in jobs if _lower(job.get("job_name")) == "broker-poll"]),
+            "broker_polls": len([job for job in jobs if _lower(job.get("job_name")).startswith("broker-poll")]),
             "learning_reviews_completed": len([job for job in jobs if _lower(job.get("job_name")) == "daily-learning" and _lower(job.get("status")).startswith("completed")]),
             "reports_generated": len(reports),
             "incidents_opened": incidents_opened,
@@ -303,7 +303,7 @@ def broker_activity(
     for broker in ["alpaca", "kraken"]:
         panel = panels_by_broker.get(broker, {})
         rows = [row for row in broker_rows if _lower(row.get("broker")) == broker]
-        broker_jobs = [row for row in jobs if _lower(row.get("job_name")) == "broker-poll"]
+        broker_jobs = [row for row in jobs if _lower(row.get("job_name")).startswith("broker-poll")]
         latest_error = _latest_error_for_broker(rows, broker_jobs, broker)
         last_submission = _latest_trade_time(rows, statuses={"submitted", "accepted", "new", "filled", "partially_filled"})
         last_fill = _latest_trade_time([row for row in rows if "filled" in _lower(row.get("status"))])
@@ -791,6 +791,14 @@ def _latest_job_time(jobs: list[dict[str, Any]], job_name: str) -> str | None:
     return None
 
 
+def _latest_job_time_prefix(jobs: list[dict[str, Any]], job_name_prefix: str) -> str | None:
+    """Match a retired combined job name and its AT-ED-003 per-broker replacements alike."""
+    for row in jobs:
+        if _lower(row.get("job_name")).startswith(job_name_prefix):
+            return _iso(row.get("completed_at") or row.get("started_at") or row.get("scheduled_for"))
+    return None
+
+
 def _latest_completed_job_time(jobs: list[dict[str, Any]]) -> str | None:
     for row in sorted(jobs, key=lambda item: item.get("completed_at") or item.get("started_at") or item.get("scheduled_for") or "", reverse=True):
         if _lower(row.get("status")).startswith("completed"):
@@ -905,9 +913,9 @@ def _job_summary(job_name: Any, processed: int, recs: int, submitted: int, fills
     name = _lower(job_name)
     if "research" in name or "equity" in name or "crypto" in name:
         return f"Research job processed {processed} asset(s) and created {recs} recommendation(s)."
-    if name == "auto-execution":
+    if "auto-execution" in name:
         return f"Auto-execution reviewed eligibility and submitted {submitted} order(s)."
-    if name == "broker-poll":
+    if "broker-poll" in name:
         return f"Broker polling completed and recorded {fills} fill(s)."
     if "learning" in name:
         return "Learning job completed or recorded no action."

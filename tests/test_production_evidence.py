@@ -201,6 +201,62 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(result["status"]["state"], "STATUS UNKNOWN")
             self.assertEqual(result["snapshot"]["served_from"], "warmup_state")
 
+    def test_job_health_summary_uses_founder_facing_vocabulary(self):
+        # AT-ED-003 Section 2: a job must never be reported "Healthy" merely because a
+        # process exists somewhere in history. Each state below must be distinguishable.
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(seconds=30)).isoformat()
+        stale = (now - timedelta(hours=6)).isoformat()
+
+        jobs = [
+            {"job_name": "broker-poll-alpaca", "status": "completed", "completed_at": recent},
+            {"job_name": "broker-poll-kraken", "status": "completed", "completed_at": stale},
+            {"job_name": "auto-execution-alpaca", "status": "completed", "completed_at": recent, "paper_orders_submitted": 0, "rejection_count": 0},
+            {"job_name": "managed-exits", "status": "timed_out", "completed_at": recent, "failure_reason": "exceeded boundary"},
+            {"job_name": "evidence-snapshot", "status": "failed", "completed_at": recent, "failure_reason": "broker API error"},
+        ]
+        broker_payload = [
+            {"broker": "alpaca", "auto_trading_enabled": True},
+            {"broker": "kraken", "auto_trading_enabled": False},
+        ]
+
+        results = {row["job"]: row for row in production_evidence._job_health_summary(jobs, broker_payload)}
+
+        self.assertEqual(results["broker-poll-alpaca"]["status"], "Healthy")
+        # Kraken auto trading is Founder-disabled, so its broker-poll job reads
+        # "Disabled by Founder" even though a stale completed run exists - disabled
+        # takes precedence over a delayed-looking timestamp.
+        self.assertEqual(results["broker-poll-kraken"]["status"], "Disabled by Founder")
+        self.assertEqual(results["auto-execution-alpaca"]["status"], "No Eligible Action")
+        self.assertEqual(results["managed-exits"]["status"], "Timed Out")
+        self.assertEqual(results["evidence-snapshot"]["status"], "Blocked")
+        # auto-execution-kraken has no matching job rows and kraken is disabled by
+        # the Founder - disabled still takes precedence over "no run recorded yet".
+        self.assertEqual(results["auto-execution-kraken"]["status"], "Disabled by Founder")
+        # daily-report has never run and is not broker-gated.
+        self.assertEqual(results["daily-report"]["status"], "Awaiting First Run")
+
+    def test_job_health_summary_distinguishes_blocked_from_no_eligible_action(self):
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        jobs = [
+            {"job_name": "auto-execution-alpaca", "status": "completed", "completed_at": now_iso, "paper_orders_submitted": 0, "rejection_count": 3},
+            {"job_name": "auto-execution-kraken", "status": "completed", "completed_at": now_iso, "paper_orders_submitted": 1, "rejection_count": 0},
+        ]
+        broker_payload = [
+            {"broker": "alpaca", "auto_trading_enabled": True},
+            {"broker": "kraken", "auto_trading_enabled": True},
+        ]
+
+        results = {row["job"]: row for row in production_evidence._job_health_summary(jobs, broker_payload)}
+
+        self.assertEqual(results["auto-execution-alpaca"]["status"], "Enabled but Blocked")
+        self.assertIn("3", results["auto-execution-alpaca"]["detail"])
+        self.assertEqual(results["auto-execution-kraken"]["status"], "Healthy")
+
     def test_founder_payload_reconstructs_worker_activity_and_financial_truth(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

@@ -297,11 +297,19 @@ def record_broker_snapshot(db_path: Path, panel: dict[str, Any], *, captured_at:
     )
 
 
-def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) -> None:
-    # Hosted startup owns additive Postgres migrations. Re-running the complete
-    # schema script for every broker event turns a bounded poll into hundreds of
-    # DDL round trips and can starve Founder-facing snapshots.
-    _ensure_local_production_evidence_schema(db_path)
+_TRADE_EVIDENCE_INSERT_SQL = """
+    INSERT INTO PRODUCTION_TRADE_EVIDENCE (
+        idempotency_key, observed_at, broker, broker_order_id, broker_trade_id, symbol, side,
+        status, quantity, price, average_fill_price, fee, realized_pnl, opened_at, closed_at,
+        entry_reason, exit_reason, payload_json
+    ) VALUES ({p}) ON CONFLICT(idempotency_key) DO UPDATE SET
+        observed_at=excluded.observed_at, status=excluded.status, quantity=excluded.quantity,
+        price=excluded.price, average_fill_price=excluded.average_fill_price, fee=excluded.fee,
+        realized_pnl=excluded.realized_pnl, closed_at=excluded.closed_at, payload_json=excluded.payload_json
+"""
+
+
+def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...]:
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
     status = str(_first(event, "status", "order_status", "type") or "observed").lower()
@@ -311,7 +319,7 @@ def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) 
     price = _number(_first(event, "price", "filled_avg_price", "average_price", "avg_price"))
     key_parts = [broker, str(broker_order_id or ""), str(broker_trade_id or ""), status, str(quantity or ""), str(price or "")]
     idempotency_key = ":".join(key_parts)
-    values = (
+    return (
         idempotency_key, observed_at, broker.lower(), broker_order_id, broker_trade_id,
         str(symbol).upper() if symbol else None, _first(event, "side", "type"), status, quantity, price,
         _number(_first(event, "filled_avg_price", "average_price", "avg_price")),
@@ -319,20 +327,43 @@ def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) 
         _first(event, "opened_at", "created_at"), _first(event, "closed_at", "filled_at"),
         event.get("entry_reason"), event.get("exit_reason"), _json(event),
     )
-    _upsert(
-        db_path,
-        """
-        INSERT INTO PRODUCTION_TRADE_EVIDENCE (
-            idempotency_key, observed_at, broker, broker_order_id, broker_trade_id, symbol, side,
-            status, quantity, price, average_fill_price, fee, realized_pnl, opened_at, closed_at,
-            entry_reason, exit_reason, payload_json
-        ) VALUES ({p}) ON CONFLICT(idempotency_key) DO UPDATE SET
-            observed_at=excluded.observed_at, status=excluded.status, quantity=excluded.quantity,
-            price=excluded.price, average_fill_price=excluded.average_fill_price, fee=excluded.fee,
-            realized_pnl=excluded.realized_pnl, closed_at=excluded.closed_at, payload_json=excluded.payload_json
-        """,
-        values,
-    )
+
+
+def record_trade_evidence(db_path: Path, *, broker: str, event: dict[str, Any]) -> None:
+    # Hosted startup owns additive Postgres migrations. Re-running the complete
+    # schema script for every broker event turns a bounded poll into hundreds of
+    # DDL round trips and can starve Founder-facing snapshots.
+    _ensure_local_production_evidence_schema(db_path)
+    _upsert(db_path, _TRADE_EVIDENCE_INSERT_SQL, _trade_evidence_values(broker, event))
+
+
+def record_trade_evidence_batch(db_path: Path, *, broker: str, events: Iterable[dict[str, Any]]) -> int:
+    """Persist every event from one broker-poll cycle over a single connection/transaction.
+
+    record_trade_evidence() opens a fresh connection per call; a poll cycle with
+    dozens of new broker events turned that into dozens of round trips and was a
+    confirmed contributor to worker-cycle timeouts. Each event still becomes its
+    own idempotent row with identical ON CONFLICT semantics -- only the connection
+    is shared.
+    """
+    rows = [_trade_evidence_values(broker, event) for event in events if isinstance(event, dict)]
+    if not rows:
+        return 0
+    _ensure_local_production_evidence_schema(db_path)
+    if uses_postgres():
+        statement = _TRADE_EVIDENCE_INSERT_SQL.format(p=", ".join(["%s"] * len(rows[0])))
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                for values in rows:
+                    cur.execute(statement, values)
+            conn.commit()
+        return len(rows)
+    statement = _TRADE_EVIDENCE_INSERT_SQL.format(p=", ".join(["?"] * len(rows[0])))
+    with closing(connect(db_path)) as conn:
+        with conn:
+            for values in rows:
+                conn.execute(statement, values)
+    return len(rows)
 
 
 def record_learning_evidence(db_path: Path, result: dict[str, Any], *, worker_id: str) -> None:
@@ -405,7 +436,8 @@ def _load_founder_evidence_rows(
             ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 100", ()),
             ("""SELECT snapshot_id, captured_at, broker, connection_status, account_mode, currency,
                        portfolio_value, cash, buying_power, deployed_capital, day_pnl, week_pnl,
-                       month_pnl, open_positions, positions_json, reconciliation_status, source, error
+                       month_pnl, open_positions, positions_json, reconciliation_status, source, error,
+                       payload_json
                 FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 100""", ()),
             ("""SELECT trade_evidence_id, observed_at, broker, broker_order_id, broker_trade_id,
                        symbol, side, status, quantity, price, average_fill_price, fee, realized_pnl,
@@ -438,6 +470,82 @@ def _load_founder_evidence_rows(
     ))
 
 
+# (job_key, label, expected_cadence_seconds, broker, matching job_name(s) - old
+# combined name kept for continuity across the AT-ED-003 split deploy).
+_JOB_HEALTH_SPECS: tuple[tuple[str, str, int, str | None, tuple[str, ...]], ...] = (
+    ("broker-poll-alpaca", "Alpaca Broker Poll", 400, "alpaca", ("broker-poll-alpaca", "broker-poll")),
+    ("broker-poll-kraken", "Kraken Broker Poll", 400, "kraken", ("broker-poll-kraken", "broker-poll")),
+    ("auto-execution-alpaca", "Alpaca Auto-Execution", 180, "alpaca", ("auto-execution-alpaca", "auto-execution")),
+    ("auto-execution-kraken", "Kraken Auto-Execution", 180, "kraken", ("auto-execution-kraken", "auto-execution")),
+    ("managed-exits", "Managed Exits", 180, None, ("managed-exits",)),
+    ("evidence-snapshot", "Evidence Snapshot", 1200, None, ("evidence-snapshot",)),
+    ("push-dispatch", "Push Notification Dispatch", 90, None, ("push-dispatch",)),
+    ("overnight-crypto", "Overnight Crypto Research", 4200, None, ("overnight-crypto",)),
+    ("daily-learning", "Daily Learning", 90000, None, ("daily-learning",)),
+    ("daily-report", "Daily Report", 90000, None, ("daily-report", "weekly-report", "monthly-report")),
+)
+
+
+def _job_health_summary(jobs: list[dict[str, Any]], broker_payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Classify each scheduled job using the Founder-facing status vocabulary AT-ED-003
+    Section 2 requires. A job must never read "Healthy" merely because a process
+    exists somewhere in history: no recent run, a Founder-disabled broker, or a
+    cycle that had nothing eligible to act on must each say so plainly and
+    distinctly, not collapse into a generic "OK".
+    """
+    auto_enabled = {str(row.get("broker") or "").lower(): row.get("auto_trading_enabled") for row in broker_payload}
+    results: list[dict[str, Any]] = []
+    for job_key, label, expected_seconds, broker, names in _JOB_HEALTH_SPECS:
+        broker_enabled = auto_enabled.get(broker) if broker else None
+        entry: dict[str, Any] = {
+            "job": job_key,
+            "label": label,
+            "broker": broker,
+            "last_run_at": None,
+            "status": "Awaiting First Run",
+            "detail": "No run has been recorded for this job in the selected period.",
+        }
+        if broker is not None and broker_enabled is False:
+            entry["status"] = "Disabled by Founder"
+            entry["detail"] = "Auto trading is disabled by the Founder for this broker; new-entry jobs are not scheduled."
+        matches = [row for row in jobs if row.get("job_name") in names]
+        if matches:
+            latest = matches[0]
+            status_raw = str(latest.get("status") or "").lower()
+            last_time = latest.get("completed_at") or latest.get("started_at") or latest.get("scheduled_for")
+            entry["last_run_at"] = last_time
+            age = _timestamp_age_seconds(last_time) if last_time else None
+            if entry["status"] != "Disabled by Founder":
+                if status_raw == "timed_out":
+                    entry["status"] = "Timed Out"
+                    entry["detail"] = latest.get("failure_reason") or "The job exceeded its execution time boundary and was terminated."
+                elif status_raw == "failed":
+                    entry["status"] = "Blocked"
+                    entry["detail"] = latest.get("failure_reason") or "The job failed."
+                elif age is not None and age > expected_seconds * 3:
+                    minutes = int(age // 60)
+                    expected_minutes = max(1, expected_seconds // 60)
+                    entry["status"] = "Delayed"
+                    entry["detail"] = f"Last run was {minutes} minute(s) ago; expected roughly every {expected_minutes} minute(s)."
+                elif job_key in {"auto-execution-alpaca", "auto-execution-kraken"} and status_raw == "completed":
+                    submitted = int(latest.get("paper_orders_submitted") or 0)
+                    rejected = int(latest.get("rejection_count") or 0)
+                    if submitted == 0 and rejected == 0:
+                        entry["status"] = "No Eligible Action"
+                        entry["detail"] = "No candidate recommendations were available for this broker in its last completed cycle."
+                    elif submitted == 0 and rejected > 0:
+                        entry["status"] = "Enabled but Blocked"
+                        entry["detail"] = f"{rejected} candidate(s) were evaluated and blocked by governance or risk checks; none were submitted."
+                    else:
+                        entry["status"] = "Healthy"
+                        entry["detail"] = f"{submitted} order(s) submitted in the last completed cycle."
+                else:
+                    entry["status"] = "Healthy"
+                    entry["detail"] = "Last run completed within the expected schedule."
+        results.append(entry)
+    return results
+
+
 def _assemble_founder_evidence_payload(
     rows: tuple[list[dict[str, Any]], ...],
     *,
@@ -449,7 +557,11 @@ def _assemble_founder_evidence_payload(
     fees = sum(_number(row.get("fee")) or 0.0 for row in trades)
     latest_activity = _latest_activity(research, trades, learning, jobs)
     no_trade = _why_no_trade(funnels, jobs, trades)
-    broker_payload = [_decode_row(row, {"positions_json", "payload_json"}) for row in snapshots]
+    broker_payload = [
+        _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
+        for row in snapshots
+    ]
+    job_health = _job_health_summary(jobs, broker_payload)
     return {
         "generated_at": utc_now_iso(),
         "period": period,
@@ -461,7 +573,7 @@ def _assemble_founder_evidence_payload(
             "scheduler_status": "active" if jobs else "no_recent_jobs",
             "database_status": "postgres" if uses_postgres() else "sqlite",
             "last_successful_research_run": research[0].get("completed_at") if research else None,
-            "last_broker_poll": _latest_job_time(jobs, "broker-poll"),
+            "last_broker_poll": _latest_job_time_any(jobs, BROKER_POLL_JOB_NAMES),
             "last_report_generated": _latest_report_time(jobs),
             "unresolved_incident_count": 0,
         },
@@ -480,11 +592,12 @@ def _assemble_founder_evidence_payload(
                 "trades_closed": len([row for row in trades if row.get("status") in {"closed", "target_exit", "stop_exit", "manual_exit"}]),
             },
             "operations": {
-                "broker_polls": len([row for row in jobs if row.get("job_name") == "broker-poll"]),
+                "broker_polls": len([row for row in jobs if row.get("job_name") in BROKER_POLL_JOB_NAMES]),
                 "learning_reviews_completed": len(learning),
                 "reports_generated": len([row for row in jobs if "report" in str(row.get("job_name") or "") and str(row.get("status") or "").startswith("completed")]),
                 "incidents_opened": 0,
                 "incidents_resolved": 0,
+                "job_health": job_health,
             },
         },
         "why_no_trade": no_trade,
@@ -803,6 +916,31 @@ def _decode_row(row: dict[str, Any], keys: set[str]) -> dict[str, Any]:
     return item
 
 
+_BROKER_PAYLOAD_LIFT_KEYS = ("auto_trading_enabled", "auto_trading_status", "trading_permissions", "block_reason")
+
+
+def _lift_broker_payload_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Surface the governance fields captured onto the snapshot's payload_json.
+
+    capture_production_broker_snapshots() computes the true DB-backed auto-trading
+    setting, env-level trading permission, reconciliation state, and block reason
+    for each broker and stores them inside payload_json. Founder-facing consumers
+    (Command screen, broker panels) must never see a silent default of False/
+    "Disabled" when this data simply has not been captured yet -- absence must
+    read as Unknown, not Disabled.
+    """
+    payload = row.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    for key in _BROKER_PAYLOAD_LIFT_KEYS:
+        if key in payload:
+            row[key] = payload[key]
+    row.setdefault("auto_trading_enabled", None)
+    row.setdefault("auto_trading_status", "Unknown")
+    row.setdefault("trading_permissions", None)
+    row.setdefault("block_reason", None)
+    return row
+
+
 def _latest_per(rows: Iterable[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -845,6 +983,19 @@ def _operating_sentence(workers: list[dict[str, Any]], research: list[dict[str, 
 def _latest_job_time(jobs: list[dict[str, Any]], job_name: str) -> str | None:
     row = next((item for item in jobs if item.get("job_name") == job_name), None)
     return str(row.get("completed_at") or row.get("started_at")) if row else None
+
+
+# AT-ED-003 split broker-poll/auto-execution into per-broker job names. Evidence
+# rows recorded under the old combined names remain valid history, so summaries
+# recognize both the retired name and its per-broker replacements.
+BROKER_POLL_JOB_NAMES = ("broker-poll", "broker-poll-alpaca", "broker-poll-kraken")
+AUTO_EXECUTION_JOB_NAMES = ("auto-execution", "auto-execution-alpaca", "auto-execution-kraken")
+
+
+def _latest_job_time_any(jobs: list[dict[str, Any]], job_names: tuple[str, ...]) -> str | None:
+    times = [_latest_job_time(jobs, name) for name in job_names]
+    times = [value for value in times if value]
+    return max(times) if times else None
 
 
 def _latest_report_time(jobs: list[dict[str, Any]]) -> str | None:

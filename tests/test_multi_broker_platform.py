@@ -6,6 +6,7 @@ import unittest
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -250,13 +251,96 @@ class MultiBrokerPlatformTests(unittest.TestCase):
                 mock_auto_execute.assert_not_called()
                 self.assertEqual(
                     result["auto_execution"],
-                    {"status": "delegated", "message": "Handled by the independent auto-execution job."},
+                    {"status": "delegated", "message": "Handled by the independent per-broker auto-execution jobs."},
                 )
                 # No order was ever submitted directly from research - confirms there is no
                 # duplicate execution path hiding elsewhere in this call.
                 self.assertEqual(adapter.submitted_orders, [])
         finally:
             restore_env(previous)
+
+    def test_auto_execute_recommendations_broker_filter_isolates_candidates(self):
+        # AT-ED-003 Section 1 item 4: auto-execution-alpaca/auto-execution-kraken must
+        # each only consider candidates whose resolved broker matches, without touching
+        # the governance chain for the other broker's candidates at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                alpaca_api_key="paper-key",
+                alpaca_secret_key="paper-secret",
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=root / "audit.sqlite3",
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(enabled=True),
+            )
+            service = LocalApiService(settings)
+            set_broker_auto_trading(settings.db_path, "alpaca", True)
+            set_broker_auto_trading(settings.db_path, "kraken", True)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+
+            stock_proposal = TradeProposal(
+                symbol="AAPL", side="buy", entry_price=100, stop_loss=98, take_profit=106,
+                position_size=1, risk_percentage=0.01, confidence_score=0.95,
+                news_summary="No material news.", market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning=(
+                    "Strongest argument for: the trend is constructive. "
+                    "Strongest argument against: volatility could invalidate the setup."
+                ),
+                ai_guardrails_passed=True, asset_type="stock", exchange="NASDAQ",
+            ).normalized()
+            crypto_proposal = TradeProposal(
+                symbol="BTC", side="buy", entry_price=50000, stop_loss=48000, take_profit=53000,
+                position_size=0.01, risk_percentage=0.01, confidence_score=0.95,
+                news_summary="No material news.", market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning=(
+                    "Strongest argument for: the trend is constructive. "
+                    "Strongest argument against: volatility could invalidate the setup."
+                ),
+                ai_guardrails_passed=True, asset_type="crypto", exchange="KRAKEN",
+            ).normalized()
+            audit.record_trade_event("agent_proposal", stock_proposal, validation=ValidationResult(passed=True))
+            audit.record_trade_event("agent_proposal", crypto_proposal, validation=ValidationResult(passed=True))
+
+            def fake_select_adapter(proposal):
+                name = "alpaca" if proposal.asset_type == "stock" else "kraken"
+                return SimpleNamespace(name=name)
+
+            evaluated_symbols: list[str] = []
+
+            def fake_evaluate(proposal, context, auto_execute=True):
+                evaluated_symbols.append(proposal.symbol)
+                return SimpleNamespace(
+                    decision="rejected",
+                    rejection_reason="test_short_circuit",
+                    notes=None,
+                    symbol=proposal.symbol,
+                    to_dict=lambda: {},
+                )
+
+            with (
+                patch.object(service.orchestrator, "_select_adapter", side_effect=fake_select_adapter),
+                patch.object(service.orchestrator, "evaluate_recommendation", side_effect=fake_evaluate),
+                patch.object(LocalApiService, "_account_context_for_broker", return_value=SimpleNamespace()),
+            ):
+                alpaca_result = service.auto_execute_recommendations(broker_filter="alpaca")
+                self.assertEqual(evaluated_symbols, ["AAPL"])
+                evaluated_symbols.clear()
+                kraken_result = service.auto_execute_recommendations(broker_filter="kraken")
+                self.assertEqual(evaluated_symbols, ["BTC"])
+
+            alpaca_skipped_symbols = {row["symbol"] for row in alpaca_result.get("skipped", [])}
+            kraken_skipped_symbols = {row["symbol"] for row in kraken_result.get("skipped", [])}
+            self.assertIn("AAPL", alpaca_skipped_symbols)
+            self.assertNotIn("BTC", alpaca_skipped_symbols)
+            self.assertIn("BTC", kraken_skipped_symbols)
+            self.assertNotIn("AAPL", kraken_skipped_symbols)
 
     def test_kraken_live_switches_enable_crypto_policy(self):
         previous = {key: os.environ.get(key) for key in [
