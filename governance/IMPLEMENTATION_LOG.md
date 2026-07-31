@@ -1,5 +1,114 @@
 # Implementation Log
 
+## 2026-07-31 AT-ED-003 UI pass completed - Activity, Recommendations, Portfolio, Learning
+
+Continuation of the same day's Command-screen truth/declutter session. Commit `7969d1d2`,
+merged `5656e7bc`, pushed to master (Render backend redeploy triggered by the additive
+`production_evidence.py` change; the mobile `App.js`/`lib/` changes require a separate
+EAS Update - see "Mobile deployment" below, not automatic from a git push).
+
+**New shared module** `mobile/lib/founderPresentation.js` - pure, dependency-free functions
+(no React/RN imports) so they're unit-testable without a bundler: `operationalRollup`,
+`operationalLevelTone`, `brokerOverallReadiness` (moved out of `App.js` so Command, Activity,
+and Portfolio all call the same broker-status computation instead of each maintaining their
+own copy), `activityCategoryFor`/`groupActivity`, `recommendationLifecycle`,
+`positionOwnership`, `learningSummary`. 24 assert-based tests in
+`mobile/lib/founderPresentation.test.js`, run with `node mobile/lib/founderPresentation.test.js`
+- no test framework was installed; this is Node's built-in `assert`.
+
+**Activity screen.** Raw timeline items (`_timeline()` in `production_evidence.py`, which only
+carries four raw categories - Research/Execution/Learning/System, with job identity folded into
+the title string) are now grouped client-side into the nine Founder-facing categories via
+job-name pattern matching, with repeated identical events (e.g.
+`auto-execution-alpaca completed_no_action` firing every cycle) collapsed into one line with a
+count and latest-occurrence timestamp. Each event states what happened, why it matters, the
+outcome, and whether Founder action is required. Raw per-event detail is retained in full behind
+a "Technical Details" section - nothing is deleted, only reordered. Removed a "Broker Activity"
+section whose own broker-status computation (`row.payload?.auto_trading_enabled ? 'Enabled' :
+'Disabled or not evidenced'`) used the exact true/false-only coercion the rest of the app had
+already moved away from; rather than fix a component nothing else needed, it and its backing
+computation were removed so it can't resurface later as a second, disagreeing source. Also
+removed "Founder Attention" and "Latest Completed Actions", which duplicated the same evidence
+now shown in the grouped view (the former's `items` array was always hardcoded empty).
+
+**Recommendations screen.** Added a `recommendationLifecycle()` stage - Executed / Expired /
+Blocked / No Action / Under Review - computed only from fields already in the
+`/founder-evidence` recommendation payload (`freshness_status`, `guardrails_passed`,
+`guardrail_failures`, `confidence`). "Executed" additionally requires a best-effort match
+against trade evidence (same broker, same symbol, fill observed within the recommendation's
+`created_at`..`expires_at` window plus a 24h grace period) - there is no persisted foreign key
+from a recommendation to a specific fill in the current evidence model, so the reason text says
+"matched by broker/symbol/timing, not a direct database link" rather than overclaiming certainty.
+"Generated" (always true - `created_at` is always present), "Approved", and "Rejected" are
+**not** separately derivable from current evidence - there is no persisted per-recommendation
+orchestrator-decision record to read - and the module says so in its own docstring rather than
+faking a sixth/seventh/eighth stage. The ~50-field technical dossier per recommendation moved
+behind a collapsible "Full Evidence Dossier"; the lifecycle stage and reason now lead the card.
+
+**Portfolio screen.** Reordered to lead with portfolio value/cash/deployed capital/day P&L/open
+positions/positions-at-a-loss; broker diagnostics and exposure/operational detail moved into
+collapsible sections. Added a new "AI-Managed Positions" section fed by a **new backend field**
+(see below) - `positionOwnership()` only ever labels a position AI-managed when a real, open
+`MANAGED_TRADE_EXITS` row exists for that symbol; every other holding (including any manual
+Kraken holdings) renders as a plain position, never guessed to be AI-managed. Each AI-managed
+position shows its originating recommendation (`proposal_id`, cross-referenced against the
+recommendations list for strategy name), broker, entry time, current state, and unrealised
+result; learning state correctly reads "not available yet" since learning only ever follows a
+closed, reconciled trade and these positions are by definition still open.
+
+**Learning screen.** Replaced three sections that were *always* empty under the current evidence
+model (Strategy Rankings, Signal Rankings, Institutional Tests - all backed by
+`founder_experience.learning_lab` fields hardcoded to `[]`/`null` in `statusFromFounderEvidence`)
+with one concise summary card: completed trades reviewed, distinct strategies evaluated (from
+recommendations grouped by `strategy_id`), latest lesson, and a single "why learning hasn't
+progressed further" explanation instead of repeated "Not available" rows. Latest
+strategy-change-proposal approval status reads "not yet exposed in this evidence projection" -
+genuinely true; no strategy-promotion record is included in `/founder-evidence` today.
+
+**Backend addition (`production_evidence.py`).** Added `managed_exits` (open
+`MANAGED_TRADE_EXITS` rows, via the already-existing `open_managed_exits()`) to each broker in
+the founder-evidence payload. Read-only and additive - no governance, guardrail, kill-switch,
+allocation, reconciliation, or duplicate-order logic touched. This was the only way to correctly
+satisfy "do not label manual Kraken holdings as AI-managed": without it, the mobile app had zero
+signal to distinguish an AI-opened position from a personal holding. New test:
+`test_founder_evidence_exposes_managed_exits_distinct_from_raw_positions`.
+
+**Cross-screen consistency.** Confirmed Command, Portfolio, and the Dashboard tab all render
+broker status through the same `BrokerPanel` component fed by the same `status.brokers` array
+computed once per refresh in `statusFromFounderEvidence` - structurally, one broker cannot read
+"Enabled" on one screen and "Disabled" on another because there is only one computation, not
+several. The one live inconsistency risk found (the Activity screen's now-removed
+`broker_activity` computation) is documented above.
+
+**Validation performed:** full backend suite (234/234), 24 assert-based JS tests for the new
+module, a full-file babel parse (`babel-preset-expo`) after every edit, manual review of every
+modified JSX block and its data mapping, and repo-wide greps for remaining user-visible SQLite
+wording (none beyond the intentionally-conditional sprint6/always_on self-diagnostic strings
+already reviewed in the original AT-ED-003 session) and for independently-computed broker-status
+logic (one instance found and removed).
+
+**Not verified - requires the Founder:** on-device rendering, narrow/foldable Android layout,
+loading/error states under real network conditions, and an actual EAS Update/build. There is
+still no lint/typecheck/build tooling in `mobile/package.json` beyond the syntax-only babel
+parse used here.
+
+**Mobile deployment.** The `git push` above deploys the *backend* change only (Render). The
+`mobile/App.js`/`mobile/lib/` changes need a separate EAS Update to reach installed test
+builds, since this is a pure-JS change (no native code) under `runtimeVersion.policy:
+"appVersion"`. This environment has no Expo/EAS credentials to run it. Exact command for the
+Founder to run (from `mobile/`, after `eas login` with access to project
+`58ca35af-2cf4-44a0-8da4-7f02563b635f`):
+
+```
+cd mobile
+eas update --branch preview --message "AT-ED-003 UI pass: Activity/Recommendations/Portfolio/Learning"
+```
+
+Replace `preview` with whichever channel (`preview` / `hosted-preview` / other) the Founder's
+actual test device build is currently pointed at - `eas.json` defines both `preview` and
+`hosted-preview` build profiles with no way to tell from the repo alone which one is installed
+on the Founder's device.
+
 ## 2026-07-31 Research batching/timeout fix + Command screen truth/declutter (partial)
 
 Two coordinated changes, each on its own feature branch, merged to master and deployed:
