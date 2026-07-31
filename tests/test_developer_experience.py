@@ -804,6 +804,76 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(row[0], "agent_no_trade")
             self.assertIn("No latest market bar", row[1])
 
+    def test_propose_trades_fetches_market_data_once_for_the_whole_batch(self):
+        # run_analysis used to call propose_trades once per symbol, meaning one full
+        # get_latest_bars/get_news HTTP round trip *per symbol* (60 calls for a 30-symbol
+        # watchlist) -- confirmed as the reason equity research was consistently timing out
+        # before generating a single proposal. propose_trades must now fetch market/news
+        # exactly once regardless of how many symbols are in the batch.
+        class CountingMarketData:
+            def __init__(self):
+                self.bars_calls: list[list[str]] = []
+                self.news_calls: list[list[str]] = []
+
+            def get_latest_bars(self, symbols):
+                self.bars_calls.append(list(symbols))
+                return {"bars": {}, "unavailable_symbols": symbols}
+
+            def get_news(self, symbols, limit=5):
+                self.news_calls.append(list(symbols))
+                return {"news": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            market_data = CountingMarketData()
+            agent = AITradingAgent(market_data=market_data, audit=audit, guardrails=settings.guardrails)
+
+            agent.propose_trades(
+                ["AAA", "BBB", "CCC"],
+                account=AccountContext(equity=100_000, daily_realized_pnl=0, open_positions=[]),
+            )
+
+            self.assertEqual(len(market_data.bars_calls), 1)
+            self.assertEqual(len(market_data.news_calls), 1)
+            self.assertEqual(market_data.bars_calls[0], ["AAA", "BBB", "CCC"])
+
+    def test_propose_trades_isolates_one_symbols_failure_from_the_rest_of_the_batch(self):
+        class FlakyAnalyzer:
+            def propose(self, symbol, market, news, account):
+                if symbol == "BAD":
+                    raise RuntimeError("simulated analyzer failure")
+                return None
+
+        class EmptyMarketData:
+            def get_latest_bars(self, symbols):
+                return {"bars": {symbol: {"c": 100.0} for symbol in symbols}}
+
+            def get_news(self, symbols, limit=5):
+                return {"news": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            agent = AITradingAgent(
+                market_data=EmptyMarketData(),
+                audit=audit,
+                guardrails=settings.guardrails,
+                analyzer=FlakyAnalyzer(),
+            )
+            skipped: list[dict[str, str]] = []
+
+            proposals = agent.propose_trades(
+                ["GOOD", "BAD"],
+                account=AccountContext(equity=100_000, daily_realized_pnl=0, open_positions=[]),
+                skipped_symbols=skipped,
+            )
+
+            self.assertEqual(proposals, [])
+            self.assertEqual(len(skipped), 1)
+            self.assertEqual(skipped[0]["symbol"], "BAD")
+            self.assertIn("simulated analyzer failure", skipped[0]["reason"])
+
     def test_alpaca_missing_asset_returns_empty_market_data(self):
         class MissingAssetClient(AlpacaPaperClient):
             def _request(self, method, path, *, payload=None, data_api=False):

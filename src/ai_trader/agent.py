@@ -46,59 +46,92 @@ class AITradingAgent:
         *,
         demo: bool = False,
         now: datetime | None = None,
+        skipped_symbols: list[dict[str, str]] | None = None,
     ) -> list[TradeProposal]:
+        """Fetch market/news data once for the whole batch, then evaluate each symbol.
+
+        `run_analysis` used to call this once per symbol, which meant one full
+        `get_latest_bars`/`get_news` HTTP round trip *per symbol* (60 calls for a 30-symbol
+        watchlist) on top of a per-symbol OpenAI call -- confirmed as the reason equity research
+        was consistently timing out before generating any proposals, since the batch fetch is a
+        single call regardless of symbol count. `skipped_symbols`, if given, is appended to with
+        a reason for every symbol that could not produce a proposal, preserving the per-symbol
+        fault isolation the old per-symbol caller relied on.
+        """
         proposals: list[TradeProposal] = []
-        market = self.market_data.get_latest_bars(symbols)
-        news = self.market_data.get_news(symbols, limit=5)
+        try:
+            market = self.market_data.get_latest_bars(symbols)
+            news = self.market_data.get_news(symbols, limit=5)
+        except Exception as exc:
+            reason = str(exc)
+            if skipped_symbols is not None:
+                skipped_symbols.extend({"symbol": symbol, "reason": reason} for symbol in symbols)
+            for symbol in symbols:
+                self.audit.record_execution_event(
+                    f"analysis-skip-{symbol}",
+                    "agent_no_trade",
+                    {"symbol": symbol, "reason": reason},
+                )
+            return proposals
 
         for symbol in symbols:
-            if not _has_latest_bar(symbol, market):
-                self._no_trade_probe(
-                    symbol,
-                    market,
-                    news,
-                    reason="No latest market bar was returned. The symbol may be unsupported by the broker/data provider.",
-                )
-                continue
-            if demo:
-                proposal = self._demo_proposal(symbol, market, news, account)
-            elif self.analyzer is not None:
-                proposal = self.analyzer.propose(symbol, market, news, account)
+            try:
+                if not _has_latest_bar(symbol, market):
+                    self._no_trade_probe(
+                        symbol,
+                        market,
+                        news,
+                        reason="No latest market bar was returned. The symbol may be unsupported by the broker/data provider.",
+                    )
+                    continue
+                if demo:
+                    proposal = self._demo_proposal(symbol, market, news, account)
+                elif self.analyzer is not None:
+                    proposal = self.analyzer.propose(symbol, market, news, account)
+                    if proposal is None:
+                        self._no_trade_probe(symbol, market, news)
+                else:
+                    proposal = self._no_trade_probe(symbol, market, news)
                 if proposal is None:
-                    self._no_trade_probe(symbol, market, news)
-            else:
-                proposal = self._no_trade_probe(symbol, market, news)
-            if proposal is None:
-                continue
-            intelligence = evaluate_trade_intelligence(
-                self.audit.path,
-                proposal,
-                account,
-                market=market,
-                news=news,
-                source="demo" if demo else "agent",
-            )
-            if intelligence is None:
-                self.audit.record_execution_event(
-                    proposal_id=proposal.proposal_id,
-                    event_type="agent_no_trade",
-                    payload={
-                        "symbol": symbol,
-                        "reason": "Trading Intelligence could not articulate both strongest argument for and strongest argument against.",
-                    },
+                    continue
+                intelligence = evaluate_trade_intelligence(
+                    self.audit.path,
+                    proposal,
+                    account,
+                    market=market,
+                    news=news,
+                    source="demo" if demo else "agent",
                 )
-                continue
-            validation = validate_trade_proposal(proposal, account, self.guardrails, now=now)
-            proposal = replace(
-                proposal,
-                ai_guardrails_passed=validation.passed,
-                ai_guardrail_failures=validation.failures,
-                intelligence=intelligence.to_dict(),
-                strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
-            )
-            self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
-            if validation.passed:
-                proposals.append(proposal)
+                if intelligence is None:
+                    self.audit.record_execution_event(
+                        proposal_id=proposal.proposal_id,
+                        event_type="agent_no_trade",
+                        payload={
+                            "symbol": symbol,
+                            "reason": "Trading Intelligence could not articulate both strongest argument for and strongest argument against.",
+                        },
+                    )
+                    continue
+                validation = validate_trade_proposal(proposal, account, self.guardrails, now=now)
+                proposal = replace(
+                    proposal,
+                    ai_guardrails_passed=validation.passed,
+                    ai_guardrail_failures=validation.failures,
+                    intelligence=intelligence.to_dict(),
+                    strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
+                )
+                self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
+                if validation.passed:
+                    proposals.append(proposal)
+            except Exception as exc:
+                reason = str(exc)
+                if skipped_symbols is not None:
+                    skipped_symbols.append({"symbol": symbol, "reason": reason})
+                self.audit.record_execution_event(
+                    f"analysis-skip-{symbol}",
+                    "agent_no_trade",
+                    {"symbol": symbol, "reason": reason},
+                )
         return proposals
 
     def _demo_proposal(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal:
