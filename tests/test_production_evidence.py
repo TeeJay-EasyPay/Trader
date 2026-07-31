@@ -359,6 +359,59 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertNotIn("payload_json", payload["trades"][0])
             self.assertNotIn("payload_json", payload["learning"][0])
 
+    def test_founder_evidence_exposes_managed_exits_distinct_from_raw_positions(self):
+        # The Portfolio screen must never label a manual Kraken holding as AI-managed. The only
+        # way to do that correctly is to expose the explicitly AI-owned open positions
+        # (MANAGED_TRADE_EXITS) separately from the raw broker position list, which also
+        # contains personal/manual holdings the AI never opened.
+        from ai_trader.multi_broker import record_managed_trade_exit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_broker_snapshot(
+                db_path,
+                {
+                    "broker": "kraken",
+                    "connection_status": "connected",
+                    "account_mode": "live",
+                    "portfolio_value": 3700,
+                    "cash_available": 50,
+                    # Two coins held: one AI-managed (BTC, via record_managed_trade_exit below)
+                    # and one manual/personal holding (ETH) with no managed-exit row at all.
+                    "open_positions_detail": [
+                        {"symbol": "BTC", "qty": 0.01, "market_value": 500},
+                        {"symbol": "ETH", "qty": 1.0, "market_value": 3000},
+                    ],
+                    "reconciliation_status": "verification_required",
+                    "auto_trading_enabled": True,
+                },
+            )
+            record_managed_trade_exit(
+                db_path,
+                broker="kraken",
+                symbol="BTC",
+                side="buy",
+                quantity=0.01,
+                entry_order_id="ai-entry-1",
+                entry_price=45_000.0,
+                stop_loss=43_000.0,
+                take_profit=48_000.0,
+                payload={"proposal_id": "prop-btc-1", "entry_reason": "Momentum breakout."},
+            )
+
+            payload = founder_evidence_payload(db_path)
+
+            kraken = next(row for row in payload["brokers"] if row["broker"] == "kraken")
+            self.assertEqual(len(kraken["managed_exits"]), 1)
+            managed = kraken["managed_exits"][0]
+            self.assertEqual(managed["symbol"], "BTC")
+            self.assertEqual(managed["status"], "open")
+            self.assertEqual(managed["payload"]["proposal_id"], "prop-btc-1")
+            # ETH has no managed-exit row -- it must not appear in managed_exits, even though
+            # it is in the broker's raw position list.
+            managed_symbols = {row["symbol"] for row in kraken["managed_exits"]}
+            self.assertNotIn("ETH", managed_symbols)
+
     def test_repeated_broker_event_does_not_create_duplicate_trade_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

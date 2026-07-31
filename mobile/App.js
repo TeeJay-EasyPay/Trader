@@ -14,6 +14,15 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+const {
+  operationalRollup,
+  operationalLevelTone,
+  brokerOverallReadiness,
+  groupActivity,
+  recommendationLifecycle,
+  positionOwnership,
+  learningSummary,
+} = require('./lib/founderPresentation');
 
 const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
@@ -275,6 +284,11 @@ function statusFromFounderEvidence(evidence) {
       month_pnl: row.month_pnl,
       open_positions: row.open_positions,
       open_positions_detail: row.positions || [],
+      // Explicitly AI-owned open positions (MANAGED_TRADE_EXITS) - a strict subset of
+      // open_positions_detail. Never used to infer that a position NOT in this list is
+      // AI-managed; the absence of a managed-exit row means "not confirmed AI-managed",
+      // not "assume it is anyway" (see positionOwnership() in lib/founderPresentation.js).
+      managed_exits: row.managed_exits || [],
       reconciliation_status: row.reconciliation_status,
       source: `${row.source || 'broker adapter'}; captured ${formatDateTime(row.captured_at)}`,
       latest_error: row.error,
@@ -458,101 +472,8 @@ function statusFromFounderEvidence(evidence) {
   };
 }
 
-// Single Normal/Degraded/Blocked/Critical rollup for the Command screen's top summary card.
-// Grounded only in fields the backend already computes -- never invents a status the data
-// does not support:
-//  - operating.state comes from _operating_state() in production_evidence.py: "NOT OPERATING"
-//    (worker heartbeat stale), "OPERATING WITH WARNINGS" (a recent job failed, or the served
-//    snapshot itself is stale), or "OPERATING NORMALLY".
-//  - "Blocked" is a distinct axis from system health: a broker can be fully healthy and still
-//    have new entries intentionally gated (Kraken's reconciliation hold is the current example)
-//    while auto_trading_enabled is true. That must never collapse into "Degraded"/"Critical",
-//    since nothing is actually broken -- it is a deliberate governance gate.
-function operationalRollup({ operatingState, plainEnglish, liveWorker, brokerPanels, generatedAt }) {
-  const blockedBrokers = (brokerPanels || []).filter((broker) => broker.auto_trading_enabled === true && broker.block_reason);
-  if (operatingState === 'NOT OPERATING') {
-    return {
-      level: 'Critical',
-      reason: plainEnglish || 'The background worker has not reported a fresh heartbeat.',
-      deployed_commit: liveWorker?.deployment_commit || null,
-      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
-      generated_at: generatedAt || null,
-    };
-  }
-  if (operatingState === 'OPERATING WITH WARNINGS') {
-    return {
-      level: 'Degraded',
-      reason: plainEnglish || 'A recent scheduled job failed or the served evidence snapshot is stale.',
-      deployed_commit: liveWorker?.deployment_commit || null,
-      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
-      generated_at: generatedAt || null,
-    };
-  }
-  if (blockedBrokers.length) {
-    const names = blockedBrokers.map((broker) => broker.label).join(', ');
-    return {
-      level: 'Blocked',
-      reason: `${names} auto trading is enabled but new entries are blocked: ${blockedBrokers[0].block_reason}`,
-      deployed_commit: liveWorker?.deployment_commit || null,
-      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
-      generated_at: generatedAt || null,
-    };
-  }
-  return {
-    level: 'Normal',
-    reason: plainEnglish || 'All systems operating normally.',
-    deployed_commit: liveWorker?.deployment_commit || null,
-    last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
-    generated_at: generatedAt || null,
-  };
-}
-
-function operationalLevelTone(level) {
-  if (level === 'Normal') return 'good';
-  if (level === 'Blocked' || level === 'Degraded') return 'warn';
-  if (level === 'Critical') return 'danger';
-  return 'neutral';
-}
-
-// One derived readiness label per broker, used by both BrokerPanel and the Command screen's
-// Broker Operations group. Never says "Disabled" when the DB control is actually enabled, and
-// never says "Healthy"/"Ready" merely because a connection exists.
-function brokerOverallReadiness(broker) {
-  if (!broker) {
-    return { label: 'Data Unavailable', tone: 'neutral', newEntriesAllowed: null };
-  }
-  if (String(broker.connection_status || '').toLowerCase() !== 'connected') {
-    return { label: 'Data Unavailable', tone: 'neutral', newEntriesAllowed: null };
-  }
-  if (broker.auto_trading_enabled === true && broker.block_reason) {
-    return { label: 'Enabled but Blocked', tone: 'warn', newEntriesAllowed: false };
-  }
-  if (broker.auto_trading_enabled === true) {
-    return { label: 'Ready', tone: 'good', newEntriesAllowed: true };
-  }
-  if (broker.auto_trading_enabled === false) {
-    return { label: 'Disabled by Founder', tone: 'neutral', newEntriesAllowed: false };
-  }
-  return { label: 'Unknown', tone: 'neutral', newEntriesAllowed: null };
-}
-
 function activityFromFounderEvidence(evidence) {
   const timeline = evidence?.timeline || { items: [], total: 0 };
-  const brokers = (evidence?.brokers || []).map((row) => ({
-    broker: row.broker,
-    label: String(row.broker || '').toLowerCase() === 'alpaca' ? 'Alpaca' : 'Kraken',
-    connection_status: row.connection_status,
-    account_mode: row.account_mode,
-    last_successful_poll: row.captured_at,
-    polling_freshness: row.captured_at ? `Captured ${formatDateTime(row.captured_at)}` : 'No broker snapshot recorded',
-    autonomous_execution: row.payload?.auto_trading_enabled ? 'Enabled' : 'Disabled or not evidenced',
-    orders_submitted: (evidence?.trades || []).filter((trade) => trade.broker === row.broker && ['submitted', 'accepted', 'new'].includes(trade.status)).length,
-    fills_received: (evidence?.trades || []).filter((trade) => trade.broker === row.broker && String(trade.status).includes('filled')).length,
-    open_positions: row.open_positions,
-    reconciliation_status: row.reconciliation_status,
-    current_blocker: row.error || null,
-    latest_broker_error: row.error || null,
-  }));
   return {
     ...evidence,
     timeline: {
@@ -561,7 +482,10 @@ function activityFromFounderEvidence(evidence) {
       source_event_count: timeline.total || timeline.items?.length || 0,
       empty_state: timeline.items?.length ? null : 'No autonomous activity has been recorded in the selected period.',
     },
-    broker_activity: { brokers },
+    // Broker status is intentionally not recomputed here. The Activity screen never renders
+    // its own broker-status view - it reuses status.brokers (via BrokerPanel) exactly like
+    // Command and Portfolio do, so there is one authoritative broker-status computation, not
+    // several that could disagree (see brokerOverallReadiness() in lib/founderPresentation.js).
     founder_attention: {
       plain_english: evidence?.status?.state === 'OPERATING NORMALLY'
         ? 'No Founder action is currently required.'
@@ -862,6 +786,7 @@ export default function App() {
       return (
         <Recommendations
           recommendations={recommendations}
+          trades={performanceAttribution}
           dailyLearning={dailyLearning}
           amounts={amounts}
           setAmounts={setAmounts}
@@ -884,6 +809,7 @@ export default function App() {
         <PortfolioCommandCentre
           status={status}
           portfolio={portfolio}
+          recommendations={recommendations}
           performanceAttribution={performanceAttribution}
           latestReport={latestReport}
           selectedExchange={selectedExchange}
@@ -1028,42 +954,69 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
   );
 }
 
-function PortfolioCommandCentre({ status, portfolio, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
+function PortfolioCommandCentre({ status, portfolio, recommendations, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
   const portfolioCommand = status?.founder_experience?.portfolio_command || {};
   const evidence = status?.world_class_evidence || {};
   const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
   const summary = tradeHistorySummary(status, trades, selectedExchange);
   const brokerPanels = connectedFounderBrokers(status?.brokers || []);
+
+  // AI-managed positions only ever come from a broker's own managed_exits (an explicit,
+  // open MANAGED_TRADE_EXITS row) - never inferred from the raw position list, so a manual
+  // Kraken holding can never be mislabeled as AI-managed.
+  const aiManagedPositions = brokerPanels.flatMap((broker) =>
+    (broker.open_positions_detail || [])
+      .map((position) => ({ position, broker, ownership: positionOwnership(position, broker.managed_exits) }))
+      .filter((row) => row.ownership.isAiManaged)
+  );
+  const positionsRequiringAttention = (portfolio?.open_positions || []).filter((position) => Number(position.unrealized_pl || 0) < 0);
+
   return (
     <View>
-      <Section title="Portfolio Command Centre">
-        <Text style={styles.bodyText}>This screen answers: where is capital, where is risk, and what needs attention?</Text>
-        <Metric label="Portfolio Allocation" value={moneyOrText(portfolioCommand.portfolio_allocation?.total)} />
-        <Metric label="Capital Deployed" value={moneyOrText(portfolioCommand.portfolio_allocation?.deployed)} />
-        <Metric label="Cash" value={moneyOrText(portfolioCommand.portfolio_allocation?.cash)} />
-        <Metric label="Deployed %" value={formatPercent(portfolioCommand.portfolio_allocation?.deployed_pct)} />
-        <Metric label="Diversification" value={portfolioCommand.diversification} />
-        <Metric label="Portfolio Risk" value={portfolioCommand.portfolio_risk} />
-        <Metric label="Expected Portfolio Return" value={portfolioCommand.expected_portfolio_return} />
-        <TextBlock label="Positions Requiring Attention" value={formatList(portfolioCommand.positions_requiring_attention)} />
-        <TextBlock label="Rebalancing Suggestions" value={formatList(portfolioCommand.rebalancing_suggestions)} />
-      </Section>
-      <Section title="Operational Truth">
-        <Metric label="Lifecycle Events" value={evidence.operational_truth?.canonical_lifecycle_events} />
-        <Metric label="Illegal Transition Rejections" value={evidence.operational_truth?.illegal_transition_rejections} />
-        <TextBlock label="Reconciliation Health" value={formatReconciliation(evidence.operational_truth?.reconciliation_health)} />
-      </Section>
-      <Section title="Portfolio Intelligence">
-        <TextBlock label="Plain English" value={evidence.portfolio_intelligence?.plain_english} />
-        <TextBlock label="Warnings" value={formatList(evidence.portfolio_intelligence?.warnings)} />
-      </Section>
-      <Section title="Exposure Checks">
-        <Metric label="Sector Exposure" value={portfolioCommand.sector_exposure} />
-        <Metric label="Country Exposure" value={portfolioCommand.country_exposure} />
-        <Metric label="Currency Exposure" value={portfolioCommand.currency_exposure} />
-        <Metric label="Correlation" value={portfolioCommand.correlation} />
-      </Section>
-      <Section title="Trade History">
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryReason}>Where is capital, where is risk, and what needs attention?</Text>
+        <Metric label="Portfolio Value" value={moneyOrText(portfolio?.portfolio_value)} />
+        <Metric label="Cash Available" value={moneyOrText(portfolio?.cash_available)} />
+        <Metric label="Deployed Capital" value={moneyOrText(portfolio?.deployed_capital)} />
+        <Metric label="Today's P&L" value={moneyOrText(portfolio?.todays_pnl)} />
+        <Metric label="Open Positions" value={(portfolio?.open_positions || []).length} />
+        <Metric label="Positions Requiring Attention" value={positionsRequiringAttention.length} />
+        {positionsRequiringAttention.length ? (
+          <TextBlock
+            label="At a Loss"
+            value={positionsRequiringAttention.map((position) => `${position.symbol || 'Unknown'}: ${moneyOrText(position.unrealized_pl)}`).join('\n')}
+          />
+        ) : null}
+      </View>
+
+      <CollapsibleSection
+        title="AI-Managed Positions"
+        subtitle="Positions the AI opened and is tracking to a stop-loss/take-profit exit. Manual holdings are never included here."
+        defaultExpanded={true}
+        badge={{ label: `${aiManagedPositions.length}`, tone: aiManagedPositions.length ? 'good' : 'neutral' }}
+      >
+        {aiManagedPositions.length === 0 ? (
+          <Empty />
+        ) : aiManagedPositions.map(({ position, broker, ownership }, index) => {
+          const proposalId = ownership.managedExit?.payload?.proposal_id || null;
+          const recommendation = proposalId ? (recommendations || []).find((item) => item.proposal_id === proposalId) : null;
+          return (
+            <View key={`ai-managed-${broker.broker}-${position.symbol || index}`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{position.symbol || 'Unknown symbol'}</Text>
+              <Metric label="Broker" value={broker.label} />
+              <Metric label="Originating Recommendation" value={proposalId || 'Not linked in this evidence'} />
+              <Metric label="Strategy" value={recommendation?.strategy_name || recommendation?.strategy_id || 'Not available'} />
+              <Metric label="Entry Time" value={formatDateTime(ownership.managedExit?.created_at)} />
+              <Metric label="Current State" value={ownership.managedExit?.status} />
+              <Metric label="Managed-Exit Status" value={ownership.managedExit?.status === 'open' ? 'Monitoring for stop-loss/take-profit' : ownership.managedExit?.status} />
+              <Metric label="Unrealised Result" value={moneyOrText(position.unrealized_pl)} />
+              <Metric label="Latest Learning State" value="Not available yet - learning only follows a closed, reconciled trade." />
+            </View>
+          );
+        })}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Trade History" subtitle="Every order, fill, and closed trade across brokers.">
         <View style={styles.buttonGrid}>
           {tradeHistoryBrokers(status).map((item) => (
             <Button key={`history-${item}`} label={item} tone={selectedExchange === item ? 'primary' : 'neutral'} onPress={() => setSelectedExchange(item)} />
@@ -1075,12 +1028,30 @@ function PortfolioCommandCentre({ status, portfolio, performanceAttribution, lat
         {trades.slice(0, 20).map((item, index) => (
           <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
         ))}
-      </Section>
-      <Section title="Broker Panels">
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Broker Diagnostics" subtitle="Per-broker connection, governance, and balance detail.">
         {brokerPanels.length ? brokerPanels.map((broker) => (
           <BrokerPanel key={`${broker.broker}-portfolio`} broker={broker} onCommand={onCommand} onReport={onReport} />
         )) : <Empty />}
-      </Section>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Exposure and Operational Detail" subtitle="Diversification, exposure checks, and reconciliation health.">
+        <Metric label="Diversification" value={portfolioCommand.diversification} />
+        <Metric label="Portfolio Risk" value={portfolioCommand.portfolio_risk} />
+        <Metric label="Expected Portfolio Return" value={portfolioCommand.expected_portfolio_return} />
+        <TextBlock label="Rebalancing Suggestions" value={formatList(portfolioCommand.rebalancing_suggestions)} />
+        <Metric label="Sector Exposure" value={portfolioCommand.sector_exposure} />
+        <Metric label="Country Exposure" value={portfolioCommand.country_exposure} />
+        <Metric label="Currency Exposure" value={portfolioCommand.currency_exposure} />
+        <Metric label="Correlation" value={portfolioCommand.correlation} />
+        <Metric label="Lifecycle Events" value={evidence.operational_truth?.canonical_lifecycle_events} />
+        <Metric label="Illegal Transition Rejections" value={evidence.operational_truth?.illegal_transition_rejections} />
+        <TextBlock label="Reconciliation Health" value={formatReconciliation(evidence.operational_truth?.reconciliation_health)} />
+        <TextBlock label="Portfolio Intelligence Notes" value={evidence.portfolio_intelligence?.plain_english} />
+        <TextBlock label="Warnings" value={formatList(evidence.portfolio_intelligence?.warnings)} />
+      </CollapsibleSection>
+
       {latestReport ? <ReportPanel report={latestReport} /> : null}
     </View>
   );
@@ -1175,33 +1146,50 @@ function AutonomousActivitySummaryCard({ activity, onOpenActivity }) {
 }
 
 function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
-  const [category, setCategory] = useState('All');
-  const [mode, setMode] = useState('all');
-  const [expanded, setExpanded] = useState({});
+  const [filterCategory, setFilterCategory] = useState('All');
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const status = activity?.status || {};
-  const summary = activity?.summary || {};
-  const timeline = filterActivityItems(activity?.timeline?.items || [], category, mode);
-  const allTimeline = activity?.timeline?.items || [];
   const noTrade = activity?.why_no_trade || {};
-  const brokers = activity?.broker_activity?.brokers || [];
-  const attention = activity?.founder_attention || {};
-  const latest = activity?.latest_completed_actions || [];
+  const items = activity?.timeline?.items || [];
+  const decisionCounts = activity?.summary?.decisions || {};
+  const hasDecisionCounts = Object.values(decisionCounts).some((value) => Number(value) > 0);
+
+  // Groups derived from raw timeline items (worker jobs, research runs, trades, learning
+  // runs). Governance decision counts have no per-decision timeline entry in the current
+  // evidence model (only an aggregate), so a single synthesized summary event represents them
+  // in the Decisions bucket instead of leaving it silently empty when decisions did happen.
+  let groups = groupActivity(items);
+  if (hasDecisionCounts) {
+    groups = groups.map((group) => {
+      if (group.category !== 'Decisions') return group;
+      const summaryLine = Object.entries(decisionCounts)
+        .filter(([, value]) => Number(value) > 0)
+        .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`)
+        .join(', ');
+      const syntheticEvent = {
+        what: 'Governance decisions this period',
+        why: 'Governance decisions are the final gate before any capital is committed.',
+        outcome: summaryLine,
+        actionRequired: false,
+        count: 1,
+        latestAt: activity?.generated_at || null,
+        broker: null,
+        symbol: null,
+      };
+      return { ...group, totalCount: group.totalCount + 1, events: [syntheticEvent, ...group.events] };
+    });
+  }
+
+  const visibleGroups = groups.filter((group) => filterCategory === 'All' || group.category === filterCategory);
+  const anyRequiresAttention = groups.some((group) => group.requiresAttention);
+
   return (
     <View>
-      <Section title="Current Autonomous Status">
-        <StatusPill label={status.state || 'STATUS UNKNOWN'} tone={activityStatusTone(status.state)} />
-        <Text style={styles.bodyText}>{status.plain_english || 'No autonomous status evidence was returned.'}</Text>
-        <Metric label="Last Meaningful Activity" value={status.last_meaningful_activity ? `${status.last_meaningful_activity.title} - ${formatDateTime(status.last_meaningful_activity.timestamp)}` : 'Not available - no meaningful activity recorded in this period.'} />
-        <Metric label="Worker" value={status.worker_status} />
-        <Metric label="Scheduler" value={status.scheduler_status} />
-        <Metric label="Database" value={status.database_status} />
-        <Metric label="Last Research" value={formatDateTime(status.last_successful_research_run)} />
-        <Metric label="Last Broker Poll" value={formatDateTime(status.last_broker_poll)} />
-        <Metric label="Last Report" value={formatDateTime(status.last_report_generated)} />
-        <Metric label="Unresolved Incidents" value={status.unresolved_incident_count} />
-      </Section>
-
-      <Section title="Period">
+      <View style={styles.summaryCard}>
+        <StatusPill label={status.state || 'Status Unknown'} tone={activityStatusTone(status.state)} />
+        <Text style={styles.summaryReason}>{status.plain_english || 'No autonomous status evidence was returned.'}</Text>
+        <Metric label="Last Refreshed" value={formatDateTime(activity?.generated_at)} />
+        {anyRequiresAttention ? <StatusPill label="Some categories require attention" tone="warn" /> : null}
         <View style={styles.buttonGrid}>
           {[
             ['1h', 'Last Hour'],
@@ -1213,140 +1201,77 @@ function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
           ))}
           <Button label="Refresh" tone="neutral" onPress={onRefresh} />
         </View>
-        <Text style={styles.smallText}>Last refreshed from persisted backend evidence: {formatDateTime(activity?.generated_at) || 'Not available'}</Text>
-      </Section>
+      </View>
 
-      <Section title="Last Period Summary">
-        <ActivitySummaryGroup title="Research" values={summary.research} labels={{
-          runs: 'Runs',
-          assets_analysed: 'Assets analysed',
-          candidates: 'Candidates',
-          recommendations_created: 'Recommendations',
-        }} />
-        <ActivitySummaryGroup title="Decisions" values={summary.decisions} labels={{
-          portfolio_manager_approvals: 'Portfolio approvals',
-          portfolio_manager_rejections: 'Portfolio rejections',
-          risk_engine_approvals: 'Risk approvals',
-          risk_engine_rejections: 'Risk rejections',
-          sentinel_blocks: 'Sentinel blocks',
-        }} />
-        <ActivitySummaryGroup title="Execution" values={summary.execution} labels={{
-          orders_submitted: 'Orders submitted',
-          orders_rejected: 'Orders rejected',
-          orders_filled: 'Orders filled',
-          trades_closed: 'Trades closed',
-        }} />
-        <ActivitySummaryGroup title="Operations" values={summary.operations} labels={{
-          broker_polls: 'Broker polls',
-          learning_reviews_completed: 'Learning completed',
-          reports_generated: 'Reports',
-          incidents_opened: 'Incidents opened',
-          incidents_resolved: 'Incidents resolved',
-        }} />
-      </Section>
-
-      <Section title="What Happened?">
+      <Section title="Filter">
         <View style={styles.buttonGrid}>
-          {['All', 'Research', 'Decisions', 'Risk', 'Execution', 'Brokers', 'Reconciliation', 'Learning', 'Reports', 'Incidents', 'System'].map((item) => (
-            <Button key={item} label={item} tone={category === item ? 'primary' : 'neutral'} onPress={() => setCategory(item)} />
+          {['All', ...groups.map((group) => group.category)].map((item) => (
+            <Button key={item} label={item} tone={filterCategory === item ? 'primary' : 'neutral'} onPress={() => setFilterCategory(item)} />
           ))}
         </View>
         <View style={styles.buttonGrid}>
-          <Button label="All Events" tone={mode === 'all' ? 'primary' : 'neutral'} onPress={() => setMode('all')} />
-          <Button label="Important" tone={mode === 'important' ? 'primary' : 'neutral'} onPress={() => setMode('important')} />
-          <Button label="Action Required" tone={mode === 'action' ? 'primary' : 'neutral'} onPress={() => setMode('action')} />
+          <Button
+            label={attentionOnly ? 'Showing: Requires Attention Only' : 'Show: Everything'}
+            tone={attentionOnly ? 'warn' : 'neutral'}
+            onPress={() => setAttentionOnly((value) => !value)}
+          />
         </View>
-        {!timeline.length ? (
-          <Text style={styles.bodyText}>{activity?.timeline?.empty_state || 'No autonomous activity matched this filter.'}</Text>
-        ) : timeline.map((item) => {
-          const isOpen = !!expanded[item.activity_id];
-          return (
-            <TouchableOpacity
-              key={item.activity_id}
-              style={styles.compactRow}
-              onPress={() => setExpanded((current) => ({ ...current, [item.activity_id]: !current[item.activity_id] }))}
-            >
-              <Text style={styles.cardTitle}>{isOpen ? 'v' : '>'} {item.title}</Text>
-              <Text style={styles.smallText}>{formatDateTime(item.timestamp)} - {item.component}</Text>
-              <Text style={styles.bodyText}>{item.summary}</Text>
-              <StatusPill label={`${item.severity} - ${item.outcome}`} tone={activitySeverityTone(item.severity)} />
-              {item.broker ? <Metric label="Broker" value={item.broker} /> : null}
-              {item.asset_or_symbol ? <Metric label="Symbol" value={item.asset_or_symbol} /> : null}
-              {isOpen ? (
-                <>
-                  <TextBlock label="Reason" value={item.detailed_reason} />
-                  <Metric label="Source" value={`${item.source_table} #${item.source_record_id}`} />
-                  <Metric label="Raw Evidence" value={item.raw_evidence_available ? 'Available' : 'Not available'} />
-                  {item.founder_action_required ? <TextBlock label="Founder Action" value="This event needs Founder review." /> : null}
-                </>
-              ) : null}
-            </TouchableOpacity>
-          );
-        })}
-        <Text style={styles.smallText}>Showing {timeline.length} of {allTimeline.length} returned event(s). Newest first.</Text>
       </Section>
 
-      <Section title="Why No Trade?">
+      {visibleGroups.map((group) => {
+        const events = attentionOnly ? group.events.filter((event) => event.actionRequired) : group.events;
+        return (
+          <CollapsibleSection
+            key={group.category}
+            title={group.category}
+            subtitle={`${group.totalCount} event(s) in this period`}
+            defaultExpanded={group.requiresAttention}
+            badge={{
+              label: group.requiresAttention ? 'Requires Attention' : (group.totalCount ? 'Normal' : 'No Activity'),
+              tone: group.requiresAttention ? 'warn' : (group.totalCount ? 'good' : 'neutral'),
+            }}
+          >
+            {events.length === 0 ? (
+              <Empty />
+            ) : events.map((event, index) => (
+              <View key={`${group.category}-${index}`} style={styles.compactRow}>
+                <Text style={styles.cardTitle}>{event.what}{event.count > 1 ? ` (x${event.count})` : ''}</Text>
+                <Text style={styles.smallText}>Latest: {formatDateTime(event.latestAt)}</Text>
+                <Text style={styles.bodyText}>{event.why}</Text>
+                <Metric label="Outcome" value={event.outcome} />
+                <Metric label="Founder Action Required" value={event.actionRequired ? 'Yes' : 'No'} />
+                {event.broker ? <Metric label="Related Broker" value={event.broker} /> : null}
+                {event.symbol ? <Metric label="Related Symbol" value={event.symbol} /> : null}
+              </View>
+            ))}
+          </CollapsibleSection>
+        );
+      })}
+
+      <CollapsibleSection title="Why No Trade?" subtitle="Aggregate reasons recommendations did not execute in this period.">
         <StatusPill label={noTrade.state || 'unknown'} tone={noTradeTone(noTrade.state)} />
         <Text style={styles.bodyText}>{noTrade.conclusion || 'No no-trade funnel evidence has been returned yet.'}</Text>
         {Object.entries(noTrade.counts || {}).map(([key, value]) => (
           <Metric key={key} label={key.replaceAll('_', ' ')} value={value} />
         ))}
         <TextBlock label="Top Reasons" value={(noTrade.top_reasons || []).map((item) => `${item.reason}: ${item.count}`).join('\n') || 'No rejection reasons recorded in this period.'} />
-      </Section>
+      </CollapsibleSection>
 
-      <Section title="Broker Activity">
-        {brokers.length ? brokers.map((broker) => (
-          <View key={`activity-broker-${broker.broker}`} style={styles.compactRow}>
-            <Text style={styles.cardTitle}>{broker.label || broker.broker}</Text>
-            <Metric label="Connection" value={broker.connection_status} />
-            <Metric label="Mode" value={broker.account_mode} />
-            <Metric label="Last Poll" value={formatDateTime(broker.last_successful_poll)} />
-            <Metric label="Polling Freshness" value={broker.polling_freshness} />
-            <Metric label="Autonomous Execution" value={broker.autonomous_execution} />
-            <Metric label="Orders Submitted" value={broker.orders_submitted} />
-            <Metric label="Fills Received" value={broker.fills_received} />
-            <Metric label="Open Positions" value={broker.open_positions} />
-            <Metric label="Reconciliation" value={broker.reconciliation_status} />
-            <TextBlock label="Current Blocker" value={broker.current_blocker} />
-            <TextBlock label="Latest Error" value={broker.latest_broker_error} />
-          </View>
-        )) : <Empty />}
-      </Section>
-
-      <Section title="Founder Attention">
-        {attention.items?.length ? attention.items.map((item, index) => (
-          <View key={`attention-${index}-${item.title}`} style={styles.compactRow}>
-            <StatusPill label={item.severity || 'warning'} tone={activitySeverityTone(item.severity)} />
+      <CollapsibleSection title="Technical Details" subtitle="Every raw, unfiltered evidence row behind the summaries above. All underlying audit data is retained regardless of what this screen groups or collapses.">
+        {items.length === 0 ? (
+          <Empty />
+        ) : items.map((item) => (
+          <View key={item.activity_id} style={styles.compactRow}>
             <Text style={styles.cardTitle}>{item.title}</Text>
-            <TextBlock label="Impact" value={item.impact} />
-            <Metric label="Began" value={formatDateTime(item.began_at)} />
-            <TextBlock label="Recommended Action" value={item.recommended_action} />
+            <Text style={styles.smallText}>{formatDateTime(item.timestamp)} - {item.component}</Text>
+            <Text style={styles.bodyText}>{item.summary}</Text>
+            <StatusPill label={`${item.severity} - ${item.outcome}`} tone={activitySeverityTone(item.severity)} />
+            {item.broker ? <Metric label="Broker" value={item.broker} /> : null}
+            {item.symbol ? <Metric label="Symbol" value={item.symbol} /> : null}
           </View>
-        )) : <Text style={styles.bodyText}>{attention.plain_english || 'No Founder action is currently required.'}</Text>}
-      </Section>
-
-      <Section title="Latest Completed Actions">
-        {latest.length ? latest.map((item) => (
-          <View key={`${item.label}-${item.timestamp}`} style={styles.compactRow}>
-            <Text style={styles.cardTitle}>{item.label}</Text>
-            <Metric label="Time" value={formatDateTime(item.timestamp)} />
-            <Text style={styles.bodyText}>{item.title}</Text>
-            <Metric label="Outcome" value={item.outcome} />
-          </View>
-        )) : <Text style={styles.bodyText}>No completed actions were recorded in this period.</Text>}
-      </Section>
-    </View>
-  );
-}
-
-function ActivitySummaryGroup({ title, values, labels }) {
-  return (
-    <View style={styles.compactRow}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      {Object.entries(labels).map(([key, label]) => (
-        <Metric key={`${title}-${key}`} label={label} value={values?.[key] ?? 0} />
-      ))}
+        ))}
+        <Text style={styles.smallText}>{items.length} raw event(s) retained for this period.</Text>
+      </CollapsibleSection>
     </View>
   );
 }
@@ -1839,7 +1764,7 @@ function withMobileTokenReadiness(readiness) {
   };
 }
 
-function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation }) {
+function Recommendations({ recommendations, trades, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation }) {
   const [expanded, setExpanded] = useState({});
   const [brokerFilter, setBrokerFilter] = useState('All');
   const [confidenceFilter, setConfidenceFilter] = useState('All');
@@ -1910,14 +1835,18 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
         <Section key={`group-${broker}`} title={broker}>
           {items.map((item) => {
             const open = !!expanded[item.proposal_id];
+            const lifecycle = recommendationLifecycle(item, trades);
             return (
               <View key={item.proposal_id}>
                 <TouchableOpacity style={styles.recommendationHeader} onPress={() => setExpanded((prev) => ({ ...prev, [item.proposal_id]: !open }))}>
                   <Text style={styles.cardTitle}>{open ? 'v' : '>'} {notAvailable(item.ticker)} {formatPercent(item.confidence)}</Text>
+                  <StatusPill label={lifecycle.stage} tone={lifecycle.tone} />
+                  <Text style={styles.smallText}>{lifecycle.reason}</Text>
                 </TouchableOpacity>
                 {open && (
                   <RecommendationCard
                     item={item}
+                    lifecycle={lifecycle}
                     amount={amounts[item.proposal_id] || ''}
                     setAmount={(value) => setAmounts((prev) => ({ ...prev, [item.proposal_id]: value }))}
                     onApprove={() => onApprove(item.proposal_id, item.ticker)}
@@ -1932,72 +1861,25 @@ function Recommendations({ recommendations, amounts, setAmounts, onApprove, onRe
   );
 }
 
-function RecommendationCard({ item, amount, setAmount, onApprove }) {
+function RecommendationCard({ item, lifecycle, amount, setAmount, onApprove }) {
   const enriched = withRecommendationFreshness(item);
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>{notAvailable(enriched.company)} ({notAvailable(enriched.ticker)})</Text>
       <Section title="Decision Summary">
+        <StatusPill label={lifecycle.stage} tone={lifecycle.tone} />
+        <Text style={styles.bodyText}>{lifecycle.reason}</Text>
         <Metric label="Action" value={item.side || 'Review'} />
         <Metric label="Broker" value={item.suggested_broker} />
-        <Metric label="Status" value={recommendationStatus(item)} />
-        <Metric label="Probability Range" value={probabilityRange(item.probability_of_success)} />
-        <Metric label="Expected R" value={rMultiple(item.expected_return_r)} />
+        <Metric label="Generated" value={formatDateTime(enriched.created_at)} />
+        <Metric label="Expires" value={formatDateTime(enriched.expires_at)} />
         <Metric label="Selected Strategy" value={item.strategy_name || item.strategy_id} />
         <TextBlock label="One-Sentence Thesis" value={item.reason_for_recommendation} />
       </Section>
       <Section title="Why This Trade">
         <TextBlock label="Strongest Argument For" value={item.strongest_argument_for} />
-      </Section>
-      <Section title="Why Not Trade">
         <TextBlock label="Strongest Argument Against" value={item.strongest_argument_against} />
-        <TextBlock label="What Would Invalidate It" value={formatList(item.invalidation)} />
-        <TextBlock label="Why Waiting May Be Better" value={item.why_no_action_may_be_better} />
       </Section>
-      <Metric label="Freshness" value={enriched.freshness_status} />
-      <Metric label="Generated" value={formatDateTime(enriched.created_at)} />
-      <Metric label="Expires" value={formatDateTime(enriched.expires_at)} />
-      <TextBlock label="Freshness Note" value={enriched.freshness_note} />
-      <Metric label="Sector" value={item.sector} />
-      <Metric label="Country" value={item.country} />
-      <Metric label="Asset Availability" value={yesNo(item.asset_available)} />
-      <Metric label="Suggested Broker" value={item.suggested_broker} />
-      <Metric label="Exchange" value={item.exchange} />
-      <Metric label="Market Open" value={yesNo(item.market_open)} />
-      <Metric label="Auto Eligible" value={yesNo(enriched.auto_trade_eligible)} />
-      <TextBlock label="Rejection Reason" value={item.orchestrator_rejection_reason || enriched.auto_trade_reason} />
-      <Metric label="Market Regime" value={marketRegimeText(item.market_regime)} />
-      <Metric label="Probability Of Success" value={formatPercent(item.probability_of_success)} />
-      <Metric label="Expected Return" value={rMultiple(item.expected_return_r)} />
-      <Metric label="Calibration" value={item.calibration_status} />
-      <TextBlock label="Committee View" value={committeeSummary(item.committee)} />
-      <TextBlock label="Signal Evidence" value={signalSummary(item.signals)} />
-      <TextBlock label="Lifecycle" value={lifecycleSummary(item.trade_lifecycle)} />
-      <Metric label="Confidence" value={formatPercent(item.confidence)} />
-      <Metric label="Investment Score" value={formatPercent(item.investment_score?.overall_confidence)} />
-      <Metric label="Fundamental Score" value={formatPercent(item.investment_score?.fundamental_score)} />
-      <Metric label="Technical Score" value={formatPercent(item.investment_score?.technical_score)} />
-      <Metric label="Market Score" value={formatPercent(item.investment_score?.market_score)} />
-      <Metric label="Macro Score" value={formatPercent(item.investment_score?.macro_score)} />
-      <Metric label="Behavioural Score" value={formatPercent(item.investment_score?.behavioural_score)} />
-      <Metric label="Policy Score" value={formatPercent(item.investment_score?.investment_policy_score)} />
-      <Metric label="Risk Score" value={formatPercent(item.investment_score?.risk_score)} />
-      <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
-      <TextBlock label="Investment Thesis" value={item.investment_thesis} />
-      <TextBlock label="Reason for Recommendation" value={item.reason_for_recommendation} />
-      <TextBlock label="Key Risks" value={item.key_risks} />
-      <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
-      <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
-      <Metric label="Suggested Position Size" value={item.suggested_position_size} />
-      <Metric label="Recommended Position Size" value={item.recommended_position_size} />
-      <Metric label="Due Diligence Status" value={item.due_diligence_status} />
-      <Metric label="Guardrail Result" value={yesNo(item.guardrails_passed)} />
-      <TextBlock label="Passed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'passed') || formatList(enriched.guardrail_passes)} />
-      <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
-      <Metric label="Auto Trade Eligible" value={yesNo(enriched.auto_trade_eligible)} />
-      <TextBlock label="Auto Trade Reason" value={enriched.auto_trade_reason} />
-      <TextBlock label="Exit Plan" value={exitPlan(item)} />
-      <TextBlock label="Manual Trade Amount" value="For manual approval, the amount box sets the requested trade notional. Guardrails, broker caps, and allocation limits still control execution." />
       <TextInput
         style={styles.input}
         keyboardType="decimal-pad"
@@ -2006,10 +1888,50 @@ function RecommendationCard({ item, amount, setAmount, onApprove }) {
         onChangeText={setAmount}
       />
       <Button
-        label={enriched.freshness_status === 'Expired' ? 'Expired - Run Analysis' : 'Approve & Execute'}
+        label={lifecycle.stage === 'Expired' ? 'Expired - Run Analysis' : 'Approve & Execute'}
         onPress={onApprove}
-        disabled={enriched.freshness_status === 'Expired'}
+        disabled={lifecycle.stage === 'Expired'}
       />
+      <CollapsibleSection title="Full Evidence Dossier" subtitle="Every score, guardrail check, and intelligence field behind the decision above.">
+        <TextBlock label="What Would Invalidate It" value={formatList(item.invalidation)} />
+        <TextBlock label="Why Waiting May Be Better" value={item.why_no_action_may_be_better} />
+        <Metric label="Freshness" value={enriched.freshness_status} />
+        <TextBlock label="Freshness Note" value={enriched.freshness_note} />
+        <Metric label="Sector" value={item.sector} />
+        <Metric label="Country" value={item.country} />
+        <Metric label="Asset Availability" value={yesNo(item.asset_available)} />
+        <Metric label="Exchange" value={item.exchange} />
+        <Metric label="Market Open" value={yesNo(item.market_open)} />
+        <Metric label="Market Regime" value={marketRegimeText(item.market_regime)} />
+        <Metric label="Probability Range" value={probabilityRange(item.probability_of_success)} />
+        <Metric label="Probability Of Success" value={formatPercent(item.probability_of_success)} />
+        <Metric label="Expected Return" value={rMultiple(item.expected_return_r)} />
+        <Metric label="Calibration" value={item.calibration_status} />
+        <TextBlock label="Committee View" value={committeeSummary(item.committee)} />
+        <TextBlock label="Signal Evidence" value={signalSummary(item.signals)} />
+        <TextBlock label="Lifecycle" value={lifecycleSummary(item.trade_lifecycle)} />
+        <Metric label="Confidence" value={formatPercent(item.confidence)} />
+        <Metric label="Investment Score" value={formatPercent(item.investment_score?.overall_confidence)} />
+        <Metric label="Fundamental Score" value={formatPercent(item.investment_score?.fundamental_score)} />
+        <Metric label="Technical Score" value={formatPercent(item.investment_score?.technical_score)} />
+        <Metric label="Market Score" value={formatPercent(item.investment_score?.market_score)} />
+        <Metric label="Macro Score" value={formatPercent(item.investment_score?.macro_score)} />
+        <Metric label="Behavioural Score" value={formatPercent(item.investment_score?.behavioural_score)} />
+        <Metric label="Policy Score" value={formatPercent(item.investment_score?.investment_policy_score)} />
+        <Metric label="Risk Score" value={formatPercent(item.investment_score?.risk_score)} />
+        <Metric label="Investment Philosophy Fit" value={item.investment_philosophy_fit} />
+        <TextBlock label="Investment Thesis" value={item.investment_thesis} />
+        <TextBlock label="Key Risks" value={item.key_risks} />
+        <Metric label="Suggested Stop Loss" value={item.suggested_stop_loss} />
+        <Metric label="Suggested Take Profit" value={item.suggested_take_profit} />
+        <Metric label="Suggested Position Size" value={item.suggested_position_size} />
+        <Metric label="Due Diligence Status" value={item.due_diligence_status} />
+        <Metric label="Guardrail Result" value={yesNo(item.guardrails_passed)} />
+        <TextBlock label="Passed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'passed') || formatList(enriched.guardrail_passes)} />
+        <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
+        <TextBlock label="Exit Plan" value={exitPlan(item)} />
+        <TextBlock label="Manual Trade Amount" value="For manual approval, the amount box sets the requested trade notional. Guardrails, broker caps, and allocation limits still control execution." />
+      </CollapsibleSection>
     </View>
   );
 }
@@ -2151,24 +2073,45 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
   const lab = status?.founder_experience?.learning_lab || {};
   const strategyRows = lab.strategy_rankings || [];
   const signalRows = lab.signal_rankings || [];
+  const summary = dailyLearning?.evidence_summary || {
+    completedTradesReviewed: dailyLearning?.trade_outcomes?.closed_trades || 0,
+    strategiesEvaluated: 0,
+    latestLesson: null,
+    hasEnoughEvidence: false,
+    missingEvidence: 'Learning evidence has not loaded yet.',
+  };
+  const hasInstitutionalTestData = Boolean(lab.backtest_results || lab.walk_forward_results || lab.committee_performance);
+
   return (
     <View>
-      <Section title="Learning & Strategy Lab">
-        <Text style={styles.bodyText}>This screen answers: is AI Trader learning, which strategies are working, and what needs Founder approval before behaviour changes?</Text>
-        <StatusPill label={notAvailable(lab.learning_progress)} tone={riskTone(lab.learning_progress)} />
-        <Metric label="Prediction Accuracy" value={formatPercent(lab.prediction_accuracy)} />
-        <Metric label="Calibration" value={lab.calibration} />
-        <Metric label="Best Strategy" value={lab.best_strategy} />
-        <Metric label="Weakest Strategy" value={lab.weakest_strategy} />
-        <Metric label="Strategy Validation" value={lab.strategy_validation_status} />
-        <TextBlock label="Lessons Learned" value={formatList(lab.lessons_learned)} />
-        <TextBlock label="Founder Suggestions" value={formatList(lab.founder_suggestions)} />
-      </Section>
-      <Section title="Strategy Rankings">
-        {!strategyRows.length ? (
-          <Empty />
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryReason}>Is AI Trader learning, and what needs Founder approval before behaviour changes?</Text>
+        <Metric label="Completed Trades Reviewed" value={summary.completedTradesReviewed} />
+        <Metric label="Strategies Evaluated" value={summary.strategiesEvaluated} />
+        <Metric label="Latest Lesson" value={summary.latestLesson || 'No lesson recorded yet.'} />
+        <Metric label="Latest Strategy-Change Proposal" value={summary.latestProposal || 'Not yet exposed in this evidence projection.'} />
+        <Metric label="Proposal Approved" value={summary.proposalApproved === null ? 'Not applicable yet' : yesNo(summary.proposalApproved)} />
+        {!summary.hasEnoughEvidence ? (
+          <View style={styles.compactRow}>
+            <Text style={styles.cardTitle}>Why learning has not progressed further</Text>
+            <Text style={styles.bodyText}>{summary.missingEvidence}</Text>
+          </View>
         ) : (
-          strategyRows.map((item, index) => (
+          <TextBlock label="Evidence Note" value={summary.missingEvidence} />
+        )}
+      </View>
+
+      <CollapsibleSection title="Trade Outcomes" subtitle="Closed-trade win rate and realized P&L behind the summary above.">
+        <Metric label="Closed Trades" value={dailyLearning?.trade_outcomes?.closed_trades} />
+        <Metric label="Win Rate" value={formatPercent(dailyLearning?.trade_outcomes?.win_rate)} />
+        <Metric label="Total Realized P&L" value={moneyOrText(dailyLearning?.trade_outcomes?.total_profit_loss)} />
+        <TextBlock label="Lessons Learned" value={formatList(dailyLearning?.trade_lessons)} />
+        <TextBlock label="Recommendations for Founder" value={formatList(dailyLearning?.recommendations_for_founder)} />
+      </CollapsibleSection>
+
+      {(strategyRows.length || signalRows.length || hasInstitutionalTestData) ? (
+        <CollapsibleSection title="Strategy and Signal Rankings" subtitle="Institutional-grade backtest and ranking evidence, where available.">
+          {strategyRows.map((item, index) => (
             <View key={`${item.strategy_id || item.strategy_name}-${index}`} style={styles.compactRow}>
               <Text style={styles.cardTitle}>{notAvailable(item.strategy_name || item.strategy_id)}</Text>
               <Metric label="Sample Size" value={item.sample_size} />
@@ -2176,28 +2119,25 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
               <Metric label="Expectancy" value={item.expectancy_r !== undefined ? `${Number(item.expectancy_r).toFixed(2)}R` : null} />
               <Metric label="Recommendation" value={item.recommendation} />
             </View>
-          ))
-        )}
-      </Section>
-      <Section title="Institutional Tests">
-        <TextBlock label="Backtest Results" value={formatJsonText(lab.backtest_results)} />
-        <TextBlock label="Walk-forward Results" value={formatJsonText(lab.walk_forward_results)} />
-        <TextBlock label="Committee Performance" value={formatJsonText(lab.committee_performance)} />
-      </Section>
-      <Section title="Signal Rankings">
-        {!signalRows.length ? (
-          <Empty />
-        ) : (
-          signalRows.map((item, index) => (
+          ))}
+          {signalRows.map((item, index) => (
             <View key={`${item.signal_name || item.signal}-${index}`} style={styles.compactRow}>
               <Text style={styles.cardTitle}>{notAvailable(item.signal_name || item.signal)}</Text>
               <Metric label="Score" value={formatPercent(item.score)} />
               <Metric label="Weight" value={formatPercent(item.weight)} />
               <Metric label="Direction" value={item.direction} />
             </View>
-          ))
-        )}
-      </Section>
+          ))}
+          {hasInstitutionalTestData ? (
+            <>
+              <TextBlock label="Backtest Results" value={formatJsonText(lab.backtest_results)} />
+              <TextBlock label="Walk-forward Results" value={formatJsonText(lab.walk_forward_results)} />
+              <TextBlock label="Committee Performance" value={formatJsonText(lab.committee_performance)} />
+            </>
+          ) : null}
+        </CollapsibleSection>
+      ) : null}
+
       <AskAiTrader messages={messages} setMessages={setMessages} request={request} />
     </View>
   );
@@ -2583,6 +2523,7 @@ function founderLearningForMobile(evidence) {
       ? ['Review learning evidence before approving any governed strategy change.']
       : ['Allow terminal trades to reconcile before judging strategy improvement.'],
     note: 'This view is derived from shared production evidence. Learning cannot silently change trading policy or production parameters.',
+    evidence_summary: learningSummary(evidence),
   };
 }
 
@@ -3323,21 +3264,6 @@ function formatHoldingDuration(start, end, isOpen) {
   return formatDuration(start, end);
 }
 
-function filterActivityItems(items, category, mode) {
-  return (items || []).filter((item) => {
-    if (category && category !== 'All' && item.event_category !== category) {
-      return false;
-    }
-    if (mode === 'important') {
-      return ['warning', 'blocked', 'failure', 'failed', 'error', 'incident', 'recovered'].includes(String(item.severity || '').toLowerCase()) || item.founder_action_required;
-    }
-    if (mode === 'action') {
-      return !!item.founder_action_required;
-    }
-    return true;
-  });
-}
-
 function activityStatusTone(state) {
   const text = String(state || '').toLowerCase();
   if (text.includes('normal')) {
@@ -3511,14 +3437,6 @@ function operationsIncidentText(items) {
     return 'No open operations incidents recorded.';
   }
   return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.title || item.message}`).join('\n');
-}
-
-function recommendationStatus(item) {
-  if (item.freshness_status === 'Expired') return 'Expired';
-  if (!item.strongest_argument_for || !item.strongest_argument_against) return 'Insufficient evidence';
-  if (item.auto_trade_eligible) return 'Actionable';
-  if (item.guardrails_passed === false) return 'Rejected by guardrails';
-  return 'Wait / review';
 }
 
 function probabilityRange(value) {

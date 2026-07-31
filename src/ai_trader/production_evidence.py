@@ -11,6 +11,7 @@ from typing import Any, Iterable
 from .always_on import classify_worker_presence, initialize_always_on_schema, postgres_connection, uses_postgres
 from .database import connect
 from .models import utc_now_iso
+from .multi_broker import open_managed_exits
 
 
 SQLITE_SCHEMA = """
@@ -416,7 +417,7 @@ def _build_founder_evidence_payload(db_path: Path, *, period: str, trade_limit: 
         since=_period_start(period),
         trade_limit=trade_limit,
     )
-    return _assemble_founder_evidence_payload(rows, period=period)
+    return _assemble_founder_evidence_payload(rows, period=period, db_path=db_path)
 
 
 def _load_founder_evidence_rows(
@@ -550,6 +551,7 @@ def _assemble_founder_evidence_payload(
     rows: tuple[list[dict[str, Any]], ...],
     *,
     period: str,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = rows
     snapshots = _latest_per(snapshots_all, "broker")
@@ -561,6 +563,20 @@ def _assemble_founder_evidence_payload(
         _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
         for row in snapshots
     ]
+    if db_path is not None:
+        # Open, AI-tracked positions (MANAGED_TRADE_EXITS) are a distinct, explicitly-owned
+        # subset of a broker's raw position list -- the raw list also includes personal/manual
+        # holdings the AI never opened. Exposing this here is what lets the mobile Portfolio
+        # screen show AI-managed position detail (originating recommendation, managed-exit
+        # status) without ever mislabeling a manual Kraken holding as AI-managed.
+        for broker_row in broker_payload:
+            try:
+                broker_row["managed_exits"] = [
+                    _decode_row(exit_row, {"payload_json"})
+                    for exit_row in open_managed_exits(db_path, broker_row.get("broker"))
+                ]
+            except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
+                broker_row["managed_exits"] = []
     job_health = _job_health_summary(jobs, broker_payload)
     return {
         "generated_at": utc_now_iso(),
@@ -700,7 +716,7 @@ def refresh_founder_evidence_snapshots(
     for period in periods:
         try:
             period_rows = _filter_founder_evidence_rows(shared_rows, since=_period_start(period))
-            payload = _assemble_founder_evidence_payload(period_rows, period=period)
+            payload = _assemble_founder_evidence_payload(period_rows, period=period, db_path=db_path)
             persist_founder_evidence_snapshot(db_path, payload, period=period)
             refreshed.append(period)
         except Exception as exc:  # noqa: BLE001 - retain partial snapshots and expose failure evidence
