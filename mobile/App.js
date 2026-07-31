@@ -292,6 +292,14 @@ function statusFromFounderEvidence(evidence) {
       auto_trading_status: raw.auto_trading_status || (raw.auto_trading_enabled === undefined ? 'Unknown' : (raw.auto_trading_enabled ? 'Enabled' : 'Disabled')),
       block_reason: raw.block_reason ?? null,
       trading_permissions: raw.trading_permissions,
+      // SCHEDULED_JOB_RUNS is ordered completed_at/scheduled_for DESC by the query that
+      // populates evidence.jobs, so the first match is genuinely the latest.
+      latest_successful_poll: (evidence?.jobs || []).find(
+        (job) => job.job_name === `broker-poll-${String(row.broker).toLowerCase()}` && job.status === 'completed'
+      )?.completed_at || null,
+      // PRODUCTION_TRADE_EVIDENCE is ordered observed_at DESC, and brokerTrades preserves
+      // that order, so the first entry is the latest confirmed trade for this broker.
+      latest_confirmed_trade: brokerTrades[0] || null,
     };
   });
   const deployed = portfolio.deployed_capital;
@@ -440,7 +448,92 @@ function statusFromFounderEvidence(evidence) {
         warnings: dayPnl == null ? ['Daily P&L needs at least two comparable broker snapshots or broker-reported P&L.'] : [],
       },
     },
+    operational_summary: operationalRollup({
+      operatingState: operating.state,
+      plainEnglish: operating.plain_english,
+      liveWorker: operating.worker || null,
+      brokerPanels,
+      generatedAt: evidence?.generated_at,
+    }),
   };
+}
+
+// Single Normal/Degraded/Blocked/Critical rollup for the Command screen's top summary card.
+// Grounded only in fields the backend already computes -- never invents a status the data
+// does not support:
+//  - operating.state comes from _operating_state() in production_evidence.py: "NOT OPERATING"
+//    (worker heartbeat stale), "OPERATING WITH WARNINGS" (a recent job failed, or the served
+//    snapshot itself is stale), or "OPERATING NORMALLY".
+//  - "Blocked" is a distinct axis from system health: a broker can be fully healthy and still
+//    have new entries intentionally gated (Kraken's reconciliation hold is the current example)
+//    while auto_trading_enabled is true. That must never collapse into "Degraded"/"Critical",
+//    since nothing is actually broken -- it is a deliberate governance gate.
+function operationalRollup({ operatingState, plainEnglish, liveWorker, brokerPanels, generatedAt }) {
+  const blockedBrokers = (brokerPanels || []).filter((broker) => broker.auto_trading_enabled === true && broker.block_reason);
+  if (operatingState === 'NOT OPERATING') {
+    return {
+      level: 'Critical',
+      reason: plainEnglish || 'The background worker has not reported a fresh heartbeat.',
+      deployed_commit: liveWorker?.deployment_commit || null,
+      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
+      generated_at: generatedAt || null,
+    };
+  }
+  if (operatingState === 'OPERATING WITH WARNINGS') {
+    return {
+      level: 'Degraded',
+      reason: plainEnglish || 'A recent scheduled job failed or the served evidence snapshot is stale.',
+      deployed_commit: liveWorker?.deployment_commit || null,
+      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
+      generated_at: generatedAt || null,
+    };
+  }
+  if (blockedBrokers.length) {
+    const names = blockedBrokers.map((broker) => broker.label).join(', ');
+    return {
+      level: 'Blocked',
+      reason: `${names} auto trading is enabled but new entries are blocked: ${blockedBrokers[0].block_reason}`,
+      deployed_commit: liveWorker?.deployment_commit || null,
+      last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
+      generated_at: generatedAt || null,
+    };
+  }
+  return {
+    level: 'Normal',
+    reason: plainEnglish || 'All systems operating normally.',
+    deployed_commit: liveWorker?.deployment_commit || null,
+    last_heartbeat_at: liveWorker?.last_heartbeat_at || null,
+    generated_at: generatedAt || null,
+  };
+}
+
+function operationalLevelTone(level) {
+  if (level === 'Normal') return 'good';
+  if (level === 'Blocked' || level === 'Degraded') return 'warn';
+  if (level === 'Critical') return 'danger';
+  return 'neutral';
+}
+
+// One derived readiness label per broker, used by both BrokerPanel and the Command screen's
+// Broker Operations group. Never says "Disabled" when the DB control is actually enabled, and
+// never says "Healthy"/"Ready" merely because a connection exists.
+function brokerOverallReadiness(broker) {
+  if (!broker) {
+    return { label: 'Data Unavailable', tone: 'neutral', newEntriesAllowed: null };
+  }
+  if (String(broker.connection_status || '').toLowerCase() !== 'connected') {
+    return { label: 'Data Unavailable', tone: 'neutral', newEntriesAllowed: null };
+  }
+  if (broker.auto_trading_enabled === true && broker.block_reason) {
+    return { label: 'Enabled but Blocked', tone: 'warn', newEntriesAllowed: false };
+  }
+  if (broker.auto_trading_enabled === true) {
+    return { label: 'Ready', tone: 'good', newEntriesAllowed: true };
+  }
+  if (broker.auto_trading_enabled === false) {
+    return { label: 'Disabled by Founder', tone: 'neutral', newEntriesAllowed: false };
+  }
+  return { label: 'Unknown', tone: 'neutral', newEntriesAllowed: null };
 }
 
 function activityFromFounderEvidence(evidence) {
@@ -995,10 +1088,29 @@ function PortfolioCommandCentre({ status, portfolio, performanceAttribution, lat
 
 function BrokerPanel({ broker, onCommand, onReport }) {
   const label = broker.label || notAvailable(broker.broker);
+  const readiness = brokerOverallReadiness(broker);
+  const isKraken = broker.broker === 'kraken';
   return (
     <View style={styles.compactRow}>
       <Text style={styles.cardTitle}>{label}</Text>
+      <StatusPill label={`Overall Readiness: ${readiness.label}`} tone={readiness.tone} />
+      <Metric label="Mode" value={isKraken ? 'Live' : 'Paper'} />
       <Metric label="Connection Status" value={broker.connection_status} />
+      <Metric label="Auto Trading" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
+      <Metric label="New Entries Allowed" value={readiness.newEntriesAllowed === null ? 'Unknown' : yesNo(readiness.newEntriesAllowed)} />
+      {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
+      <Metric label="Latest Successful Poll" value={broker.latest_successful_poll ? formatDateTime(broker.latest_successful_poll) : 'Not available yet'} />
+      <Metric
+        label={isKraken ? 'Latest Confirmed AI-Managed Trade' : 'Latest Confirmed Paper Trade'}
+        value={broker.latest_confirmed_trade ? describeLatestTrade({
+          type: 'fill',
+          symbol: broker.latest_confirmed_trade.symbol,
+          side: broker.latest_confirmed_trade.side,
+          qty: broker.latest_confirmed_trade.qty,
+          price: broker.latest_confirmed_trade.filled_avg_price,
+          status: broker.latest_confirmed_trade.status,
+        }) : 'None recorded yet'}
+      />
       <Metric label="Portfolio" value={brokerMoney(broker, broker.portfolio_value)} />
       <Metric label="Cash" value={brokerMoney(broker, broker.cash_available)} />
       <Metric label="Estimated In Positions" value={brokerMoney(broker, broker.estimated_in_positions)} />
@@ -1021,8 +1133,6 @@ function BrokerPanel({ broker, onCommand, onReport }) {
       ) : null}
       <Metric label="Research Status" value={broker.research_status} />
       <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
-      <Metric label="Auto Trading Status" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
-      {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
       <TradingPermissions permissions={broker.trading_permissions} />
       <View style={styles.buttonGrid}>
         <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
@@ -1250,68 +1360,87 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, brokerPanels));
   const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
   const policy = status?.trading_policy || {};
+  const summary = status?.operational_summary || {
+    level: status?.system_status === 'OPERATING NORMALLY' ? 'Normal' : 'Degraded',
+    reason: status?.engine_health,
+    deployed_commit: status?.live_worker?.deployment_commit,
+    last_heartbeat_at: status?.live_worker?.last_heartbeat_at,
+    generated_at: null,
+  };
+  const learningLab = status?.founder_experience?.learning_lab || {};
+  const blockedBrokers = brokerPanels.filter((broker) => broker.auto_trading_enabled === true && broker.block_reason);
+  const recentActivity = analysisActivity(status);
+  const researchIsRunning = Boolean(status?.last_research_run) || recentActivity.length > 0;
+
   return (
     <View>
-      <ConnectionReadinessCard readiness={readiness} />
-      <OperationsHealthCard jobHealth={status?.job_health} liveWorker={status?.live_worker} />
-      {false && (
-      <Section title={`Notifications${notifications?.length ? ` (${notifications.length} unread)` : ''}`}>
-        {!notifications || !notifications.length ? (
-          <Empty />
-        ) : (
-          <View>
-            {notifications.slice(0, 15).map((item) => (
-              <View key={item.notification_id} style={styles.compactRow}>
-                <Text style={styles.cardTitle}>
-                  {item.delivery_status === 'queued' ? '● ' : ''}
-                  {notAvailable(item.title)}
-                </Text>
-                <Text style={styles.bodyText}>{notAvailable(item.message)}</Text>
-                <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
-              </View>
-            ))}
-            {false ? (
-              <View style={styles.buttonGrid}>
-                <Button
-                  label="Mark all read"
-                  tone="neutral"
-                  onPress={() => onAckNotifications([])}
-                />
-              </View>
-            ) : null}
-          </View>
-        )}
-      </Section>
-      )}
-      <Section title="Risk Limits">
-        <Text style={styles.bodyText}>
-          These are the Founder-approved limits the Investment Orchestrator enforces before any autonomous trade.
+      {/* One concise, truthful top summary -- replaces the previously separate
+          Connection Readiness / Operations Health cards, which computed overlapping
+          "is everything OK" signals independently. */}
+      <View style={styles.summaryCard}>
+        <StatusPill label={`Overall: ${summary.level}`} tone={operationalLevelTone(summary.level)} />
+        <Text style={styles.summaryReason}>{notAvailable(summary.reason)}</Text>
+        <Metric label="Deployed Commit" value={summary.deployed_commit ? String(summary.deployed_commit).slice(0, 8) : null} />
+        <Metric label="Last Worker Heartbeat" value={formatDateTime(summary.last_heartbeat_at)} />
+        <Metric label="Last Refreshed" value={formatDateTime(summary.generated_at)} />
+        <View style={styles.buttonGrid}>
+          <Button label="Refresh" onPress={onRefresh} tone="neutral" />
+          <Button label="Resume All Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
+          <Button label="Emergency Stop All" onPress={() => onCommand('/stop-trading')} tone="danger" />
+        </View>
+        <Text style={styles.smallText}>
+          Emergency Stop All halts new autonomous entries and manual approvals across every broker. It does not disable
+          stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
+          automatically regardless of trading state.
         </Text>
-        <Metric label="Max Daily Loss" value={formatPercent(policy.max_daily_loss_pct)} />
-        <Metric label="Max Weekly Loss" value={formatPercent(policy.max_weekly_loss_pct)} />
-        <Metric label="Max Monthly Loss" value={formatPercent(policy.max_monthly_loss_pct)} />
-        <Metric label="Max Drawdown" value={formatPercent(policy.max_drawdown_pct)} />
-        <Metric label="Max Position Size" value={formatPercent(policy.max_position_size_pct)} />
-        <Metric label="Max Capital Allocation" value={formatPercent(policy.max_capital_allocation_pct)} />
-        <Metric label="Max Concurrent Exposure" value={formatPercent(policy.max_concurrent_exposure_pct)} />
-        <Metric label="Max Concurrent Positions" value={policy.max_concurrent_positions} />
-        <Metric label="Min Confidence Required" value={formatPercent(policy.min_ai_confidence)} />
-        <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
-        <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
-      </Section>
-      <Section title="Executive Summary">
-        {founderSummary ? (
-          <View style={styles.compactRow}>
-            <Text style={styles.cardTitle}>{notAvailable(founderSummary.headline)}</Text>
-            {(founderSummary.plain_english || []).map((line, index) => (
-              <Text key={`${line}-${index}`} style={styles.bodyText}>- {line}</Text>
-            ))}
-          </View>
-        ) : (
+      </View>
+
+      <CollapsibleSection
+        title="Research"
+        subtitle="Is research running and producing fresh evidence?"
+        badge={{ label: researchIsRunning ? 'Running' : 'No Recent Activity', tone: researchIsRunning ? 'good' : 'warn' }}
+      >
+        <Metric label="Research Status" value={status?.research_status} />
+        <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
+        <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
+        <Metric label="Assets Reviewed" value={status?.research_assets_reviewed} />
+        <Metric label="Crypto Projects Reviewed" value={status?.crypto_projects_reviewed} />
+        <Metric label="Recommendations Created" value={status?.research_recommendations_created} />
+        <View style={styles.buttonGrid}>
+          <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
+        </View>
+        <Text style={styles.metricLabel}>Recent Activity</Text>
+        {recentActivity.length === 0 ? (
           <Empty />
+        ) : (
+          recentActivity.map((item, index) => (
+            <Text key={`${item.created_at}-${index}`} style={styles.bodyText}>
+              {formatDateTime(item.created_at)} - {friendlyEvent(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
+            </Text>
+          ))
         )}
-      </Section>
-      <Section title="Exchange Filter">
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Recommendations and Decisions"
+        subtitle="Are fresh recommendations being generated and acted on?"
+        badge={{ label: `${recommendationSummary.active || 0} active`, tone: recommendationSummary.active ? 'good' : 'neutral' }}
+      >
+        <Metric label="Active Recommendations" value={recommendationSummary.active} />
+        <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
+        <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
+        <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
+        <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
+        <Metric label="Latest Trade" value={describeLatestTrade(portfolio?.latest_trade)} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Broker Operations"
+        subtitle="Is Alpaca operational? Is Kraken enabled but blocked? Is polling healthy?"
+        badge={blockedBrokers.length
+          ? { label: `${blockedBrokers.length} Enabled but Blocked`, tone: 'warn' }
+          : { label: 'No Blocks', tone: 'good' }}
+      >
         <View style={styles.buttonGrid}>
           {['All', 'Alpaca', 'Kraken', 'Coinbase'].map((item) => (
             <Button
@@ -1322,29 +1451,21 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
             />
           ))}
         </View>
-      </Section>
-      <Section title="Trading Command Centre">
-        <Metric label="System Status" value={status?.system_status} />
-        <Metric label="Paper / Live Mode" value={status?.paper_live_mode} />
-        <Metric label="Engine Health" value={status?.engine_health} />
-        <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
-        <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
+        <Metric label="Selected Active Brokers" value={formatListInline(status?.selected_active_brokers)} />
+        {brokerPanels.length ? brokerPanels.map((broker) => (
+          <BrokerPanel key={`${broker.broker}-command`} broker={broker} onCommand={onCommand} onReport={onReport} />
+        )) : <Empty />}
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Trading and Portfolio"
+        subtitle="Portfolio value, cash, and today's P&L for the selected exchange filter."
+      >
         <Metric label="Portfolio Value" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'portfolio')} />
         <Metric label="Cash Available" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'cash')} />
         <Metric label="Estimated In Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'invested')} />
         <Metric label="Today's P&L" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'dayPnl')} />
         <Metric label="Open Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'positions') || (positions.length ? `${positions.length}` : 'Not available')} />
-        <Metric label="Active Recommendations" value={recommendationSummary.active} />
-        <Metric label="Latest Trade" value={describeLatestTrade(portfolio?.latest_trade)} />
-        <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
-        <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
-        <Metric label="Auto Paper Trading Status" value={status?.auto_paper_trading_status} />
-        <Metric label="Selected Active Brokers" value={formatListInline(status?.selected_active_brokers)} />
-        <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
-        <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
-        <Metric label="Cloud API Health" value={status?.cloud_api_health} />
-      </Section>
-      <Section title="Reports">
         <View style={styles.buttonGrid}>
           <Button label="Today Report" onPress={() => onReport({ type: 'daily', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} />
           <Button label="Yesterday Report" onPress={() => onReport({ type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
@@ -1353,84 +1474,69 @@ function CommandCentre({ status, portfolio, brief, notifications, performanceAtt
           <Button label="Weekly Report" onPress={() => onReport({ type: 'weekly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
           <Button label="Monthly Report" onPress={() => onReport({ type: 'monthly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
         </View>
-        <Text style={styles.smallText}>
-          Reports explain P&L movement using broker snapshots, closed trades, orders, guardrail rejections, and learning notes.
-        </Text>
         {latestReport ? <ReportPanel report={latestReport} /> : null}
-      </Section>
-      <Section title="Broker Panels">
-        {brokerPanels.length ? brokerPanels.map((broker) => {
-          const label = broker.label || notAvailable(broker.broker);
-          return (
-            <View key={`${broker.broker}-panel`} style={styles.compactRow}>
-              <Text style={styles.cardTitle}>{label}</Text>
-              <Metric label="Connection Status" value={broker.connection_status} />
-              <Metric label="Portfolio" value={brokerMoney(broker, broker.portfolio_value)} />
-              <Metric label="Cash" value={brokerMoney(broker, broker.cash_available)} />
-              <Metric label="Estimated In Positions" value={brokerMoney(broker, broker.estimated_in_positions)} />
-              <Metric label="Buying Power" value={brokerMoney(broker, broker.buying_power)} />
-              <Metric label="Open Positions" value={broker.open_positions} />
-              <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
-              <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
-              <Metric label="Month P&L" value={moneyOrText(broker.month_pnl)} />
-              <Metric label="Trades Today" value={broker.trades_today} />
-              {broker.balance_summary ? (
-                <>
-                  <Metric label="Total Estimated Balance" value={gbpOrText(broker.balance_summary.total_estimated_gbp)} />
-                  <Metric label="GBP Cash" value={gbpOrText(broker.balance_summary.gbp_cash)} />
-                  <Metric label="AI Trading Allocation" value={gbpOrText(broker.balance_summary.trading_allocation_gbp)} />
-                  <TextBlock label="Converted Assets" value={formatKrakenAssets(broker.balance_summary.converted_assets, true)} />
-                  <TextBlock label="Unpriced / Excluded Assets" value={formatKrakenAssets(broker.balance_summary.unpriced_assets, false)} />
-                  <TextBlock label="Raw Kraken Balances Seen By API" value={formatRawKrakenBalances(broker.balance_summary.raw_balance_rows)} />
-                  <TextBlock label="Balance Note" value={broker.balance_summary.valuation_note} />
-                </>
-              ) : null}
-              <Metric label="Research Status" value={broker.research_status} />
-              <Metric label="Due Diligence Status" value={broker.due_diligence_status} />
-              <Metric label="Auto Trading Status" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
-              {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
-              <TradingPermissions permissions={broker.trading_permissions} />
-              <View style={styles.buttonGrid}>
-                <Button label={`Run Analysis (${label})`} onPress={() => onCommand('/run-analysis', { limit: 30, broker: broker.broker })} />
-                <Button label={`Daily Report (${label})`} onPress={() => onReport({ type: 'daily', date: todayIso(), broker: broker.broker })} tone="neutral" />
-                <Button label={`Enable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: true })} tone="warn" />
-                <Button label={`Disable Auto Trading (${label})`} onPress={() => onCommand('/broker-auto-trading', { broker: broker.broker, enabled: false })} tone="danger" />
-              </View>
-            </View>
-          );
-        }) : <Empty />}
-      </Section>
-      <View style={styles.buttonGrid}>
-        <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
-        <Button label="Resume All Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
-        <Button label="Emergency Stop All" onPress={() => onCommand('/stop-trading')} tone="danger" />
-        <Button label="Refresh" onPress={onRefresh} tone="neutral" />
-      </View>
-      <Text style={styles.smallText}>
-        Emergency Stop All halts new autonomous entries and manual approvals across every broker. It does not disable
-        stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
-        automatically regardless of trading state.
-      </Text>
-      <Section title="Analysis Activity">
-        {analysisActivity(status).length === 0 ? (
-          <Empty />
-        ) : (
-          analysisActivity(status).map((item, index) => (
-            <Text key={`${item.created_at}-${index}`} style={styles.bodyText}>
-              {formatDateTime(item.created_at)} - {friendlyEvent(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
-            </Text>
-          ))
-        )}
-      </Section>
-      <Section title="Morning Brief">
+        {founderSummary ? (
+          <View style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{notAvailable(founderSummary.headline)}</Text>
+            {(founderSummary.plain_english || []).map((line, index) => (
+              <Text key={`${line}-${index}`} style={styles.bodyText}>- {line}</Text>
+            ))}
+          </View>
+        ) : null}
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Learning"
+        subtitle="Is learning receiving completed trade evidence?"
+      >
+        <Metric label="Learning Progress" value={learningLab.learning_progress} />
+        <Text style={styles.metricLabel}>Morning Brief</Text>
         <Text style={styles.bodyText}>{notAvailable(status?.morning_brief?.summary)}</Text>
-      </Section>
-      <Section title="Evening Brief">
+        <Text style={styles.metricLabel}>Evening Brief</Text>
         <Text style={styles.bodyText}>{notAvailable(status?.evening_brief?.summary)}</Text>
-      </Section>
-      <Section title="Founder Brief">
+        <Text style={styles.metricLabel}>Founder Brief</Text>
         <Text style={styles.bodyText}>{notAvailable(brief?.report_markdown)}</Text>
-      </Section>
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="System Health"
+        subtitle="Worker liveness, job history, connections, and Founder-approved risk limits."
+      >
+        <ConnectionReadinessCard readiness={readiness} />
+        <OperationsHealthCard jobHealth={status?.job_health} liveWorker={status?.live_worker} />
+        <Section title="Risk Limits">
+          <Text style={styles.bodyText}>
+            These are the Founder-approved limits the Investment Orchestrator enforces before any autonomous trade.
+          </Text>
+          <Metric label="Max Daily Loss" value={formatPercent(policy.max_daily_loss_pct)} />
+          <Metric label="Max Weekly Loss" value={formatPercent(policy.max_weekly_loss_pct)} />
+          <Metric label="Max Monthly Loss" value={formatPercent(policy.max_monthly_loss_pct)} />
+          <Metric label="Max Drawdown" value={formatPercent(policy.max_drawdown_pct)} />
+          <Metric label="Max Position Size" value={formatPercent(policy.max_position_size_pct)} />
+          <Metric label="Max Capital Allocation" value={formatPercent(policy.max_capital_allocation_pct)} />
+          <Metric label="Max Concurrent Exposure" value={formatPercent(policy.max_concurrent_exposure_pct)} />
+          <Metric label="Max Concurrent Positions" value={policy.max_concurrent_positions} />
+          <Metric label="Min Confidence Required" value={formatPercent(policy.min_ai_confidence)} />
+          <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
+          <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
+        </Section>
+        <Metric label="Cloud API Health" value={status?.cloud_api_health} />
+        {notifications?.length ? (
+          <View>
+            <Text style={styles.metricLabel}>{`Notifications (${notifications.length} unread)`}</Text>
+            {notifications.slice(0, 15).map((item) => (
+              <View key={item.notification_id} style={styles.compactRow}>
+                <Text style={styles.cardTitle}>
+                  {item.delivery_status === 'queued' ? '● ' : ''}
+                  {notAvailable(item.title)}
+                </Text>
+                <Text style={styles.bodyText}>{notAvailable(item.message)}</Text>
+                <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </CollapsibleSection>
     </View>
   );
 }
@@ -2191,6 +2297,26 @@ function Section({ title, children }) {
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {children}
+    </View>
+  );
+}
+
+// Same visual language as Section, but starts collapsed and can be expanded on tap -- used to
+// group Command-screen detail out of the way by default so the top summary card answers the
+// Founder's question at a glance instead of scrolling past a wall of always-open cards.
+function CollapsibleSection({ title, subtitle, defaultExpanded = false, badge, children }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  return (
+    <View style={styles.section}>
+      <TouchableOpacity onPress={() => setExpanded((value) => !value)} style={styles.collapsibleHeader}>
+        <View style={styles.collapsibleHeaderText}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          {subtitle ? <Text style={styles.smallText}>{subtitle}</Text> : null}
+        </View>
+        {badge ? <StatusPill label={badge.label} tone={badge.tone} /> : null}
+        <Text style={styles.collapsibleChevron}>{expanded ? '▲' : '▼'}</Text>
+      </TouchableOpacity>
+      {expanded ? <View style={styles.collapsibleBody}>{children}</View> : null}
     </View>
   );
 }
@@ -3478,6 +3604,38 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#17202a',
     marginBottom: 8,
+  },
+  collapsibleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  collapsibleHeaderText: {
+    flex: 1,
+  },
+  collapsibleChevron: {
+    fontSize: 13,
+    color: '#667085',
+    marginLeft: 6,
+  },
+  collapsibleBody: {
+    marginTop: 8,
+  },
+  summaryCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d9e2ec',
+    padding: 14,
+    marginBottom: 14,
+  },
+  summaryReason: {
+    marginTop: 4,
+    marginBottom: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#243142',
   },
   metric: {
     flexDirection: 'row',
