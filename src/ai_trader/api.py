@@ -1623,7 +1623,7 @@ class LocalApiService:
         escaped_title = html.escape(title)
         escaped_summary = html.escape(row["summary"] or "")
         escaped_markdown = html.escape(row["report_markdown"] or "")
-        escaped_path = html.escape(row["file_path"] or "Saved in SQLite only")
+        escaped_path = html.escape(row["file_path"] or "Saved to the database record only; no separate file was written.")
         page = f"""<!doctype html>
 <html lang="en">
 <head>
