@@ -1,5 +1,45 @@
 # Implementation Log
 
+## 2026-07-31 Research batching/timeout fix + Command screen truth/declutter (partial)
+
+Two coordinated changes, each on its own feature branch, merged to master and deployed:
+
+**1. `fix/research-batching-and-timeout` (commit `fd9575b3`, merged `12040272`).**
+Root cause of auto-execution never seeing fresh candidates: `run_analysis` called
+`propose_trades` once per symbol, making up to 60 separate Alpaca `get_latest_bars`/`get_news`
+HTTP round trips for a 30-symbol watchlist (both are genuine batch endpoints), plus one OpenAI
+call per symbol, all sharing the fixed per-job subprocess overhead already confirmed to consume
+most of the generic 180s worker job timeout. Fixed: `propose_trades` now fetches market/news once
+per batch with per-symbol try/except preserving fault isolation; `run_analysis` calls it once;
+`premarket-equity`/`market-open-equity`/`market-close-equity`/`overnight-crypto` get their own
+timeout via `AI_TRADER_RESEARCH_JOB_TIMEOUT_SECONDS` (default 300s) instead of the shared 180s.
+No trading/risk/governance/broker-permission/kill-switch/allocation/reconciliation/duplicate-order
+logic touched. Local suite: 233/233. **Hosted verification not yet performed** - requires a Render
+log pull spanning at least one `market-open-equity`/`overnight-crypto` firing (hourly buckets);
+see `architecture/` for the prior evidence-snapshot-timeout fix this follows the same pattern as.
+
+**2. `feat/command-screen-truth-and-declutter` (commit `3dc2bef8`, merged `26802923`) - PARTIAL.**
+Scoped to what could be verified without new test infrastructure. Delivered: one true
+Normal/Degraded/Blocked/Critical rollup (`operationalRollup`) replacing four independently-computed
+"is everything OK" signals that could disagree with each other on the same screen; a
+`CollapsibleSection` primitive so Command-screen detail is collapsed by default instead of ~15 flat
+always-open sections, grouped into Research / Recommendations & Decisions / Broker Operations /
+Trading & Portfolio / Learning / System Health; removed a full inline duplicate of `BrokerPanel`'s
+JSX inside `CommandCentre` (now reuses the shared component) and a dead `{false && ...}`
+notifications block; added explicit "New Entries Allowed", "Overall Readiness", "Latest Successful
+Poll", and "Latest Confirmed Trade" per broker; fixed the one remaining genuinely user-facing
+SQLite-wording string (`api.py` `report_page()`'s file_path fallback).
+
+**Not attempted this session** (explicitly deferred, not silently dropped): Activity screen
+grouping/collapsing/filters, Recommendations lifecycle wording, Portfolio screen declutter,
+Learning screen concise empty-state, the cross-screen data-consistency audit beyond the Command
+screen, and all new test-infrastructure work. `mobile/App.js` is a single ~3,800-line file with no
+test/lint/typecheck/build tooling in `mobile/package.json` (no jest, no eslint, no tsconfig, no
+build script) - verified only with a one-off babel parse (`babel-preset-expo`), which confirms
+syntax only, not runtime behavior, rendering, or layout. On-device / narrow / foldable Android
+layout was not verified; no EAS build or update was run (no Expo/EAS credentials available in this
+environment).
+
 ## 2026-07-30 AT-ED-003 implementation session - operational job splitting, broker status data contract, SQLite wording audit
 
 Executes `engineering-directives/implementation/AT-ED-003_OPERATIONAL_UI_CLEANUP_AND_REMEDIATION.md.txt`
