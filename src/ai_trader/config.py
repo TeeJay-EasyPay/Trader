@@ -65,6 +65,7 @@ class Settings:
     worker_heartbeat_interval_seconds: int = 30
     worker_job_timeout_seconds: int = 180
     evidence_snapshot_job_timeout_seconds: int = 300
+    research_job_timeout_seconds: int = 300
     broker_poll_interval_seconds: int = 600
     process_role: str = "local"
     disable_api_background_workers: bool = False
@@ -152,6 +153,7 @@ def load_settings() -> Settings:
         worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),
+        research_job_timeout_seconds=_int_env("AI_TRADER_RESEARCH_JOB_TIMEOUT_SECONDS", 300),
         broker_poll_interval_seconds=_int_env("AI_TRADER_BROKER_POLL_INTERVAL_SECONDS", 600),
         process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),
         disable_api_background_workers=_bool_env(

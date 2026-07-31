@@ -341,6 +341,17 @@ def main(argv: list[str] | None = None) -> int:
                             worker_id,
                             pulse,
                             scheduled_for=scheduled_for,
+                            # Equity/crypto research evaluates up to 30 symbols, each
+                            # potentially a real OpenAI call, on top of the same ~120s
+                            # fixed subprocess overhead evidence-snapshot has -- the
+                            # shared default budget left it with no realistic chance of
+                            # completing before generating a single proposal (2026-07-31
+                            # follow-up: same root cause class as evidence-snapshot).
+                            timeout_seconds=(
+                                service.settings.research_job_timeout_seconds
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "overnight-crypto"}
+                                else None
+                            ),
                         )
                     pulse.set_job("learning")
                     learning = process_learning_outbox(settings.db_path, worker_id=worker_id, limit=10)

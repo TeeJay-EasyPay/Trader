@@ -2200,19 +2200,14 @@ This report explains available evidence. It does not automatically change strate
         agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
         daily_pnl = safe_float(latest_pnl_snapshot(self.settings.db_path, "alpaca").get("day_pnl")) or 0.0
         account = broker.account_context(daily_realized_pnl=daily_pnl)
-        proposals: list[TradeProposal] = []
         skipped_symbols: list[dict[str, str]] = []
-        for symbol in symbols:
-            try:
-                proposals.extend(agent.propose_trades([symbol], account))
-            except Exception as exc:
-                reason = str(exc)
-                skipped_symbols.append({"symbol": symbol, "reason": reason})
-                self.audit.record_execution_event(
-                    f"analysis-skip-{symbol}",
-                    "agent_no_trade",
-                    {"symbol": symbol, "reason": reason},
-                )
+        # One batched market/news fetch for the whole watchlist instead of one per symbol --
+        # calling propose_trades per symbol meant up to 30 separate get_latest_bars/get_news
+        # HTTP round trips (60 calls) for a 30-symbol run, which combined with the ~120s of
+        # fixed per-job subprocess overhead already observed in hosted logs left equity research
+        # with no realistic chance of finishing inside the shared job timeout before generating
+        # a single proposal. propose_trades still isolates one symbol's failure from the rest.
+        proposals = agent.propose_trades(symbols, account, skipped_symbols=skipped_symbols)
         auto_execution = self.auto_execute_recommendations() if proposals else {"status": "skipped", "message": "No proposals generated."}
         for proposal in proposals:
             self._record_shadow_from_proposal(
