@@ -304,6 +304,13 @@ def main(argv: list[str] | None = None) -> int:
                             worker_id,
                             pulse,
                             scheduled_for=snapshot_schedule,
+                            # Captures both brokers' portfolios, governance, persistence,
+                            # and founder-evidence generation in one job -- strictly more
+                            # Postgres round trips than any other worker job sharing the
+                            # default budget. Logs showed it hitting the shared 180s
+                            # timeout on every cycle even with no single stage visibly
+                            # hung (AT-ED-003 follow-up, 2026-07-31 hosted evidence).
+                            timeout_seconds=service.settings.evidence_snapshot_job_timeout_seconds,
                         )
                     auto_execution_results = _run_broker_job_group(
                         service,
@@ -649,14 +656,22 @@ def _run_claimed_job_process(
     }
 
 
-def _run_pulsed_job(service, job_name: str, worker_id: str, pulse: "WorkerHeartbeatPulse", *, scheduled_for: str) -> dict:
+def _run_pulsed_job(
+    service,
+    job_name: str,
+    worker_id: str,
+    pulse: "WorkerHeartbeatPulse",
+    *,
+    scheduled_for: str,
+    timeout_seconds: int | None = None,
+) -> dict:
     pulse.set_job(job_name)
     return _run_worker_cycle_job(
         service,
         job_name,
         worker_id,
         scheduled_for=scheduled_for,
-        timeout_seconds=service.settings.worker_job_timeout_seconds,
+        timeout_seconds=timeout_seconds or service.settings.worker_job_timeout_seconds,
         restart_worker_on_timeout=True,
     )
 

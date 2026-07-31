@@ -30,7 +30,7 @@ from ai_trader.always_on import (
 )
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
-from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs, _run_broker_job_group
+from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs, _run_broker_job_group, _run_pulsed_job
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from unittest.mock import MagicMock, patch
 
@@ -374,6 +374,35 @@ class BrokerJobGroupConcurrencyTests(unittest.TestCase):
             # idempotency key and claims independently.
             self.assertTrue(first_kraken["claimed"])
             self.assertNotEqual(first_alpaca["job_run_id"], first_kraken["job_run_id"])
+
+    def test_pulsed_job_uses_explicit_timeout_override_not_the_default(self):
+        # evidence-snapshot does strictly more Postgres round trips (both brokers'
+        # portfolios, governance, persistence, founder-evidence generation) than any
+        # other worker job sharing the default worker_job_timeout_seconds budget, and
+        # was observed timing out at 180s on every hosted cycle with no single stage
+        # visibly hung. It gets its own, larger timeout instead of the shared default.
+        seen_timeout = {}
+
+        def fake_run_worker_cycle_job(service, job_name, worker_id, *, scheduled_for, timeout_seconds, restart_worker_on_timeout):
+            seen_timeout["value"] = timeout_seconds
+            return {"status": "completed", "job_name": job_name}
+
+        service = SimpleNamespace(settings=SimpleNamespace(worker_job_timeout_seconds=180, evidence_snapshot_job_timeout_seconds=300))
+        pulse = MagicMock()
+
+        with patch("ai_trader.cli._run_worker_cycle_job", side_effect=fake_run_worker_cycle_job):
+            _run_pulsed_job(
+                service, "evidence-snapshot", "worker-1", pulse,
+                scheduled_for="2026-01-01T00:00:00+00:00",
+                timeout_seconds=service.settings.evidence_snapshot_job_timeout_seconds,
+            )
+            self.assertEqual(seen_timeout["value"], 300)
+
+            _run_pulsed_job(
+                service, "managed-exits", "worker-1", pulse,
+                scheduled_for="2026-01-01T00:00:00+00:00",
+            )
+            self.assertEqual(seen_timeout["value"], 180)
 
     def test_alpaca_inactivity_reports_fault_without_research(self):
         with tempfile.TemporaryDirectory() as tmp:

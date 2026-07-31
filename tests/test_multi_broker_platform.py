@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
@@ -341,6 +342,53 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertNotIn("BTC", alpaca_skipped_symbols)
             self.assertIn("BTC", kraken_skipped_symbols)
             self.assertNotIn("AAPL", kraken_skipped_symbols)
+
+    def test_auto_execute_recommendations_excludes_candidates_older_than_24h(self):
+        # The candidate query used to be ORDER BY ai_confidence DESC with no time
+        # bound, so an old high-confidence proposal could occupy a LIMIT 50 slot
+        # forever and starve fresh, lower-confidence proposals from ever being
+        # considered -- confirmed in hosted logs 2026-07-31: the same handful of
+        # expired proposal_ids recurred unchanged for 40+ minutes across several
+        # research cycles. A proposal older than the longest freshness lifetime
+        # (24h, see _recommendation_freshness) can never be anything but Expired,
+        # so it must now be excluded from the candidate pool entirely, not merely
+        # skipped after being selected.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            set_broker_auto_trading(settings.db_path, "alpaca", True)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+
+            def make_proposal(symbol: str, confidence: float) -> TradeProposal:
+                return TradeProposal(
+                    symbol=symbol, side="buy", entry_price=100, stop_loss=98, take_profit=106,
+                    position_size=1, risk_percentage=0.01, confidence_score=confidence,
+                    news_summary="No material news.", market_sentiment_summary="Neutral.",
+                    technical_summary="Setup available.",
+                    plain_english_reasoning=(
+                        "Strongest argument for: the trend is constructive. "
+                        "Strongest argument against: volatility could invalidate the setup."
+                    ),
+                    ai_guardrails_passed=True, asset_type="stock", exchange="NASDAQ",
+                ).normalized()
+
+            old_proposal = make_proposal("OLDCO", 0.99)
+            fresh_proposal = make_proposal("NEWCO", 0.5)
+            audit.record_trade_event("agent_proposal", old_proposal, validation=ValidationResult(passed=True))
+            audit.record_trade_event("agent_proposal", fresh_proposal, validation=ValidationResult(passed=True))
+            stale_cutoff = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "UPDATE trade_audit SET created_at = ? WHERE proposal_id = ?",
+                        (stale_cutoff, old_proposal.proposal_id),
+                    )
+
+            with patch.object(LocalApiService, "_account_context_for_broker", return_value=SimpleNamespace()):
+                result = LocalApiService(settings).auto_execute_recommendations()
+
+            seen_symbols = {row["symbol"] for row in result.get("skipped", [])}
+            self.assertNotIn("OLDCO", seen_symbols)
+            self.assertIn("NEWCO", seen_symbols)
 
     def test_kraken_live_switches_enable_crypto_policy(self):
         previous = {key: os.environ.get(key) for key in [

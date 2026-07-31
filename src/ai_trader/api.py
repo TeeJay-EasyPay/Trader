@@ -2637,15 +2637,26 @@ This report explains available evidence. It does not automatically change strate
             return {"status": "manual_required", "message": "No broker has auto trading enabled. Enable auto trading for an individual broker to allow new autonomous entries.", "eligible_count": 0, "skipped": []}
         if not self.settings.guardrails.paper_trading_only:
             return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
+        # Bounded to the longest recommendation lifetime _recommendation_freshness()
+        # grants (24h for confidence < 0.75) and ordered by recency first: a proposal
+        # older than that can never be anything but "Expired" below, and ordering by
+        # ai_confidence DESC alone let old high-confidence proposals permanently
+        # occupy the LIMIT 50 candidate slots, starving every genuinely fresh (but
+        # equal-or-lower-confidence) recommendation the research pipeline generated
+        # after them -- confirmed in hosted logs 2026-07-31: the same 10 expired
+        # proposal_ids recurred unchanged across 40+ minutes and several research
+        # cycles because they never aged out of the candidate pool.
+        freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         rows = self._rows(
             """
             SELECT ta.proposal_id, ta.payload_json, ta.created_at, ta.ai_confidence,
                    execution_guardrails_passed, validation_result, symbol
             FROM trade_audit ta
-            WHERE ta.event_type = 'agent_proposal'
-            ORDER BY ta.ai_confidence DESC, ta.created_at DESC, ta.id DESC
+            WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ?
+            ORDER BY ta.created_at DESC, ta.ai_confidence DESC, ta.id DESC
             LIMIT 50
-            """
+            """,
+            (freshness_cutoff,),
         )
         decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -3275,6 +3286,7 @@ This report explains available evidence. It does not automatically change strate
             status, payload = panels[broker_name]
             auto_enabled = bool(broker_auto_enabled.get(broker_name, False))
             broker_stage_start = time.monotonic()
+            print(f"[evidence-snapshot] stage=trading_permissions broker={broker_name} status=started", flush=True)
             price_hints = _kraken_price_hints_from_panel(payload) if broker_name == "kraken" and status == "ok" else None
             ledger_stage_start = time.monotonic()
             try:
