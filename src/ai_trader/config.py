@@ -65,7 +65,7 @@ class Settings:
     worker_heartbeat_interval_seconds: int = 30
     worker_job_timeout_seconds: int = 180
     evidence_snapshot_job_timeout_seconds: int = 300
-    research_job_timeout_seconds: int = 300
+    research_job_timeout_seconds: int = 450
     auto_execution_job_timeout_seconds: int = 300
     broker_poll_interval_seconds: int = 600
     process_role: str = "local"
