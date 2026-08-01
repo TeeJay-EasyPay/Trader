@@ -2644,6 +2644,8 @@ This report explains available evidence. It does not automatically change strate
         )
 
     def auto_execute_recommendations(self, broker_filter: str | None = None) -> dict[str, Any]:
+        _auto_exec_t0 = time.monotonic()
+        print(f"[auto-execution] broker={broker_filter} stage=started", flush=True)
         control = self._control_state()
         if control["trading_state"] != "running":
             return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
@@ -2681,10 +2683,15 @@ This report explains available evidence. It does not automatically change strate
             """,
             (freshness_cutoff,),
         )
+        print(
+            f"[auto-execution] broker={broker_filter} stage=candidates_loaded count={len(rows)} "
+            f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+            flush=True,
+        )
         decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
         skipped: list[dict[str, Any]] = []
-        for row in rows:
+        for _candidate_index, row in enumerate(rows):
             proposal_id = row["proposal_id"]
             if proposal_id in seen:
                 continue
@@ -2738,6 +2745,12 @@ This report explains available evidence. It does not automatically change strate
             # governance-chain work is done for it (AT-ED-003 Section 1 item 4).
             if broker_filter and broker_name != broker_filter:
                 continue
+            print(
+                f"[auto-execution] broker={broker_filter} stage=candidate_matched index={_candidate_index} "
+                f"proposal_id={proposal_id} candidate_broker={broker_name} "
+                f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+                flush=True,
+            )
             if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -2757,6 +2770,11 @@ This report explains available evidence. It does not automatically change strate
                 })
                 continue
             managed_capacity = self._broker_managed_trade_capacity(broker_name)
+            print(
+                f"[auto-execution] broker={broker_filter} stage=managed_capacity_checked index={_candidate_index} "
+                f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+                flush=True,
+            )
             if not managed_capacity["can_open"]:
                 skipped.append({
                     "proposal_id": proposal_id,
@@ -2773,6 +2791,11 @@ This report explains available evidence. It does not automatically change strate
                 guardrails=self.settings.guardrails,
             )
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
+            print(
+                f"[auto-execution] broker={broker_filter} stage=recommendation_evaluated index={_candidate_index} "
+                f"decision={decision.decision} elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+                flush=True,
+            )
             if decision.decision == "approved":
                 decisions.append(decision.to_dict())
                 update_broker_runtime(self.settings.db_path, broker_name, last_trade_submitted=decision.symbol, current_stage="trade_submitted")
@@ -2795,6 +2818,11 @@ This report explains available evidence. It does not automatically change strate
                     "message": decision.rejection_reason or decision.notes or decision.decision,
                 })
 
+        print(
+            f"[auto-execution] broker={broker_filter} stage=loop_completed decisions={len(decisions)} "
+            f"skipped={len(skipped)} elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+            flush=True,
+        )
         if not decisions:
             return {
                 "status": "skipped",
