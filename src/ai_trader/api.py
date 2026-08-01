@@ -2342,9 +2342,17 @@ This report explains available evidence. It does not automatically change strate
             if isinstance(proposal, dict)
         }
         try:
+            # recommendations() does several fresh-connection lookups per row
+            # (already-executed check, latest orchestrator decision, ...), so the
+            # previous max(100, ...) floor meant enriching a handful of just-generated
+            # proposal_ids always paid the cost of ~100 rows regardless of how many
+            # were actually needed. Hosted evidence (2026-08-01): this was the last
+            # ~80s of overnight-crypto's end-of-cycle bookkeeping, still pushing the
+            # job past its 300s budget even after every other identified cost was
+            # fixed. proposal_ids is small and known exactly here -- no floor needed.
             rich_recommendations = {
                 str(recommendation.get("proposal_id") or ""): recommendation
-                for recommendation in self.recommendations(limit=max(100, len(proposal_ids) * 4))
+                for recommendation in self.recommendations(limit=len(proposal_ids) * 4)
                 if str(recommendation.get("proposal_id") or "") in proposal_ids
             }
         except Exception:
