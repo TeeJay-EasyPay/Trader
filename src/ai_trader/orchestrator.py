@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from .database import connect
 from contextlib import closing
 from dataclasses import dataclass
@@ -121,25 +122,33 @@ class InvestmentOrchestrator:
         *,
         auto_execute: bool,
     ) -> OrchestratorDecision:
+        _eval_t0 = time.monotonic()
         p = proposal.normalized()
         intelligence = latest_intelligence_packet(self.db_path, p.proposal_id) or {}
         strategy_id = (
             (intelligence.get("committee") or {}).get("strategy_id")
             or (intelligence.get("probability") or {}).get("strategy_id")
         )
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=intelligence_loaded elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         selected = self._select_adapter(p)
         market_open = selected.is_market_open(p.exchange) if selected else False
         asset_available = selected.is_asset_available(p.symbol, p.exchange, p.asset_type) if selected else False
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=adapter_selected broker={selected.name if selected else None} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         validation = validate_trade_proposal(p, context.account, context.guardrails, now=context.now)
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=guardrails_validated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         policy = load_trading_policy(self.db_path, auto_trade=context.auto_trade, guardrails=context.guardrails)
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=policy_loaded elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         due_diligence = create_due_diligence_assessment(self.db_path, p)
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=due_diligence_assessed elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         investment_score = calculate_investment_score(self.db_path, p)
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=investment_score_calculated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         allocation = calculate_capital_allocation(
             self.db_path,
             p,
             policy,
             account_equity=context.account.equity,
         )
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=capital_allocation_calculated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         failures: list[str] = []
         if selected is None:
             failures.append("no_configured_broker_supports_asset")
@@ -197,6 +206,7 @@ class InvestmentOrchestrator:
                 failures.append("maximum_capital_allocation_exceeded")
         failures.extend(validate_investment_universe(self.db_path, p, policy))
         failures.extend(validation.failures)
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=pre_governance_checks_done elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
 
         production_packet: dict[str, Any] | None = None
         if selected and getattr(selected, "requires_production_governance", True):
@@ -217,6 +227,7 @@ class InvestmentOrchestrator:
                     or "Unknown - no current market-data quality record was attached."
                 ),
             )
+            print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=production_governance_done elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
             if not production_packet["approved"]:
                 failures.extend(production_packet["reasons"])
             elif production_packet.get("approved_notional") is not None:

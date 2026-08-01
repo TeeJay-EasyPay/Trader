@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import connect
+import threading
+from .database import connect, selected_backend
 from contextlib import closing
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -80,11 +81,40 @@ QUALITATIVE_SCORES = {
 }
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_operational_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(OPERATIONAL_SCHEMA)
+    """Create schema once per process.
+
+    Called unconditionally from 6 different functions in this module
+    (record_notification, record_recommendation_set, record_research_run, etc.),
+    each of which record_crypto_analysis's end-of-cycle bookkeeping calls in
+    sequence. Hosted evidence (2026-08-01): after the propose_crypto_trades loop
+    itself started finishing well inside budget (all 9 symbols evaluated), this
+    end-of-cycle bookkeeping tail alone still consumed ~71s and pushed the job
+    over its 300s timeout. Same fix pattern as kraken_reconciliation,
+    trading_intelligence, and multi_broker.
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(OPERATIONAL_SCHEMA)
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def safe_score(value: Any) -> float | None:
