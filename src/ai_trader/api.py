@@ -754,6 +754,13 @@ class LocalApiService:
             return 200, self.sprint6_status()
         if path == "/kraken-reconciliation":
             return 200, kraken_reconciliation_status(self.settings.db_path)
+        if path == "/broker-decisions":
+            return 200, {
+                "broker_decisions": self.broker_decisions(
+                    broker=_first(query, "broker"),
+                    limit=_int_or_default(_first(query, "limit"), 20),
+                )
+            }
         if path == "/kraken-reconciliation/verify":
             return 200, verify_kraken_reconciliation(self.settings.db_path)
         if path == "/autonomous-activity":
@@ -4282,6 +4289,25 @@ This report explains available evidence. It does not automatically change strate
         if proposal.exchange.upper() in {"NYSE", "NASDAQ", "AMEX"}:
             return "alpaca"
         return None
+
+    def broker_decisions(self, *, broker: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Read-only view of BROKER_DECISIONS.reason -- the specific guardrail/policy
+
+        failure(s) that rejected a candidate, which no other endpoint exposes (the
+        operational-events/decision-journal summaries only say "blocked", not why).
+        """
+
+        if broker:
+            rows = self._rows(
+                "SELECT * FROM BROKER_DECISIONS WHERE selected_broker = ? ORDER BY created_at DESC LIMIT ?",
+                (broker, max(1, int(limit))),
+            )
+        else:
+            rows = self._rows(
+                "SELECT * FROM BROKER_DECISIONS ORDER BY created_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )
+        return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
         conn = connect(self.settings.db_path)
