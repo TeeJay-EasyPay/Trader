@@ -90,6 +90,7 @@ from .multi_broker import (
 from .orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run
 from .canonical_trades import initialize_canonical_trade_schema
 from .kraken_reconciliation import (
+    founder_override_kraken_hold,
     initialize_kraken_reconciliation_schema,
     kraken_capital_ledger_summary,
     kraken_reconciliation_status,
@@ -812,6 +813,17 @@ class LocalApiService:
             return 200, verify_kraken_reconciliation(self.settings.db_path)
         if path == "/kraken-reconciliation/resume":
             return 200, resume_kraken_entries_after_verification(self.settings.db_path)
+        if path == "/kraken-reconciliation/founder-override":
+            return 200, founder_override_kraken_hold(
+                self.settings.db_path,
+                reason=str(
+                    body.get("reason")
+                    or "Founder-authorized override (2026-08-01): unmatched Kraken history "
+                    "confirmed as pre-existing personal/manual activity, not an AI Trader "
+                    "accounting gap. explicit_order_ownership_exists can never pass for "
+                    "evidence predating the 2026-07-27 reconciliation bootstrap."
+                ),
+            )
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/generate-operational-report":

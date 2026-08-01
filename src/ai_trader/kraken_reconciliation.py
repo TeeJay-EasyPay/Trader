@@ -772,6 +772,32 @@ def verify_kraken_reconciliation(db_path: Path) -> dict[str, Any]:
     return {"status": "verified" if passed else "failed", "passed": passed, "checks": checks, "ledger": ledger}
 
 
+def founder_override_kraken_hold(db_path: Path, *, reason: str) -> dict[str, Any]:
+    """Release the Kraken entry hold on explicit Founder authorization, bypassing verification.
+
+    verify_kraken_reconciliation's explicit_order_ownership_exists check can never pass for
+    Kraken evidence that predates this reconciliation system's 2026-07-27 bootstrap -- there is
+    no way to retroactively prove an order was AI Trader-placed versus pre-existing personal
+    Kraken activity from before ownership records existed. This lets the Founder release the
+    hold based on manual review (2026-08-01: confirmed via hosted /kraken-reconciliation that
+    all 864 unmatched Kraken events are pre-existing personal/manual activity, not an AI Trader
+    accounting gap) instead of waiting on a check that can never pass. The independent
+    KRAKEN_MAX_ORDER_GBP / KRAKEN_MIN_ORDER_GBP / KRAKEN_MAX_OPEN_TRADES /
+    KRAKEN_TRADING_ALLOCATION_GBP guardrails in broker_adapters.KrakenAdapter are unaffected --
+    this only releases the entry hold, it does not change spend limits.
+    """
+
+    verification_snapshot = verify_kraken_reconciliation(db_path)
+    control = set_reconciliation_hold(
+        db_path,
+        active=False,
+        status="founder_override",
+        reason=reason,
+        payload={"override": True, "verification_at_override": verification_snapshot},
+    )
+    return {"status": "resumed", "control": control, "verification_at_override": verification_snapshot}
+
+
 def resume_kraken_entries_after_verification(db_path: Path) -> dict[str, Any]:
     verification = verify_kraken_reconciliation(db_path)
     if not verification["passed"]:
