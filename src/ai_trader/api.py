@@ -761,6 +761,14 @@ class LocalApiService:
                     limit=_int_or_default(_first(query, "limit"), 20),
                 )
             }
+        if path == "/order-intent-locks":
+            return 200, {
+                "order_intent_locks": self.order_intent_locks(
+                    broker=_first(query, "broker"),
+                    status=_first(query, "status"),
+                    limit=_int_or_default(_first(query, "limit"), 20),
+                )
+            }
         if path == "/kraken-reconciliation/verify":
             return 200, verify_kraken_reconciliation(self.settings.db_path)
         if path == "/autonomous-activity":
@@ -846,6 +854,12 @@ class LocalApiService:
                     "accounting gap. explicit_order_ownership_exists can never pass for "
                     "evidence predating the 2026-07-27 reconciliation bootstrap."
                 ),
+            )
+        if path == "/order-intent-locks/release":
+            return 200, self.release_order_intent_lock_for(
+                broker=str(body.get("broker") or ""),
+                client_order_id=str(body.get("client_order_id") or ""),
+                confirmed_no_order_placed=bool(body.get("confirmed_no_order_placed")),
             )
         if path == "/generate-report":
             return 200, self.generate_report(body)
@@ -4308,6 +4322,53 @@ This report explains available evidence. It does not automatically change strate
                 (max(1, int(limit)),),
             )
         return [dict(row) for row in rows]
+
+    def order_intent_locks(self, *, broker: str | None = None, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Read-only view of ORDER_INTENT_LOCKS -- see release_order_intent_lock_for below
+
+        for why a lock can outlive the process that created it (2026-08-01 incident).
+        """
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if broker:
+            clauses.append("broker = ?")
+            params.append(broker.lower())
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._rows(
+            f"SELECT * FROM ORDER_INTENT_LOCKS {where} ORDER BY created_at DESC LIMIT ?",
+            (*params, max(1, int(limit))),
+        )
+        return [dict(row) for row in rows]
+
+    def release_order_intent_lock_for(self, *, broker: str, client_order_id: str, confirmed_no_order_placed: bool) -> dict[str, Any]:
+        """Manually release one specific order-intent lock.
+
+        acquire_order_intent_lock is a deliberate safety mechanism: once acquired, a
+        lock only clears when the broker gives a definite "no order was placed"
+        answer, precisely so a process that dies mid-submission (a timeout kill, a
+        crash) can never cause the same proposal to be blindly resubmitted -- see
+        release_order_intent_lock's docstring in multi_broker.py. That means a killed
+        process orphans its lock forever unless someone with independent proof (e.g.
+        the broker's own order history showing nothing was placed) releases it by
+        hand. confirmed_no_order_placed must be explicitly set True by the caller as
+        a deliberate acknowledgement that such proof was actually checked -- this
+        does not check the broker itself, it only records the caller's confirmation
+        and performs the release.
+        """
+
+        if not confirmed_no_order_placed:
+            return {
+                "status": "refused",
+                "message": "Set confirmed_no_order_placed=true only after independently verifying "
+                "(e.g. against the broker's own order history) that no order was actually placed "
+                "for this client_order_id.",
+            }
+        release_order_intent_lock(self.settings.db_path, broker=broker.lower(), client_order_id=client_order_id)
+        return {"status": "released", "broker": broker.lower(), "client_order_id": client_order_id}
 
     def _connect(self) -> sqlite3.Connection:
         conn = connect(self.settings.db_path)
