@@ -268,8 +268,25 @@ def broker_auto_trading_enabled(db_path: Path, broker: str, env_default: bool = 
 
 
 def set_broker_auto_trading(db_path: Path, broker: str, enabled: bool, *, updated_by: str = "founder") -> dict[str, Any]:
+    """Set (and durably record) whether a broker's autonomous entries are enabled.
+
+    LocalApiService.__init__ calls _apply_env_broker_auto_defaults /
+    _apply_founder_kraken_live_authorization unconditionally on every process --
+    and every scheduled job runs in its own fresh process -- so without this
+    early-exit, every single job launch (every few minutes, for every job type)
+    re-wrote this row and re-fired a "auto trading enabled" notification even
+    when nothing had changed. Confirmed via hosted evidence 2026-08-01: dozens
+    of duplicate broker_auto_trading_enabled notifications roughly 10-15s apart,
+    matching job cadence, plus concurrent auto-execution-alpaca/auto-execution-
+    kraken pairs both racing to write the same row on every launch -- the same
+    "concurrent processes contending for the same seed row" class of bug already
+    found and fixed for kraken_reconciliation's schema seeding.
+    """
+
     initialize_multi_broker_schema(db_path)
     broker_key = broker.lower()
+    if broker_auto_trading_enabled(db_path, broker_key) == bool(enabled):
+        return {"broker": broker_key, "auto_trading_enabled": bool(enabled), "updated_at": None, "unchanged": True}
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
