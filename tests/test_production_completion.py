@@ -458,7 +458,7 @@ class ProductionCompletionTests(unittest.TestCase):
 
         with patch("ai_trader.cli.subprocess.Popen", return_value=process) as popen:
             result = _run_claimed_job_process(
-                job_name="overnight-crypto",
+                job_name="crypto-research",
                 job_run_id=7,
                 worker_id="production-worker",
                 timeout_seconds=180,

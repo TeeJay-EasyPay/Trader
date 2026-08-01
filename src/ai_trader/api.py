@@ -519,7 +519,7 @@ class LocalApiService:
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
         _crypto_research_t0 = time.monotonic()
-        print("[overnight-crypto] stage=research status=started", flush=True)
+        print("[crypto-research] stage=research status=started", flush=True)
         record_operational_event(
             self.settings.db_path,
             component="research",
@@ -563,7 +563,7 @@ class LocalApiService:
             )
             self._record_production_research(started_at, "kraken", "crypto", "scheduled", [], result)
             return result
-        print(f"[overnight-crypto] stage=symbols_resolved count={len(symbols)} symbols={symbols}", flush=True)
+        print(f"[crypto-research] stage=symbols_resolved count={len(symbols)} symbols={symbols}", flush=True)
         account = self._account_context_for_broker("kraken")
         evaluated_symbols: list[str] = []
 
@@ -572,7 +572,7 @@ class LocalApiService:
             # returns -- so a job timeout only loses whatever hadn't been evaluated yet.
             # The Market Intelligence Centre reads research_freshness/last_scan directly,
             # and previously only saw a write once every symbol in the batch had finished
-            # (2026-08-01 hosted evidence: overnight-crypto timing out mid-batch left
+            # (2026-08-01 hosted evidence: crypto-research timing out mid-batch left
             # "no fresh production research evidence" even though several symbols had
             # genuinely been evaluated).
             evaluated_symbols.append(symbol)
@@ -611,16 +611,16 @@ class LocalApiService:
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
             on_symbol_complete=_on_symbol_complete,
         )
-        print(f"[overnight-crypto] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
+        print(f"[crypto-research] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
         # Deliberately does not call auto_execute_recommendations() here. The dedicated,
         # independently-scheduled auto-execution-alpaca/auto-execution-kraken jobs are the
         # sole autonomous execution path - they already pick up any proposal recorded here
         # within their own ~60-90s cadence. Calling the full execution pipeline again inline,
         # synchronously, inside every research cycle was redundant (the standalone jobs would
         # evaluate the same candidates a minute later regardless) and was a major contributor
-        # to overnight-crypto's chronic timeouts.
+        # to crypto-research's chronic timeouts.
         auto_execution = {"status": "delegated", "message": "Handled by the independent per-broker auto-execution jobs."}
-        print("[overnight-crypto] stage=execution status=delegated", flush=True)
+        print("[crypto-research] stage=execution status=delegated", flush=True)
         # Shadow trades and broker-runtime freshness were already recorded per-symbol via
         # on_symbol_complete above -- the final state it leaves behind already matches what
         # a post-loop write here would produce, so re-writing it again would be redundant.
@@ -680,7 +680,7 @@ class LocalApiService:
         self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols, result)
         _crypto_research_elapsed = time.monotonic() - _crypto_research_t0
         print(
-            f"[overnight-crypto] stage=evidence_persisted status=completed "
+            f"[crypto-research] stage=evidence_persisted status=completed "
             f"symbols={len(symbols)} proposals={len(proposals)} elapsed={_crypto_research_elapsed:.1f}s",
             flush=True,
         )
@@ -2354,7 +2354,7 @@ This report explains available evidence. It does not automatically change strate
             # previous max(100, ...) floor meant enriching a handful of just-generated
             # proposal_ids always paid the cost of ~100 rows regardless of how many
             # were actually needed. Hosted evidence (2026-08-01): this was the last
-            # ~80s of overnight-crypto's end-of-cycle bookkeeping, still pushing the
+            # ~80s of crypto-research's end-of-cycle bookkeeping, still pushing the
             # job past its 300s budget even after every other identified cost was
             # fixed. proposal_ids is small and known exactly here -- no floor needed.
             rich_recommendations = {

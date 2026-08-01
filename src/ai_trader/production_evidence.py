@@ -481,7 +481,7 @@ _JOB_HEALTH_SPECS: tuple[tuple[str, str, int, str | None, tuple[str, ...]], ...]
     ("managed-exits", "Managed Exits", 180, None, ("managed-exits",)),
     ("evidence-snapshot", "Evidence Snapshot", 1200, None, ("evidence-snapshot",)),
     ("push-dispatch", "Push Notification Dispatch", 90, None, ("push-dispatch",)),
-    ("overnight-crypto", "Overnight Crypto Research", 4200, None, ("overnight-crypto",)),
+    ("crypto-research", "Crypto Research (24/7)", 4200, None, ("crypto-research",)),
     ("daily-learning", "Daily Learning", 90000, None, ("daily-learning",)),
     ("daily-report", "Daily Report", 90000, None, ("daily-report", "weekly-report", "monthly-report")),
 )

@@ -220,11 +220,11 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             restore_env(previous)
 
     def test_run_crypto_analysis_no_longer_calls_auto_execute_recommendations_inline(self):
-        # Regression guard for the overnight-crypto timeout remediation: the dedicated,
+        # Regression guard for the crypto-research timeout remediation: the dedicated,
         # independently-scheduled auto-execution job must remain the sole autonomous execution
         # path. run_crypto_analysis previously called self.auto_execute_recommendations()
         # synchronously inside itself - redundant (the standalone job picks up the same
-        # proposals within its own ~60-90s cadence) and a major contributor to overnight-crypto's
+        # proposals within its own ~60-90s cadence) and a major contributor to crypto-research's
         # chronic timeouts.
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_API_KEY",

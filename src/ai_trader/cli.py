@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                             # follow-up: same root cause class as evidence-snapshot).
                             timeout_seconds=(
                                 service.settings.research_job_timeout_seconds
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "overnight-crypto"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research"}
                                 else None
                             ),
                         )
@@ -474,7 +474,7 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
     job_name = job_name.strip().lower()
     if job_name in {"premarket-equity", "market-open-equity", "midday-equity", "market-close-equity"}:
         return service.run_analysis({"limit": limit, "trigger_type": job_name, "broker": "alpaca"})
-    if job_name == "overnight-crypto":
+    if job_name == "crypto-research":
         return service.run_crypto_analysis(limit=limit)
     if job_name == "daily-learning":
         return service.daily_learning_update(date.today().isoformat())
@@ -826,7 +826,7 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     if not settings.worker_research_enabled:
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
-    due.append(("overnight-crypto", _time_bucket(now, research_seconds)))
+    due.append(("crypto-research", _time_bucket(now, research_seconds)))
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     if market_now.weekday() >= 5:
         return due

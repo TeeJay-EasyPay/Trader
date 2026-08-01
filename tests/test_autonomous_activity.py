@@ -60,7 +60,7 @@ class AutonomousActivityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = _db(tmp)
             self._seed_common(db_path)
-            claim = claim_scheduled_job(db_path, job_name="overnight-crypto", worker_id="worker-activity")
+            claim = claim_scheduled_job(db_path, job_name="crypto-research", worker_id="worker-activity")
             complete_scheduled_job(
                 db_path,
                 claim["job_run_id"],
@@ -71,7 +71,7 @@ class AutonomousActivityTests(unittest.TestCase):
                 db_path,
                 broker="kraken",
                 asset_type="crypto",
-                trigger_type="overnight-crypto",
+                trigger_type="crypto-research",
                 symbols_examined=12,
                 symbols_with_adequate_data=12,
                 interesting_ideas=0,

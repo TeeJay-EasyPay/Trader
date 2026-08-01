@@ -56,14 +56,14 @@ class AlwaysOnOperationsTests(unittest.TestCase):
     def test_research_worker_jobs_excludes_priority_evidence_snapshot(self) -> None:
         due = [
             ("evidence-snapshot", "2026-07-23T16:00:00+00:00"),
-            ("overnight-crypto", "2026-07-23T16:00:00+00:00"),
+            ("crypto-research", "2026-07-23T16:00:00+00:00"),
             ("market-open-equity", "2026-07-23T16:00:00+00:00"),
         ]
 
         self.assertEqual(
             _research_worker_jobs(due),
             [
-                ("overnight-crypto", "2026-07-23T16:00:00+00:00"),
+                ("crypto-research", "2026-07-23T16:00:00+00:00"),
                 ("market-open-equity", "2026-07-23T16:00:00+00:00"),
             ],
         )
@@ -203,7 +203,7 @@ class AlwaysOnOperationsTests(unittest.TestCase):
             status = scheduler_status(db_path)
 
             self.assertIn("premarket-equity", status["supported_jobs"])
-            self.assertIn("overnight-crypto", status["supported_jobs"])
+            self.assertIn("crypto-research", status["supported_jobs"])
             self.assertIn("broker-poll-alpaca", status["supported_jobs"])
             self.assertIn("broker-poll-kraken", status["supported_jobs"])
             self.assertIn("auto-execution-alpaca", status["supported_jobs"])

@@ -1043,7 +1043,7 @@ def scheduler_status(db_path: Path) -> dict[str, Any]:
             "market-open-equity",
             "midday-equity",
             "market-close-equity",
-            "overnight-crypto",
+            "crypto-research",
             "daily-learning",
             "daily-report",
             "auto-execution-alpaca",

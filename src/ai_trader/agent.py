@@ -218,7 +218,7 @@ def propose_crypto_trades(
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         for symbol in symbols:
-            print(f"[overnight-crypto] symbol={symbol} stage=evaluating", flush=True)
+            print(f"[crypto-research] symbol={symbol} stage=evaluating", flush=True)
             row = conn.execute(
                 """
                 SELECT * FROM CRYPTO_RESEARCH_SCORES WHERE UPPER(symbol) = UPPER(?)
@@ -227,7 +227,7 @@ def propose_crypto_trades(
                 (symbol,),
             ).fetchone()
             if row is None:
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_research_score", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=no_research_score", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
@@ -239,7 +239,7 @@ def propose_crypto_trades(
                     event_type="agent_no_trade",
                     payload={"symbol": symbol, "reason": "crypto_due_diligence_below_threshold_or_negative_trend", "score": dict(row)},
                 )
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=below_threshold", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=below_threshold", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
@@ -252,7 +252,7 @@ def propose_crypto_trades(
                     event_type="agent_no_trade",
                     payload={"symbol": symbol, "pair": pair, "reason": "kraken_pair_unavailable", "detail": str(exc)},
                 )
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=pair_unavailable", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=pair_unavailable", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
@@ -263,7 +263,7 @@ def propose_crypto_trades(
                     event_type="agent_no_trade",
                     payload={"symbol": symbol, "reason": "current_price_not_available"},
                 )
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_current_price", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=no_current_price", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
@@ -310,7 +310,7 @@ def propose_crypto_trades(
                         "reason": "Trading Intelligence could not articulate both strongest argument for and strongest argument against.",
                     },
                 )
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_bull_bear_case", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=no_bull_bear_case", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
@@ -325,11 +325,11 @@ def propose_crypto_trades(
             audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
                 proposals.append(proposal)
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=proposal_generated", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=proposal_generated", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [proposal])
             else:
-                print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=guardrails_failed", flush=True)
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=guardrails_failed", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
     return proposals
