@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from .database import connect
+import threading
+from .database import connect, selected_backend
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
@@ -381,12 +382,41 @@ class TradingPolicy:
         }
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_foundation_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(FOUNDATION_SCHEMA)
-            _seed_policies(conn)
+    """Create schema and seed default policies once per process.
+
+    load_trading_policy called this unconditionally, and evaluate_recommendation calls
+    load_trading_policy on every candidate. Hosted evidence (2026-08-01): this single
+    call cost ~15s inside a single evaluate_recommendation invocation that took ~65-70s
+    total -- the largest identified individual sub-step, likely from _seed_policies
+    re-inserting the full default policy set (INSERT OR IGNORE against every row) on
+    every call rather than only when the tables are genuinely empty. Same fix pattern
+    as kraken_reconciliation, trading_intelligence, multi_broker, and operational --
+    this is the 5th occurrence.
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(FOUNDATION_SCHEMA)
+                _seed_policies(conn)
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> TradingPolicy:

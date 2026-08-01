@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import POSTGRES_BACKENDS, connect
+import threading
+from .database import POSTGRES_BACKENDS, connect, selected_backend
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -148,13 +149,39 @@ CRITICAL_RUNTIME_FAMILIES = {
 STRATEGY_STAGES = ["Research", "Backtest", "Walk Forward", "Shadow", "Paper", "Micro Live", "Production", "Retired"]
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_production_spine_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(PHASE5_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_decisions_symbol ON PORTFOLIO_MANAGER_DECISIONS(symbol, created_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_gateway_symbol ON MARKET_DATA_GATEWAY_RUNS(normalized_symbol, created_at)")
+    """Create schema once per process.
+
+    portfolio_manager_decision and production_risk_sentinel_decision (both called from
+    pre_execution_decision_packet, on every candidate evaluate_recommendation processes)
+    call this unconditionally. Same fix pattern as kraken_reconciliation,
+    trading_intelligence, multi_broker, operational, and foundation -- this is the
+    6th occurrence.
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(PHASE5_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_decisions_symbol ON PORTFOLIO_MANAGER_DECISIONS(symbol, created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_gateway_symbol ON MARKET_DATA_GATEWAY_RUNS(normalized_symbol, created_at)")
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def production_database_spine_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
