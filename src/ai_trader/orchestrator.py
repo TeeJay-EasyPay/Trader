@@ -278,6 +278,7 @@ class InvestmentOrchestrator:
             notes = "Auto Paper Trading is disabled; recommendation requires manual approval."
         else:
             assert selected is not None
+            print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=order_path_entered broker={selected.name} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
             logical_trade_id = register_execution_intent(
                 self.db_path,
                 proposal=p,
@@ -291,6 +292,7 @@ class InvestmentOrchestrator:
                     "account_equity": context.account.equity,
                 },
             )
+            print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=execution_intent_registered logical_trade_id={logical_trade_id} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
             client_order_id = p.proposal_id
             lock_acquired = acquire_order_intent_lock(
                 self.db_path,
@@ -300,6 +302,7 @@ class InvestmentOrchestrator:
                 side=p.side,
                 notional=allocation["approved_notional"],
             )
+            print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=order_intent_lock_attempted acquired={lock_acquired} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
             if not lock_acquired:
                 failures.append("duplicate_order_intent")
                 decision_text = "rejected"
@@ -316,7 +319,13 @@ class InvestmentOrchestrator:
                     payload={"proposal_id": p.proposal_id, "notional": allocation["approved_notional"]},
                 )
                 order_request = _order_request(p, allocation["approved_notional"])
-                order = selected.place_bracket_order(order_request)
+                print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=broker_order_submitting notional={allocation['approved_notional']} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
+                try:
+                    order = selected.place_bracket_order(order_request)
+                except Exception as exc:  # noqa: BLE001 - must see the failure, not lose it to the outer timeout
+                    print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=broker_order_failed error={exc!r} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
+                    raise
+                print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=broker_order_submitted order={json_safe(order)} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
                 broker_order_id = str(order.get("id") or order.get("order_id") or "")
                 if broker_order_id:
                     link_broker_order(
