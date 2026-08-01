@@ -319,6 +319,12 @@ def main(argv: list[str] | None = None) -> int:
                         worker_id,
                         pulse,
                         scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
+                        # trade_audit candidates are evaluated one at a time through the full
+                        # Strategy/Portfolio/Risk/Sentinel governance chain (~50-55s each even
+                        # after fixing the schema-reinit costs found 2026-08-01) -- the shared
+                        # 180s default gave auto-execution-kraken time for only 1-2 of up to 47
+                        # queued candidates before every single run timed out.
+                        timeout_seconds=service.settings.auto_execution_job_timeout_seconds,
                     )
                     auto_alpaca = auto_execution_results["auto-execution-alpaca"]
                     auto_kraken = auto_execution_results["auto-execution-kraken"]
@@ -695,6 +701,7 @@ def _run_broker_job_group(
     pulse: "WorkerHeartbeatPulse",
     *,
     scheduled_for: str,
+    timeout_seconds: int | None = None,
 ) -> dict[str, dict]:
     """Run independent broker-specific jobs concurrently within one named group.
 
@@ -715,6 +722,7 @@ def _run_broker_job_group(
     pulse.set_job(f"{group_name}[{'+'.join(job_names)}]")
     print(f"[worker] group={group_name} status=started jobs={','.join(job_names)}", flush=True)
     group_start = time.monotonic()
+    effective_timeout = timeout_seconds if timeout_seconds is not None else service.settings.worker_job_timeout_seconds
     results: dict[str, dict] = {}
     if selected_backend() != "postgres":
         for job_name in job_names:
@@ -722,7 +730,7 @@ def _run_broker_job_group(
             results[job_name] = _run_worker_cycle_job(
                 service, job_name, worker_id,
                 scheduled_for=scheduled_for,
-                timeout_seconds=service.settings.worker_job_timeout_seconds,
+                timeout_seconds=effective_timeout,
                 restart_worker_on_timeout=True,
             )
             print(f"[worker] group={group_name} job={job_name} status={results[job_name].get('status')} elapsed={time.monotonic() - job_start:.1f}s", flush=True)
@@ -733,7 +741,7 @@ def _run_broker_job_group(
                 pool.submit(
                     _run_worker_cycle_job, service, job_name, worker_id,
                     scheduled_for=scheduled_for,
-                    timeout_seconds=service.settings.worker_job_timeout_seconds,
+                    timeout_seconds=effective_timeout,
                     restart_worker_on_timeout=True,
                 ): job_name
                 for job_name in job_names
