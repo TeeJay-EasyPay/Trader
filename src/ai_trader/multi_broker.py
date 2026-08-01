@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import connect
+import threading
+from .database import connect, selected_backend
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -216,43 +217,72 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_multi_broker_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(MULTI_BROKER_SCHEMA)
-            _ensure_columns(
-                conn,
-                "MANAGED_TRADE_EXITS",
-                {
-                    "trailing_stop_pct": "REAL",
-                    "high_water_mark": "REAL",
-                    "low_water_mark": "REAL",
-                },
-            )
-            _ensure_columns(conn, "NOTIFICATION_EVENTS", {"push_sent_at": "TEXT"})
-            now = utc_now_iso()
-            for broker in DEFAULT_BROKERS:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO BROKER_AUTO_TRADING_SETTINGS (
-                        broker, auto_trading_enabled, mode, updated_at, updated_by, notes
-                    ) VALUES (?, 0, 'paper_or_sandbox', ?, 'system', 'Disabled by default.')
-                    """,
-                    (broker, now),
+    """Create schema and seed default broker rows once per process.
+
+    This is called unconditionally (CREATE TABLE/ALTER/seed round trips) from nearly
+    every function in this module -- update_broker_runtime, broker_auto_trading_enabled,
+    broker_runtime, set_broker_auto_trading, etc. -- so every candidate evaluated by
+    auto_execute_recommendations and every symbol evaluated by propose_crypto_trades'
+    on_symbol_complete callback paid this cost repeatedly. Same "repeated schema setup
+    mistaken for slow work" bug already fixed for kraken_reconciliation and
+    trading_intelligence; caching per-process is safe for the same reason (every
+    statement here is idempotent, every job run is its own fresh process).
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(MULTI_BROKER_SCHEMA)
+                _ensure_columns(
+                    conn,
+                    "MANAGED_TRADE_EXITS",
+                    {
+                        "trailing_stop_pct": "REAL",
+                        "high_water_mark": "REAL",
+                        "low_water_mark": "REAL",
+                    },
                 )
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO BROKER_RUNTIME_STATE (
-                        broker, connection_status, research_status, due_diligence_status,
-                        current_asset, current_stage, research_queue_json,
-                        assets_reviewed_today, research_cycles_today, last_scan,
-                        next_scan, research_freshness, last_recommendation,
-                        last_trade_submitted, updated_at, details_json
-                    ) VALUES (?, 'Not checked', 'idle', 'idle', NULL, NULL, '[]', 0, 0, NULL, NULL, 'Not available', NULL, NULL, ?, '{}')
-                    """,
-                    (broker, now),
-                )
+                _ensure_columns(conn, "NOTIFICATION_EVENTS", {"push_sent_at": "TEXT"})
+                now = utc_now_iso()
+                for broker in DEFAULT_BROKERS:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO BROKER_AUTO_TRADING_SETTINGS (
+                            broker, auto_trading_enabled, mode, updated_at, updated_by, notes
+                        ) VALUES (?, 0, 'paper_or_sandbox', ?, 'system', 'Disabled by default.')
+                        """,
+                        (broker, now),
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO BROKER_RUNTIME_STATE (
+                            broker, connection_status, research_status, due_diligence_status,
+                            current_asset, current_stage, research_queue_json,
+                            assets_reviewed_today, research_cycles_today, last_scan,
+                            next_scan, research_freshness, last_recommendation,
+                            last_trade_submitted, updated_at, details_json
+                        ) VALUES (?, 'Not checked', 'idle', 'idle', NULL, NULL, '[]', 0, 0, NULL, NULL, 'Not available', NULL, NULL, ?, '{}')
+                        """,
+                        (broker, now),
+                    )
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def broker_auto_trading_enabled(db_path: Path, broker: str, env_default: bool = False) -> bool:
