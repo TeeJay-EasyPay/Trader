@@ -6,7 +6,7 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .audit import AuditDatabase
 from .database import connect
@@ -202,12 +202,18 @@ def propose_crypto_trades(
     requested_notional: float,
     default_stop_loss_pct: float,
     now: datetime | None = None,
+    on_symbol_complete: Callable[[str, list[TradeProposal]], None] | None = None,
 ) -> list[TradeProposal]:
     """Generates crypto trade proposals from the same CRYPTO_RESEARCH_SCORES data the due
     diligence pipeline reads, so a proposal only exists when there's real evidence behind
     it - no LLM call, no floors, just the live technical/momentum/liquidity/risk scores
     computed from CoinGecko market data. Only proposes a long entry when the score clears
-    the confidence bar and the 7-day trend is positive; otherwise the symbol is skipped."""
+    the confidence bar and the 7-day trend is positive; otherwise the symbol is skipped.
+
+    on_symbol_complete, if given, fires immediately after each symbol's outcome is known
+    (empty list if skipped/rejected) so a caller can persist research-freshness evidence
+    per symbol instead of only after the whole batch returns -- a single shared connection
+    for the batch is still opened below, so this adds no per-symbol connection overhead."""
     proposals: list[TradeProposal] = []
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -222,6 +228,8 @@ def propose_crypto_trades(
             ).fetchone()
             if row is None:
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_research_score", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
                 continue
             confidence = float(row["overall_due_diligence_score"] or 0.0)
             trend = row["technical_trend_score"]
@@ -232,6 +240,8 @@ def propose_crypto_trades(
                     payload={"symbol": symbol, "reason": "crypto_due_diligence_below_threshold_or_negative_trend", "score": dict(row)},
                 )
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=below_threshold", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
                 continue
             pair = _kraken_pair(symbol)
             try:
@@ -243,6 +253,8 @@ def propose_crypto_trades(
                     payload={"symbol": symbol, "pair": pair, "reason": "kraken_pair_unavailable", "detail": str(exc)},
                 )
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=pair_unavailable", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
                 continue
             price = _kraken_last_price(prices, pair)
             if price is None or price <= 0:
@@ -252,6 +264,8 @@ def propose_crypto_trades(
                     payload={"symbol": symbol, "reason": "current_price_not_available"},
                 )
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_current_price", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
                 continue
             stop_loss = round(price * (1 - default_stop_loss_pct), 8)
             take_profit = round(price * (1 + default_stop_loss_pct * 2), 8)
@@ -297,6 +311,8 @@ def propose_crypto_trades(
                     },
                 )
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=no_bull_bear_case", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
                 continue
             validation = validate_trade_proposal(proposal, account, guardrails, now=now)
             proposal = replace(
@@ -310,8 +326,12 @@ def propose_crypto_trades(
             if validation.passed:
                 proposals.append(proposal)
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=proposal_generated", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [proposal])
             else:
                 print(f"[overnight-crypto] symbol={symbol} stage=completed outcome=guardrails_failed", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
     return proposals
 
 

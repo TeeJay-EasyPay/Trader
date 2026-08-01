@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from .database import connect
+import threading
+from .database import connect, selected_backend
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,18 +219,48 @@ class IntelligencePacket:
         }
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_trading_intelligence_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(TRADING_INTELLIGENCE_SCHEMA)
-            _ensure_column(conn, "TRADE_LIFECYCLE", "fees", "REAL")
-            _ensure_column(conn, "TRADE_LIFECYCLE", "slippage", "REAL")
-            _ensure_column(conn, "TRADE_LIFECYCLE", "r_multiple", "REAL")
-            _ensure_column(conn, "TRADE_LIFECYCLE", "mae", "REAL")
-            _ensure_column(conn, "TRADE_LIFECYCLE", "mfe", "REAL")
-            _ensure_column(conn, "TRADE_LIFECYCLE", "holding_time_seconds", "REAL")
-            _seed_strategy_registry(conn)
+    """Create schema and seed the strategy registry once per process.
+
+    evaluate_trade_intelligence (called once per symbol from propose_crypto_trades /
+    propose_stock_trades) called this unconditionally on every symbol, so a 9-symbol
+    research cycle paid the full CREATE TABLE / ALTER / seed round-trip cost nine
+    times over. Hosted logs (2026-08-01) showed ~43-44s per symbol against a 300s
+    job budget -- the same "repeated schema setup mistaken for slow analysis" bug
+    already found and fixed for kraken_reconciliation._ensure_schema and the
+    evidence-snapshot job timeout. Caching per-process is safe because every
+    statement here is idempotent (CREATE TABLE IF NOT EXISTS / ensure-column /
+    seed-if-missing) and every job run is its own fresh process.
+    """
+
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(TRADING_INTELLIGENCE_SCHEMA)
+                _ensure_column(conn, "TRADE_LIFECYCLE", "fees", "REAL")
+                _ensure_column(conn, "TRADE_LIFECYCLE", "slippage", "REAL")
+                _ensure_column(conn, "TRADE_LIFECYCLE", "r_multiple", "REAL")
+                _ensure_column(conn, "TRADE_LIFECYCLE", "mae", "REAL")
+                _ensure_column(conn, "TRADE_LIFECYCLE", "mfe", "REAL")
+                _ensure_column(conn, "TRADE_LIFECYCLE", "holding_time_seconds", "REAL")
+                _seed_strategy_registry(conn)
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def evaluate_trade_intelligence(

@@ -565,6 +565,40 @@ class LocalApiService:
             return result
         print(f"[overnight-crypto] stage=symbols_resolved count={len(symbols)} symbols={symbols}", flush=True)
         account = self._account_context_for_broker("kraken")
+        evaluated_symbols: list[str] = []
+
+        def _on_symbol_complete(symbol: str, symbol_proposals: list) -> None:
+            # Persisted immediately after every symbol -- not just once the whole batch
+            # returns -- so a job timeout only loses whatever hadn't been evaluated yet.
+            # The Market Intelligence Centre reads research_freshness/last_scan directly,
+            # and previously only saw a write once every symbol in the batch had finished
+            # (2026-08-01 hosted evidence: overnight-crypto timing out mid-batch left
+            # "no fresh production research evidence" even though several symbols had
+            # genuinely been evaluated).
+            evaluated_symbols.append(symbol)
+            for proposal in symbol_proposals:
+                self._record_shadow_from_proposal(
+                    proposal,
+                    intended_broker="kraken",
+                    decision_status="shadow_candidate",
+                    trigger_type="scheduled",
+                    wait_or_rejection_reason=None,
+                )
+            update_broker_runtime(
+                self.settings.db_path,
+                "kraken",
+                research_status="researching" if len(evaluated_symbols) < len(symbols) else "idle",
+                due_diligence_status="in_progress" if len(evaluated_symbols) < len(symbols) else "completed",
+                current_stage=f"evaluated {len(evaluated_symbols)}/{len(symbols)}",
+                research_queue=symbols,
+                assets_reviewed_today=len(evaluated_symbols),
+                research_cycles_today=1,
+                last_scan=utc_now_iso(),
+                next_scan=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
+                research_freshness="Fresh",
+                last_recommendation=symbol_proposals[-1].symbol if symbol_proposals else None,
+            )
+
         proposals = propose_crypto_trades(
             self.settings.db_path,
             adapter,
@@ -575,6 +609,7 @@ class LocalApiService:
             min_confidence=self.settings.auto_trade.min_confidence,
             requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
+            on_symbol_complete=_on_symbol_complete,
         )
         print(f"[overnight-crypto] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
         # Deliberately does not call auto_execute_recommendations() here. The dedicated,
@@ -586,28 +621,9 @@ class LocalApiService:
         # to overnight-crypto's chronic timeouts.
         auto_execution = {"status": "delegated", "message": "Handled by the independent per-broker auto-execution jobs."}
         print("[overnight-crypto] stage=execution status=delegated", flush=True)
-        for proposal in proposals:
-            self._record_shadow_from_proposal(
-                proposal,
-                intended_broker="kraken",
-                decision_status="shadow_candidate",
-                trigger_type="scheduled",
-                wait_or_rejection_reason=None,
-            )
-        update_broker_runtime(
-            self.settings.db_path,
-            "kraken",
-            research_status="idle",
-            due_diligence_status="completed",
-            current_stage="complete",
-            research_queue=symbols,
-            assets_reviewed_today=len(symbols),
-            research_cycles_today=1,
-            last_scan=utc_now_iso(),
-            next_scan=next_research_run(interval_minutes=self.settings.research_scheduler_interval_minutes),
-            research_freshness="Fresh",
-            last_recommendation=proposals[-1].symbol if proposals else None,
-        )
+        # Shadow trades and broker-runtime freshness were already recorded per-symbol via
+        # on_symbol_complete above -- the final state it leaves behind already matches what
+        # a post-loop write here would produce, so re-writing it again would be redundant.
         record_notification(
             self.settings.db_path,
             event_type="research_completed",
