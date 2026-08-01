@@ -187,11 +187,27 @@ class InvestmentOrchestrator:
             failures.append("capital_allocation_rejected")
         pnl_snapshot = latest_pnl_snapshot(self.db_path, selected.name) if selected else {}
         if context.account.equity > 0:
+            # PORTFOLIO_SNAPSHOTS.portfolio_value (and the day/week/month_pnl derived from
+            # it) reflects the broker's whole account -- for Kraken specifically that
+            # includes pre-existing personal holdings alongside the AI's own isolated
+            # allocation, so it can be an order of magnitude larger than
+            # context.account.equity (deliberately scoped to just the AI's own capital,
+            # see _account_context_for_broker/_kraken_trading_allocation_gbp). Comparing
+            # a whole-account P&L swing against a tiny isolated equity figure means
+            # ordinary price movement on capital the AI never touched could trip a guard
+            # meant to protect the AI's own allocation. Hosted evidence (2026-08-01): this
+            # produced a standing false-positive maximum_weekly_loss_exceeded on every
+            # single Kraken candidate. The drawdown check below already guards against
+            # exactly this mismatch via _snapshot_equity_basis_matches_context -- the
+            # weekly/monthly checks were simply missing the same guard.
+            snapshot_basis_matches = _snapshot_equity_basis_matches_context(
+                pnl_snapshot.get("portfolio_value") or 0.0, context.account.equity
+            )
             week_pnl = pnl_snapshot.get("week_pnl")
-            if week_pnl is not None and week_pnl <= -(context.account.equity * policy.max_weekly_loss_pct):
+            if snapshot_basis_matches and week_pnl is not None and week_pnl <= -(context.account.equity * policy.max_weekly_loss_pct):
                 failures.append("maximum_weekly_loss_exceeded")
             month_pnl = pnl_snapshot.get("month_pnl")
-            if month_pnl is not None and month_pnl <= -(context.account.equity * policy.max_monthly_loss_pct):
+            if snapshot_basis_matches and month_pnl is not None and month_pnl <= -(context.account.equity * policy.max_monthly_loss_pct):
                 failures.append("maximum_monthly_loss_exceeded")
             peak_equity = pnl_snapshot.get("peak_equity")
             if peak_equity and peak_equity > 0 and _snapshot_equity_basis_matches_context(peak_equity, context.account.equity):

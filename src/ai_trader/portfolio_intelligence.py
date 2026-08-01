@@ -230,6 +230,25 @@ def proposed_trade_portfolio_impact(
     max_asset_class_weight: float = 0.40,
 ) -> dict[str, Any]:
     total = _float(current_exposure.get("total_value")) or 0.0
+    if total <= 0:
+        # No existing measured positions means the concentration formula below (new
+        # asset's notional / new total, where new total is built entirely from this
+        # one trade) always evaluates to exactly 100% -- not because the trade is
+        # genuinely concentrated, but because the denominator is empty. That
+        # permanently rejected every single first-ever trade for a broker/asset class
+        # regardless of size (hosted evidence, 2026-08-01: every Kraken candidate
+        # rejected as "100.0% of the measured portfolio" while AI-managed Kraken
+        # positions were still zero). Concentration is meaningful only relative to an
+        # existing portfolio to compare against.
+        return {
+            "symbol": symbol.upper(),
+            "decision": "Acceptable portfolio impact",
+            "new_asset_class_weight": None,
+            "plain_english": (
+                f"No existing {proposed_asset_class} positions are measured yet, so {symbol.upper()} "
+                "cannot be over-concentrated relative to an empty portfolio."
+            ),
+        }
     new_total = total + max(0.0, proposed_notional)
     current_bucket = current_exposure.get("exposure", {}).get("asset_class", {})
     current_value = 0.0
