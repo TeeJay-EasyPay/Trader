@@ -1,5 +1,94 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 4 — founder presentation service extraction
+
+Implements Phase 4 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move read-only founder-facing aggregation into `application/founder_experience_service.py`:
+founder experience payload, world-class evidence, executive summaries, connection readiness,
+portfolio extremes, positions requiring attention, strategy/signal summaries, supporting
+presentation helpers. This service must not execute trades, change broker settings or mutate
+operational controls.").
+
+**New `src/ai_trader/application/founder_experience_service.py`** (649 lines): `FounderExperienceService`
+holding 15 methods moved verbatim from `LocalApiService` - `founder_experience_payload`,
+`world_class_evidence`, `executive_summary`, `founder_executive_summary`, `connection_readiness`,
+plus 10 exclusive supporting helpers (`_latest_strategy_performance_rows`, `_portfolio_extremes`,
+`_positions_requiring_attention`, `_crypto_health_summary`, `_strategy_validation_summary`,
+`_signal_rankings`, `_portfolio_intelligence_summary`, `_future_broker_status`,
+`_data_availability_unknowns`, `_executive_first_conclusion`, `_latest_broker_trade_any`,
+`_plain_learning_status` - 12 in total), and 6 module-level formatting helper functions
+(`_average_numeric`, `_committee_numeric_confidence`, `_plain_confidence`, `_plain_regime`,
+`_plain_market_health`, `_portfolio_rebalancing_suggestions`) used only by this cluster.
+Verified via grep-based call-site analysis (every candidate helper checked for call sites
+outside its own containing method before being classified as exclusive) - confirmed zero
+dangling references after the move.
+
+**Confirmed read-only**, per the plan's explicit constraint: grepped the new file for
+`INSERT INTO`/`UPDATE`/`DELETE FROM`/`place_order`/`place_bracket`/`set_kill_switch`/
+`record_notification` - zero matches. Every method is aggregation over already-recorded data
+or `SELECT`-only queries.
+
+**One caught-in-review design mistake, fixed before this entry was written.** The first
+extraction pass used a single blind line-range replacement (1072-1493) covering the entire
+founder-presentation cluster, not noticing that `portfolio()`, `founder_brief()`, and
+`operational_truth_status()` - three unrelated, out-of-scope `LocalApiService` methods - sit
+physically interspersed between `_signal_rankings` and `world_class_evidence` in the original
+file. That pass silently deleted all three. Caught immediately by grepping for their
+definitions post-edit and finding none; fixed by reverting the file to the last commit
+(`git checkout`) and redoing the extraction as separate, precisely-bounded blocks that
+verified the preserved methods survived before proceeding. No broken state was ever tested,
+committed, or left in place - this is recorded here as the plan's Section 11 delivery
+controls call for honest accounting of what verification actually caught, not to imply the
+error reached a committed state.
+
+**Eight narrow injected dependencies, not a reference to LocalApiService.** This cluster reads
+more not-yet-extracted `LocalApiService` state than Phase 3's reporting pipeline did:
+`broker_panels()` and `recommendations()` (Phase 6/5 territory), `daily_learning_update()`
+(Phase 5 territory), `operational_truth_status()`, `themes()`, and `companies()` (each has its
+own separate route contract, out of this phase's scope to move), plus `hosted_read_only` and
+`api_token_configured`. The last two are **not** captured as plain bool parameters: both are
+reassigned on the `LocalApiService` instance *after* `__init__` runs (by `run_server()`, and
+by `tests/test_developer_experience.py::test_connection_readiness_shows_hosted_control_lock`,
+which sets `service.hosted_read_only = True` post-construction and expects
+`connection_readiness()` to reflect it) - so both are wired as `lambda: self.hosted_read_only`
+/ `lambda: self.api_token_configured`, reading live state off the instance at call time, not a
+value snapshotted at construction. All eight follow the same `Callable` injection pattern
+established in Phase 3, per the plan's Section 5 dependency rule 6.
+
+**Two small pure formatting helpers duplicated again**, not imported: `_broker_label` and
+`_money_text` are still needed by other not-yet-extracted parts of `api/__init__.py` (broker
+panels and permissions summaries - Phase 6 territory) and were already duplicated once into
+`application/reporting_service.py` for the same reason in Phase 3. Per this codebase's now-
+established convention, each `application/*` module stays self-contained rather than importing
+from a peer service, so they are duplicated a second time here rather than imported from
+`reporting_service.py`.
+
+**Delegation before deletion.** The 5 top-level methods (`founder_experience_payload`,
+`world_class_evidence`, `executive_summary`, `founder_executive_summary`, `connection_readiness`)
+stayed in place as one-line delegates to `self._founder_experience_service.*`, constructed via
+composition in `__init__` alongside `self._query_executor` and `self._reporting_service`. The
+GET/POST route dispatch table and the large `/founder-evidence` aggregator function (which
+calls all 5) needed zero changes. The 12 exclusive supporting helpers had no other internal
+callers and were fully removed rather than delegated, matching Phase 3's precedent for methods
+with a single containing caller.
+
+**No bug found this phase.** Unlike Phase 3 (`record_trading_report`'s schema-reinit-per-call),
+nothing in this cluster showed the same pattern - none of these methods call any
+`initialize_*_schema` function.
+
+**Verification.** `python -m py_compile` clean on both files. Confirmed no circular import at
+runtime. Grepped every moved function/method name across `api/__init__.py` post-edit -
+zero dangling references. Full stable suite passed clean twice independently: 286 passed, 0
+failed both runs, including `test_connection_readiness_shows_hosted_control_lock` (the direct
+proof the live-state injection design works) and `test_founder_evidence_top_level_shape`
+(the direct proof the `/founder-evidence` contract didn't shift), both re-run individually
+by name for extra confidence. `api/__init__.py`: 5,261 -> 4,747 lines (-514). Removed two now-
+unused imports (`calculate_portfolio_exposure`, `calculate_performance_metrics` - both moved
+into the new file). No production runtime behaviour changed.
+
+**Next.** Continuing to Phase 5 (Research service). No checkpoint until Phase 7 completes, per
+the 2026-08-02 Founder/Claude agreement on phase batching.
+
 ## 2026-08-02 Modularisation Phase 3 — reporting service extraction
 
 Implements Phase 3 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
