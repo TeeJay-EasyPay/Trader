@@ -124,11 +124,18 @@ class AlpacaPaperClient:
             )
             try:
                 response = self._request("GET", f"/v2/stocks/{symbol}/bars?{query}", data_api=True)
-            except AlpacaError as exc:
-                if "asset" in str(exc).lower() and "not found" in str(exc).lower():
-                    unavailable.append(symbol)
-                    continue
-                raise
+            except AlpacaError:
+                # Any per-symbol failure here (Alpaca has used at least two different
+                # message phrasings for "this ticker doesn't exist to us" -- "asset ...
+                # not found" and "invalid symbol: X" -- and there is no guarantee those
+                # are the only two) must not abort the whole backtest/walk-forward cycle.
+                # This loop's entire purpose is per-symbol isolation: one bad ticker in
+                # the equity universe (e.g. a foreign share class Alpaca doesn't carry)
+                # previously crashed strategy-lab-refresh outright, silently, for at
+                # least 3 consecutive days (2026-07-29 through 2026-07-31 hosted
+                # evidence) before this was ever noticed.
+                unavailable.append(symbol)
+                continue
             bars[symbol] = response.get("bars") or []
         return {"bars": bars, "unavailable_symbols": unavailable}
 

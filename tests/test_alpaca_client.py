@@ -70,6 +70,28 @@ class AlpacaDailyBarsTests(unittest.TestCase):
         self.assertEqual(list(result["bars"].keys()), ["AAPL"])
         self.assertEqual(result["unavailable_symbols"], ["BADSYM"])
 
+    def test_get_daily_bars_skips_symbol_rejected_with_a_different_error_phrasing(self):
+        """Alpaca doesn't only say "asset not found" -- a foreign share class like
+        NOVO-B came back as 400 "invalid symbol: NOVO-B", which previously fell
+        through the narrow message-matching and crashed the whole batch (and with
+        it, strategy-lab-refresh, silently, for 3+ consecutive days). Any per-symbol
+        failure here must be isolated, not just the one phrasing seen first."""
+
+        client = self._client()
+
+        def fake_urlopen(request, timeout=20):
+            if "NOVO-B" in request.full_url:
+                raise __import__("urllib.error", fromlist=["HTTPError"]).HTTPError(
+                    request.full_url, 400, "invalid symbol: NOVO-B", {}, BytesIO(b'{"message": "invalid symbol: NOVO-B"}')
+                )
+            return _fake_response({"bars": [{"t": "2026-07-01T00:00:00Z", "c": 10}]})
+
+        with patch("ai_trader.alpaca.urlopen", side_effect=fake_urlopen):
+            result = client.get_daily_bars(["AAPL", "NOVO-B"], days=30)
+
+        self.assertEqual(list(result["bars"].keys()), ["AAPL"])
+        self.assertEqual(result["unavailable_symbols"], ["NOVO-B"])
+
 
 if __name__ == "__main__":
     unittest.main()
