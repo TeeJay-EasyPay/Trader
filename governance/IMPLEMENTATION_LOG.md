@@ -1,5 +1,82 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 7 — administration service extraction (+ Phase 6a scope correction)
+
+Implements Phase 7 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move trading-state administration, broker auto-trading settings, Render API
+synchronisation, guarded lock release, founder reconciliation override, developer/diagnostic
+status. Keep guarded administrative actions separate from ordinary presentation endpoints."),
+plus a correction to Phase 6a found while scoping this phase.
+
+**The correction, found and fixed before any new Phase 7 work.** Phase 6a's fork instructions
+were written from Phase 6's one-sentence plan description alone, without cross-checking Phase
+7's explicit list. As a result four methods that genuinely *mutate* state ended up inside
+`application/broker_service.py`, which the plan's Section 5 dependency rule 4 requires to stay
+presentation-only ("may read operational state but must not mutate trading state"):
+`set_broker_auto_trading` (writes to the DB, triggers a Render deploy), `_render_api_json` and
+`_sync_broker_auto_trading_to_render` (the Render API call that performs), and
+`release_order_intent_lock_for` (manually releases a safety lock - explicitly a "guarded"
+action per its own docstring, and per this exact plan section's wording). Moved a second time,
+from `broker_service.py` (not from `api/__init__.py` - they no longer lived there), into the
+new `application/administration_service.py`, along with `BROKER_AUTO_TRADING_ENV_VARS` (only
+used by `_sync_broker_auto_trading_to_render`). `broker_service.py`'s `order_intent_locks`
+(the read-only lock listing, correctly presentation, unmoved) now cross-references where the
+guarded release action actually lives. `LocalApiService`'s delegates for `set_broker_auto_trading`
+and `release_order_intent_lock_for` were repointed from `self._broker_service.*` to
+`self._administration_service.*`; a stale test patch target in
+`tests/test_multi_broker_platform.py` (`patch.object(BrokerService, "_render_api_json", ...)`)
+was found by running the suite and retargeted to `AdministrationService`.
+
+**New Phase 7 scope**: `set_trading_state` moved from `api/__init__.py` into
+`AdministrationService` the normal way (AST-verified exclusive, delegated, "delegation before
+deletion").
+
+**`AdministrationService` needs zero injected dependencies** - unlike every other application
+service extracted so far, all six of its methods only need `settings`, `audit`, and
+`query_executor`, no not-yet-extracted `LocalApiService` state.
+
+**Two deliberate non-moves, decided and documented rather than assumed:**
+- `founder_override_kraken_hold` ("founder reconciliation override" in the plan's list) is
+  already a bare domain-level function (from `kraken_reconciliation.py`) called directly inline
+  in the POST route dispatch table - there is no existing `LocalApiService` method wrapping it.
+  Left exactly as-is: a route calling a domain function directly is already clean, and inventing
+  a wrapper method purely to match a plan bullet point would be redesign, not extraction, which
+  the plan explicitly warns against ("do not move and redesign logic simultaneously").
+- `developer_status` ("developer/diagnostic status" in the plan's list) was already moved into
+  `OperationsService` during Phase 6b. Verified its body is 100% read-only (SELECT counts and
+  system diagnostics, zero writes) - it does not violate dependency rule 4, unlike the four
+  methods corrected above. Left in `OperationsService`; moving it again would be pure churn
+  with no rule-compliance benefit, even though it doesn't match the plan's phase-label grouping
+  exactly.
+
+**No bug found this phase requiring a fix.**
+
+**Verification.** `python -m py_compile` clean on all three touched/new files. Confirmed no
+circular import at runtime (`from ai_trader.api import LocalApiService, AdministrationService`).
+Grepped every corrected/moved name across `broker_service.py` and `api/__init__.py` post-edit -
+zero dangling references (one intentional docstring cross-reference in `order_intent_locks`
+pointing to the new location, not a code reference). Full stable suite passed clean twice
+independently: 286 passed, 0 failed both runs, including the retargeted broker-auto-trading
+Render-sync test. `api/__init__.py`: 2,828 lines (net roughly unchanged - `set_trading_state`'s
+body shrank to a delegate but the new service's construction and three corrected delegates
+added lines back). `broker_service.py`: 1,133 -> 990 lines (-143, the correction). New
+`administration_service.py`: 212 lines. No production runtime behaviour changed.
+
+**Note on how this entry was produced.** The fork that started this phase was terminated
+mid-task by a session usage limit after completing the code moves (both files) but before
+wiring `AdministrationService` into `api/__init__.py`'s constructor/imports/delegates or
+writing this log entry - the working tree was left in a genuinely broken intermediate state
+(delegates pointing at methods that no longer existed on `BrokerService`). The coordinating
+session completed the wiring, found and fixed the one resulting test failure, ran full
+verification, and wrote this entry directly.
+
+**Did not run `git commit`** during the fork's portion; the coordinating session reviewed and
+completed this phase itself before committing.
+
+**Next.** Phase 7 complete - this was the last phase before the Founder/Claude/ChatGPT review
+checkpoint agreed 2026-08-02. Stopping here. Phase 8 (execution service) does not begin until
+that review happens.
+
 ## 2026-08-02 Modularisation Phase 6b — operations service extraction
 
 Implements the operations half of Phase 6 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`

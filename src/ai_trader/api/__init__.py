@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+from ..application.administration_service import AdministrationService
 from ..application.broker_service import BrokerService
 from ..application.founder_experience_service import FounderExperienceService
 from ..application.operations_service import OperationsService
@@ -240,6 +241,11 @@ class LocalApiService:
             # post-construction.
             broker_factory=lambda: self._broker(),
             kraken_balance_summary_lookup=lambda balances, adapter: _kraken_balance_summary(balances, adapter),
+        )
+        self._administration_service = AdministrationService(
+            settings=settings,
+            audit=self.audit,
+            query_executor=self._query_executor,
         )
         self._operations_service = OperationsService(
             settings=settings,
@@ -1030,21 +1036,10 @@ class LocalApiService:
         return self._research_service._record_production_research(started_at, broker, asset_type, trigger_type, symbols, result)
 
     def set_trading_state(self, state: str, command: str) -> dict[str, Any]:
-        with closing(self._connect()) as conn:
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO engine_control (id, trading_state, updated_at, last_command)
-                    VALUES (1, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        trading_state = excluded.trading_state,
-                        updated_at = excluded.updated_at,
-                        last_command = excluded.last_command
-                    """,
-                    (state, utc_now_iso(), command),
-                )
-        self.audit.record_execution_event(f"control-{command}", "engine_control", {"state": state, "command": command})
-        return {"status": state, "command": command}
+        # Delegates to AdministrationService (Phase 7, architecture/AI_TRADER_
+        # MODULARISATION_ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper --
+        # "delegation before deletion" -- so callers needed zero changes.
+        return self._administration_service.set_trading_state(state, command)
 
     def approve_and_execute(self, body: dict[str, Any]) -> dict[str, Any]:
         control = self._control_state()
@@ -1442,10 +1437,12 @@ class LocalApiService:
         return self.auto_execute_recommendations(broker_filter="kraken")
 
     def set_broker_auto_trading(self, body: dict[str, Any]) -> dict[str, Any]:
-        # Delegates to BrokerService (Phase 6a, architecture/AI_TRADER_MODULARISATION_
-        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- "delegation before
-        # deletion" -- so callers (POST /broker-auto-trading, tests) needed no changes.
-        return self._broker_service.set_broker_auto_trading(body)
+        # Delegates to AdministrationService (Phase 7, architecture/AI_TRADER_
+        # MODULARISATION_ARCHITECTURE_2026-08-02.md; corrected from a Phase 6a scoping
+        # mistake that put this mutating method in the presentation-only BrokerService).
+        # Kept as a thin wrapper -- "delegation before deletion" -- so callers
+        # (POST /broker-auto-trading, tests) needed no changes.
+        return self._administration_service.set_broker_auto_trading(body)
 
     def monitor_managed_exits(self) -> dict[str, Any]:
         checked = []
@@ -1907,7 +1904,10 @@ class LocalApiService:
         return self._broker_service.order_intent_locks(broker=broker, status=status, limit=limit)
 
     def release_order_intent_lock_for(self, *, broker: str, client_order_id: str, confirmed_no_order_placed: bool) -> dict[str, Any]:
-        return self._broker_service.release_order_intent_lock_for(
+        # Delegates to AdministrationService (Phase 7; corrected from a Phase 6a scoping
+        # mistake that put this guarded mutating action in the presentation-only
+        # BrokerService).
+        return self._administration_service.release_order_intent_lock_for(
             broker=broker, client_order_id=client_order_id, confirmed_no_order_placed=confirmed_no_order_placed
         )
 

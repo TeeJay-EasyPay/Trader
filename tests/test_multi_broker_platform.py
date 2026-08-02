@@ -22,6 +22,7 @@ from ai_trader.api import (
 # not a method); _kraken_balance_summary/_kraken_trading_allocation_gbp deliberately
 # stayed in ai_trader.api as the single implementation of the Kraken capital-isolation
 # pricing pipeline (see broker_service.py's kraken_balance_summary_lookup injection).
+from ai_trader.application.administration_service import AdministrationService
 from ai_trader.application.broker_service import BrokerService, _recent_unique_broker_events
 from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
@@ -87,11 +88,12 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             settings = replace(settings_for(tmp), render_api_key="render-key", render_service_id="srv-test")
             service = LocalApiService(settings)
 
-            # Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
-            # moved _render_api_json/_sync_broker_auto_trading_to_render into BrokerService
-            # with no delegate (neither had any caller outside this cluster), so the class
-            # to patch is BrokerService, not LocalApiService.
-            with patch.object(BrokerService, "_render_api_json", return_value={"status": "ok", "http_status": 200}) as render_api:
+            # Phase 7 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+            # moved _render_api_json/_sync_broker_auto_trading_to_render/
+            # set_broker_auto_trading into AdministrationService (corrected from a Phase 6a
+            # scoping mistake that had put these mutating methods in the presentation-only
+            # BrokerService), so the class to patch is AdministrationService.
+            with patch.object(AdministrationService, "_render_api_json", return_value={"status": "ok", "http_status": 200}) as render_api:
                 result = service.set_broker_auto_trading({"broker": "alpaca", "enabled": True})
 
             self.assertEqual(result["render_sync"]["status"], "synced")
