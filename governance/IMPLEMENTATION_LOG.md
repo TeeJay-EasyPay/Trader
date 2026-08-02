@@ -1,5 +1,47 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 1 — HTTP transport extraction
+
+Implements Phase 1 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Extract `ApiHandler` to `api/http_server.py`. Preserve exactly: authentication;
+`/healthz` exemption; CORS; body parsing; IP lockout; error envelopes; response serialisation;
+logging behaviour. Keep route paths and handler results unchanged.").
+
+**Mechanical move, not a redesign.** `src/ai_trader/api.py` (6,152 lines) converted into a
+package: `git mv` to `src/ai_trader/api/__init__.py`, then the `ApiHandler` class (transport
+only: `do_GET`/`do_POST`/`do_OPTIONS`, auth-token + IP-lockout check, JSON/HTML response
+serialization, CORS headers, error envelopes) moved verbatim into the new
+`src/ai_trader/api/http_server.py`, which now has zero dependency on any other `ai_trader`
+module - only stdlib. `__init__.py` re-imports it (`from .http_server import ApiHandler`), so
+every existing call site continues to resolve identically: `from ai_trader.api import
+ApiHandler, LocalApiService, run_server` (cli.py, most tests) and every `patch("ai_trader.api.X")`
+mock target (`kraken_capital_ledger_summary`, `record_broker_snapshot`,
+`OpenAIReadOnlyExplainer`, `AuditDatabase`, etc.) still hang off the same `ai_trader.api`
+namespace, since `LocalApiService` and everything else stayed in `__init__.py` untouched -
+only `ApiHandler` moved.
+
+**Before/after dependency summary.** Before: one 6,152-line module mixing HTTP transport,
+service orchestration (`LocalApiService`, ~150 methods), and ~70 module-level helper
+functions, with 28 single-dot relative imports of sibling domain modules. After: `api/http_server.py`
+(143 lines, stdlib-only) owns transport; `api/__init__.py` (6,021 lines, unchanged content
+otherwise) still owns everything else pending Phases 2-8, with its 28 sibling imports promoted
+to double-dot (`..database`, `..agent`, etc., since it is now one directory deeper) and six
+imports removed that only `ApiHandler` had used (`hmac`, `deque`, `BaseHTTPRequestHandler`,
+`Lock`, `parse_qs`, `urlparse`).
+
+**Verification.** `python -m py_compile` clean on both files. Confirmed no circular import
+(`http_server.py` imports nothing from the `api` package). Confirmed no deployment config
+(`Dockerfile`, `render.yaml`) or packaging metadata hardcodes the old `api.py` file path.
+Full stable suite passed clean twice independently: 277 passed, 0 failed both runs. No
+production runtime behaviour changed - this is a pure code-location move.
+
+**Committed separately from Stage 0 below**, per the plan's "small, independently revertible
+commit" delivery control. Files changed: `src/ai_trader/api.py` → `src/ai_trader/api/__init__.py`
+(renamed, ~195 lines changed), `src/ai_trader/api/http_server.py` (new, 143 lines).
+
+**Next.** Continuing to Phase 2 (query execution: extracting `_connect`, `_row`, `_rows`,
+`_scalar`, `_count` into an injected `QueryExecutor`).
+
 ## 2026-08-02 Modularisation Stage 0 (safety/characterization) complete
 
 Implements Stage 0 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
@@ -73,7 +115,7 @@ process-lifetime call, per module. No broker permission, risk limit, strategy ga
 allocation limit, stop, target, capital-isolation boundary, or governance threshold was
 weakened.
 
-**Committed separately from Phase 1 below**, per the plan's "small, independently revertible
+**Committed separately from Phase 1 above**, per the plan's "small, independently revertible
 commit" delivery control. Files changed: `src/ai_trader/portfolio_intelligence.py`,
 `src/ai_trader/operational_truth.py`, `src/ai_trader/experience_engine.py`,
 `src/ai_trader/persistence/__init__.py` (new), `src/ai_trader/persistence/schema_once.py` (new),
