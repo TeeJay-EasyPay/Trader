@@ -1,5 +1,76 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 6b — operations service extraction
+
+Implements the operations half of Phase 6 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move broker panels, broker activity polling, production snapshots, operational
+timelines, notifications and reconciliation presentation into bounded broker/operations
+services. Re-run all Kraken isolation and reconciliation tests after each move."). The broker
+half (Phase 6a, `application/broker_service.py`) is already done and committed (`b5f13c2b`).
+
+**New `src/ai_trader/application/operations_service.py`** (389 lines): `OperationsService`
+holding 13 methods moved verbatim from `LocalApiService` - `notifications`,
+`ack_notifications`, `register_push_token_endpoint`, `dispatch_pending_push_notifications`,
+`status` (the single dashboard aggregator the whole app is built around), `operations_health`,
+`phase5_status`, `sprint6_status`, `autonomous_activity`, `production_activity`,
+`_filtered_production_timeline`, `operational_events`, `decision_journal`,
+`developer_status` - plus four exclusive module-level helpers (`_component`, `_port_open`,
+`_research_status`, `_research_assets_reviewed`) and two generic query-param helpers
+(`_first`, `_int_or_default`) duplicated verbatim per the established convention (still used
+44 times elsewhere in `api/__init__.py`'s route dispatch).
+
+**`reconcile_on_startup` deliberately excluded, staying in `api/__init__.py`.** Despite its
+operations-adjacent name, its body calls `reconcile_broker_trade_rows` (writes lifecycle
+events) and `record_notification` (writes a notification row) - it performs real
+reconciliation actions at process startup, not read-only presentation. Per the plan's Section
+5 dependency rule 4 ("presentation services may read operational state but must not mutate
+trading state") and matching Phase 6a's precedent of excluding two genuinely mutating
+methods from `BrokerService`, this stays out of `OperationsService`.
+
+**`autonomous_activity` found to be dead code**, unrelated to this extraction. Grepped every
+call site in `api/__init__.py`'s GET/POST route dispatch, every test file, and the rest of the
+codebase: zero callers anywhere. The `/autonomous-activity` route calls `production_activity`
+instead - `autonomous_activity` appears to be an orphaned method that predates this phase.
+Moved as-is (not removed, not fixed) to keep this phase a pure relocation with zero behaviour
+change; it now has no delegate wrapper in `api/__init__.py` since nothing calls it there
+either, matching the established convention for zero-caller methods.
+
+**Thirteen narrow injected dependencies** - the largest injection surface of any phase so far,
+because `status()` alone touches nearly every other application service already extracted:
+`recommendations`, `broker_panels` (`BrokerService`), `executive_summary`,
+`founder_executive_summary`, `connection_readiness`, `founder_experience_payload`,
+`world_class_evidence` (all `FounderExperienceService`), `_active_broker_names`
+(`BrokerService`), `_continuous_research_status`, `_due_diligence_status`, `_control_state`,
+`_latest_daily_brief` (all still un-extracted `LocalApiService` methods). All thirteen are
+wired as call-time lambdas in `LocalApiService.__init__`, per the pattern every phase from 4
+onward established.
+
+**Zero fix-cycle this phase.** Unlike Phases 4-6a, every test passed on the first run: the
+Kraken/operations-focused test files individually (`test_multi_broker_platform.py`,
+`test_always_on_operations.py`, `test_sprint6_institutional_spine.py`,
+`test_phase5_production_spine.py`, `test_developer_experience.py` - 119 passed), then the full
+suite (286 passed) twice. No test file needed changes. Verified every SQL string moved into
+the new file byte-for-byte against the original before running anything (programmatic
+substring match across all triple-quoted `SELECT` blocks in both files), and diffed all six
+duplicated/moved helper functions (`_component`, `_port_open`, `_research_status`,
+`_research_assets_reviewed`, `_first`, `_int_or_default`) for exact equality - all identical.
+
+**Verification.** `python -m py_compile` clean on both files. Confirmed no circular import at
+runtime. Grepped all 17 moved names (13 methods + 4 module-level helpers) across
+`api/__init__.py` post-edit - zero dangling references. Removed 12 now-fully-unused imports
+(`operations_health`, `phase5_status`, `sprint6_status`, `autonomous_activity_payload`,
+`load_trading_policy`, `latest_research_run`, and the six `multi_broker` notification
+functions) plus the now-dead `socket`/`sys` module imports (both only used by the two
+module-level helpers that moved). `api/__init__.py`: 3,053 -> 2,828 lines (-225). No
+production runtime behaviour changed.
+
+**Did not run `git commit`** - left in the working tree for the coordinating session to
+review and commit, per the process established after an earlier phase's fork committed
+without waiting for review.
+
+**Next.** Continuing to Phase 7 (Administration service) - the last phase before the
+2026-08-02 Founder/Claude/ChatGPT review checkpoint.
+
 ## 2026-08-02 Modularisation Phase 6a — broker service extraction
 
 Implements the broker half of Phase 6 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`

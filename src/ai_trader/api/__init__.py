@@ -3,16 +3,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
 import sqlite3
 from ..application.broker_service import BrokerService
 from ..application.founder_experience_service import FounderExperienceService
+from ..application.operations_service import OperationsService
 from ..application.reporting_service import ReportingService
 from ..application.research_service import ResearchService
 from ..database import connect
 from ..persistence.query_executor import QueryExecutor
 from .http_server import ApiHandler
-import sys
 import time
 from collections import Counter, defaultdict
 from contextlib import closing
@@ -30,7 +29,6 @@ from ..always_on import (
     list_job_runs,
     list_research_funnels,
     list_shadow_trades,
-    operations_health,
     record_research_funnel,
     record_shadow_trade,
     scheduler_status,
@@ -39,7 +37,6 @@ from ..always_on import (
 from ..autonomous_activity import (
     activity_summary,
     activity_timeline,
-    autonomous_activity_payload,
     broker_activity,
     current_autonomous_status,
     founder_attention,
@@ -52,7 +49,7 @@ from ..benchmark import BenchmarkIntelligenceDatabase
 from ..briefing import generate_daily_briefing
 from ..broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from ..config import Settings, load_settings
-from ..foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score, load_trading_policy
+from ..foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score
 from ..experience_engine import initialize_experience_engine_schema
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..intelligence import InvestmentIntelligenceDatabase
@@ -64,21 +61,14 @@ from ..multi_broker import (
     broker_auto_trading_enabled,
     complete_order_intent_lock,
     initialize_multi_broker_schema,
-    active_push_tokens,
     latest_recommendation_set,
-    list_notifications,
     list_performance_attribution,
-    mark_notifications_read,
-    mark_push_sent,
     mark_managed_exit_submitted,
     open_managed_exits,
-    pending_push_notifications,
     record_crypto_research_score,
     record_notification,
     record_recommendation_set,
-    register_push_token,
     release_order_intent_lock,
-    send_expo_push,
     set_broker_auto_trading,
     update_broker_runtime,
     update_trailing_water_marks,
@@ -94,10 +84,10 @@ from ..kraken_reconciliation import (
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
 )
-from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, latest_research_run, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
+from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..portfolio_intelligence import initialize_portfolio_intelligence_schema, upsert_asset_metadata
-from ..production_spine import initialize_production_spine_schema, phase5_status
+from ..production_spine import initialize_production_spine_schema
 from ..production_evidence import (
     founder_evidence_payload,
     initialize_production_evidence_schema,
@@ -111,7 +101,6 @@ from ..sprint6 import (
     record_operational_event,
     refresh_strategy_maturity,
     seed_default_strategy_registry,
-    sprint6_status,
 )
 from ..scheduler import IntervalWorker, ResearchScheduler
 from ..trading_intelligence import (
@@ -252,6 +241,27 @@ class LocalApiService:
             broker_factory=lambda: self._broker(),
             kraken_balance_summary_lookup=lambda balances, adapter: _kraken_balance_summary(balances, adapter),
         )
+        self._operations_service = OperationsService(
+            settings=settings,
+            orchestrator=self.orchestrator,
+            query_executor=self._query_executor,
+            # Lazy lambdas, matching every prior phase's pattern: status() alone touches
+            # nearly every other application service, and several of these (recommendations,
+            # broker_panels, hosted-state) are monkeypatched or reassigned on the
+            # LocalApiService instance after construction in various tests/run_server().
+            recommendations_lookup=lambda limit: self.recommendations(limit),
+            broker_panels_lookup=lambda: self.broker_panels(),
+            executive_summary_lookup=lambda brokers: self.executive_summary(brokers),
+            founder_executive_summary_lookup=lambda brokers, executive_summary: self.founder_executive_summary(brokers, executive_summary),
+            connection_readiness_lookup=lambda brokers: self.connection_readiness(brokers),
+            founder_experience_payload_lookup=lambda brokers, recommendations, policy, research_run: self.founder_experience_payload(brokers, recommendations, policy, research_run),
+            world_class_evidence_lookup=lambda **kwargs: self.world_class_evidence(**kwargs),
+            active_broker_names_lookup=lambda: self._active_broker_names(),
+            continuous_research_status_lookup=lambda brokers: self._continuous_research_status(brokers),
+            due_diligence_status_lookup=lambda: self._due_diligence_status(),
+            control_state_lookup=lambda: self._control_state(),
+            latest_daily_brief_lookup=lambda brief_type: self._latest_daily_brief(brief_type),
+        )
         if not initialize_runtime:
             return
         initialize_foundation_schema(settings.db_path)
@@ -321,36 +331,20 @@ class LocalApiService:
         return summary
 
     def notifications(self, *, unread_only: bool = False, limit: int = 50) -> list[dict[str, Any]]:
-        return list_notifications(self.settings.db_path, unread_only=unread_only, limit=limit)
+        # Delegates to OperationsService (Phase 6b, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- "delegation before
+        # deletion" -- so the GET/POST route dispatch table needed zero changes.
+        return self._operations_service.notifications(unread_only=unread_only, limit=limit)
 
     def ack_notifications(self, body: dict[str, Any]) -> dict[str, Any]:
-        ids = body.get("notification_ids") or ([body["notification_id"]] if body.get("notification_id") else [])
-        try:
-            ids = [int(item) for item in ids]
-        except (TypeError, ValueError):
-            return {"status": "rejected", "message": "notification_ids must be a list of integers."}
-        updated = mark_notifications_read(self.settings.db_path, ids)
-        return {"status": "updated", "marked_read": updated}
+        return self._operations_service.ack_notifications(body)
 
     def register_push_token_endpoint(self, body: dict[str, Any]) -> dict[str, Any]:
-        token = body.get("push_token")
-        if not token:
-            return {"status": "rejected", "message": "push_token is required."}
-        result = register_push_token(self.settings.db_path, str(token), platform=body.get("platform"))
-        return {"status": "registered", **result}
+        return self._operations_service.register_push_token_endpoint(body)
 
     def dispatch_pending_push_notifications(self) -> dict[str, Any]:
-        pending = pending_push_notifications(self.settings.db_path)
-        if not pending:
-            return {"dispatched": 0}
-        tokens = active_push_tokens(self.settings.db_path)
-        if not tokens:
-            mark_push_sent(self.settings.db_path, [row["notification_id"] for row in pending])
-            return {"dispatched": 0, "reason": "no_registered_devices", "skipped": len(pending)}
-        for row in pending:
-            send_expo_push(tokens, title=row["title"], body=row["message"], data={"event_type": row["event_type"], "broker": row["broker"], "symbol": row["symbol"]})
-        mark_push_sent(self.settings.db_path, [row["notification_id"] for row in pending])
-        return {"dispatched": len(pending), "devices": len(tokens)}
+        # cli.py and run_server()'s scheduled job wiring call this externally.
+        return self._operations_service.dispatch_pending_push_notifications()
 
     def refresh_crypto_universe(self) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5, architecture/AI_TRADER_MODULARISATION_
@@ -562,147 +556,21 @@ class LocalApiService:
         return 404, {"error": "not_found", "path": path}
 
     def status(self) -> dict[str, Any]:
-        control = self._control_state()
-        last_trade_analysis = self._scalar("SELECT MAX(created_at) FROM trade_audit WHERE event_type IN ('agent_proposal', 'agent_no_trade')")
-        last_event_analysis = self._scalar("SELECT MAX(created_at) FROM execution_events WHERE event_type IN ('agent_no_trade', 'analysis_completed')")
-        last_analysis = max([value for value in [last_trade_analysis, last_event_analysis] if value], default=None)
-        last_activity = self._rows(
-            """
-            SELECT created_at, event_type, proposal_id, symbol, execution_result
-            FROM (
-                SELECT created_at, event_type, proposal_id, symbol, execution_result
-                FROM trade_audit
-                UNION ALL
-                SELECT created_at, event_type, proposal_id, NULL AS symbol, payload_json AS execution_result
-                FROM execution_events
-                WHERE event_type IN ('agent_no_trade', 'analysis_completed', 'engine_control')
-            )
-            ORDER BY created_at DESC
-            LIMIT 8
-            """
-        )
-        recent_transactions = self._rows(
-            """
-            SELECT created_at, event_type, proposal_id, symbol, side, position_size,
-                   ai_confidence, execution_result
-            FROM trade_audit
-            WHERE event_type IN ('execution_approved', 'execution_rejected', 'agent_proposal', 'agent_no_trade')
-            ORDER BY id DESC
-            LIMIT 10
-            """
-        )
-        recommendation_rows = self.recommendations(limit=50)
-        active_recommendations = [row for row in recommendation_rows if row["freshness_status"] != "Expired"]
-        latest_decision = self.orchestrator.latest_decision()
-        latest_morning = self._latest_daily_brief("morning")
-        latest_evening = self._latest_daily_brief("evening")
-        research_run = latest_research_run(self.settings.db_path)
-        policy = load_trading_policy(self.settings.db_path, auto_trade=self.settings.auto_trade, guardrails=self.settings.guardrails)
-        brokers = self.broker_panels()
-        executive_summary = self.executive_summary(brokers)
-        founder_summary = self.founder_executive_summary(brokers, executive_summary)
-        readiness = self.connection_readiness(brokers)
-        founder_experience = self.founder_experience_payload(brokers, recommendation_rows, policy, research_run)
-        world_class = self.world_class_evidence(brokers=brokers, recommendations=recommendation_rows)
-        always_on = self.operations_health()
-        phase5 = self.phase5_status()
-        sprint6 = self.sprint6_status()
-        return {
-            "system_status": control["trading_state"],
-            "paper_live_mode": "Paper" if self.settings.guardrails.paper_trading_only else "Live disabled by local API",
-            "engine_health": "Available" if self.settings.db_path.exists() else "Database not initialized",
-            "last_analysis_time": last_analysis,
-            "auto_paper_trading_status": "Enabled" if self.settings.auto_trade.enabled else "Disabled",
-            "broker_auto_trading": broker_auto_settings(self.settings.db_path),
-            "selected_active_brokers": self._active_broker_names(),
-            "brokers": brokers,
-            "continuous_research": self._continuous_research_status(brokers),
-            "next_scheduled_research_run": (research_run or {}).get("next_scheduled_run") or next_research_run(),
-            "last_research_run": research_run,
-            "research_status": _research_status(research_run),
-            "due_diligence_status": self._due_diligence_status(),
-            "research_assets_reviewed": _research_assets_reviewed(research_run),
-            "crypto_projects_reviewed": self._count("CRYPTO_MASTER", "active = 1"),
-            "research_recommendations_created": (research_run or {}).get("recommendations_created"),
-            "auto_trading_enabled": self.settings.auto_trade.enabled,
-            "paper_or_sandbox_mode": self.settings.guardrails.paper_trading_only,
-            "trading_policy": policy.to_dict(),
-            "executive_summary": executive_summary,
-            "founder_executive_summary": founder_summary,
-            "founder_experience": founder_experience,
-            "last_orchestrator_decision": latest_decision,
-            "morning_brief": latest_morning,
-            "evening_brief": latest_evening,
-            "cloud_api_health": "Available",
-            "connection_readiness": readiness,
-            "world_class_evidence": world_class,
-            "operations_health": always_on,
-            "phase5_status": phase5,
-            "sprint6_status": sprint6,
-            "latest_activity": [dict(row) for row in last_activity],
-            "recent_transactions": [dict(row) for row in recent_transactions],
-            "recommendation_summary": {
-                "active": len(active_recommendations),
-                "expired": len(recommendation_rows) - len(active_recommendations),
-                "auto_trade_threshold": self.settings.auto_trade.min_confidence,
-                "auto_trade_mode": "Auto Paper Trading" if self.settings.auto_trade.enabled else "Manual approval required",
-            },
-            "updated_at": control["updated_at"],
-        }
+        # Delegates to OperationsService (Phase 6b). Kept as a thin wrapper -- callers
+        # (GET /status, tests) needed zero changes.
+        return self._operations_service.status()
 
     def operations_health(self) -> dict[str, Any]:
-        return operations_health(
-            self.settings.db_path,
-            expected_worker_interval_seconds=max(60, self.settings.auto_execution_interval_seconds),
-        )
+        return self._operations_service.operations_health()
 
     def phase5_status(self) -> dict[str, Any]:
-        return phase5_status(self.settings.db_path, database_backend=self.settings.database_backend)
+        return self._operations_service.phase5_status()
 
     def sprint6_status(self) -> dict[str, Any]:
-        return sprint6_status(self.settings.db_path, database_backend=self.settings.database_backend)
-
-    def autonomous_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        return autonomous_activity_payload(
-            self.settings.db_path,
-            period=_first(query, "period") or "24h",
-            category=_first(query, "category") or "all",
-            severity=_first(query, "severity") or "all",
-            important_only=_first(query, "important_only") == "true",
-            founder_action_required=_first(query, "founder_action_required") == "true",
-            limit=_int_or_default(_first(query, "limit"), 100),
-            broker_panels=self.broker_panels(),
-            database_backend=self.settings.database_backend,
-        )
+        return self._operations_service.sprint6_status()
 
     def production_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        payload = founder_evidence_payload(
-            self.settings.db_path,
-            period=_first(query, "period") or "24h",
-            trade_limit=_int_or_default(_first(query, "limit"), 100),
-        )
-        timeline = self._filtered_production_timeline(query, payload=payload)
-        attention_items = []
-        if payload["status"]["state"] != "OPERATING NORMALLY":
-            attention_items.append({
-                "title": payload["status"]["state"],
-                "explanation": payload["status"]["plain_english"],
-                "recommended_action": "Review stale or failed evidence below before enabling more capital.",
-                "started_at": payload["generated_at"],
-            })
-        latest = payload["status"].get("last_meaningful_activity")
-        return {
-            "generated_at": payload["generated_at"],
-            "period": payload["period"],
-            "status": payload["status"],
-            "summary": payload["summary"],
-            "timeline": timeline,
-            "why_no_trade": payload["why_no_trade"],
-            "broker_activity": {"brokers": payload["brokers"]},
-            "founder_attention": {"items": attention_items, "count": len(attention_items)},
-            "latest_completed_actions": [latest] if latest else [],
-            "truthfulness": payload["truthfulness"],
-        }
+        return self._operations_service.production_activity(query)
 
     def _filtered_production_timeline(
         self,
@@ -710,51 +578,13 @@ class LocalApiService:
         *,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload = payload or founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")
-        items = list(payload["timeline"]["items"])
-        category = (_first(query, "category") or "all").lower()
-        severity = (_first(query, "severity") or "all").lower()
-        if category != "all":
-            items = [row for row in items if str(row.get("category") or "").lower() == category]
-        if severity != "all":
-            items = [row for row in items if str(row.get("severity") or "").lower() == severity]
-        if _first(query, "important_only") == "true":
-            items = [row for row in items if row.get("severity") in {"warning", "blocked", "failure", "recovered"}]
-        limit = max(1, min(_int_or_default(_first(query, "limit"), 100), 200))
-        return {"items": items[:limit], "total": len(items), "period": payload["period"]}
+        return self._operations_service._filtered_production_timeline(query, payload=payload)
 
     def operational_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 200))
-        return [
-            dict(row)
-            for row in self._rows(
-                """
-                SELECT created_at, component, event_type, severity, summary,
-                       proposal_id, logical_trade_id, broker, duration_ms, success
-                FROM OPERATIONAL_EVENTS
-                ORDER BY event_id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-        ]
+        return self._operations_service.operational_events(limit=limit)
 
     def decision_journal(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 200))
-        return [
-            dict(row)
-            for row in self._rows(
-                """
-                SELECT created_at, proposal_id, symbol, broker, strategy_id,
-                       confidence, final_decision, execution_eligibility,
-                       evidence_for, evidence_against, market_data_quality
-                FROM DECISION_JOURNAL
-                ORDER BY decision_id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-        ]
+        return self._operations_service.decision_journal(limit=limit)
 
     def founder_experience_payload(
         self,
@@ -1170,37 +1000,9 @@ class LocalApiService:
         return {"date": brief_date, "source_date": source_date, "summary": summary, "items": rows, "unavailable_reason": reason}
 
     def developer_status(self) -> dict[str, Any]:
-        watchlist_count = self._count("INVESTMENT_WATCHLIST", "active = 1")
-        theme_count = self._count("MARKET_THEMES")
-        benchmark_count = self._count("BENCHMARK_TRADERS", "active = 1")
-        journal_count = self._count("trade_audit")
-        founder = self._row("SELECT briefing_date, created_at FROM daily_briefings ORDER BY id DESC LIMIT 1")
-        control = self._control_state()
-        db_ok = self.settings.db_path.exists()
-        knowledge_ok = watchlist_count > 0 and theme_count > 0
-        benchmark_ok = benchmark_count > 0
-        return {
-            "generated_at": utc_now_iso(),
-            "python_version": sys.version.split()[0],
-            "components": {
-                "python": _component(True, sys.version.split()[0]),
-                "sqlite": _component(db_ok, str(self.settings.db_path)),
-                "openai": _component(bool(self.settings.openai_api_key), "Configured" if self.settings.openai_api_key else "OPENAI_API_KEY missing"),
-                "alpaca": _component(self.settings.has_alpaca_credentials, "Configured" if self.settings.has_alpaca_credentials else "Alpaca credentials missing"),
-                "knowledge_engine": _component(knowledge_ok, f"{watchlist_count} watchlist / {theme_count} themes"),
-                "benchmark_engine": _component(benchmark_ok, f"{benchmark_count} traders"),
-                "trading_engine": _component(control["trading_state"] in {"running", "paused", "stopped"}, control["trading_state"]),
-                "api": _component(True, "Listening"),
-                "mobile_app": _component(_port_open("127.0.0.1", 8082), "Expo port 8082"),
-            },
-            "counts": {
-                "watchlist": watchlist_count,
-                "market_themes": theme_count,
-                "benchmark_traders": benchmark_count,
-                "trading_journal": journal_count,
-            },
-            "last_founder_brief": dict(founder) if founder else None,
-        }
+        # Delegates to OperationsService (Phase 6b). Kept as a thin wrapper -- callers
+        # (GET /developer-status, tests/test_developer_experience.py) needed zero changes.
+        return self._operations_service.developer_status()
 
     def run_analysis(self, body: dict[str, Any]) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper so callers
@@ -2866,21 +2668,6 @@ def _learning_recommendations(attribution: list[dict[str, Any]], rejected: list[
 
 
 
-def _research_status(run: dict[str, Any] | None) -> str:
-    if not run:
-        return "idle - no research run recorded yet"
-    status = str(run.get("status") or "idle")
-    if status == "completed":
-        return "idle"
-    return status
-
-
-def _research_assets_reviewed(run: dict[str, Any] | None) -> int | None:
-    if not run:
-        return None
-    return int(run.get("companies_reviewed") or 0) + int(run.get("crypto_assets_reviewed") or 0)
-
-
 def _validation_failures(validation_result: Any) -> list[str]:
     data = _validation_payload(validation_result)
     if not data:
@@ -2958,18 +2745,6 @@ def _format_guardrail_failures(failures: list[str]) -> str:
     if not failures:
         return "No guardrail details available."
     return ", ".join(item.replace("_", " ") for item in failures)
-
-
-def _component(healthy: bool, detail: str) -> dict[str, Any]:
-    return {"healthy": healthy, "state": "Healthy" if healthy else "Problem", "detail": detail}
-
-
-def _port_open(host: str, port: int) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=0.25):
-            return True
-    except OSError:
-        return False
 
 
 DEVELOPER_DASHBOARD_HTML = """<!doctype html>
