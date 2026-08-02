@@ -16,8 +16,13 @@ from ai_trader.api import (
     LocalApiService,
     _kraken_balance_summary,
     _kraken_trading_allocation_gbp,
-    _recent_unique_broker_events,
 )
+# Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md) moved
+# _recent_unique_broker_events into BrokerService (it is now module-level in that file,
+# not a method); _kraken_balance_summary/_kraken_trading_allocation_gbp deliberately
+# stayed in ai_trader.api as the single implementation of the Kraken capital-isolation
+# pricing pipeline (see broker_service.py's kraken_balance_summary_lookup injection).
+from ai_trader.application.broker_service import BrokerService, _recent_unique_broker_events
 from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
@@ -82,7 +87,11 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             settings = replace(settings_for(tmp), render_api_key="render-key", render_service_id="srv-test")
             service = LocalApiService(settings)
 
-            with patch.object(LocalApiService, "_render_api_json", return_value={"status": "ok", "http_status": 200}) as render_api:
+            # Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+            # moved _render_api_json/_sync_broker_auto_trading_to_render into BrokerService
+            # with no delegate (neither had any caller outside this cluster), so the class
+            # to patch is BrokerService, not LocalApiService.
+            with patch.object(BrokerService, "_render_api_json", return_value={"status": "ok", "http_status": 200}) as render_api:
                 result = service.set_broker_auto_trading({"broker": "alpaca", "enabled": True})
 
             self.assertEqual(result["render_sync"]["status"], "synced")
@@ -956,7 +965,7 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
             unpriced_summary = {"unpriced_open_symbols": ["BTC"], "allocation_gbp": 100.0}
             priced_summary = {"unpriced_open_symbols": [], "unrealized_pnl_gbp": 50.0}
 
-            with patch("ai_trader.api.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
+            with patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
                 ledger = service._kraken_ai_capital_ledger(price_hints={"BTC": 50000.0}, allow_live_pricing=False)
 
             self.assertEqual(ledger, priced_summary)
@@ -981,7 +990,7 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
                 "unrealized_pnl_status": "Unavailable because current Kraken prices were not captured for: BTC",
             }
 
-            with patch("ai_trader.api.kraken_capital_ledger_summary", return_value=unpriced_summary) as mocked:
+            with patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", return_value=unpriced_summary) as mocked:
                 ledger = service._kraken_ai_capital_ledger(price_hints=None, allow_live_pricing=False)
 
             # The ledger is still returned, clearly labelled as unpriced -- not a crash,
@@ -999,7 +1008,7 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
             unpriced_summary = {"unpriced_open_symbols": ["BTC"]}
             priced_summary = {"unpriced_open_symbols": [], "unrealized_pnl_gbp": 10.0}
 
-            with patch("ai_trader.api.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
+            with patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", side_effect=[unpriced_summary, priced_summary]) as mocked:
                 ledger = service._kraken_ai_capital_ledger(price_hints=None, allow_live_pricing=True)
 
             self.assertEqual(ledger, priced_summary)
@@ -1018,16 +1027,22 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
 
             adapter.current_prices = fail_if_called
             service.orchestrator.adapters["kraken"] = adapter
-            service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
-            service._exchange_portfolio = lambda broker: {
+            # Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+            # moved capture_production_broker_snapshots/_live_alpaca_portfolio/
+            # _exchange_portfolio into BrokerService; capture_production_broker_snapshots
+            # now calls self._live_alpaca_portfolio()/self._exchange_portfolio() on the
+            # BrokerService instance, not the LocalApiService delegate, so these
+            # monkeypatches must target service._broker_service directly.
+            service._broker_service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
+            service._broker_service._exchange_portfolio = lambda broker: {
                 "connection_status": "Connected",
                 "portfolio_value": 4_000,
                 "balance_summary": {"converted_assets": []},
             }
 
             with (
-                patch("ai_trader.api.kraken_capital_ledger_summary", return_value={"unpriced_open_symbols": ["BTC"]}),
-                patch("ai_trader.api.record_broker_snapshot") as snapshot,
+                patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", return_value={"unpriced_open_symbols": ["BTC"]}),
+                patch("ai_trader.application.broker_service.record_broker_snapshot") as snapshot,
             ):
                 result = service.capture_production_broker_snapshots()
 

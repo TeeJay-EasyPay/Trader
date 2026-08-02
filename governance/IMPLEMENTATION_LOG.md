@@ -1,5 +1,108 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 6a — broker service extraction
+
+Implements the broker half of Phase 6 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move broker panels, broker activity polling, production snapshots, ...
+reconciliation presentation into bounded broker/operations services. Re-run all Kraken
+isolation and reconciliation tests after each move."). The operations half (notifications,
+operational timelines, status/dashboard aggregation) is a separate Phase 6b, not done here.
+
+**New `src/ai_trader/application/broker_service.py`** (1,133 lines): `BrokerService` holding
+23 methods moved verbatim from `LocalApiService` - `broker_panels`, `poll_broker_activity`
+(+ `_alpaca`/`_kraken` variants), `capture_production_broker_snapshots`,
+`set_broker_auto_trading`, `_sync_broker_auto_trading_to_render`, `_render_api_json`,
+`_broker_trade_rows`, `_managed_exit_rows`, `_broker_trading_permissions`,
+`_ai_managed_open_trade_count`, `_kraken_ai_capital_ledger`, `_broker_managed_trade_capacity`,
+`_active_broker_names`, `_latest_snapshot_summary`, `_unconfigured_exchange_portfolio`,
+`_exchange_portfolio`, `_alpaca_panel_portfolio`, `_live_alpaca_portfolio`, `broker_decisions`,
+`order_intent_locks`, `release_order_intent_lock_for` - plus `BROKER_AUTO_TRADING_ENV_VARS`
+and 10 exclusive module-level helpers.
+
+**Four methods deliberately excluded, staying in `api/__init__.py`** - all four looked
+broker-adjacent by name but failed a "presentation only" scope check on inspection:
+- `_adapters` - called during `LocalApiService.__init__` itself (`self.orchestrator =
+  InvestmentOrchestrator(adapters=self._adapters(), ...)`), before any application service
+  can exist. Moving it would create a construction-order deadlock.
+- `_auto_config_for_broker` - its only callers (`_manual_approval_auto_config`,
+  `auto_execute_recommendations`) are execution territory (Phase 8), not broker
+  presentation; nothing in the broker cluster calls it.
+- `_apply_env_broker_auto_defaults` and `_apply_founder_kraken_live_authorization` - both
+  called once from `__init__`, both **mutate trading-state authorization**
+  (`apply_founder_strategy_authorization`, `set_broker_auto_trading`), not read it. The
+  plan's Section 5 dependency rule 4 restricts presentation services from mutating trading
+  state; `_apply_founder_kraken_live_authorization` specifically controls whether autonomous
+  Kraken execution can cross into real-money mode. This is Phase 7 (Administration service,
+  "trading-state administration") territory, not Phase 6.
+
+**The Kraken wallet-pricing subsystem was deliberately left completely untouched.**
+`_kraken_balance_summary`/`_kraken_gbp_cash`/`_kraken_asset_gbp_price`/`_kraken_usd_to_gbp`/
+`_kraken_pair_price`/`_kraken_asset_symbol`/`_kraken_trading_allocation_gbp` all stay in
+`api/__init__.py`. `_kraken_trading_allocation_gbp` is the same safety-critical Kraken AI
+capital-sleeve isolation function Phase 5 already established must keep exactly one
+implementation anywhere in the codebase (`_account_context_for_broker`, which also stays,
+calls it directly). Since `_kraken_balance_summary` calls `_kraken_trading_allocation_gbp`
+and the moved `_exchange_portfolio` needs `_kraken_balance_summary`, the entire pricing
+pipeline is injected as one `kraken_balance_summary_lookup: Callable` rather than partially
+extracted or duplicated - the safest option given this phase's explicit "re-run Kraken
+isolation tests after each move" instruction.
+
+**Two narrow injected dependencies**: `broker_factory` (constructs an `AlpacaPaperClient`,
+same pattern Phase 5 established) and `kraken_balance_summary_lookup`, both wired as
+call-time lambdas in `LocalApiService.__init__`.
+
+**Own bugs caught via automated AST diff before touching `api/__init__.py` at all** (the
+Phase 3/5 discipline: compare every moved function's source against the original
+byte-for-byte before running any test): a first-draft reconstruction of `_float_env`/
+`_int_env` used invented logic instead of the original's `float(os.getenv(key,
+str(default)))`/try-except pattern; `_broker_trade_payload` used a different (wrong)
+type-check branch than the original; `_sum_balances` was restructured (behaviourally
+identical, but rewritten rather than copied) - all three found and fixed before any test ran.
+
+**Extensive test fixes required - all expected consequences of the move, not behaviour
+changes**: six `patch("ai_trader.api.X", ...)` targets updated to
+`ai_trader.application.broker_service.X` (`kraken_capital_ledger_summary`,
+`record_broker_snapshot`, `record_broker_trade_history`, `record_trade_evidence_batch`,
+`normalize_broker_events`, `replay_kraken_evidence`) across `tests/test_multi_broker_platform.py`
+and `tests/test_production_completion.py`. One `patch.object(LocalApiService,
+"_render_api_json", ...)` changed to `patch.object(BrokerService, "_render_api_json", ...)`,
+since that method has no delegate. One import (`from ai_trader.api import
+_recent_unique_broker_events`) changed to import from `ai_trader.application.broker_service`
+instead, since it moved and is no longer defined in `api/__init__.py`.
+
+**A real gap found in four hand-built `LocalApiService.__new__(LocalApiService)` test
+doubles** (`tests/test_production_completion.py`) that bypass `__init__` entirely and
+manually set only `service.settings`/`service.orchestrator` - these never got a
+`_broker_service` constructed, so the delegate methods would raise `AttributeError`. Fixed by
+constructing `BrokerService.__new__(BrokerService)` alongside each and wiring only the
+attributes each test actually needs (mirroring exactly what the test already did for
+`service.settings`/`service.orchestrator`). Three more tests (one in
+`test_multi_broker_platform.py`, two in `test_production_completion.py`) monkeypatched
+`service._live_alpaca_portfolio`/`service._exchange_portfolio` directly on a *fully
+constructed* `LocalApiService` instance - after the move, `capture_production_broker_snapshots`
+(now on `BrokerService`) calls `self._live_alpaca_portfolio()` on the `BrokerService`
+instance, not the `LocalApiService` delegate, so these monkeypatches had gone silently inert.
+Fixed by retargeting them to `service._broker_service._live_alpaca_portfolio`/
+`._exchange_portfolio`. None of this was caught by AST analysis of `api/__init__.py`'s own
+call graph (the established Phase 5 gap: it cannot see test-file monkeypatch targets) - only
+by actually running the suite and reading each failure.
+
+**Verification.** `python -m py_compile` clean on both files. Confirmed no circular import at
+runtime. Grepped every one of the 34 moved names (23 methods + 11 module-level items) across
+`api/__init__.py` post-edit - zero dangling references, including bare-name (not just
+call-site) greps to catch non-call references. Ran the Kraken/broker-focused test files
+individually first (`test_multi_broker_platform.py`: 37 passed; `test_production_completion.py`:
+14 passed) before the full suite, per this phase's explicit re-test instruction. Full stable
+suite passed clean twice independently: 286 passed, 0 failed both runs. `api/__init__.py`:
+3,982 -> 3,053 lines (-929). No production runtime behaviour changed.
+
+**Did not run `git commit`** - left in the working tree for the coordinating session to
+review and commit, per the process established after an earlier phase's fork committed
+without waiting for review.
+
+**Next.** Continuing to Phase 6b (Operations service). No checkpoint until Phase 7 completes,
+per the 2026-08-02 Founder/Claude agreement on phase batching.
+
 ## 2026-08-02 Modularisation Phase 5 — research service extraction
 
 Implements Phase 5 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`

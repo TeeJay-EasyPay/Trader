@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.always_on import complete_scheduled_job, initialize_always_on_schema
 from ai_trader.api import LocalApiService
+from ai_trader.application.broker_service import BrokerService
 from ai_trader.canonical_trades import (
     canonical_trade,
     link_broker_order,
@@ -64,12 +65,18 @@ class ProductionCompletionTests(unittest.TestCase):
         service = LocalApiService.__new__(LocalApiService)
         service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
         service.orchestrator = SimpleNamespace(adapters={"alpaca": adapter})
+        # Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+        # moved poll_broker_activity into BrokerService; LocalApiService.poll_broker_activity
+        # is now a delegate, so this hand-built service double needs a _broker_service too.
+        service._broker_service = BrokerService.__new__(BrokerService)
+        service._broker_service.settings = service.settings
+        service._broker_service.orchestrator = service.orchestrator
 
         with (
-            patch("ai_trader.api.record_broker_trade_history", return_value=[changed]),
-            patch("ai_trader.api.record_trade_evidence_batch", return_value=1) as evidence,
-            patch("ai_trader.api.normalize_broker_events", return_value={"status": "reconciled"}),
-            patch("ai_trader.api.record_notification"),
+            patch("ai_trader.application.broker_service.record_broker_trade_history", return_value=[changed]),
+            patch("ai_trader.application.broker_service.record_trade_evidence_batch", return_value=1) as evidence,
+            patch("ai_trader.application.broker_service.normalize_broker_events", return_value={"status": "reconciled"}),
+            patch("ai_trader.application.broker_service.record_notification"),
         ):
             result = service.poll_broker_activity()
 
@@ -88,12 +95,15 @@ class ProductionCompletionTests(unittest.TestCase):
         service = LocalApiService.__new__(LocalApiService)
         service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
         service.orchestrator = SimpleNamespace(adapters={"alpaca": alpaca_adapter, "kraken": kraken_adapter})
+        service._broker_service = BrokerService.__new__(BrokerService)
+        service._broker_service.settings = service.settings
+        service._broker_service.orchestrator = service.orchestrator
 
         with (
-            patch("ai_trader.api.record_broker_trade_history", return_value=[]),
-            patch("ai_trader.api.record_trade_evidence_batch", return_value=0),
-            patch("ai_trader.api.replay_kraken_evidence", return_value={"status": "reconciled"}),
-            patch("ai_trader.api.normalize_broker_events", return_value={"status": "reconciled"}),
+            patch("ai_trader.application.broker_service.record_broker_trade_history", return_value=[]),
+            patch("ai_trader.application.broker_service.record_trade_evidence_batch", return_value=0),
+            patch("ai_trader.application.broker_service.replay_kraken_evidence", return_value={"status": "reconciled"}),
+            patch("ai_trader.application.broker_service.normalize_broker_events", return_value={"status": "reconciled"}),
         ):
             alpaca_only = service.poll_broker_activity_alpaca()
             kraken_only = service.poll_broker_activity_kraken()
@@ -106,12 +116,19 @@ class ProductionCompletionTests(unittest.TestCase):
     def test_broker_snapshot_does_not_duplicate_trade_evidence(self):
         service = LocalApiService.__new__(LocalApiService)
         service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
-        service._live_alpaca_portfolio = lambda: {
+        # Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+        # moved capture_production_broker_snapshots/_live_alpaca_portfolio/
+        # _exchange_portfolio into BrokerService; these now need to be monkeypatched on
+        # the _broker_service instance BrokerService.capture_production_broker_snapshots
+        # actually calls self._live_alpaca_portfolio()/self._exchange_portfolio() on,
+        # not on the LocalApiService delegate (which forwards to a different object).
+        service._broker_service = BrokerService.__new__(BrokerService)
+        service._broker_service._live_alpaca_portfolio = lambda: {
             "connection_status": "Connected",
             "portfolio_value": 100_000,
             "recent_orders": [{"id": "order-1"}],
         }
-        service._exchange_portfolio = lambda broker: {
+        service._broker_service._exchange_portfolio = lambda broker: {
             "connection_status": "Connected",
             "portfolio_value": 4_000,
             "recent_activities": [{"id": "trade-1"}],
@@ -122,7 +139,8 @@ class ProductionCompletionTests(unittest.TestCase):
             patch.dict(os.environ, {"AI_TRADER_DATABASE_BACKEND": "sqlite"}, clear=True),
         ):
             service.settings = SimpleNamespace(db_path=Path(tmp) / "snapshot.sqlite3")
-            with patch("ai_trader.api.record_broker_snapshot") as snapshot:
+            service._broker_service.settings = service.settings
+            with patch("ai_trader.application.broker_service.record_broker_snapshot") as snapshot:
                 result = service.capture_production_broker_snapshots()
 
             self.assertEqual(snapshot.call_count, 2)
@@ -157,10 +175,13 @@ class ProductionCompletionTests(unittest.TestCase):
                 guardrails=SimpleNamespace(max_open_positions=5),
             )
             service.orchestrator = SimpleNamespace(adapters={})
-            service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
-            service._exchange_portfolio = lambda broker: {"connection_status": "Connected", "portfolio_value": 4_000}
+            service._broker_service = BrokerService.__new__(BrokerService)
+            service._broker_service.settings = service.settings
+            service._broker_service.orchestrator = service.orchestrator
+            service._broker_service._live_alpaca_portfolio = lambda: {"connection_status": "Connected", "portfolio_value": 100_000}
+            service._broker_service._exchange_portfolio = lambda broker: {"connection_status": "Connected", "portfolio_value": 4_000}
 
-            with patch("ai_trader.api.record_broker_snapshot") as snapshot:
+            with patch("ai_trader.application.broker_service.record_broker_snapshot") as snapshot:
                 result = service.capture_production_broker_snapshots()
 
             panels = {call.args[1]["broker"]: call.args[1] for call in snapshot.call_args_list}
