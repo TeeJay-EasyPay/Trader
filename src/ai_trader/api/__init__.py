@@ -7,6 +7,7 @@ import os
 import socket
 import sqlite3
 from ..database import connect, selected_backend
+from ..persistence.query_executor import QueryExecutor
 from .http_server import ApiHandler
 import sys
 import time
@@ -255,6 +256,7 @@ GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
 class LocalApiService:
     def __init__(self, settings: Settings, *, initialize_runtime: bool = True):
         self.settings = settings
+        self._query_executor = QueryExecutor(settings.db_path)
         self.hosted_read_only = False
         self.api_token_configured = bool(os.getenv("AI_TRADER_API_TOKEN"))
         self.audit = AuditDatabase(
@@ -4370,38 +4372,23 @@ This report explains available evidence. It does not automatically change strate
         return {"status": "released", "broker": broker.lower(), "client_order_id": client_order_id}
 
     def _connect(self) -> sqlite3.Connection:
-        conn = connect(self.settings.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        # Delegates to QueryExecutor (Phase 2, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper rather than rewriting all
+        # 73 existing self._row/_rows/_scalar/_count/_connect call sites in this file --
+        # "delegation before deletion" per the plan's Section 11 delivery controls.
+        return self._query_executor.connect()
 
     def _row(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
-        with closing(self._connect()) as conn:
-            return conn.execute(sql, params).fetchone()
+        return self._query_executor.row(sql, params)
 
     def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-        with closing(self._connect()) as conn:
-            return list(conn.execute(sql, params))
+        return self._query_executor.rows(sql, params)
 
     def _scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
-        row = self._row(sql, params)
-        return None if row is None else row[0]
+        return self._query_executor.scalar(sql, params)
 
     def _count(self, table: str, where: str | None = None) -> int:
-        if table not in {
-            "INVESTMENT_WATCHLIST",
-            "MARKET_THEMES",
-            "BENCHMARK_TRADERS",
-            "trade_audit",
-            "CRYPTO_ASSET_MASTER",
-            "BENCHMARK_DAILY_RESEARCH",
-            "CRYPTO_MASTER",
-            "DUE_DILIGENCE_ASSESSMENTS",
-        }:
-            raise ValueError(f"Unsupported count table: {table}")
-        sql = f"SELECT COUNT(*) FROM {table}"
-        if where:
-            sql += f" WHERE {where}"
-        return int(self._scalar(sql) or 0)
+        return self._query_executor.count(table, where)
 
     def _due_diligence_status(self) -> str:
         latest = self._row("SELECT overall_status, created_at FROM DUE_DILIGENCE_ASSESSMENTS ORDER BY assessment_id DESC LIMIT 1")

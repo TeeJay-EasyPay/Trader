@@ -1,5 +1,39 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 2 — query execution extraction
+
+Implements Phase 2 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Extract `_connect`, `_row`, `_rows`, `_scalar` and `_count` into an injected
+`QueryExecutor`. Avoid a broad inheritance mixin. Use explicit composition.").
+
+**New `src/ai_trader/persistence/query_executor.py`**: `QueryExecutor`, constructed with a
+`db_path`, holding `connect`/`row`/`rows`/`scalar`/`count` - the same logic these five
+`LocalApiService` methods held, moved verbatim (including the `count` table allowlist and its
+`ValueError` message). `LocalApiService.__init__` now constructs `self._query_executor =
+QueryExecutor(settings.db_path)` (composition, not inheritance - matches the plan's explicit
+"avoid a broad inheritance mixin" instruction).
+
+**Delegation before deletion.** `LocalApiService._connect/_row/_rows/_scalar/_count` were not
+deleted - they're now one-line delegates to `self._query_executor.*`, so the 73 existing call
+sites elsewhere in the file (`self._row(...)`, `self._rows(...)`, etc.) needed zero changes.
+Per the plan's Section 11 delivery controls: "Old method → delegates to new service → tests
+prove equivalence → old body removed in a later commit. Do not move and redesign logic
+simultaneously." Removing the now-redundant wrapper methods and pointing all 73 call sites at
+`self._query_executor` directly is left for a later cleanup pass, not this phase.
+
+**New tests.** `tests/test_query_executor.py` (9 tests) exercises `QueryExecutor` directly and
+in isolation from `LocalApiService` for the first time: connection row-factory behaviour, `row`/
+`rows`/`scalar` on matches and on no-match, and `count`'s table allowlist including the
+rejection path.
+
+**Verification.** `python -m py_compile` clean. Confirmed no circular import. Full stable suite
+passed clean twice independently: 286 passed (277 + 9 new), 0 failed both runs. No production
+runtime behaviour changed - `QueryExecutor`'s methods are the exact same SQL and control flow
+that `LocalApiService`'s methods already ran.
+
+**Next.** Stopping here for review before Phase 3 (reporting service extraction), per the
+plan's per-phase review cadence.
+
 ## 2026-08-02 Modularisation Phase 1 — HTTP transport extraction
 
 Implements Phase 1 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
