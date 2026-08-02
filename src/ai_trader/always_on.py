@@ -12,6 +12,7 @@ from typing import Any
 
 from .database import connect, database_url, requested_backend, uses_postgres
 from .models import utc_now_iso
+from .multi_broker import record_notification
 from .operational import latest_research_run, safe_float
 
 
@@ -817,6 +818,20 @@ def record_operations_incident(
     status: str = "open",
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Record an operations incident, and push-notify the Founder if it's an error.
+
+    This is the single function every "something went wrong" call site in the codebase
+    already funnels through (job failures, timeouts, crashes). It previously only wrote a
+    silent database row -- nothing ever surfaced an incident to the Founder unless they
+    happened to check the incidents table by hand. Confirmed 2026-08-01: the real
+    backtest/walk-forward job (strategy-lab-refresh) crashed silently every single day for
+    at least 3 consecutive days before anyone noticed, even though an incident row existed
+    for every one of those failures the whole time. Routing error-severity incidents
+    through the existing push-notification pipeline (the same one that already delivers
+    "trade submitted"/"research completed" notifications) closes that gap for every
+    current and future call site at once, with no per-call-site wiring required.
+    """
+
     initialize_always_on_schema(db_path)
     values = (utc_now_iso(), severity, component, status, title, message, json.dumps(payload or {}, default=str))
     if uses_postgres():
@@ -833,20 +848,32 @@ def record_operations_incident(
                 )
                 row = cur.fetchone()
             conn.commit()
-        return dict(row)
-    with closing(connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        with conn:
-            conn.execute(
-                """
-                INSERT INTO OPERATIONS_INCIDENTS (
-                    created_at, severity, component, status, title, message, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                values,
-            )
-            row = conn.execute("SELECT * FROM OPERATIONS_INCIDENTS ORDER BY incident_id DESC LIMIT 1").fetchone()
-    return dict(row)
+        row = dict(row)
+    else:
+        with closing(connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO OPERATIONS_INCIDENTS (
+                        created_at, severity, component, status, title, message, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+                row = conn.execute("SELECT * FROM OPERATIONS_INCIDENTS ORDER BY incident_id DESC LIMIT 1").fetchone()
+        row = dict(row)
+    if severity == "error":
+        record_notification(
+            db_path,
+            event_type="operations_incident",
+            broker=None,
+            symbol=None,
+            title=f"⚠ {component}: {title}",
+            message=message,
+            payload={"incident_id": row.get("incident_id"), "component": component, "severity": severity, "payload": payload or {}},
+        )
+    return row
 
 
 def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None) -> list[dict[str, Any]]:

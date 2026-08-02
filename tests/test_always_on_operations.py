@@ -21,6 +21,7 @@ from ai_trader.always_on import (
     initialize_always_on_schema,
     list_job_runs,
     operations_health,
+    record_operations_incident,
     record_research_funnel,
     record_shadow_trade,
     record_worker_heartbeat,
@@ -30,6 +31,7 @@ from ai_trader.always_on import (
 )
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
+from ai_trader.multi_broker import list_notifications
 from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs, _run_broker_job_group, _run_pulsed_job
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from unittest.mock import MagicMock, patch
@@ -67,6 +69,40 @@ class AlwaysOnOperationsTests(unittest.TestCase):
                 ("market-open-equity", "2026-07-23T16:00:00+00:00"),
             ],
         )
+
+    def test_error_severity_incident_pushes_a_notification(self):
+        """The 2026-08-01 alerting fix: strategy-lab-refresh crashed silently every day for
+        3+ consecutive days because record_operations_incident only wrote a database row --
+        nothing ever surfaced it. Every error-severity incident must now also queue a
+        push notification through the same pipeline that already delivers trade/research
+        notifications, with no per-call-site wiring required."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_operations_incident(
+                db_path,
+                severity="error",
+                component="scheduled-job",
+                title="Scheduled job failed: strategy-lab-refresh",
+                message="isolated job process exited with code 1.",
+            )
+            notifications = list_notifications(db_path)
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0]["event_type"], "operations_incident")
+            self.assertIn("strategy-lab-refresh", notifications[0]["title"])
+            self.assertEqual(notifications[0]["delivery_status"], "queued")
+
+    def test_warning_severity_incident_does_not_push_a_notification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_operations_incident(
+                db_path,
+                severity="warning",
+                component="research",
+                title="No symbols available",
+                message="Nothing to research this cycle.",
+            )
+            self.assertEqual(list_notifications(db_path), [])
 
     def test_scheduled_jobs_are_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
