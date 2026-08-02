@@ -1,5 +1,80 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 3 — reporting service extraction
+
+Implements Phase 3 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move the report pipeline into `application/reporting_service.py`: trading_report /
+report_page / report-source refresh / broker-learning markdown / report writing and
+persistence / report generation. Preserve `/trading-report`, `/generate-report` and
+`/reports/*` contracts exactly.").
+
+**New `src/ai_trader/application/reporting_service.py`** (903 lines): `ReportingService`,
+holding the entire report pipeline moved verbatim from `LocalApiService` - `generate_report`,
+`trading_report`, `report_page`, `refresh_report_sources`, `broker_learning_report_markdown`,
+`write_trading_report`, `record_trading_report`, `initialize_schema`, plus 20 module-level
+formatting/reconstruction helper functions (`_report_period`, `_reconstruct_broker_fill_pnl`,
+`_period_lessons`, etc.) that only the report pipeline used, and the `REPORT_SCHEMA` constant.
+Verified via AST call-graph analysis (not just grep) which helpers were reporting-exclusive
+versus shared with other, not-yet-extracted parts of `api/__init__.py` before moving anything -
+this caught `_kraken_trade_status_lines` looking reporting-adjacent by proximity but actually
+belonging entirely to the separate Ask AI Trader feature, which stayed put correctly.
+
+**Two narrow injected dependencies, not a reference to LocalApiService.** `refresh_report_sources`
+needs `portfolio()` (Phase 6 broker/operations territory) and `broker_learning_report_markdown`
+needs `daily_learning_update()` (research/learning territory) - both still live on
+`LocalApiService` and are out of this phase's scope to move. Per the plan's Section 5
+dependency rule 6 ("cross-service dependencies should go through explicit domain services or
+the application context," not the whole service object), `ReportingService.__init__` takes
+`portfolio_lookup` and `daily_learning_lookup` as explicit `Callable` parameters, wired by
+`LocalApiService` as `portfolio_lookup=self.portfolio, daily_learning_lookup=self.daily_learning_update`
+(ordinary bound-method references).
+
+**Five small pure formatting helpers duplicated, not imported.** `_human_time`, `_money_text`,
+`_list_or_none`, `_broker_label`, `_estimated_in_positions`, plus the tightly-coupled
+`_broker_trade_payload`/`_broker_trade_symbol` pair, are still used by other not-yet-extracted
+parts of `api/__init__.py` (broker panels, executive summaries - Phase 4/6 territory) and by
+`_broker_trade_rows` specifically. Importing them into `reporting_service.py` from `..api`
+would create a circular import (api/__init__.py imports `ReportingService` at module load
+time, before its own later-defined functions exist yet). Rather than introduce a lazy/deferred
+import pattern this codebase doesn't otherwise use, these seven small stateless functions are
+duplicated verbatim with a comment explaining why, pending consolidation once their other call
+sites are extracted in a later phase.
+
+**Delegation before deletion.** All eight `LocalApiService` methods stayed in place as one-line
+delegates to `self._reporting_service.*` (constructed via composition in `__init__`, alongside
+the existing `self._query_executor`), so the GET/POST route dispatch table needed zero changes.
+`_write_trading_report`, `_record_trading_report`, and `_broker_learning_report_markdown` had no
+other internal callers, so no delegate wrapper was needed for those three specifically -
+verified by grep before removing them.
+
+**Bug found, not fixed.** `record_trading_report` re-runs `REPORT_SCHEMA`'s `executescript` on
+every persisted report - the same "schema re-init mistaken for slow work" pattern already fixed
+elsewhere this session via `persistence/schema_once.py`. Left as a code comment for a future
+fix; not touched here per "do not move and redesign logic simultaneously."
+
+**Own bug caught and fixed before verification.** The first draft of `refresh_report_sources`
+silently dropped the `logger.exception(...)` call the original `_refresh_report_sources` made
+on a broker-refresh failure. Caught by diffing removed lines for any `logger.` calls before
+declaring the move complete, not by a test (no existing test exercised the failure path) -
+fixed by adding a `logger = logging.getLogger("ai_trader.api")` (same logger name, same log
+output) to `reporting_service.py` and restoring the call.
+
+**Verification.** `python -m py_compile` clean. Confirmed no circular import at runtime.
+Grepped every moved function name across `api/__init__.py` post-edit to confirm zero dangling
+references. Smoke-tested all three endpoints end-to-end against a real temp SQLite database
+(`/trading-report`, `/generate-report`, `/reports/{id}`) - genuine report generation,
+persistence, and HTML rendering, not just import resolution. Full stable suite passed clean
+twice independently: 286 passed, 0 failed both runs, including both existing characterization
+tests for `/trading-report` and `/generate-report` unchanged. `api/__init__.py`: 6,021 -> 5,261
+lines (-760). Removed `import html` (its only use moved). No production runtime behaviour
+changed except restoring the logging call above to match the original exactly.
+
+**Next.** Continuing to Phase 4 (Founder presentation service). Per 2026-08-02 agreement with
+the Founder, phases 3-7 proceed without a stop-for-review checkpoint between each one (to
+preserve momentum on the rearchitecture); the next checkpoint is after Phase 7 completes, for
+joint Founder/Claude/ChatGPT review of this log before Phase 8 (execution service - the
+highest-risk phase, sequenced last for that reason) begins.
+
 ## 2026-08-02 Modularisation Phase 2 — query execution extraction
 
 Implements Phase 2 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
