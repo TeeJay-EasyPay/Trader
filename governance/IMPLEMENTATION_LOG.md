@@ -1,5 +1,89 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Stage 0 (safety/characterization) complete
+
+Implements Stage 0 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+(ChatGPT-authored plan, produced from `architecture/AI_TRADER_MODULARISATION_DISCOVERY_PACK_2026-08-02.md`).
+Per the plan's own Section 14 instruction, Stage 0 is mandatory safety/characterization work
+that must complete and be reviewed before any Phase (actual code extraction) begins. **No
+extraction Phase has started.** No behaviour was intentionally changed; this stage only adds
+tests and collapses redundant schema-initialization work.
+
+**0.1 - Resolved two flagged safety unknowns** (the discovery pack could not confirm either
+from static reading alone):
+- Kill switch consultation: proved by code trace and a new end-to-end test
+  (`test_active_kill_switch_prevents_order_placement_end_to_end`, `tests/test_orchestrator.py`)
+  that `KILL_SWITCH_STATE` is genuinely read on the live order path
+  (`sprint6.production_risk_sentinel_decision` -> `pre_execution_decision_packet` ->
+  `orchestrator.evaluate_recommendation`), not only displayed on a status endpoint.
+- Order-intent lock atomicity under Postgres: proved by code trace that
+  `database.PostgresConnection.execute()` re-raises `psycopg.IntegrityError` as
+  `sqlite3.IntegrityError`, which `acquire_order_intent_lock`'s existing exception handler
+  already catches correctly on both backends. No bug found.
+
+**0.2 - Fixed the remaining schema-reinit-per-call bug** (the same class of bug fixed in 7
+other modules on 2026-08-01, where `initialize_*_schema` ran its full `CREATE TABLE`/`ALTER`/
+seed sequence unconditionally on every call instead of once per process). Added a shared
+`src/ai_trader/persistence/schema_once.py` helper (`ensure_schema_once`, process-wide,
+thread-safe, backend/db_path-scoped cache key; 5 tests in `tests/test_schema_once.py`) and
+applied it to the three modules confirmed to sit in a real hot loop:
+- `portfolio_intelligence.py` - runs on every candidate `evaluate_recommendation` call via
+  the portfolio-manager governance step.
+- `operational_truth.py` and `experience_engine.py` - `sprint6.process_learning_outbox`
+  claims and loops over up to 10 pending learning workflows per worker invocation, each of
+  which independently called these modules' schema-init functions up to ~4 times.
+- Deferred: migrating the 8 already-fixed modules' hand-rolled equivalents onto the shared
+  helper. They are already correct and tested; this is pure code-hygiene cleanup with no bug
+  to fix, left for a later phase to avoid unnecessary re-test surface during Stage 0.
+
+**0.3 - API contract characterization tests.** Added `tests/test_api_contract_characterization.py`
+(21 tests) pinning current authorization and top-level response shape for all 17 named
+mobile-consumed endpoints ahead of any future extraction of `api.py` routing/handlers. Cross-
+checked `mobile/App.js`'s actual call sites (not static grep): confirmed mobile calls all 17,
+found one endpoint outside the named list that mobile also calls
+(`/benchmark-daily-brief`, fetched best-effort like the other secondary screens), and
+confirmed which GET endpoints mobile does not call at all (everything founder-facing screens
+need is nested inside `/founder-evidence` instead).
+
+**0.4 - Added the remaining missing safety tests** named in the plan's Section 3 invariants,
+after checking existing coverage to avoid duplicates: Kraken allowed-pair rejection, Kraken
+capital-sleeve isolation at the real `_account_context_for_broker` integration point (a large
+pre-existing personal BTC holding must never inflate the AI's isolated equity), the
+`_snapshot_equity_basis_matches_context` equity-basis guard directly, Alpaca paper-only
+rejection on the live-account path, an ambiguous (exception-raising) broker outcome
+retaining its order-intent lock, `operational_truth` reconciliation flagging missing data for
+manual review instead of fabricating a symbol, and a regression test proving the 0.2 schema-
+once fix still initializes correctly across multiple fresh `db_path` values in one process.
+Kraken buy-only enforcement was already covered and was not duplicated.
+
+**Flaky test diagnosed and fixed.** `test_phase5_production_spine.py::test_phase5_status_reports_attention_until_production_database_ready`
+intermittently failed only in full-suite runs. Root cause: `production_spine.supervise_workers`
+classifies heartbeat staleness against a live, non-injectable `datetime.now(timezone.utc)`
+read against a fixed 240-second threshold - a genuine wall-clock race on this environment, not
+a logic bug (schema-cache key collision and cross-test global state were both ruled out by
+direct code trace). Fixed the test, not production code: it now asserts the healthy path
+strictly, and on the rare stale-clock path asserts the failure is genuinely isolated to clock
+staleness on the one just-heartbeated worker (no duplicate worker types, no late jobs, no
+backlog) - still fails on a real classification bug if one exists.
+
+**Verification.** Full stable suite: 277 passed, 0 failed, run clean twice independently
+(including the previously-flaky test). No production runtime behaviour was intentionally
+changed - all `src/` edits only collapse repeated idempotent schema setup into a single
+process-lifetime call, per module. No broker permission, risk limit, strategy gate,
+allocation limit, stop, target, capital-isolation boundary, or governance threshold was
+weakened.
+
+**Committed separately from Phase 1 below**, per the plan's "small, independently revertible
+commit" delivery control. Files changed: `src/ai_trader/portfolio_intelligence.py`,
+`src/ai_trader/operational_truth.py`, `src/ai_trader/experience_engine.py`,
+`src/ai_trader/persistence/__init__.py` (new), `src/ai_trader/persistence/schema_once.py` (new),
+`tests/test_schema_once.py` (new), `tests/test_api_contract_characterization.py` (new),
+`tests/test_orchestrator.py`, `tests/test_guardrails.py`, `tests/test_multi_broker_platform.py`,
+`tests/test_phase5_production_spine.py`, `tests/test_world_class_transformation.py`.
+
+**Next.** Per the plan's Section 14 instruction, stopping here for review before Phase 1
+(HTTP transport extraction) begins.
+
 ## 2026-07-31 AT-ED-003 UI pass completed - Activity, Recommendations, Portfolio, Learning
 
 Continuation of the same day's Command-screen truth/declutter session. Commit `7969d1d2`,

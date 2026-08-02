@@ -78,6 +78,23 @@ class WorldClassTransformationTests(unittest.TestCase):
             self.assertEqual(again["duplicate_events"], 2)
             self.assertTrue(reconciliation_health(db_path, "kraken"))
 
+    def test_broker_reconciliation_flags_manual_review_instead_of_fabricating_a_symbol(self) -> None:
+        # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md):
+        # reconcile_broker_trade_rows must classify/create lifecycle events from broker
+        # rows "without fabricating data it doesn't have." A row with no symbol/pair
+        # field must be flagged for manual review with symbol left genuinely None, not
+        # guessed at, and the row must still be recorded (never silently dropped).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            rows = [{"id": "unmatched-1", "type": "buy", "status": "filled", "vol": "0.1", "price": "50"}]
+
+            result = reconcile_broker_trade_rows(db_path, "kraken", rows)
+
+            self.assertEqual(result["rows_seen"], 1)
+            self.assertTrue(result["manual_review_required"])
+            self.assertEqual(result["status"], "Manual review required")
+            self.assertEqual(result["lifecycle_events_created"], 1, "The row must still be recorded, just flagged, not dropped.")
+
     def test_r_multiple_and_excursions_are_not_currency_pnl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
@@ -155,6 +172,26 @@ class WorldClassTransformationTests(unittest.TestCase):
             self.assertIn(impact["decision"], {"Reject due to concentration", "Buy smaller"})
             corr = correlation_warning(["A", "B"], {"A": [0.01] * 30, "B": [0.01] * 30})
             self.assertEqual(corr["status"], "complete")
+
+    def test_portfolio_intelligence_schema_still_initializes_per_db_path_after_schema_once_fix(self) -> None:
+        # Stage 0.2 (2026-08-02) moved initialize_portfolio_intelligence_schema onto the
+        # shared ensure_schema_once cache, since it used to re-run its full CREATE
+        # TABLE/index sequence on every single evaluate_recommendation call. This proves
+        # that fix didn't accidentally make the schema a one-time-ever event: two
+        # completely fresh sqlite db_path values used later in the SAME process must
+        # each still get correctly initialized, and a first-ever trade against each
+        # must still get "Acceptable portfolio impact" (not the pre-2026-08-01 bug
+        # where an empty portfolio's 0-value denominator made every first trade look
+        # 100% concentrated and get auto-rejected).
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "test.db"
+                exposure = calculate_portfolio_exposure(db_path, [])
+                impact = proposed_trade_portfolio_impact(
+                    exposure, symbol="BTCGBP", proposed_notional=50, proposed_asset_class="Crypto"
+                )
+                self.assertEqual(impact["decision"], "Acceptable portfolio impact")
+                self.assertIsNone(impact["new_asset_class_weight"])
 
     def test_experience_engine_governed_learning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

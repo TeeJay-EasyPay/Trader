@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import utc_now_iso
+from .persistence.schema_once import ensure_schema_once
 
 
 EXPERIENCE_ENGINE_SCHEMA = """
@@ -73,12 +74,24 @@ CREATE TABLE IF NOT EXISTS LEARNING_PROPOSALS (
 
 
 def initialize_experience_engine_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(EXPERIENCE_ENGINE_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_experience_symbol ON EXPERIENCE_RECORDS(symbol, strategy_id, regime_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_symbol ON POST_TRADE_REVIEWS(symbol, created_at)")
+    """Create schema once per process.
+
+    record_experience, generate_post_trade_review, find_historical_analogues, and
+    create_learning_proposal are all called once per workflow inside
+    production_spine.run_closed_loop_learning, which sprint6.process_learning_outbox
+    loops over up to 10 times per call -- same hot-path repetition risk already fixed
+    for operational_truth and portfolio_intelligence.
+    """
+
+    def _init() -> None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(EXPERIENCE_ENGINE_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_experience_symbol ON EXPERIENCE_RECORDS(symbol, strategy_id, regime_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_symbol ON POST_TRADE_REVIEWS(symbol, created_at)")
+
+    ensure_schema_once(db_path, "experience_engine", _init)
 
 
 def record_experience(

@@ -18,9 +18,9 @@ from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, Position, TradeProposal, utc_now_iso
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.operational import initialize_operational_schema
-from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext
+from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext, _snapshot_equity_basis_matches_context
 from ai_trader.scheduler import ResearchScheduler
-from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry
+from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry, set_kill_switch
 
 
 def seed_due_diligence_context(db_path: Path) -> None:
@@ -361,6 +361,74 @@ class OrchestratorTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_active_kill_switch_prevents_order_placement_end_to_end(self):
+        # Stage 0 safety-unknown resolution (2026-08-02 architecture discovery pack flagged
+        # this as unconfirmed either way): proves KILL_SWITCH_STATE is genuinely consulted
+        # before a live order reaches the broker, not just displayed on a status endpoint.
+        # The real chain: sprint6.production_risk_sentinel_decision reads KILL_SWITCH_STATE
+        # and returns decision="blocked" when active -> pre_execution_decision_packet adds
+        # "risk_sentinel_blocked: kill_switch_active: ..." to its reasons -> orchestrator.
+        # evaluate_recommendation extends its own failures list with those reasons -> the
+        # order is never submitted to the adapter.
+        class FakeKrakenAdapter(FakeAdapter):
+            name = "kraken"
+            requires_production_governance = True
+
+            def get_supported_assets(self):
+                return ["crypto"]
+
+            def get_supported_markets(self):
+                return ["KRAKEN"]
+
+        env_keys = ("KRAKEN_TRADING_ENABLED", "KRAKEN_LIVE_TRADING_APPROVED", "KRAKEN_SUBMIT_REAL_ORDERS")
+        previous = {key: os.environ.get(key) for key in env_keys}
+        try:
+            for key in env_keys:
+                os.environ[key] = "true"
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "audit.sqlite3"
+                seed_due_diligence_context(db_path)
+                seed_default_strategy_registry(db_path)
+                initialize_foundation_schema(db_path)
+                apply_founder_strategy_authorization(
+                    db_path,
+                    strategy_id="crypto_trend_following_2r",
+                    target_stage="Micro Live",
+                    additional_modes=["micro_live"],
+                    reason="test",
+                )
+                with closing(sqlite3.connect(db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at) "
+                            "VALUES ('BTC', 'Bitcoin', 'layer1', 'test', 1, ?, ?)",
+                            (utc_now_iso(), utc_now_iso()),
+                        )
+                crypto_proposal = proposal(
+                    symbol="BTC", asset_type="crypto", exchange="KRAKEN", strategy_id="crypto_trend_following_2r",
+                )
+                adapter = FakeKrakenAdapter()
+                orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+                # Baseline: kill switch not yet activated. Whatever this from-scratch test
+                # database does or doesn't approve, it must not be blocked *for kill-switch
+                # reasons specifically* - proves the reason only appears because of the switch.
+                before = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertNotIn("kill_switch_active", before.rejection_reason or "")
+
+                set_kill_switch(db_path, active=True, reason="test emergency stop")
+
+                after = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertEqual(after.decision, "rejected")
+                self.assertIn("kill_switch_active", after.rejection_reason)
+                self.assertEqual(len(adapter.orders), 0)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_alpaca_adapter_uses_standard_bracket_interface(self):
         adapter = AlpacaBrokerAdapter(FakeAlpacaClient())
         result = adapter.place_bracket_order(OrderRequest("AAPL", "buy", 1, "stock", "NYSE", 97, 106))
@@ -415,6 +483,30 @@ class OrchestratorTests(unittest.TestCase):
         stop.set()
 
         self.assertGreaterEqual(service.calls, 1)
+
+
+class EquityBasisGuardTests(unittest.TestCase):
+    """Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md):
+    _snapshot_equity_basis_matches_context is the guard orchestrator.py's
+    evaluate_recommendation relies on to stop a Kraken whole-account PORTFOLIO_SNAPSHOTS
+    figure (which includes pre-existing personal holdings) from being compared against
+    the AI's isolated allocation equity. Hosted evidence (2026-08-01) showed this
+    mismatch producing a standing false-positive maximum_weekly_loss_exceeded on every
+    Kraken candidate before the guard existed; this pins the fix in place directly."""
+
+    def test_whole_account_snapshot_against_isolated_equity_does_not_match(self):
+        # £9000 whole-Kraken-account snapshot vs a £100 isolated AI allocation --
+        # exactly the order-of-magnitude mismatch that caused the false positive.
+        self.assertFalse(_snapshot_equity_basis_matches_context(9000.0, 100.0))
+
+    def test_snapshot_on_the_same_basis_as_context_matches(self):
+        # A snapshot genuinely captured on the same (isolated) basis as the current
+        # context equity must still be usable by the weekly/monthly/drawdown checks.
+        self.assertTrue(_snapshot_equity_basis_matches_context(95.0, 100.0))
+
+    def test_zero_or_negative_account_equity_never_matches(self):
+        self.assertFalse(_snapshot_equity_basis_matches_context(100.0, 0.0))
+        self.assertFalse(_snapshot_equity_basis_matches_context(100.0, -5.0))
 
 
 if __name__ == "__main__":

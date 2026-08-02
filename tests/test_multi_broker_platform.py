@@ -588,6 +588,41 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_rejects_a_pair_outside_the_founder_approved_allowlist(self):
+        # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md):
+        # "Kraken order size, allocation, allowed-pair and buy-only checks remain enforced
+        # at the adapter boundary" -- buy-only and order-size/allocation already had
+        # coverage; the allowed-pair half of that invariant did not.
+        previous = {key: os.environ.get(key) for key in [
+            "KRAKEN_API_KEY",
+            "KRAKEN_PRIVATE_KEY",
+            "KRAKEN_AUTO_TRADING",
+            "KRAKEN_LIVE_TRADING_APPROVED",
+            "KRAKEN_MAX_ORDER_GBP",
+            "KRAKEN_MIN_ORDER_GBP",
+            "KRAKEN_ALLOWED_PAIRS",
+            "KRAKEN_SUBMIT_REAL_ORDERS",
+        ]}
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
+            os.environ["KRAKEN_MIN_ORDER_GBP"] = "1"
+            # DOGEGBP is deliberately absent from the allowlist.
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP,ETHGBP,SOLGBP"
+            os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "false"
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_order(OrderRequest("DOGE", "buy", 5.0, "crypto", "KRAKEN", 0.05, 0.08, notional_amount=2, client_order_id="unlisted-pair"))
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("pair_not_allowed", result["seatbelt_failures"])
+            self.assertFalse(adapter.submitted_orders)
+        finally:
+            restore_env(previous)
+
     def test_kraken_live_micro_order_submits_when_all_seatbelts_pass(self):
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_API_KEY",
@@ -744,6 +779,37 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertEqual(summary["unpriced_assets"][0]["normalized_asset"], "USDT")
             self.assertIn("excluded from the estimated total", summary["valuation_note"])
             self.assertEqual(_kraken_trading_allocation_gbp({"ZGBP": "50"}), 50.0)
+        finally:
+            restore_env(previous)
+
+    def test_account_context_for_kraken_never_lets_personal_holdings_inflate_ai_equity(self):
+        # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md
+        # section 3): "Kraken personal holdings never enter the AI trading capital
+        # sleeve." _kraken_trading_allocation_gbp is already unit-tested as a pure
+        # function; this exercises the real integration point governance actually reads
+        # from (_account_context_for_broker -> AccountContext.equity), with an account
+        # holding thousands of pounds of pre-existing personal crypto (from before the
+        # AI was ever given trading authority) and only a small GBP cash remainder.
+        previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
+        try:
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                # A large pre-existing personal Bitcoin holding (worth thousands of GBP
+                # at any realistic price) plus a small GBP cash remainder below the
+                # £100 allocation cap.
+                adapter.get_account = lambda: {
+                    "status": "connected",
+                    "balances": {"ZGBP": "38.23", "XXBT": "0.5"},
+                }
+                service.orchestrator.adapters["kraken"] = adapter
+
+                account = service._account_context_for_broker("kraken")
+
+                # Equity must reflect only the isolated GBP cash sleeve (capped at the
+                # allocation), never the personal BTC holding's value.
+                self.assertEqual(account.equity, 38.23)
         finally:
             restore_env(previous)
 
@@ -1128,6 +1194,47 @@ class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
                 second = service.monitor_managed_exits()
                 self.assertEqual(second["managed_exits"][0]["status"], "exit_submitted")
                 self.assertEqual(len(adapter.submitted_orders), 1)
+        finally:
+            restore_env(previous)
+
+    def test_ambiguous_broker_outcome_does_not_release_the_lock(self):
+        # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md
+        # section 3): "An uncertain broker outcome must not cause an order-intent lock
+        # to be automatically released." release_order_intent_lock's own docstring
+        # already states this must only be called after a definite, synchronous
+        # rejection -- this proves the actual call site (monitor_managed_exits,
+        # api.py) honours that: when place_exit_order raises (simulating a network
+        # timeout or any other outcome where we genuinely don't know whether Kraken
+        # received the order), no release call is reached and the lock survives.
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+
+                def raise_ambiguous_outcome(order_request):
+                    raise TimeoutError("Kraken did not respond before the request timed out")
+
+                adapter.place_exit_order = raise_ambiguous_outcome
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+
+                with self.assertRaises(TimeoutError):
+                    service.monitor_managed_exits()
+
+                # The lock acquired before the ambiguous call must still be held --
+                # a same-key re-acquire attempt must fail.
+                relocked = acquire_order_intent_lock(
+                    service.settings.db_path,
+                    broker="kraken",
+                    client_order_id=f"exit-{managed_exit_id}",
+                    symbol="BTC",
+                    side="sell",
+                    notional=4800.0,
+                )
+                self.assertFalse(relocked, "An ambiguous broker outcome must never release the order-intent lock.")
         finally:
             restore_env(previous)
 

@@ -62,6 +62,31 @@ class GuardrailTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("outside_regular_trading_hours", result.failures)
 
+    def test_rejects_a_live_non_paper_stock_account(self):
+        # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md
+        # section 3): "Alpaca remains paper-only unless an explicitly approved future
+        # change alters that policy." No existing test exercised the actual failure
+        # path -- only the default (paper, passing) case was covered.
+        result = validate_trade_proposal(
+            proposal(asset_type="stock"),
+            AccountContext(equity=100_000, daily_realized_pnl=0, open_positions=[], is_paper=False),
+            GuardrailConfig(paper_trading_only=True),
+            now=MARKET_TIME,
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("paper_trading_only_failed", result.failures)
+
+    def test_crypto_is_exempt_from_the_paper_only_check(self):
+        # Kraken crypto trading is deliberately real-money (the founder's isolated £100
+        # sleeve), so the paper-only guard must not block it the way it blocks stocks.
+        result = validate_trade_proposal(
+            proposal(asset_type="crypto", symbol="BTC"),
+            AccountContext(equity=100_000, daily_realized_pnl=0, open_positions=[], is_paper=False),
+            GuardrailConfig(paper_trading_only=True),
+            now=MARKET_TIME,
+        )
+        self.assertNotIn("paper_trading_only_failed", result.failures)
+
 
 if __name__ == "__main__":
     unittest.main()

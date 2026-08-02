@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import utc_now_iso
+from .persistence.schema_once import ensure_schema_once
 
 
 PORTFOLIO_INTELLIGENCE_SCHEMA = """
@@ -84,12 +85,25 @@ CREATE TABLE IF NOT EXISTS PORTFOLIO_STRESS_TESTS (
 
 
 def initialize_portfolio_intelligence_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(PORTFOLIO_INTELLIGENCE_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_metadata_symbol ON ASSET_METADATA(symbol)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_exposure_broker ON PORTFOLIO_EXPOSURE_SNAPSHOTS(broker, created_at)")
+    """Create schema once per process.
+
+    This is called from calculate_portfolio_exposure, which runs on every single
+    evaluate_recommendation call via production_spine.portfolio_manager_decision -- i.e.
+    every candidate evaluated in the live governance chain. Confirmed still unfixed by the
+    2026-08-02 architecture discovery pack; same "repeated schema setup mistaken for slow
+    analysis" bug already fixed for kraken_reconciliation, trading_intelligence,
+    multi_broker, operational, foundation, and production_spine on 2026-08-01.
+    """
+
+    def _init() -> None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(PORTFOLIO_INTELLIGENCE_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_metadata_symbol ON ASSET_METADATA(symbol)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_exposure_broker ON PORTFOLIO_EXPOSURE_SNAPSHOTS(broker, created_at)")
+
+    ensure_schema_once(db_path, "portfolio_intelligence", _init)
 
 
 def upsert_asset_metadata(

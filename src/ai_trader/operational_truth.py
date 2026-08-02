@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import utc_now_iso
+from .persistence.schema_once import ensure_schema_once
 
 
 CANONICAL_STAGES = {
@@ -193,12 +194,27 @@ CREATE TABLE IF NOT EXISTS BROKER_RECONCILIATION_RUNS (
 
 
 def initialize_operational_truth_schema(db_path: Path) -> None:
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(OPERATIONAL_TRUTH_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_proposal ON CANONICAL_TRADE_LIFECYCLE(proposal_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_broker_symbol ON CANONICAL_TRADE_LIFECYCLE(broker, symbol)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_stage ON CANONICAL_TRADE_LIFECYCLE(stage)")
+    """Create schema once per process.
+
+    record_lifecycle_event and reconcile_broker_trade_rows call this on every row of
+    every broker reconciliation batch, and process_learning_outbox (sprint6.py) claims
+    and loops over up to 10 pending learning workflows per call, each of which runs
+    calculate_execution_costs/calculate_r_multiple/calculate_mae_mfe/record_lifecycle_event
+    -- i.e. up to ~40 redundant full CREATE TABLE/ALTER passes per worker invocation.
+    Same "repeated schema setup mistaken for slow analysis" bug already fixed for
+    kraken_reconciliation, trading_intelligence, multi_broker, operational, foundation,
+    production_spine, and portfolio_intelligence.
+    """
+
+    def _init() -> None:
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(OPERATIONAL_TRUTH_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_proposal ON CANONICAL_TRADE_LIFECYCLE(proposal_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_broker_symbol ON CANONICAL_TRADE_LIFECYCLE(broker, symbol)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_ctl_stage ON CANONICAL_TRADE_LIFECYCLE(stage)")
+
+    ensure_schema_once(db_path, "operational_truth", _init)
 
 
 def record_lifecycle_event(
