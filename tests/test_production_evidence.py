@@ -119,7 +119,12 @@ class ProductionEvidenceTests(unittest.TestCase):
 
             with (
                 patch.object(service, "recommendations", return_value=[rich]),
-                patch("ai_trader.api.record_research_evidence") as record_evidence,
+                # Phase 5 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md)
+                # moved _record_production_research into application/research_service.py,
+                # which imports record_research_evidence independently -- the call site this
+                # patch needs to target moved with it. Same underlying function object,
+                # same observable behaviour; only the module-qualified patch target changed.
+                patch("ai_trader.application.research_service.record_research_evidence") as record_evidence,
             ):
                 service._record_production_research(
                     "2026-07-23T14:00:00+00:00",

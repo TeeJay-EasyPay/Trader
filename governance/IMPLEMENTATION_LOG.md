@@ -1,5 +1,94 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 5 — research service extraction
+
+Implements Phase 5 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+Section 7 ("Move run_analysis, run_crypto_analysis, refresh_strategy_lab,
+refresh_crypto_universe, research recording and enrichment, shared cycle bookkeeping.
+Preserve separate equity and crypto entry points. Share only lifecycle helpers that are
+genuinely common.").
+
+**New `src/ai_trader/application/research_service.py`** (933 lines): `ResearchService`
+holding `run_analysis`, `run_crypto_analysis`, `refresh_strategy_lab`,
+`refresh_crypto_universe`, `_refresh_asset_metadata_from_company_master`,
+`_record_production_research`, `_enrich_production_recommendations`,
+`_bootstrap_crypto_universe_from_kraken_permissions`, `_record_research_from_result`,
+`_record_research_funnel_from_result`, `_record_shadow_from_proposal`, plus three exclusive
+module-level helpers (`_symbol_from_kraken_pair`, `_crypto_display_name`,
+`_proposal_expected_r`). `run_analysis` and `run_crypto_analysis` remain two separate
+methods, not merged, per the plan's explicit instruction.
+
+**AST-based caller analysis excluded `_continuous_research_status`** from this phase despite
+its name and the plan's "shared cycle bookkeeping" wording suggesting otherwise: its only
+caller anywhere in `api/__init__.py` is `status()` (the `/status` dashboard aggregator), never
+any research method. It computes a status summary for display, not bookkeeping that happens
+during a research cycle - left in place, correctly out of scope.
+
+**Four narrow injected dependencies, not a reference to LocalApiService.**
+`_account_context_for_broker` (Kraken AI capital-sleeve isolation logic -
+`_kraken_trading_allocation_gbp` - deliberately injected rather than duplicated, so that
+safety-critical logic keeps exactly one implementation anywhere in the codebase),
+`recommendations` (used by several not-yet-extracted callers), `auto_execute_recommendations`
+(execution territory, Phase 6/8), and a broker-client factory (`_broker`, still needed
+elsewhere in `api/__init__.py` too) are all injected as `Callable`s per the plan's Section 5
+dependency rule 6.
+
+**Design flaw found via test failures, not caught before running tests - corrected.** The
+first pass wired `recommendations_lookup=self.recommendations` and (for the broker factory)
+duplicated `_broker()` as ResearchService's own method, both captured/defined once. Running
+the full suite (not py_compile, not manual review) surfaced two real failures:
+`tests/test_strategy_lab.py` monkeypatches `service._broker = lambda: FakeAlpacaBars(...)`
+*after* `LocalApiService(settings)` has already constructed `ResearchService`, and
+`tests/test_production_evidence.py` does the same via `patch.object(service, "recommendations",
+...)`. A directly-captured bound method or a duplicated method neither one sees a later
+instance-attribute monkeypatch. Fixed by wiring all four injected dependencies as lambdas that
+read the LocalApiService instance's method at call time
+(`lambda limit: self.recommendations(limit)`, not `self.recommendations`) - the same
+live-reading pattern Phase 4 already established for `hosted_read_only`/`api_token_configured`
+for the identical reason, now applied consistently across all four here rather than only the
+two a test happened to catch.
+
+**Two more methods needed delegates, not full removal - also found via test failures.**
+`_refresh_asset_metadata_from_company_master` and `_record_production_research` had no
+internal caller left inside `api/__init__.py` after their one call site moved with them, so
+the first pass removed both outright - but `tests/test_asset_metadata_refresh.py` and
+`tests/test_production_evidence.py` call both directly on the `LocalApiService` instance as
+external callers. AST analysis of *this file's* call graph correctly found zero internal
+callers; it does not see test-file callers, which is a real gap in the method, not just this
+run of it - noted here so a future phase's exclusivity check greps `tests/` too, not only
+`api/__init__.py`. Fixed by adding both back as one-line delegates.
+
+**One test patch target updated to match the new call site.**
+`tests/test_production_evidence.py` patched `ai_trader.api.record_research_evidence` -
+`_record_production_research` now imports `record_research_evidence` independently into
+`research_service.py`, so the patch target changed to
+`ai_trader.application.research_service.record_research_evidence`. Same function object, same
+observable behaviour; only the module-qualified name the test patches moved, which is an
+expected consequence of relocating the implementation, not a behaviour change.
+
+**Small helpers duplicated**: `_csv_env` and `_int_or_default` are still used elsewhere in
+`api/__init__.py`, duplicated verbatim per the established Phase 3/4 convention. Caught myself
+using `_int_or_default(body.get("limit"), 10)`'s inline-`int()` near-equivalent in a first
+draft, which is not behaviourally identical (it raises on a non-numeric string instead of
+falling back to the default) - fixed before running any tests, by an automated diff of every
+moved method against the original rather than eyeballing it.
+
+**Verification.** Automated a byte-for-byte diff (after normalizing only the known
+lookup/query-executor substitutions) of every moved method and function against its original
+before touching `api/__init__.py` at all - this is what caught the `_int_or_default` and
+`_csv_env`-inline-import deviations before any test run. Grepped every moved name across
+`api/__init__.py` post-edit - zero dangling references. `python -m py_compile` clean. Full
+stable suite passed clean three times independently across the fix cycle: 286 passed, 0 failed
+every run, including both `/run-analysis` and `/run-crypto-analysis` characterization tests
+re-run individually by name. `api/__init__.py`: 4,747 -> 3,982 lines (-765).
+
+**Did not run `git commit`** - the previous phase's fork committed without waiting for review,
+which was flagged to the Founder as a process violation; this phase deliberately left
+everything in the working tree for the coordinating session to review and commit.
+
+**Next.** Continuing to Phase 6 (Broker and operations services). No checkpoint until Phase 7
+completes, per the 2026-08-02 Founder/Claude agreement on phase batching.
+
 ## 2026-08-02 Modularisation Phase 4 — founder presentation service extraction
 
 Implements Phase 4 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
