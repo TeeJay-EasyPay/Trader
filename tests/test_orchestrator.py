@@ -18,6 +18,7 @@ from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, Position, TradeProposal, utc_now_iso
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.operational import initialize_operational_schema
+from ai_trader.kraken_reconciliation import set_reconciliation_hold
 from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext, _snapshot_equity_basis_matches_context
 from ai_trader.scheduler import ResearchScheduler
 from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry, set_kill_switch
@@ -354,6 +355,87 @@ class OrchestratorTests(unittest.TestCase):
 
                 after = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
                 self.assertNotIn("not permitted for micro_live execution", after.rejection_reason or "")
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_kraken_reconciliation_hold_blocks_new_entries_end_to_end(self):
+        # Phase 8 safety characterization (ChatGPT/Founder-authorized directive,
+        # architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md, category 2:
+        # "remains blocked by the reconciliation hold where applicable") -- proves
+        # orchestrator.evaluate_recommendation genuinely consults KRAKEN_RECONCILIATION_
+        # CONTROL.hold_new_entries for Kraken proposals specifically (not just displayed on
+        # a status endpoint), and that lifting the hold removes that specific failure
+        # reason. Mirrors the existing kill-switch and founder-authorization end-to-end
+        # tests above: proves the presence/absence of one specific mechanism's failure
+        # reason, not a fully-approved outcome, since a from-scratch test database fails
+        # several unrelated, legitimate gates regardless (due diligence, investment score).
+        class FakeKrakenAdapter(FakeAdapter):
+            name = "kraken"
+            requires_production_governance = True
+
+            def get_supported_assets(self):
+                return ["crypto"]
+
+            def get_supported_markets(self):
+                return ["KRAKEN"]
+
+        env_keys = ("KRAKEN_TRADING_ENABLED", "KRAKEN_LIVE_TRADING_APPROVED", "KRAKEN_SUBMIT_REAL_ORDERS")
+        previous = {key: os.environ.get(key) for key in env_keys}
+        try:
+            for key in env_keys:
+                os.environ[key] = "true"
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "audit.sqlite3"
+                seed_due_diligence_context(db_path)
+                seed_default_strategy_registry(db_path)
+                initialize_foundation_schema(db_path)
+                apply_founder_strategy_authorization(
+                    db_path,
+                    strategy_id="crypto_trend_following_2r",
+                    target_stage="Micro Live",
+                    additional_modes=["micro_live"],
+                    reason="test",
+                )
+                with closing(sqlite3.connect(db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at) "
+                            "VALUES ('BTC', 'Bitcoin', 'layer1', 'test', 1, ?, ?)",
+                            (utc_now_iso(), utc_now_iso()),
+                        )
+                crypto_proposal = proposal(
+                    symbol="BTC", asset_type="crypto", exchange="KRAKEN", strategy_id="crypto_trend_following_2r",
+                )
+                adapter = FakeKrakenAdapter()
+                orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+                # KRAKEN_RECONCILIATION_CONTROL defaults to hold_new_entries=True (fail-closed
+                # until explicitly verified -- see test_kraken_reconciliation.py's
+                # test_default_control_pauses_entries_and_failed_verification_cannot_resume),
+                # so establish an explicit "verification already complete" baseline first to
+                # isolate this test to the hold mechanism specifically, not the safe default.
+                set_reconciliation_hold(db_path, active=False, reason="test: verification complete", status="verified")
+
+                before = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertNotIn("kraken_reconciliation_hold", before.rejection_reason or "")
+
+                set_reconciliation_hold(
+                    db_path, active=True, reason="test: unmatched Kraken history under review", status="verification_required"
+                )
+
+                held = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertEqual(held.decision, "rejected")
+                self.assertIn("kraken_reconciliation_hold", held.rejection_reason)
+                self.assertEqual(len(adapter.orders), 0)
+
+                set_reconciliation_hold(db_path, active=False, reason="test: verification complete", status="verified")
+
+                resumed = orchestrator.evaluate_recommendation(crypto_proposal, context(), auto_execute=True)
+                self.assertNotIn("kraken_reconciliation_hold", resumed.rejection_reason or "")
         finally:
             for key, value in previous.items():
                 if value is None:

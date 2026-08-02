@@ -1,5 +1,124 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 8 — execution service extraction (final extraction phase)
+
+Implements Phase 8 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`
+("Execution service, last... approve_and_execute; autonomous recommendation execution;
+managed-exit monitoring; forced managed exits; execution-specific helper checks. ExecutionService
+is an application coordinator only."), per a detailed ChatGPT-authored directive reviewed and
+authorized by the Founder on 2026-08-02, following a prerequisite boundary audit of
+`broker_service.py`/`operations_service.py` (see that audit's own record below) that found no
+violations, clearing this phase to proceed.
+
+**Prerequisite boundary audit (no violations found).** Read every method in `broker_service.py`
+and `operations_service.py`, grepped both files exhaustively for raw SQL writes and for calls to
+any order-submission/authorization/lock/reconciliation-hold-mutating function, and traced
+`reconciliation_control`/`broker_auto_settings` to confirm both are genuinely read-only despite
+their names. Everything in both files is either read-only or writes only observational/audit
+records (trade history, snapshots, canonical lifecycle events, notifications, push tokens) -
+never trading authorization, execution permission, locks, or the reconciliation hold/control
+state. This matches Phase 6's own scope description ("broker activity polling... reconciliation
+presentation"), confirmed by tracing `normalize_broker_events`/`reconcile_canonical_broker_event`
+directly: they record observed broker fills into the canonical trade lifecycle, they never write
+`KRAKEN_RECONCILIATION_CONTROL.hold_new_entries` or any authorization flag.
+
+**New `src/ai_trader/application/execution_service.py`** (711 lines): `ExecutionService` holding
+10 methods moved verbatim from `LocalApiService` - `approve_and_execute`,
+`_proposal_with_manual_amount`, `_manual_approval_auto_config`, `_auto_config_for_broker`,
+`auto_execute_recommendations`, `auto_execute_recommendations_alpaca`,
+`auto_execute_recommendations_kraken`, `monitor_managed_exits`, `force_managed_exit`,
+`_proposal_already_executed` - plus 7 exclusive helper functions (`_int_or_default`,
+`_parse_datetime`, `_recommendation_freshness`, `_validation_payload`, `_validation_failures`,
+`_format_guardrail_failures`, `_json_loads_safe`), all duplicated per the established convention
+since each still has external callers in not-yet-extracted presentation code
+(`recommendations()`). Every moved method and helper was verified byte-for-byte identical to its
+original (via an AST-based comparison script, not eyeballing) before `api/__init__.py` was
+touched at all, confirming an accurate move with only the known, deliberate call-site
+substitutions for injected dependencies.
+
+**`ExecutionService` is a coordinator only, per the plan's explicit requirement.** Every
+authoritative safety decision stays exactly where it already was and is called directly, never
+reimplemented: Strategy/Portfolio/Risk/Sentinel governance and the kill switch
+(`orchestrator.evaluate_recommendation`, unchanged), order-intent locking
+(`acquire_order_intent_lock`/`complete_order_intent_lock`/`release_order_intent_lock` in
+`multi_broker.py`, unchanged - a lock is only ever released here after a definite, synchronous
+"no order was placed" broker answer; an exception or an ambiguous result leaves it locked), the
+Kraken reconciliation hold (consulted inside `orchestrator.evaluate_recommendation` itself, not
+duplicated here), broker-adapter order validation (`broker_adapters.KrakenAdapter`, unchanged),
+and canonical trade lifecycle recording. Managed-exit *registration* specifically (as opposed to
+*monitoring*, which did move) was traced and confirmed to already live entirely inside
+`orchestrator.py` (`record_managed_trade_exit`, called only for Kraken fills) - nothing in
+`LocalApiService` ever performed it, so there was nothing to extract for that specific plan
+bullet; this is recorded here so it doesn't look like an oversight.
+
+**Four narrow injected dependencies, not a reference to LocalApiService**: `account_context_lookup`
+(carries the Kraken AI capital-sleeve isolation logic - deliberately injected, not duplicated, so
+it keeps exactly one implementation anywhere in the codebase, the same discipline Phases 5 and 6a
+already established for this exact function), `control_state_lookup`, `broker_managed_trade_capacity_lookup`
+(the `BrokerService` method from Phase 6a), and `portfolio_lookup`. All four wired as call-time
+lambdas in `LocalApiService.__init__`, matching every prior phase's pattern.
+
+**Two methods verified exclusively execution-scope via call-graph, not proximity** (the plan's own
+warning: "do not move methods merely because they are adjacent in the file"): `_auto_config_for_broker`
+looked purely execution-adjacent by name and was confirmed to have exactly two callers, both
+moving, so it moved too (with no delegate needed - zero external callers, including tests).
+Conversely, `_proposal_broker` sits physically between `_proposal_already_executed` and
+`broker_decisions` and looked execution-adjacent by proximity, but its only caller anywhere in the
+codebase is `recommendations()` (presentation, not execution) - correctly **not** moved, staying in
+`api/__init__.py`. `_apply_env_broker_auto_defaults`/`_apply_founder_kraken_live_authorization`
+were also considered and correctly excluded: both run once at process startup from `__init__`,
+not from any execution request path, so they are startup bootstrap, not part of this cluster.
+
+**New safety characterization test, one genuine gap found and filled.** Checked existing coverage
+first against the directive's six safety categories before writing anything new - Category 3
+(order-intent locking: acquired before submission, no duplicate on success, definite failure
+releases, ambiguous/crash retains, retained lock prevents blind resubmission) and Category 4
+(kill switch, strategy entitlement, portfolio/risk rejection) were already extremely well covered
+by existing tests (`test_ambiguous_broker_outcome_does_not_release_the_lock`,
+`test_monitor_managed_exits_refuses_to_resubmit_while_a_prior_attempt_is_still_locked`,
+`test_active_kill_switch_prevents_order_placement_end_to_end`, etc.) - no duplicate tests added.
+Category 2 ("respects the reconciliation hold where applicable") had a real gap: nothing proved
+`orchestrator.evaluate_recommendation` actually consults the Kraken reconciliation hold for a
+Kraken proposal specifically, only that the reconciliation-control module itself defaults to
+holding. Added `test_kraken_reconciliation_hold_blocks_new_entries_end_to_end`
+(`tests/test_orchestrator.py`), which incidentally also confirmed a genuine safety-positive
+finding worth recording: `KRAKEN_RECONCILIATION_CONTROL.hold_new_entries` defaults to `True`
+(fail-closed) on a fresh database, matching the existing
+`test_default_control_pauses_entries_and_failed_verification_cannot_resume` test in
+`tests/test_kraken_reconciliation.py`. Category 1's "creates managed-exit monitoring where
+required" for Alpaca was verified by direct code trace rather than a new heavy integration test
+(see the coordinator-service note above: registration is Kraken-only and lives entirely in
+`orchestrator.py`, which Phase 8 does not touch), a proportionate choice given a full new
+end-to-end submission test would exercise domain logic outside this phase's actual change surface.
+
+**No bug found this phase requiring a fix.**
+
+**Verification.** `python -m py_compile` clean on both files. Grepped every one of the 10 moved
+methods plus the removed-not-delegated `_proposal_with_manual_amount`/`_manual_approval_auto_config`/
+`_auto_config_for_broker` across `api/__init__.py` post-edit - zero dangling references. Removed 8
+now-fully-unused imports (`OrderRequest`, `acquire_order_intent_lock`, `complete_order_intent_lock`,
+`release_order_intent_lock`, `mark_managed_exit_submitted`, `update_broker_runtime`,
+`update_trailing_water_marks`, `register_kraken_order_ownership`) whose only remaining call sites
+moved with the code. Full stable suite passed clean twice independently: 287 passed (286 + 1 new),
+0 failed both runs. The two safety-critical test files (`test_orchestrator.py`,
+`test_multi_broker_platform.py`, 60 tests) and all 20 API contract characterization tests
+(including `/approve-and-execute`, `/auto-execute-recommendations`, `/force-managed-exit`) were
+additionally re-run individually with verbose output for extra confidence, all unchanged.
+`api/__init__.py`: 2,828 -> 2,332 lines (-496). No production runtime behaviour changed. No real
+Kraken order was submitted in any test (all tests use `FakeKrakenAdapter`/`FakeAlpacaClient` or
+equivalent controlled fakes, consistent with every prior phase's tests).
+
+**Not committed** by the fork that did this work, per this session's established process (one
+earlier phase's fork committed without waiting for review; every phase since has left work
+uncommitted for the coordinating session to verify independently first).
+
+**Next.** All 8 extraction phases plus Stage 0 are now complete. Per the ChatGPT-authored Phase 8
+directive's own instruction ("Pause after Phase 8 and the proposed Phase 9 cleanup plan so the
+Founder and ChatGPT can review the complete modularised code before push, merge or deployment"),
+this is a deliberate stop: no push, no merge, no deploy. A Phase 9 cleanup *plan* (proposal only,
+not executed) follows this entry; a Phase 8 Founder briefing has been produced separately for
+this specific checkpoint.
+
 ## 2026-08-02 Modularisation Phase 7 — administration service extraction (+ Phase 6a scope correction)
 
 Implements Phase 7 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`

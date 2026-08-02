@@ -6,6 +6,7 @@ import os
 import sqlite3
 from ..application.administration_service import AdministrationService
 from ..application.broker_service import BrokerService
+from ..application.execution_service import ExecutionService
 from ..application.founder_experience_service import FounderExperienceService
 from ..application.operations_service import OperationsService
 from ..application.reporting_service import ReportingService
@@ -54,25 +55,19 @@ from ..foundation import initialize_foundation_schema, latest_due_diligence, lat
 from ..experience_engine import initialize_experience_engine_schema
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..intelligence import InvestmentIntelligenceDatabase
-from ..models import AccountContext, OrderRequest, Position, TradeProposal, utc_now_iso
+from ..models import AccountContext, Position, TradeProposal, utc_now_iso
 from ..multi_broker import (
-    acquire_order_intent_lock,
     all_broker_runtime,
     broker_auto_settings,
     broker_auto_trading_enabled,
-    complete_order_intent_lock,
     initialize_multi_broker_schema,
     latest_recommendation_set,
     list_performance_attribution,
-    mark_managed_exit_submitted,
     open_managed_exits,
     record_crypto_research_score,
     record_notification,
     record_recommendation_set,
-    release_order_intent_lock,
     set_broker_auto_trading,
-    update_broker_runtime,
-    update_trailing_water_marks,
 )
 from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run
 from ..canonical_trades import initialize_canonical_trade_schema
@@ -80,7 +75,6 @@ from ..kraken_reconciliation import (
     founder_override_kraken_hold,
     initialize_kraken_reconciliation_schema,
     kraken_reconciliation_status,
-    register_kraken_order_ownership,
     replay_persisted_kraken_evidence,
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
@@ -267,6 +261,22 @@ class LocalApiService:
             due_diligence_status_lookup=lambda: self._due_diligence_status(),
             control_state_lookup=lambda: self._control_state(),
             latest_daily_brief_lookup=lambda brief_type: self._latest_daily_brief(brief_type),
+        )
+        self._execution_service = ExecutionService(
+            settings=settings,
+            orchestrator=self.orchestrator,
+            query_executor=self._query_executor,
+            # Lazy lambdas, matching every prior phase's pattern (Phases 4/5 established
+            # this is required wherever tests monkeypatch LocalApiService instance
+            # attributes post-construction). _account_context_for_broker specifically
+            # carries the Kraken AI capital-sleeve isolation logic and is deliberately
+            # injected rather than duplicated, so it keeps exactly one implementation
+            # anywhere in the codebase -- the same discipline Phases 5 and 6a established
+            # for this exact function.
+            account_context_lookup=lambda broker: self._account_context_for_broker(broker),
+            control_state_lookup=lambda: self._control_state(),
+            broker_managed_trade_capacity_lookup=lambda broker: self._broker_managed_trade_capacity(broker),
+            portfolio_lookup=lambda broker: self.portfolio(broker),
         )
         if not initialize_runtime:
             return
@@ -1042,81 +1052,10 @@ class LocalApiService:
         return self._administration_service.set_trading_state(state, command)
 
     def approve_and_execute(self, body: dict[str, Any]) -> dict[str, Any]:
-        control = self._control_state()
-        if control["trading_state"] != "running":
-            return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
-        proposal_id = body.get("proposal_id")
-        if not proposal_id:
-            return {"status": "rejected", "message": "proposal_id is required."}
-        row = self._row(
-            "SELECT payload_json, created_at, ai_confidence FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
-            (str(proposal_id),),
-        )
-        if not row:
-            symbol = str(body.get("symbol") or "").upper().strip()
-            if symbol:
-                row = self._row(
-                    """
-                    SELECT payload_json, created_at, ai_confidence, proposal_id
-                    FROM trade_audit
-                    WHERE UPPER(symbol) = UPPER(?) AND event_type = 'agent_proposal'
-                    ORDER BY created_at DESC, id DESC LIMIT 1
-                    """,
-                    (symbol,),
-                )
-                if row:
-                    proposal_id = row["proposal_id"]
-            if not row:
-                return {
-                    "status": "rejected",
-                    "message": "Proposal not found in the production database. Refresh recommendations, then try the latest card again.",
-                }
-        freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
-        if freshness["status"] == "Expired":
-            return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}
-        payload = json.loads(row["payload_json"])
-        proposal = TradeProposal.from_dict(payload["proposal"])
-        selected = self.orchestrator._select_adapter(proposal)
-        if selected is None:
-            return {"status": "rejected", "message": f"No configured broker supports asset type '{proposal.asset_type}'."}
-        broker_name = selected.name
-        if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
-            return {"status": "not_available", "message": "Alpaca paper credentials are required for execution."}
-        managed_capacity = self._broker_managed_trade_capacity(broker_name)
-        if not managed_capacity["can_open"]:
-            return {
-                "status": "blocked",
-                "message": managed_capacity["message"],
-                "managed_trade_capacity": managed_capacity,
-            }
-        context = OrchestratorContext(
-            account=self._account_context_for_broker(broker_name),
-            auto_trade=self._manual_approval_auto_config(broker_name),
-            guardrails=self.settings.guardrails,
-        )
-        proposal = self._proposal_with_manual_amount(proposal, body.get("amount"), account_equity=context.account.equity)
-        decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
-        if decision.decision == "approved":
-            self.portfolio(broker_name)
-        return {
-            "status": "submitted" if decision.decision == "approved" else decision.decision,
-            "message": decision.notes or decision.rejection_reason or decision.decision,
-            "result": decision.to_dict(),
-            "amount_requested": body.get("amount"),
-        }
-
-    def _proposal_with_manual_amount(self, proposal: TradeProposal, amount: Any, *, account_equity: float) -> TradeProposal:
-        requested = safe_float(amount)
-        if requested is None or requested <= 0 or proposal.entry_price <= 0:
-            return proposal
-        quantity = requested / proposal.entry_price
-        risk_amount = quantity * abs(proposal.entry_price - proposal.stop_loss)
-        risk_percentage = risk_amount / account_equity if account_equity > 0 else proposal.risk_percentage
-        return replace(
-            proposal,
-            position_size=quantity,
-            risk_percentage=risk_percentage,
-        ).normalized()
+        # Delegates to ExecutionService (Phase 8, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- "delegation before
+        # deletion" -- so the GET/POST route dispatch table and tests needed no changes.
+        return self._execution_service.approve_and_execute(body)
 
     def _account_context_for_broker(self, broker_name: str) -> AccountContext:
         snapshot = latest_pnl_snapshot(self.settings.db_path, broker_name)
@@ -1217,224 +1156,21 @@ class LocalApiService:
             "note": "Learning updates propose improvements only. They do not change strategy, guardrails, or execution logic automatically.",
         }
 
-    def _manual_approval_auto_config(self, broker: str) -> Any:
-        base = self._auto_config_for_broker(broker)
-        return type(base)(
-            enabled=True,
-            broker_enabled=dict(base.broker_enabled),
-            min_confidence=base.min_confidence,
-            min_philosophy_fit=base.min_philosophy_fit,
-            max_trade_amount=base.max_trade_amount,
-            default_stop_loss_pct=base.default_stop_loss_pct,
-            max_stop_loss_pct=base.max_stop_loss_pct,
-            crypto_max_trade_amount=base.crypto_max_trade_amount,
-            crypto_default_stop_loss_pct=base.crypto_default_stop_loss_pct,
-            crypto_max_stop_loss_pct=base.crypto_max_stop_loss_pct,
-        )
-
     def auto_execute_recommendations(self, broker_filter: str | None = None) -> dict[str, Any]:
-        _auto_exec_t0 = time.monotonic()
-        print(f"[auto-execution] broker={broker_filter} stage=started", flush=True)
-        control = self._control_state()
-        if control["trading_state"] != "running":
-            return {"status": "blocked", "message": f"Trading state is {control['trading_state']}."}
-        broker_settings = broker_auto_settings(self.settings.db_path)
-        if broker_filter:
-            if not broker_settings.get(broker_filter):
-                return {
-                    "status": "manual_required",
-                    "message": f"Auto trading is disabled for {broker_filter}. Enable auto trading for {broker_filter} to allow new autonomous entries.",
-                    "eligible_count": 0,
-                    "skipped": [],
-                }
-        elif not any(broker_settings.values()):
-            return {"status": "manual_required", "message": "No broker has auto trading enabled. Enable auto trading for an individual broker to allow new autonomous entries.", "eligible_count": 0, "skipped": []}
-        if not self.settings.guardrails.paper_trading_only:
-            return {"status": "blocked", "message": "Auto execution is disabled outside Paper Trading mode."}
-        # Bounded to the longest recommendation lifetime _recommendation_freshness()
-        # grants (24h for confidence < 0.75) and ordered by recency first: a proposal
-        # older than that can never be anything but "Expired" below, and ordering by
-        # ai_confidence DESC alone let old high-confidence proposals permanently
-        # occupy the LIMIT 50 candidate slots, starving every genuinely fresh (but
-        # equal-or-lower-confidence) recommendation the research pipeline generated
-        # after them -- confirmed in hosted logs 2026-07-31: the same 10 expired
-        # proposal_ids recurred unchanged across 40+ minutes and several research
-        # cycles because they never aged out of the candidate pool.
-        freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        rows = self._rows(
-            """
-            SELECT ta.proposal_id, ta.payload_json, ta.created_at, ta.ai_confidence,
-                   execution_guardrails_passed, validation_result, symbol
-            FROM trade_audit ta
-            WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ?
-            ORDER BY ta.created_at DESC, ta.ai_confidence DESC, ta.id DESC
-            LIMIT 50
-            """,
-            (freshness_cutoff,),
-        )
-        print(
-            f"[auto-execution] broker={broker_filter} stage=candidates_loaded count={len(rows)} "
-            f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
-            flush=True,
-        )
-        decisions: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        skipped: list[dict[str, Any]] = []
-        for _candidate_index, row in enumerate(rows):
-            proposal_id = row["proposal_id"]
-            if proposal_id in seen:
-                continue
-            seen.add(proposal_id)
-            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
-            confidence = safe_score(row["ai_confidence"]) or 0.0
-            if confidence < self.settings.auto_trade.min_confidence:
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "confidence_below_85_percent",
-                    "message": "Confidence is below 85%.",
-                })
-                continue
-            if freshness["status"] == "Expired":
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "recommendation_expired",
-                    "message": "Recommendation expired. Run new analysis before execution.",
-                })
-                continue
-            if not bool(row["execution_guardrails_passed"]):
-                failures = _validation_failures(row["validation_result"])
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "guardrails_not_preapproved",
-                    "message": f"Guardrails failed: {_format_guardrail_failures(failures)}.",
-                })
-                continue
-            if self._proposal_already_executed(proposal_id):
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "already_executed",
-                    "message": "Already executed.",
-                })
-                continue
-            payload = json.loads(row["payload_json"])
-            proposal = TradeProposal.from_dict(payload["proposal"])
-            selected_broker = self.orchestrator._select_adapter(proposal)
-            broker_name = selected_broker.name if selected_broker else "unknown"
-            # trade_audit has no broker/asset_type column to filter on in SQL, so
-            # broker-specific candidate pre-filtering happens here, in Python,
-            # right after the candidate's broker is resolved and before any
-            # governance-chain work is done for it (AT-ED-003 Section 1 item 4).
-            if broker_filter and broker_name != broker_filter:
-                continue
-            print(
-                f"[auto-execution] broker={broker_filter} stage=candidate_matched index={_candidate_index} "
-                f"proposal_id={proposal_id} candidate_broker={broker_name} "
-                f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
-                flush=True,
-            )
-            if broker_name == "alpaca" and not self.settings.has_alpaca_credentials:
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "alpaca_credentials_missing",
-                    "message": "Alpaca paper credentials are required for Alpaca execution.",
-                })
-                continue
-            if not broker_auto_trading_enabled(self.settings.db_path, broker_name, self.settings.auto_trade.broker_enabled.get(broker_name, False)):
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": f"{broker_name}_auto_trading_disabled",
-                    "message": f"Auto trading is disabled for {broker_name}.",
-                })
-                continue
-            managed_capacity = self._broker_managed_trade_capacity(broker_name)
-            print(
-                f"[auto-execution] broker={broker_filter} stage=managed_capacity_checked index={_candidate_index} "
-                f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
-                flush=True,
-            )
-            if not managed_capacity["can_open"]:
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": "ai_managed_open_trade_limit_reached",
-                    "message": managed_capacity["message"],
-                    "managed_trade_capacity": managed_capacity,
-                })
-                continue
-            context = OrchestratorContext(
-                account=self._account_context_for_broker(broker_name),
-                auto_trade=self._auto_config_for_broker(broker_name),
-                guardrails=self.settings.guardrails,
-            )
-            decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
-            print(
-                f"[auto-execution] broker={broker_filter} stage=recommendation_evaluated index={_candidate_index} "
-                f"decision={decision.decision} elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
-                flush=True,
-            )
-            if decision.decision == "approved":
-                decisions.append(decision.to_dict())
-                update_broker_runtime(self.settings.db_path, broker_name, last_trade_submitted=decision.symbol, current_stage="trade_submitted")
-                record_notification(
-                    self.settings.db_path,
-                    event_type="trade_submitted",
-                    broker=broker_name,
-                    symbol=decision.symbol,
-                    title="Trade submitted",
-                    message=f"{broker_name.title()} submitted {decision.symbol}.",
-                    payload=decision.to_dict(),
-                )
-                self.portfolio(broker_name)
-            else:
-                skipped.append({
-                    "proposal_id": proposal_id,
-                    "symbol": row["symbol"],
-                    "confidence": confidence,
-                    "reason": decision.rejection_reason or decision.decision,
-                    "message": decision.rejection_reason or decision.notes or decision.decision,
-                })
-
-        print(
-            f"[auto-execution] broker={broker_filter} stage=loop_completed decisions={len(decisions)} "
-            f"skipped={len(skipped)} elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
-            flush=True,
-        )
-        if not decisions:
-            return {
-                "status": "skipped",
-                "message": "No eligible recommendations over the confidence threshold passed all broker permissions and guardrails. See skipped reasons.",
-                "eligible_count": 0,
-                "skipped_count": len(skipped),
-                "skipped": skipped[:10],
-            }
-
-        return {
-            "status": "submitted",
-            "mode": "Paper",
-            "threshold": self.settings.auto_trade.min_confidence,
-            "eligible_count": len(decisions),
-            "result": decisions,
-            "skipped": skipped[:10],
-        }
+        # Delegates to ExecutionService (Phase 8). Kept as a thin wrapper: the GET/POST
+        # route dispatch table, ResearchService's injected auto_execute_recommendations_
+        # lookup, and tests all call this externally.
+        return self._execution_service.auto_execute_recommendations(broker_filter)
 
     def auto_execute_recommendations_alpaca(self) -> dict[str, Any]:
-        return self.auto_execute_recommendations(broker_filter="alpaca")
+        # Delegates to ExecutionService (Phase 8). Kept as a thin wrapper: cli.py calls
+        # this externally.
+        return self._execution_service.auto_execute_recommendations_alpaca()
 
     def auto_execute_recommendations_kraken(self) -> dict[str, Any]:
-        return self.auto_execute_recommendations(broker_filter="kraken")
+        # Delegates to ExecutionService (Phase 8). Kept as a thin wrapper: cli.py calls
+        # this externally.
+        return self._execution_service.auto_execute_recommendations_kraken()
 
     def set_broker_auto_trading(self, body: dict[str, Any]) -> dict[str, Any]:
         # Delegates to AdministrationService (Phase 7, architecture/AI_TRADER_
@@ -1445,227 +1181,16 @@ class LocalApiService:
         return self._administration_service.set_broker_auto_trading(body)
 
     def monitor_managed_exits(self) -> dict[str, Any]:
-        checked = []
-        for item in open_managed_exits(self.settings.db_path):
-            broker = item["broker"]
-            adapter = self.orchestrator.adapters.get(broker)
-            if broker != "kraken" or adapter is None or not hasattr(adapter, "current_prices"):
-                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "skipped", "reason": "broker_monitor_not_available"})
-                continue
-            pair = _kraken_pair(item["symbol"])
-            prices = adapter.current_prices([pair])
-            price = _kraken_last_price(prices, pair)
-            if price is None:
-                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "skipped", "reason": "price_not_available"})
-                continue
-            side = str(item["side"]).lower()
-            stop_loss = safe_float(item["stop_loss"]) or 0
-            take_profit = safe_float(item["take_profit"]) or 0
-            trailing_stop_pct = safe_float(item.get("trailing_stop_pct"))
-            if trailing_stop_pct:
-                high_water = max(safe_float(item.get("high_water_mark")) or price, price)
-                low_water = min(safe_float(item.get("low_water_mark")) or price, price)
-                if side == "buy":
-                    stop_loss = max(stop_loss, high_water * (1 - trailing_stop_pct))
-                else:
-                    stop_loss = min(stop_loss, low_water * (1 + trailing_stop_pct))
-                update_trailing_water_marks(
-                    self.settings.db_path,
-                    int(item["managed_exit_id"]),
-                    high_water_mark=high_water,
-                    low_water_mark=low_water,
-                )
-            should_exit = False
-            reason = None
-            if side == "buy" and price <= stop_loss:
-                should_exit = True
-                reason = "stop_loss_triggered"
-            elif side == "buy" and price >= take_profit:
-                should_exit = True
-                reason = "take_profit_triggered"
-            elif side == "sell" and price >= stop_loss:
-                should_exit = True
-                reason = "stop_loss_triggered"
-            elif side == "sell" and price <= take_profit:
-                should_exit = True
-                reason = "take_profit_triggered"
-            if not should_exit:
-                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "open", "price": price})
-                continue
-            exit_side = "sell" if side == "buy" else "buy"
-            client_order_id = f"exit-{item['managed_exit_id']}"
-            order_request = OrderRequest(
-                symbol=item["symbol"],
-                side=exit_side,
-                quantity=float(item["quantity"]),
-                asset_type="crypto",
-                exchange="KRAKEN",
-                stop_loss=0,
-                take_profit=0,
-                notional_amount=price * float(item["quantity"]),
-                client_order_id=client_order_id,
-                quote_currency="GBP",
-                broker_pair=pair,
-            )
-            lock_acquired = acquire_order_intent_lock(
-                self.settings.db_path,
-                broker=broker,
-                client_order_id=client_order_id,
-                symbol=item["symbol"],
-                side=exit_side,
-                notional=order_request.notional_amount,
-            )
-            if not lock_acquired:
-                checked.append(
-                    {
-                        "managed_exit_id": item["managed_exit_id"],
-                        "status": "duplicate_exit_intent",
-                        "reason": "An exit order intent for this managed position is already locked; skipping to avoid a duplicate broker submission.",
-                        "price": price,
-                    }
-                )
-                continue
-            result = adapter.place_exit_order(order_request)
-            complete_order_intent_lock(
-                self.settings.db_path,
-                broker=broker,
-                client_order_id=client_order_id,
-                status=str(result.get("status", "unknown")),
-                result_order_id=str(result.get("id") or result.get("order_id") or "") or None,
-                notes=json_safe(result),
-            )
-            if result.get("status") in {"accepted", "submitted"}:
-                entry_payload = _json_loads_safe(item.get("payload_json")) or {}
-                proposal_id = entry_payload.get("proposal_id")
-                exit_order_id = str(result.get("id") or result.get("order_id") or "")
-                mark_managed_exit_submitted(
-                    self.settings.db_path,
-                    int(item["managed_exit_id"]),
-                    exit_order_id=exit_order_id,
-                    exit_reason=reason or "exit_triggered",
-                    payload={"price": price, "order": result},
-                )
-                register_kraken_order_ownership(
-                    self.settings.db_path,
-                    broker_order_id=exit_order_id,
-                    logical_trade_id=proposal_id or f"kraken-managed-exit:{item['managed_exit_id']}",
-                    proposal_id=proposal_id,
-                    managed_exit_id=int(item["managed_exit_id"]),
-                    order_role="exit",
-                    symbol=item["symbol"],
-                    side=exit_side,
-                    source="managed_exit_monitor",
-                )
-                record_notification(
-                    self.settings.db_path,
-                    event_type=reason or "trade_exited",
-                    broker=broker,
-                    symbol=item["symbol"],
-                    title=(reason or "Trade exited").replace("_", " ").title(),
-                    message=f"{broker.title()} {item['symbol']} exit submitted at {price}.",
-                    payload={"managed_exit": dict(item), "order": result, "price": price},
-                )
-                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_submitted", "reason": reason, "price": price})
-            else:
-                # Broker synchronously and definitively declined the order (no ambiguity
-                # about whether it reached the exchange) -- safe to release the intent
-                # lock so the next cycle can retry instead of being permanently blocked.
-                release_order_intent_lock(self.settings.db_path, broker=broker, client_order_id=client_order_id)
-                checked.append({"managed_exit_id": item["managed_exit_id"], "status": "exit_failed", "reason": result.get("reason"), "price": price})
-        return {"status": "checked", "managed_exits": checked}
+        # Delegates to ExecutionService (Phase 8, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- run_server() passes
+        # service.monitor_managed_exits as a bound-method reference to a scheduled
+        # IntervalWorker, and tests call it directly -- both needed no changes.
+        return self._execution_service.monitor_managed_exits()
 
     def force_managed_exit(self, body: dict[str, Any]) -> dict[str, Any]:
-        managed_exit_id = _int_or_default(body.get("managed_exit_id"), 0)
-        if managed_exit_id <= 0:
-            return {"status": "rejected", "message": "managed_exit_id is required."}
-        matches = [item for item in open_managed_exits(self.settings.db_path) if int(item["managed_exit_id"]) == managed_exit_id]
-        if not matches:
-            return {"status": "rejected", "message": "Open AI-managed trade was not found. Personal/manual holdings are not force-exited by this command."}
-        item = matches[0]
-        broker = item["broker"]
-        adapter = self.orchestrator.adapters.get(broker)
-        if broker != "kraken" or adapter is None or not hasattr(adapter, "current_prices"):
-            return {"status": "rejected", "message": "Force exit is currently available only for AI-managed Kraken trades."}
-        pair = _kraken_pair(item["symbol"])
-        price = _kraken_last_price(adapter.current_prices([pair]), pair)
-        if price is None:
-            return {"status": "rejected", "message": "Current Kraken price is not available, so AI Trader cannot calculate a controlled exit order."}
-        entry_side = str(item["side"]).lower()
-        exit_side = "sell" if entry_side == "buy" else "buy"
-        quantity = float(item["quantity"])
-        # Shares the same lock key as monitor_managed_exits' automatic trigger for this
-        # managed_exit_id, so a founder-forced exit and an automatic stop-loss/take-profit
-        # exit can never both submit an order for the same position.
-        client_order_id = f"exit-{managed_exit_id}"
-        order_request = OrderRequest(
-            symbol=item["symbol"],
-            side=exit_side,
-            quantity=quantity,
-            asset_type="crypto",
-            exchange="KRAKEN",
-            stop_loss=0,
-            take_profit=0,
-            notional_amount=price * quantity,
-            client_order_id=client_order_id,
-            quote_currency="GBP",
-            broker_pair=pair,
-        )
-        lock_acquired = acquire_order_intent_lock(
-            self.settings.db_path,
-            broker=broker,
-            client_order_id=client_order_id,
-            symbol=item["symbol"],
-            side=exit_side,
-            notional=order_request.notional_amount,
-        )
-        if not lock_acquired:
-            return {
-                "status": "rejected",
-                "message": "An exit order intent for this managed position is already locked; a previous forced exit may still be in flight or was already submitted. Refusing to submit a duplicate.",
-            }
-        result = adapter.place_exit_order(order_request)
-        complete_order_intent_lock(
-            self.settings.db_path,
-            broker=broker,
-            client_order_id=client_order_id,
-            status=str(result.get("status", "unknown")),
-            result_order_id=str(result.get("id") or result.get("order_id") or "") or None,
-            notes=json_safe(result),
-        )
-        if result.get("status") not in {"accepted", "submitted"}:
-            release_order_intent_lock(self.settings.db_path, broker=broker, client_order_id=client_order_id)
-            return {"status": "rejected", "message": f"Kraken exit order was not accepted: {result.get('reason') or result.get('status')}", "order": result}
-        entry_payload = _json_loads_safe(item.get("payload_json")) or {}
-        proposal_id = entry_payload.get("proposal_id")
-        exit_order_id = str(result.get("id") or result.get("order_id") or "")
-        mark_managed_exit_submitted(
-            self.settings.db_path,
-            managed_exit_id,
-            exit_order_id=exit_order_id,
-            exit_reason="founder_forced_exit",
-            payload={"price": price, "order": result, "forced_by": "founder"},
-        )
-        register_kraken_order_ownership(
-            self.settings.db_path,
-            broker_order_id=exit_order_id,
-            logical_trade_id=proposal_id or f"kraken-managed-exit:{managed_exit_id}",
-            proposal_id=proposal_id,
-            managed_exit_id=managed_exit_id,
-            order_role="exit",
-            symbol=item["symbol"],
-            side=exit_side,
-            source="founder_forced_exit",
-        )
-        record_notification(
-            self.settings.db_path,
-            event_type="founder_forced_exit",
-            broker=broker,
-            symbol=item["symbol"],
-            title="Founder Forced Exit",
-            message=f"Kraken {item['symbol']} exit submitted at {price}.",
-            payload={"managed_exit": dict(item), "order": result, "price": price},
-        )
-        return {"status": "submitted", "message": f"Exit submitted for {item['symbol']} at approximately {price}.", "order": result}
+        # Delegates to ExecutionService (Phase 8). Kept as a thin wrapper -- "delegation
+        # before deletion" -- so the GET/POST route dispatch table needed zero changes.
+        return self._execution_service.force_managed_exit(body)
 
     def poll_broker_activity(self, broker_filter: str | None = None) -> dict[str, Any]:
         # Delegates to BrokerService (Phase 6a, architecture/AI_TRADER_MODULARISATION_
@@ -1745,21 +1270,6 @@ class LocalApiService:
         # calls this externally, and tests/test_multi_broker_platform.py and
         # tests/test_production_completion.py call it directly too.
         return self._broker_service._live_alpaca_portfolio()
-
-    def _auto_config_for_broker(self, broker: str) -> Any:
-        enabled = broker_auto_trading_enabled(self.settings.db_path, broker, self.settings.auto_trade.broker_enabled.get(broker, False))
-        return type(self.settings.auto_trade)(
-            enabled=enabled,
-            broker_enabled=dict(self.settings.auto_trade.broker_enabled),
-            min_confidence=self.settings.auto_trade.min_confidence,
-            min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
-            max_trade_amount=self.settings.auto_trade.crypto_max_trade_amount if broker == "kraken" else self.settings.auto_trade.max_trade_amount,
-            default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct if broker == "kraken" else self.settings.auto_trade.default_stop_loss_pct,
-            max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct if broker == "kraken" else self.settings.auto_trade.max_stop_loss_pct,
-            crypto_max_trade_amount=self.settings.auto_trade.crypto_max_trade_amount,
-            crypto_default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
-            crypto_max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct,
-        )
 
     def _apply_env_broker_auto_defaults(self) -> None:
         if self.settings.auto_trade.enabled:
@@ -1866,16 +1376,10 @@ class LocalApiService:
         return dict(row) if row else {"trading_state": "unknown", "updated_at": None, "last_command": None}
 
     def _proposal_already_executed(self, proposal_id: str) -> bool:
-        return bool(
-            self._scalar(
-                """
-                SELECT COUNT(*)
-                FROM trade_audit
-                WHERE proposal_id = ? AND event_type = 'execution_approved'
-                """,
-                (proposal_id,),
-            )
-        )
+        # Delegates to ExecutionService (Phase 8, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper: recommendations() (still
+        # un-extracted presentation code) calls this externally too.
+        return self._execution_service._proposal_already_executed(proposal_id)
 
     def _proposal_broker(self, payload_json: Any) -> str | None:
         proposal_payload = _proposal_payload(payload_json)
