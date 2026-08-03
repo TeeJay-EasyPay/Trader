@@ -522,5 +522,71 @@ class BrokerJobGroupConcurrencyTests(unittest.TestCase):
             self.assertEqual(settings.production_startup_errors(), [])
 
 
+class AtEd010JobRunsQueryPerformanceTests(unittest.TestCase):
+    """AT-ED-010: /status and /phase5-status were confirmed to hang ~60s in production.
+    Root cause: production_spine.supervise_workers calls list_job_runs(limit=200) with
+    no job_name filter, whose ORDER BY COALESCE(started_at, scheduled_for) DESC,
+    job_run_id DESC had no supporting index against the ~12,000-row SCHEDULED_JOB_RUNS
+    table in production, forcing a full-table sort on every call. These tests prove the
+    fix: the new index is present after schema init, and the function's return shape
+    and contract are unchanged."""
+
+    def test_coalesce_time_index_exists_after_schema_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                names = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'SCHEDULED_JOB_RUNS'"
+                    )
+                }
+            self.assertIn("idx_scheduled_job_runs_coalesce_time", names)
+
+    def test_list_job_runs_query_plan_uses_the_new_index_not_a_full_sort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                plan = conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM SCHEDULED_JOB_RUNS "
+                    "ORDER BY COALESCE(started_at, scheduled_for) DESC, job_run_id DESC LIMIT 200"
+                ).fetchall()
+            plan_text = " ".join(str(row) for row in plan)
+            self.assertIn("idx_scheduled_job_runs_coalesce_time", plan_text)
+            self.assertNotIn("TEMP B-TREE", plan_text, "the query must not fall back to sorting the whole table")
+
+    def test_list_job_runs_return_shape_and_ordering_unchanged_at_scale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    base = int(time.time()) - 100_000
+                    rows = []
+                    for i in range(3000):
+                        scheduled = datetime.fromtimestamp(base + i * 30, tz=timezone.utc).isoformat()
+                        rows.append((f"job-{i % 5}", scheduled, scheduled, "completed", 1, f"key-{i}"))
+                    conn.executemany(
+                        "INSERT INTO SCHEDULED_JOB_RUNS (job_name, scheduled_for, started_at, status, attempt, idempotency_key) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+
+            t0 = time.perf_counter()
+            result = list_job_runs(db_path, limit=200)
+            elapsed = time.perf_counter() - t0
+
+            self.assertEqual(len(result), 200)
+            self.assertIn("job_run_id", result[0])
+            self.assertIn("job_name", result[0])
+            self.assertIn("scheduled_for", result[0])
+            # Newest-first, matching the unchanged ORDER BY contract.
+            timestamps = [row["started_at"] for row in result]
+            self.assertEqual(timestamps, sorted(timestamps, reverse=True))
+            self.assertLess(elapsed, 0.5, "list_job_runs should be near-instant against the index at this scale")
+
+
 if __name__ == "__main__":
     unittest.main()

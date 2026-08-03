@@ -1,5 +1,85 @@
 # Implementation Log
 
+## 2026-08-03 AT-ED-010 requirements 4-5 — backend performance (job-runs index, broker_panels batching)
+
+Implements requirements 4 and 5 of `engineering-directives/implementation/AT-ED-010_UI_DATA_FRESHNESS_AND_EVIDENCE_ALIGNMENT.md`,
+plus the profiling ChatGPT's follow-up "Proceed with... AT-ED-010" directive required before
+changing anything ("MEASURE BEFORE CHANGING TIMEOUTS" / "PROFILE THE SLOW ENDPOINTS"). No trading,
+risk, or governance code touched.
+
+**Baseline measurement.** `/founder-evidence` was measured at 10 hosted samples: 3.02-3.75s,
+consistently well under the mobile app's 18s timeout - confirmed NOT a bottleneck, not touched.
+`/status`, `/phase5-status`, `/brokers` were re-confirmed hanging at a consistent ~60s (Render's
+own proxy timeout, not a client setting) across repeated attempts.
+
+**Fix 1 - `list_job_runs`/`supervise_workers` (the `/status`/`/phase5-status` hang).** `always_on.list_job_runs`,
+called by `production_spine.supervise_workers` with no `job_name` filter, runs
+`ORDER BY COALESCE(started_at, scheduled_for) DESC, job_run_id DESC LIMIT 200` against
+`SCHEDULED_JOB_RUNS` - a table with ~12,000 accumulated rows in production. The existing index
+(`job_name, scheduled_for`) does not cover this `COALESCE`-based sort, forcing a full-table sort
+on every call. **Measured proof, not a guess**: seeded a local 12,000-row SQLite table and timed
+the exact query before/after adding `idx_scheduled_job_runs_coalesce_time` (an expression index
+on `COALESCE(started_at, scheduled_for) DESC, job_run_id DESC` - syntax identical on SQLite and
+Postgres, added to both `ALWAYS_ON_SCHEMA` and `POSTGRES_ALWAYS_ON_SCHEMA`, guarded by
+`CREATE INDEX IF NOT EXISTS` matching every existing index in this file): **37.92ms -> 0.38ms
+average, a ~100x speedup**; `EXPLAIN QUERY PLAN` confirms the query moves from
+`SCAN SCHEDULED_JOB_RUNS` + `USE TEMP B-TREE FOR ORDER BY` to a direct index scan. Purely
+additive (no drop/rename/migration), `list_job_runs`'s SQL and return shape are byte-for-byte
+unchanged - this is an index-only fix.
+
+**Fix 2 - `broker_panels()` (the `/brokers` hang).** Traced the full call chain for a Kraken
+panel and found it was making an unbounded, unbatched number of sequential live Kraken API
+calls: `_exchange_portfolio("kraken")` alone calls `get_account`/`get_positions`/`get_orders`/
+`get_trade_history` plus a live GBP pricing conversion; `_broker_trading_permissions` separately
+made its own live Kraken pricing call inside `_kraken_ai_capital_ledger` without reusing prices
+`_exchange_portfolio` had already fetched; `_broker_trade_rows` and `_managed_exit_rows` each
+called `adapter.current_prices([pair])` **once per row** in a loop (up to 10 + open-position-count
+additional sequential round trips). Each individual Kraken HTTP call already has an explicit
+`timeout=20` (unchanged, not the problem) - the problem was the sheer count of sequential calls
+compounding past the ~60s Render proxy cutoff. Notably, this exact bug class (sequential
+per-broker fetching, redundant live pricing) was already found and fixed once before in
+`capture_production_broker_snapshots` (the evidence-snapshot job, "AT-ED-003 corrective session")
+- `broker_panels()` was simply never given the same fix. Applied the identical, already-validated
+pattern:
+- Fetch each broker's portfolio concurrently via `ThreadPoolExecutor` (Postgres only, matching
+  the existing established caveat: SQLite has no busy-timeout configured, so concurrent writers
+  to the same file can raise "database is locked" - not worth the risk for a local/test-only
+  backend). A broker whose fetch fails or raises gets a clearly-labelled "Temporarily unavailable"
+  panel instead of crashing or blocking the rest of the response.
+- Reuse the Kraken wallet-balance prices `_exchange_portfolio` already fetched
+  (`_kraken_price_hints_from_panel`, the same helper `capture_production_broker_snapshots` already
+  uses) when computing `_broker_trading_permissions`'s capital ledger, instead of making a second,
+  redundant live pricing call for the same market data. Any symbol the hints don't cover still
+  falls back to a live lookup (`_kraken_ai_capital_ledger` already only re-fetches for symbols not
+  already priced) - this eliminates the common-case redundancy without removing the completeness
+  fallback.
+- `_broker_trade_rows`/`_managed_exit_rows`: batch every row's pair into one `current_prices(pairs)`
+  call instead of one call per row.
+- Individual Kraken HTTP timeouts, `broker_panels()`'s/`_exchange_portfolio()`'s success-path
+  return shape, and every other governance/safety computation are unchanged.
+
+**New tests** (8 total): `AtEd010BrokerPanelsPerformanceTests` (`tests/test_multi_broker_platform.py`,
+4 tests) prove `_broker_trade_rows`/`_managed_exit_rows` call `current_prices` exactly once per
+invocation (not once per row) using a call-counting fake adapter, that a pricing failure leaves a
+row unpriced with a clear error rather than dropping it, and that `broker_panels()`'s capital
+ledger genuinely receives the price extracted from the portfolio's own `balance_summary` rather
+than making its own separate call. `AtEd010JobRunsQueryPerformanceTests`
+(`tests/test_always_on_operations.py`, 3 tests) prove the new index exists after schema init, that
+`EXPLAIN QUERY PLAN` uses it (not a `TEMP B-TREE` full sort), and that `list_job_runs`'s return
+shape/ordering/contract are unchanged against a freshly-seeded 3,000-row table, completing in
+under 0.5s.
+
+**Verification.** `python -m py_compile` clean. Full stable suite passed clean twice
+independently: 309 passed (302 + 7 new backend tests: 4 broker-panel tests + 3 job-runs tests),
+0 failed both runs. Production re-verification of the actual `/status`/
+`/phase5-status`/`/brokers` hosted response times happens after deployment, per the directive's
+own sequencing (item 12, production verification) - the measurements above are local/before-deploy
+evidence that the identified bottleneck is real and the fix addresses it, not yet a claim about
+production latency post-fix.
+
+**Not committed** - left in the working tree for the coordinating session's independent review,
+matching the process established for every phase since Stage 0.
+
 ## 2026-08-03 Modularisation Phase 9 (items 5-9) — verification, push, deployment, smoke verification
 
 Completes items 5-9 of the ChatGPT-authored Phase 9 directive, following the coordinating

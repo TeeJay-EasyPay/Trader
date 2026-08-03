@@ -450,13 +450,52 @@ class BrokerService:
         return results
 
     def broker_panels(self) -> list[dict[str, Any]]:
-        panels = []
+        broker_names = ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]
         settings = broker_auto_settings(self.settings.db_path)
-        for broker in ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]:
+
+        def fetch_portfolio(broker: str) -> Any:
+            return self._alpaca_panel_portfolio() if broker == "alpaca" else self._exchange_portfolio(broker)
+
+        # AT-ED-010: fetch each broker's portfolio concurrently rather than
+        # sequentially, mirroring the fix already applied and measured in
+        # capture_production_broker_snapshots -- up to ~9 sequential broker HTTP
+        # round trips was the confirmed dominant cost of that job's timeouts before
+        # that fix (see the comment there); /brokers had the same unfixed pattern,
+        # confirmed as the root cause of this endpoint hanging ~60s in production.
+        # Postgres only: SQLite (local dev/tests) has no busy-timeout configured, so
+        # concurrent writers to the same file can raise "database is locked".
+        portfolios: dict[str, Any] = {}
+        if selected_backend() == "postgres":
+            with ThreadPoolExecutor(max_workers=len(broker_names)) as pool:
+                futures = {broker: pool.submit(fetch_portfolio, broker) for broker in broker_names}
+                for broker, future in futures.items():
+                    try:
+                        portfolios[broker] = future.result()
+                    except Exception as exc:  # noqa: BLE001 - degrade this broker's panel, not the whole response
+                        logger.warning("Broker panel portfolio fetch failed for %s: %s", broker, exc)
+                        portfolios[broker] = {"connection_status": f"Temporarily unavailable - {exc}", "source": "Fetch failed"}
+        else:
+            for broker in broker_names:
+                try:
+                    portfolios[broker] = fetch_portfolio(broker)
+                except Exception as exc:  # noqa: BLE001 - degrade this broker's panel, not the whole response
+                    logger.warning("Broker panel portfolio fetch failed for %s: %s", broker, exc)
+                    portfolios[broker] = {"connection_status": f"Temporarily unavailable - {exc}", "source": "Fetch failed"}
+
+        panels = []
+        for broker in broker_names:
             runtime = {**update_broker_runtime(self.settings.db_path, broker).to_dict()}
-            portfolio = self._exchange_portfolio(broker) if broker != "alpaca" else self._alpaca_panel_portfolio()
+            portfolio = portfolios[broker]
             counts = today_runtime_counts(self.settings.db_path, broker)
             auto_enabled = settings.get(broker, False)
+            # AT-ED-010: reuse the Kraken wallet-conversion prices _exchange_portfolio
+            # already fetched live (via _kraken_balance_summary) instead of letting the
+            # capital ledger make a second, redundant live Kraken pricing round trip for
+            # the same market data -- mirrors the identical fix already applied to
+            # capture_production_broker_snapshots. Any symbol these hints don't cover
+            # still falls back to a live lookup (allow_live_kraken_pricing stays True;
+            # _kraken_ai_capital_ledger only re-fetches for symbols not already priced).
+            price_hints = _kraken_price_hints_from_panel(portfolio) if broker == "kraken" else None
             panels.append({
                 "broker": broker,
                 "label": _broker_label(broker),
@@ -473,7 +512,9 @@ class BrokerService:
                 "research_status": runtime.get("research_status"),
                 "due_diligence_status": runtime.get("due_diligence_status"),
                 "auto_trading_enabled": auto_enabled,
-                "trading_permissions": self._broker_trading_permissions(broker, auto_enabled),
+                "trading_permissions": self._broker_trading_permissions(
+                    broker, auto_enabled, kraken_price_hints=price_hints
+                ),
                 "current_asset": runtime.get("current_asset"),
                 "current_stage": runtime.get("current_stage"),
                 "research_queue": runtime.get("research_queue"),
@@ -497,15 +538,27 @@ class BrokerService:
         adapter = self.orchestrator.adapters.get("kraken")
         if adapter is None or not hasattr(adapter, "current_prices"):
             return rows
+        # AT-ED-010: one batched live-pricing call for every row's pair instead of
+        # one call per row (was up to 10 sequential Kraken API round trips for a
+        # single broker panel -- a confirmed contributor to /brokers hanging ~60s
+        # in production).
+        pairs = [pair for pair in (_broker_trade_symbol(row) for row in rows) if pair]
+        prices: dict[str, Any] = {}
+        price_error: str | None = None
+        if pairs:
+            try:
+                prices = adapter.current_prices(pairs)
+            except Exception as exc:
+                price_error = str(exc)
         enriched: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             pair = _broker_trade_symbol(item)
             if pair:
-                try:
-                    item["current_price"] = _kraken_last_price(adapter.current_prices([pair]), pair)
-                except Exception as exc:
-                    item["current_price_error"] = str(exc)
+                if price_error is not None:
+                    item["current_price_error"] = price_error
+                else:
+                    item["current_price"] = _kraken_last_price(prices, pair)
             enriched.append(item)
         return enriched
 
@@ -516,15 +569,25 @@ class BrokerService:
         adapter = self.orchestrator.adapters.get("kraken")
         if adapter is None or not hasattr(adapter, "current_prices"):
             return rows
+        # AT-ED-010: one batched live-pricing call for every open position instead
+        # of one call per row, matching the same fix in _broker_trade_rows above.
+        pairs = [_kraken_pair(row["symbol"]) for row in rows]
+        prices: dict[str, Any] = {}
+        price_error: str | None = None
+        if pairs:
+            try:
+                prices = adapter.current_prices(pairs)
+            except Exception as exc:
+                price_error = str(exc)
         enriched: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             pair = _kraken_pair(item["symbol"])
-            try:
-                item["current_price"] = _kraken_last_price(adapter.current_prices([pair]), pair)
-                item["broker_pair"] = pair
-            except Exception as exc:
-                item["current_price_error"] = str(exc)
+            item["broker_pair"] = pair
+            if price_error is not None:
+                item["current_price_error"] = price_error
+            else:
+                item["current_price"] = _kraken_last_price(prices, pair)
             enriched.append(item)
         return enriched
 

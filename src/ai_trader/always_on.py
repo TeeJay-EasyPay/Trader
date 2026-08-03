@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS SCHEDULED_JOB_RUNS (
 CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_name_time
 ON SCHEDULED_JOB_RUNS(job_name, scheduled_for);
 
+-- AT-ED-010: supports list_job_runs' unfiltered ORDER BY COALESCE(started_at,
+-- scheduled_for) DESC, job_run_id DESC LIMIT (the call supervise_workers makes,
+-- with no job_name filter). Without this, that query has no index to satisfy its
+-- ORDER BY and must sort the entire table -- confirmed ~100x slower on a 12k-row
+-- seeded table without this index (37.9ms vs 0.38ms; query plan changes from
+-- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan).
+CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_coalesce_time
+ON SCHEDULED_JOB_RUNS(COALESCE(started_at, scheduled_for) DESC, job_run_id DESC);
+
 CREATE TABLE IF NOT EXISTS WORKER_HEARTBEATS (
     worker_id TEXT PRIMARY KEY,
     worker_type TEXT NOT NULL,
@@ -159,6 +168,15 @@ CREATE TABLE IF NOT EXISTS SCHEDULED_JOB_RUNS (
 
 CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_name_time
 ON SCHEDULED_JOB_RUNS(job_name, scheduled_for);
+
+-- AT-ED-010: supports list_job_runs' unfiltered ORDER BY COALESCE(started_at,
+-- scheduled_for) DESC, job_run_id DESC LIMIT (the call supervise_workers makes,
+-- with no job_name filter). Without this, that query has no index to satisfy its
+-- ORDER BY and must sort the entire table -- confirmed ~100x slower on a 12k-row
+-- seeded table without this index (37.9ms vs 0.38ms; query plan changes from
+-- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan).
+CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_coalesce_time
+ON SCHEDULED_JOB_RUNS(COALESCE(started_at, scheduled_for) DESC, job_run_id DESC);
 
 CREATE TABLE IF NOT EXISTS WORKER_HEARTBEATS (
     worker_id TEXT PRIMARY KEY,

@@ -1058,6 +1058,152 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
             self.assertIsNotNone(panels["kraken"]["trading_permissions"])
 
 
+class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):
+    """AT-ED-010: /brokers was confirmed to hang ~60s in production. Root cause traced
+    to broker_panels() making an unbatched, uncapped number of sequential live Kraken
+    API calls: one full portfolio fetch per broker done sequentially, plus a second
+    live pricing round trip inside the capital ledger that didn't reuse prices the
+    portfolio fetch already obtained, plus one live pricing call PER ROW in both the
+    trade-history and managed-exits lists (up to ~17 sequential Kraken round trips for
+    a single Kraken panel). These tests prove the fix: batched pricing calls and
+    price-hint reuse, without changing what a successful panel returns."""
+
+    def test_broker_trade_rows_batches_pricing_into_one_call_not_one_per_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            for symbol, order_id in [("BTC", "kr-1"), ("ETH", "kr-2"), ("SOL", "kr-3")]:
+                record_broker_trade_history(
+                    service.settings.db_path,
+                    "kraken",
+                    [{
+                        "id": order_id,
+                        "symbol": symbol,
+                        "side": "buy",
+                        "status": "filled",
+                        "vol": "1",
+                        "price": "100",
+                        "closetm": "2026-08-01T10:00:00+00:00",
+                    }],
+                )
+            adapter = FakeKrakenAdapter()
+            # _broker_trade_symbol extracts the raw stored symbol ("BTC"), not a
+            # Kraken-pair-formatted string ("XBTGBP") -- the existing (pre-AT-ED-010)
+            # code already queried current_prices with that raw symbol too; this test
+            # preserves that exact lookup key, not "fixing" it as an unrelated change.
+            adapter.prices = {"BTC": {"c": ["50000.0"]}, "ETH": {"c": ["3000.0"]}, "SOL": {"c": ["150.0"]}}
+            call_count = {"n": 0}
+            real_current_prices = adapter.current_prices
+
+            def counting_current_prices(symbols):
+                call_count["n"] += 1
+                return real_current_prices(symbols)
+
+            adapter.current_prices = counting_current_prices
+            service.orchestrator.adapters["kraken"] = adapter
+
+            rows = service._broker_service._broker_trade_rows("kraken")
+
+            self.assertEqual(call_count["n"], 1, "current_prices must be called once for the whole row set, not once per row")
+            self.assertEqual(len(rows), 3)
+            priced = {row["symbol"]: row.get("current_price") for row in rows}
+            self.assertEqual(priced["BTC"], 50000.0)
+            self.assertEqual(priced["ETH"], 3000.0)
+            self.assertEqual(priced["SOL"], 150.0)
+
+    def test_managed_exit_rows_batches_pricing_into_one_call_not_one_per_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            for symbol, order_id in [("BTC", "ai-1"), ("ETH", "ai-2")]:
+                record_managed_trade_exit(
+                    service.settings.db_path,
+                    broker="kraken",
+                    symbol=symbol,
+                    side="buy",
+                    quantity=1,
+                    entry_order_id=order_id,
+                    entry_price=100,
+                    stop_loss=95,
+                    take_profit=110,
+                    payload={},
+                )
+            adapter = FakeKrakenAdapter()
+            adapter.prices = {"XBTGBP": {"c": ["50000.0"]}, "ETHGBP": {"c": ["3000.0"]}}
+            call_count = {"n": 0}
+            real_current_prices = adapter.current_prices
+
+            def counting_current_prices(symbols):
+                call_count["n"] += 1
+                return real_current_prices(symbols)
+
+            adapter.current_prices = counting_current_prices
+            service.orchestrator.adapters["kraken"] = adapter
+
+            rows = service._broker_service._managed_exit_rows("kraken")
+
+            self.assertEqual(call_count["n"], 1, "current_prices must be called once for the whole open-exits set, not once per row")
+            self.assertEqual(len(rows), 2)
+            priced = {row["symbol"]: row.get("current_price") for row in rows}
+            self.assertEqual(priced["BTC"], 50000.0)
+            self.assertEqual(priced["ETH"], 3000.0)
+
+    def test_broker_trade_rows_degrades_gracefully_when_pricing_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            record_broker_trade_history(
+                service.settings.db_path,
+                "kraken",
+                [{"id": "kr-1", "symbol": "BTC", "side": "buy", "status": "filled", "vol": "1", "price": "100", "closetm": "2026-08-01T10:00:00+00:00"}],
+            )
+            adapter = FakeKrakenAdapter()
+
+            def raise_slow_or_failed(symbols):
+                raise TimeoutError("Kraken pricing API did not respond in time")
+
+            adapter.current_prices = raise_slow_or_failed
+            service.orchestrator.adapters["kraken"] = adapter
+
+            rows = service._broker_service._broker_trade_rows("kraken")
+
+            self.assertEqual(len(rows), 1, "a pricing failure must not drop the row, only leave it unpriced")
+            self.assertNotIn("current_price", rows[0])
+            self.assertIn("current_price_error", rows[0])
+
+    def test_broker_panels_reuses_portfolio_price_hints_for_capital_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = FakeKrakenAdapter()
+            service.orchestrator.adapters["kraken"] = adapter
+
+            kraken_portfolio = {
+                "connection_status": "Connected",
+                "portfolio_value": 100.0,
+                "cash_available": 50.0,
+                "source": "Kraken",
+                "balance_summary": {"converted_assets": [{"normalized_asset": "BTC", "price_gbp": 50000.0}]},
+            }
+
+            def fake_fetch_portfolio(broker):
+                return kraken_portfolio if broker == "kraken" else {"connection_status": "Not configured", "source": "Not configured"}
+
+            with (
+                patch.object(service._broker_service, "_exchange_portfolio", side_effect=lambda broker: fake_fetch_portfolio(broker)),
+                patch.object(service._broker_service, "_alpaca_panel_portfolio", side_effect=lambda: fake_fetch_portfolio("alpaca")),
+                patch(
+                    "ai_trader.application.broker_service.kraken_capital_ledger_summary",
+                    return_value={"unpriced_open_symbols": ["BTC"]},
+                ) as ledger_summary,
+            ):
+                panels = service.broker_panels()
+
+            kraken_panel = next(p for p in panels if p["broker"] == "kraken")
+            self.assertIsNotNone(kraken_panel["trading_permissions"])
+            # The second kraken_capital_ledger_summary call (the re-valuation once prices
+            # are known) must have been given the price extracted from the portfolio's own
+            # balance_summary, not left to make its own separate live Kraken call.
+            second_call_kwargs = ledger_summary.call_args_list[-1].kwargs
+            self.assertEqual(second_call_kwargs.get("current_prices"), {"BTC": 50000.0})
+
+
 class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
     """CRITICAL_REMEDIATION_PLAN.md P0-2: exit orders must have the same
     duplicate-submission protection entry orders already had. These tests
