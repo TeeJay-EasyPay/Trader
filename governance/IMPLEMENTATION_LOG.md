@@ -1,5 +1,42 @@
 # Implementation Log
 
+## 2026-08-03 AT-ED-011.6 — backend data availability investigation and mobile resilience fix
+
+Investigated the Founder's production report following the AT-ED-011.5 OTA publish: "Refresh
+Failed" / "No Data Available" across the app, empty Broker Panels. Full findings, measured
+timing evidence, and the complete fix are in `architecture/ARCHITECTURE_DELTA.md` under
+"AT-ED-011.6"; summarized here.
+
+**Root cause (proven, not assumed): infrastructure config drift, not a code bug.** The Render
+web service (`ai-trader-api` / `trader-no0f.onrender.com`) was running on the **free** plan,
+which spins down after ~15 minutes idle — contrary to `render.yaml`'s own checked-in
+`plan: starter`. Ruled out with direct evidence: the AT-ED-011.5 OTA bundle has the full API
+token correctly inlined (downloaded and inspected); `/founder-evidence` returns correct 401/200
+responses with genuine live data when hit directly; CPU/memory metrics show a clean container
+replacement (`-wkl4k` reporting until 20:14 UTC, a new instance `-pz8jc` starting cold at 21:52,
+no deploy in between) consistent with free-tier spin-down. Measured: a cold request took 17.13s
+total (16.75s TTFB) against three immediately-following warm requests at 3.2-3.8s — the previous
+18000ms mobile timeout left only ~870ms of margin against that one sample.
+
+**Fix.** Infrastructure correction (restoring the web service to `starter`, matching
+render.yaml) is a Render dashboard billing action outside any available tool's reach — assumed
+done by the Founder per their explicit direction, not implemented by this pass. This pass ships
+mobile-side resilience: `mobile/lib/refreshState.js` gains a `connectionMessage()` state
+("Connecting to AI Trader...", "Waking backend service...", "Backend slow to respond -
+retrying..."); `useFounderEvidence.js`'s bounded retry now uses the shorter, warm-justified
+`SECONDARY_REFRESH_TIMEOUT_MS` (8s) instead of a second full primary timeout;
+`PRIMARY_REFRESH_TIMEOUT_MS` raised 18000ms → 25000ms (evidence-based headroom above the one
+measured cold-start sample, not a blanket increase); the failed-refresh banner (the exact
+"Refresh Failed" + "No Data Available" combination from the Founder's report, confirmed to be
+this code working as designed, not a bug) renamed to "Backend temporarily unavailable" and now
+shows the last successful refresh time when one exists.
+
+24 `refreshState.test.js` tests (5 new), all 16 mobile test files pass, babel-preset-expo parse
+clean on every touched file, `expo-doctor` 17/17, `expo export --platform android` succeeded
+(574 modules, zero errors). No backend file, and no trading/risk/governance/execution logic
+anywhere, was touched. Production verification (multiple refresh cycles against the restored
+Render plan and a published OTA update) is pending the Founder's plan-upgrade confirmation.
+
 ## 2026-08-03 AI executive collaboration protocol — governance-only
 
 Created `governance/ai-collaboration/` per Founder instruction: a

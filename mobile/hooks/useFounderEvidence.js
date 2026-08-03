@@ -35,6 +35,7 @@ const {
   snapshotFreshness,
   cacheBannerDetails,
   displayStateBadge,
+  connectionMessage,
 } = require('../lib/refreshState');
 const { resolveFounderEvidenceRefresh, shouldStartRefresh } = require('../lib/refreshLifecycle');
 const {
@@ -169,6 +170,10 @@ function useFounderEvidence() {
   const [hasAttempted, setHasAttempted] = useState(false);
   const [lastRefreshSucceeded, setLastRefreshSucceeded] = useState(null);
   const [lastRefreshError, setLastRefreshError] = useState(null);
+  // AT-ED-011.6: true only while the bounded retry (below) is in flight, so the UI can tell
+  // the Founder a slow/cold backend is genuinely still being retried instead of showing an
+  // undifferentiated spinner - see lib/refreshState.js's connectionMessage.
+  const [isRetrying, setIsRetrying] = useState(false);
   const [cachedAt, setCachedAt] = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [notifications, setNotifications] = useState([]);
@@ -197,7 +202,8 @@ function useFounderEvidence() {
   // failure, before the caller decides whether to fall back to cache. No silent partial
   // states - the caller always learns definitively whether this attempt succeeded.
   const fetchFounderEvidenceOnce = useCallback(
-    () => apiRequest(`/founder-evidence?period=${activityPeriod}&trade_limit=100`, { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
+    (timeoutMs = PRIMARY_REFRESH_TIMEOUT_MS) =>
+      apiRequest(`/founder-evidence?period=${activityPeriod}&trade_limit=100`, { timeoutMs }),
     [activityPeriod]
   );
 
@@ -278,10 +284,26 @@ function useFounderEvidence() {
         // AT-ED-010 requirement 3: one bounded retry before falling back to cache - a
         // transient hiccup should recover to LIVE on its own, not immediately read as
         // "the backend is down".
+        //
+        // AT-ED-011.6: the retry uses SECONDARY_REFRESH_TIMEOUT_MS (8s), not another full
+        // primary timeout. Measured evidence: a Render free-tier cold start is what the
+        // primary attempt's timeout budget exists to absorb - by the time this retry runs,
+        // that same cold start has already had the whole primary-timeout duration to finish
+        // booting in the background, so the container should now be warm (measured warm
+        // response: 2.9-3.8s). Reusing the full primary timeout here would only extend how
+        // long the Founder waits before learning about a genuinely broken backend, with no
+        // evidence it ever helps a cold start specifically.
+        if (isMountedRef.current) {
+          setIsRetrying(true);
+        }
         try {
-          founderEvidence = await fetchFounderEvidenceOnce();
+          founderEvidence = await fetchFounderEvidenceOnce(SECONDARY_REFRESH_TIMEOUT_MS);
         } catch (secondError) {
           fetchError = String(secondError.message || secondError);
+        } finally {
+          if (isMountedRef.current) {
+            setIsRetrying(false);
+          }
         }
       }
 
@@ -462,6 +484,10 @@ function useFounderEvidence() {
     [loading, hasAttempted, lastRefreshSucceeded, cachedAt, snapshotInfo.stale]
   );
   const dataSourceBadge = useMemo(() => displayStateBadge(dataSourceState), [dataSourceState]);
+  const inProgressMessage = useMemo(
+    () => connectionMessage({ isRefreshing: loading, isRetrying, hasAttempted }),
+    [loading, isRetrying, hasAttempted]
+  );
   const cacheBanner = useMemo(
     () =>
       dataSourceState === DISPLAY_STATE.CACHED
@@ -493,6 +519,8 @@ function useFounderEvidence() {
     dataSourceState,
     dataSourceBadge,
     cacheBanner,
+    isRetrying,
+    inProgressMessage,
     refresh,
     command,
     reportCommand,

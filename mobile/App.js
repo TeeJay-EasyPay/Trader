@@ -63,6 +63,8 @@ export default function App() {
     dataSourceState,
     dataSourceBadge,
     cacheBanner,
+    isRetrying,
+    inProgressMessage,
     refresh,
     command,
     reportCommand,
@@ -271,6 +273,16 @@ export default function App() {
         <Text style={styles.subtitle}>
           {activeLastRefreshedAt ? `Last refreshed ${formatDateTime(activeLastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
         </Text>
+        {/* AT-ED-011.6: once the bootstrap spinner above has cleared, a later refresh (manual,
+            pull-to-refresh, or the 2-minute auto-refresh) only drives the header's small
+            "Refreshing" StatusPill with no further detail - this surfaces the same truthful
+            in-progress message (e.g. "Backend slow to respond - retrying...") the bootstrap
+            spinner shows, instead of leaving the Founder guessing why a refresh is taking a
+            while. Market has no isRetrying concept (see useMarketData.js), so this is suppressed
+            there like the other founder-evidence-specific lines below. */}
+        {!isMarketScreen && !bootstrapping && inProgressMessage && (
+          <Text style={styles.subtitle}>{inProgressMessage}</Text>
+        )}
         {/* AT-ED-011.5: the backend evidence-snapshot-age line and the AsyncStorage cache
             banner both describe the shared founder-evidence source specifically (its
             persisted-snapshot age, its on-phone cache) - Market has neither concept (see
@@ -292,18 +304,38 @@ export default function App() {
             {cacheBanner.age && <Text style={styles.cacheBannerDetail}>Age: {cacheBanner.age}</Text>}
             <Text style={styles.cacheBannerDetail}>{cacheBanner.reason}</Text>
             <TouchableOpacity onPress={refresh} disabled={loading}>
-              <Text style={styles.cacheBannerRetry}>Retry now</Text>
+              <Text style={styles.cacheBannerRetry}>
+                {loading ? (isRetrying ? 'Waking backend service...' : 'Retrying...') : 'Retry now'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
+        {/* AT-ED-011.6: this is the state the Founder saw as an unexplained "No Data Available"
+            banner directly under a "Refresh Failed" StatusPill (the exact AT-ED-011.6 bug
+            report) - both were technically accurate but gave no indication of *why*, or that a
+            retry was already happening automatically. Renamed to name the actual condition and,
+            when a prior successful refresh exists this session, show when that was so the
+            Founder can judge how stale the last-known values are even though nothing is
+            currently displayed from this source. */}
         {activeDataSourceState === DISPLAY_STATE.REFRESH_FAILED && (
           <View style={styles.cacheBanner}>
-            <Text style={styles.cacheBannerHeadline}>No Data Available</Text>
+            <Text style={styles.cacheBannerHeadline}>Backend temporarily unavailable</Text>
             <Text style={styles.cacheBannerDetail}>
               {activeLastRefreshError ? `Live refresh failed: ${activeLastRefreshError}` : 'Live refresh failed.'}
             </Text>
+            {activeLastRefreshedAt && (
+              <Text style={styles.cacheBannerDetail}>
+                Last successful refresh: {formatDateTime(activeLastRefreshedAt)}
+              </Text>
+            )}
             <TouchableOpacity onPress={activeOnRefresh} disabled={activeRefreshing}>
-              <Text style={styles.cacheBannerRetry}>Retry now</Text>
+              <Text style={styles.cacheBannerRetry}>
+                {activeRefreshing
+                  ? !isMarketScreen && isRetrying
+                    ? 'Waking backend service...'
+                    : 'Retrying...'
+                  : 'Retry now'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -331,6 +363,13 @@ export default function App() {
       {bootstrapping && (
         <View style={styles.loading}>
           <ActivityIndicator />
+          {/* AT-ED-011.6: the bootstrap spinner previously gave no indication of what it was
+              waiting for. inProgressMessage distinguishes "first attempt in flight" from "the
+              first attempt failed and this is the bounded retry" - see
+              lib/refreshState.js's connectionMessage. */}
+          <Text style={[styles.subtitle, styles.loadingText]}>
+            {inProgressMessage || 'Connecting to AI Trader...'}
+          </Text>
         </View>
       )}
       <ScrollView

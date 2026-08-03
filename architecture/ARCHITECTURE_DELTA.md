@@ -200,3 +200,97 @@ Trader done and does it need my attention" home). Unread is `delivery_status !==
 (`NOTIFICATION_EVENTS` has no separate read/acknowledged column); "Mark All Read" calls the
 existing `POST /notifications/ack` through the existing `onCommand` path, no new command
 plumbing.
+
+---
+
+# AT-ED-011.6 (Backend Data Availability Investigation and Correction)
+
+Investigates the Founder's production report, following the AT-ED-011.5 OTA publish: top
+banner "Refresh Failed", yellow banner "No Data Available", Command cards showing
+"unavailable" across the board, Broker Panels empty.
+
+## Root cause: infrastructure config drift, not a mobile or backend code bug
+
+`render.yaml` (checked into this repo) declares `plan: starter` for the web service
+(`ai-trader-api`), matching the always-on worker. The **live** Render service was found running
+on the **free** plan — drifted from its own committed config. Free-tier Render web services
+spin down to zero after ~15 minutes with no traffic and cold-start a fresh container on the
+next request.
+
+Ruled out with direct evidence, not assumption:
+- **Not an auth/token bug**: the exact AT-ED-011.5 OTA bundle (update group `35bdf145`,
+  built from commit `1e215de2`, confirmed via `eas update:view`) was downloaded and inspected —
+  the full 64-character `AI_TRADER_API_TOKEN` is correctly inlined in it.
+- **Not a backend logic/routing bug**: `/founder-evidence` returns `401` unauthenticated and
+  `200` with genuine live data (real broker positions, current timestamps) authenticated, both
+  confirmed by direct `curl` against production.
+- **Not a mobile modularisation regression**: `mobile/api/client.js`'s auth header
+  construction, base URL, and timeout handling were reviewed and are correct.
+- **The three 500s found in Render's logs around the report window** are `BrokenPipeError`
+  from a `127.0.0.1` (loopback) health-probe disconnecting before the server could write —
+  internal noise, not something the mobile app or the Founder's request path ever saw.
+
+**Confirmed with metrics, not just logs**: `cpu_usage`/`memory_usage` for the web service show
+instance `srv-d93osvflk1mc739nga9g-wkl4k` reporting from 19:36 to 20:14 UTC (2026-08-03), then a
+gap, then a **new** instance `srv-d93osvflk1mc739nga9g-pz8jc` starting fresh at 21:52 — a clean
+container replacement with no new deploy in between, consistent with free-tier idle spin-down
+and cold restart.
+
+## Measured cold-start vs warm timing (2026-08-03, production)
+
+| Request | DNS | TCP | TLS | TTFB | Total | 
+|---|---|---|---|---|---|
+| Cold (after ~21 min idle) | 0.043s | 0.072s | 0.128s | 16.753s | **17.132s** |
+| Warm #1 (immediately after) | — | — | — | 2.881s | 3.255s |
+| Warm #2 | — | — | — | 2.853s | 3.199s |
+| Warm #3 | — | — | — | 3.101s | 3.819s |
+
+Payload size was identical (4,269,846 bytes) across all four requests, so payload size is not
+the variable — the ~13-14s difference is the container/interpreter/DB-pool cold start. The
+previous `PRIMARY_REFRESH_TIMEOUT_MS` (18000ms) left only ~870ms (5%) of margin against this
+single measured cold-start sample — thin enough that ordinary run-to-run variance (mobile
+network latency, a slightly longer idle period) plausibly explains the intermittent nature of
+the Founder's reports.
+
+## Fix
+
+**Primary correction (infrastructure, Founder-actioned)**: restore the web service to the
+`starter` plan already declared in `render.yaml`, in the Render dashboard (not achievable via
+the available Render MCP tools — service plan changes are a billing action). Not implemented by
+this pass; assumed done by the Founder per their explicit direction.
+
+**Mobile resilience (this pass, JS-only, no backend change)**:
+- `mobile/lib/refreshState.js`: new pure `connectionMessage()` — distinguishes "Connecting to
+  AI Trader..." (first attempt), "Waking backend service..." (on the bounded retry, before any
+  data has ever loaded), "Refreshing..." / "Backend slow to respond - retrying..." (same,
+  post-bootstrap).
+- `mobile/hooks/useFounderEvidence.js`: new `isRetrying` signal set only while the bounded
+  retry is in flight; the retry now uses `SECONDARY_REFRESH_TIMEOUT_MS` (8s) instead of a
+  second full primary timeout — justified because by the time the retry runs, the cold start
+  the primary timeout exists to absorb has already had that whole duration to finish booting in
+  the background (measured warm response: 2.9-3.8s, well under 8s).
+- `mobile/api/client.js`: `PRIMARY_REFRESH_TIMEOUT_MS` 18000ms → 25000ms — evidence-based
+  headroom above the single worst measured cold-start sample (17.13s), not a blanket increase.
+  `SECONDARY_REFRESH_TIMEOUT_MS` (8000ms) and `COMMAND_TIMEOUT_MS` (45000ms) left unchanged —
+  no cold-start measurement was taken against the endpoints that use them.
+- `mobile/App.js`: the exact banner combination from the Founder's report (StatusPill "Refresh
+  Failed" directly above a banner reading "No Data Available") is confirmed to be this code
+  working as designed, not a bug — both strings were independently, technically correct but
+  gave no indication of why or that a retry was already happening. Failed-refresh banner
+  renamed to "Backend temporarily unavailable", now shows "Last successful refresh: &lt;time&gt;"
+  when one exists this session, and its retry button reflects "Waking backend service..." /
+  "Retrying..." while a retry is actually in flight.
+- Not changed: `useMarketData.js` and `useFounderBrief.js` still use `SECONDARY_REFRESH_TIMEOUT_MS`
+  as a single attempt with no retry. No cold-start measurement was taken against
+  `/benchmark-daily-brief`, `/intelligence/themes`, `/intelligence/companies`, or
+  `/founder-brief` specifically, so no change is made here — flagged as an open follow-up only
+  if the Founder reports these specifically failing after the Render plan restoration.
+
+## Verification (this pass)
+
+24 `refreshState.test.js` tests (5 new for `connectionMessage`), all 16 mobile test files pass
+(no regressions), every touched file individually verified through the project's actual
+`@babel/core` + `babel-preset-expo` toolchain, `expo-doctor` 17/17, `expo export --platform
+android` Metro bundle succeeded (574 modules, zero errors). Production verification against the
+restored Render plan and a published OTA update is pending Founder confirmation of the plan
+change — see the AT-ED-011.6 Production Verification report once available.

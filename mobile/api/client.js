@@ -8,7 +8,15 @@ const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
 const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 
-const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
+// AT-ED-011.6: measured against production (2026-08-03) after the Render web service was
+// found to be on the free plan (spins down after ~15 min idle, contrary to render.yaml's
+// declared `plan: starter`) - a cold request to /founder-evidence took 17.13s total (16.75s
+// TTFB; DNS/TCP/TLS were ~0.24s combined, so the delay is entirely the container/app/DB-pool
+// coming up), against three consecutive warm requests immediately after at 3.20-3.82s total.
+// The previous 18000ms primary timeout left only ~870ms (5%) of margin against that single
+// cold-start sample - not a safe margin given cold-start time will vary run to run. Raised to
+// give real headroom above the one worst measured sample, not an arbitrary round number.
+const PRIMARY_REFRESH_TIMEOUT_MS = 25000;
 const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
 const COMMAND_TIMEOUT_MS = 45000;
 

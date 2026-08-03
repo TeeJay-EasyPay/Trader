@@ -12,6 +12,7 @@ const {
   formatAgeSeconds,
   cacheBannerDetails,
   displayStateBadge,
+  connectionMessage,
 } = require('./refreshState');
 
 let passed = 0;
@@ -183,6 +184,41 @@ test('displayStateBadge: Live is the only "good" tone; everything else is a visi
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.BACKEND_SNAPSHOT_STALE).tone, 'good');
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.REFRESH_FAILED).tone, 'good');
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.NO_DATA_AVAILABLE).tone, 'good');
+});
+
+// --- connectionMessage ---
+
+test('connectionMessage: not refreshing is silent (no in-progress message when nothing is happening)', () => {
+  assert.strictEqual(connectionMessage({ isRefreshing: false, isRetrying: false, hasAttempted: true }), null);
+  assert.strictEqual(connectionMessage({ isRefreshing: false, isRetrying: true, hasAttempted: false }), null);
+});
+
+test('connectionMessage: first-ever attempt this session, primary in flight', () => {
+  assert.strictEqual(
+    connectionMessage({ isRefreshing: true, isRetrying: false, hasAttempted: false }),
+    'Connecting to AI Trader...'
+  );
+});
+
+test('connectionMessage: first-ever attempt this session, on the bounded retry', () => {
+  assert.strictEqual(
+    connectionMessage({ isRefreshing: true, isRetrying: true, hasAttempted: false }),
+    'Waking backend service...'
+  );
+});
+
+test('connectionMessage: a later refresh (data already loaded once), primary in flight', () => {
+  assert.strictEqual(
+    connectionMessage({ isRefreshing: true, isRetrying: false, hasAttempted: true }),
+    'Refreshing...'
+  );
+});
+
+test('connectionMessage: a later refresh, on the bounded retry', () => {
+  assert.strictEqual(
+    connectionMessage({ isRefreshing: true, isRetrying: true, hasAttempted: true }),
+    'Backend slow to respond - retrying...'
+  );
 });
 
 console.log(`\n${passed} passed`);

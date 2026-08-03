@@ -86,6 +86,11 @@ export const styles = StyleSheet.create({
   },
   loading: {
     paddingVertical: 6,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 6,
+    textAlign: 'center',
   },
   content: {
     padding: 14,

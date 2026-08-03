@@ -98,6 +98,25 @@ function cacheBannerDetails({ cachedAt, lastError, nowMs = Date.now() }) {
   };
 }
 
+// AT-ED-011.6: truthful in-progress messaging, distinct from the terminal DISPLAY_STATE
+// values above. Measured evidence (see architecture/ARCHITECTURE_DELTA.md, AT-ED-011.6):
+// a cold Render free-tier instance took ~17s to answer /founder-evidence where a warm one
+// took ~3s, and the mobile app's bounded-retry (see useFounderEvidence.js's refresh()) means
+// a real refresh can spend several seconds in an intermediate state the Founder previously
+// saw as an undifferentiated spinner. This distinguishes "first-ever connection this
+// session" from "the primary attempt failed and we're on the bounded retry" so a slow/cold
+// backend reads as an honest, specific in-progress message instead of eventually just
+// flashing to Refresh Failed / No Data Available with no context for why it took a while.
+function connectionMessage({ isRefreshing, isRetrying, hasAttempted }) {
+  if (!isRefreshing) {
+    return null;
+  }
+  if (!hasAttempted) {
+    return isRetrying ? 'Waking backend service...' : 'Connecting to AI Trader...';
+  }
+  return isRetrying ? 'Backend slow to respond - retrying...' : 'Refreshing...';
+}
+
 // Short label + tone for the StatusPill shown in the app header, one call site so every
 // screen renders the identical wording/colour for a given state.
 function displayStateBadge(state) {
@@ -125,4 +144,5 @@ module.exports = {
   formatAgeSeconds,
   cacheBannerDetails,
   displayStateBadge,
+  connectionMessage,
 };
