@@ -46,8 +46,11 @@ ON SCHEDULED_JOB_RUNS(job_name, scheduled_for);
 -- scheduled_for) DESC, job_run_id DESC LIMIT (the call supervise_workers makes,
 -- with no job_name filter). Without this, that query has no index to satisfy its
 -- ORDER BY and must sort the entire table -- confirmed ~100x slower on a 12k-row
--- seeded table without this index (37.9ms vs 0.38ms; query plan changes from
--- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan).
+-- seeded table without this index (37.9ms vs 0.38ms). Query plan changes from
+-- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan.
+-- NOTE: initialize_always_on_schema splits this block on the statement-terminator
+-- character (see that function), with no comment-awareness -- do not put that
+-- character inside a comment anywhere in this string, only as a real terminator.
 CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_coalesce_time
 ON SCHEDULED_JOB_RUNS(COALESCE(started_at, scheduled_for) DESC, job_run_id DESC);
 
@@ -173,8 +176,11 @@ ON SCHEDULED_JOB_RUNS(job_name, scheduled_for);
 -- scheduled_for) DESC, job_run_id DESC LIMIT (the call supervise_workers makes,
 -- with no job_name filter). Without this, that query has no index to satisfy its
 -- ORDER BY and must sort the entire table -- confirmed ~100x slower on a 12k-row
--- seeded table without this index (37.9ms vs 0.38ms; query plan changes from
--- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan).
+-- seeded table without this index (37.9ms vs 0.38ms). Query plan changes from
+-- "SCAN + TEMP B-TREE FOR ORDER BY" to a direct index scan.
+-- NOTE: initialize_always_on_schema splits this block on the statement-terminator
+-- character (see that function), with no comment-awareness -- do not put that
+-- character inside a comment anywhere in this string, only as a real terminator.
 CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_coalesce_time
 ON SCHEDULED_JOB_RUNS(COALESCE(started_at, scheduled_for) DESC, job_run_id DESC);
 
