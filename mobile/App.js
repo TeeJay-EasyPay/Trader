@@ -7,13 +7,14 @@ import {
   SafeAreaView,
   ScrollView,
   StatusBar,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { styles } from './styles';
+import { Section, CollapsibleSection, Metric, TextBlock, Button, StatusPill, Empty } from './components/shared';
 const {
   operationalRollup,
   operationalLevelTone,
@@ -22,6 +23,7 @@ const {
   recommendationLifecycle,
   positionOwnership,
   learningSummary,
+  formatGuardrailFailures,
 } = require('./lib/founderPresentation');
 const {
   DISPLAY_STATE,
@@ -31,16 +33,36 @@ const {
   cacheBannerDetails,
   displayStateBadge,
 } = require('./lib/refreshState');
+const { brokerKey, money, gbp, moneyOrText, gbpOrText, brokerMoney, historyMoneyOrText } = require('./lib/money');
+const { dateMs, formatDateTime, formatPercent } = require('./lib/datetime');
+const { formatList, formatListInline } = require('./lib/lists');
+const { notAvailable, explainMissing } = require('./lib/notAvailable');
+const {
+  unavailableStatus,
+  unavailableActivity,
+  statusFromFounderEvidence,
+  activityFromFounderEvidence,
+  productionTradeForMobile,
+  brokerResearchStatus,
+  founderHeadline,
+  founderAction,
+  founderLearningForMobile,
+  sortByConfidence,
+} = require('./lib/founderEvidenceMapping');
+const {
+  API_BASE,
+  API_TOKEN,
+  API_TOKEN_MASK,
+  PRIMARY_REFRESH_TIMEOUT_MS,
+  SECONDARY_REFRESH_TIMEOUT_MS,
+  COMMAND_TIMEOUT_MS,
+  shortApiBase,
+  absoluteApiUrl,
+  apiRequest,
+} = require('./api/client');
 
-const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
-const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
-const API_TOKEN_MASK = API_TOKEN ? `${API_TOKEN.slice(0, 6)}...${API_TOKEN.slice(-6)}` : 'missing';
 const RECOMMENDATION_CACHE_KEY = 'ai-trader:last-recommendations';
 const FOUNDER_EVIDENCE_CACHE_KEY = 'ai-trader:last-founder-evidence';
-const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
-const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
-const BACKGROUND_HYDRATION_TIMEOUT_MS = 60000;
-const COMMAND_TIMEOUT_MS = 45000;
 // AT-ED-010 requirement 3 ("continue normal scheduled refreshes" / "automatically recover
 // to LIVE mode as soon as a successful refresh occurs"): there was previously no periodic
 // refresh at all, only manual pull-to-refresh and the initial mount fetch, so a stale/cached
@@ -52,508 +74,6 @@ const COMMAND_TIMEOUT_MS = 45000;
 const AUTO_REFRESH_INTERVAL_MS = 120000;
 
 const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
-
-function unavailableStatus(reason) {
-  return {
-    system_status: 'partial',
-    engine_health: 'Status endpoint timed out before the app finished refreshing.',
-    research_status: `Not available - ${reason}`,
-    brokers: [],
-    connection_readiness: {
-      trade_ready: false,
-      note: 'The app is showing a degraded status because the hosted status endpoint did not respond quickly enough. Check the Activity screen for persisted autonomous evidence.',
-      checks: [
-        {
-          component: 'Render API',
-          status: 'timeout',
-          ready: false,
-          detail: reason,
-        },
-      ],
-    },
-    founder_experience: {
-      executive_dashboard: {
-        portfolio_health: 'Status unavailable',
-        headline: 'The status endpoint was slow, so AI Trader is showing partial evidence instead of blocking the app.',
-        good_morning: [reason],
-        what_to_do: 'Open Activity or refresh again after Render has warmed up.',
-        what_to_worry_about: 'If this persists after repeated refreshes, check Render logs and API health.',
-      },
-    },
-    world_class_evidence: {
-      first_conclusion: 'Data issue requires attention',
-      unavailable: [
-        {
-          field: 'Hosted status',
-          reason,
-          required: 'The /status endpoint must respond within the mobile refresh timeout.',
-          expected_or_error: 'Expected during Render cold start; an error if persistent.',
-        },
-      ],
-    },
-  };
-}
-
-function unavailableActivity(reason) {
-  return {
-    generated_at: new Date().toISOString(),
-    fetch_error: reason,
-    status: {
-      state: 'STATUS UNKNOWN',
-      plain_english: `Activity evidence could not be loaded from the hosted API: ${reason}`,
-      last_meaningful_activity: null,
-      worker_status: 'Not available - Activity API request failed.',
-      scheduler_status: 'Not available - Activity API request failed.',
-      database_status: 'Not available - Activity API request failed.',
-      last_successful_research: null,
-      last_broker_poll: null,
-      last_report_generated: null,
-      unresolved_incident_count: 0,
-    },
-    summary: {},
-    timeline: {
-      items: [],
-      returned: 0,
-      total: 0,
-      source_event_count: 0,
-      empty_state: reason,
-    },
-    why_no_trade: {
-      state: 'unknown',
-      conclusion: 'No-trade evidence could not be loaded because the Activity API request failed.',
-      counts: {},
-      top_reasons: [],
-    },
-    broker_activity: { brokers: [] },
-    founder_attention: {
-      plain_english: 'Founder attention items could not be loaded because the Activity API request failed.',
-      items: [],
-    },
-    latest_completed_actions: [],
-    truthfulness: {
-      source: 'Activity API request failed',
-      mock_data_used: false,
-      synthetic_activity_used: false,
-    },
-  };
-}
-
-function statusFromOperations(operations) {
-  const reason = operations?.plain_english || 'Operations health has not loaded yet.';
-  const workerHealthy = operations?.worker_health === 'healthy';
-  const databaseBackend = operations?.database_backend?.active_backend || operations?.database_backend?.requested_backend;
-  return {
-    system_status: workerHealthy ? 'running' : 'partial',
-    paper_live_mode: 'Mixed - broker-specific controls apply',
-    engine_health: workerHealthy ? 'Background worker heartbeat is healthy.' : reason,
-    research_status: operations?.last_research_run
-      ? 'Research evidence has been recorded by the background worker.'
-      : 'Not available - no completed research run has been returned by operations health yet.',
-    due_diligence_status: 'Not available - full status is still hydrating in the background.',
-    brokers: [],
-    operations_health: operations || {},
-    connection_readiness: {
-      trade_ready: workerHealthy,
-      note: 'Readiness is loaded from the lightweight operations endpoint. Full broker readiness is still hydrating.',
-      checks: [
-        {
-          component: 'Render API',
-          status: operations?.api_health || 'available',
-          ready: true,
-          detail: 'The app received lightweight operations evidence.',
-        },
-        {
-          component: 'Background Worker',
-          status: operations?.worker_health || 'not_proven',
-          ready: workerHealthy,
-          detail: reason,
-        },
-        {
-          component: 'Database',
-          status: databaseBackend || 'not_proven',
-          ready: databaseBackend === 'postgres',
-          detail: operations?.database_backend?.plain_english || 'Database backend is still being verified.',
-        },
-      ],
-    },
-    founder_experience: {
-      executive_dashboard: {
-        portfolio_health: 'Hydrating',
-        headline: workerHealthy
-          ? 'AI Trader is alive. Worker evidence has loaded; detailed broker and portfolio evidence is still hydrating.'
-          : 'AI Trader loaded a partial operations view while detailed status evidence hydrates.',
-        good_morning: [reason],
-        what_to_do: workerHealthy ? 'Open Activity for the latest worker and job evidence.' : 'Check Activity for worker and job evidence.',
-        what_to_worry_about: workerHealthy
-          ? 'If broker panels remain empty after background hydration, inspect broker endpoint latency.'
-          : 'If the worker remains unproven, inspect Render worker logs.',
-      },
-    },
-    world_class_evidence: {
-      first_conclusion: workerHealthy ? 'No action required' : 'Data issue requires attention',
-      unavailable: workerHealthy
-        ? []
-        : [
-            {
-              field: 'Full hosted status',
-              reason,
-              required: 'The /status endpoint should hydrate after the fast operations view.',
-              expected_or_error: 'Expected during slow hosted responses; an error if it never hydrates.',
-            },
-          ],
-    },
-  };
-}
-
-function activityFromEvidence({ operations, summary, noTrade, period }) {
-  const latestJob = (operations?.last_job_runs || [])[0] || null;
-  const workerHealthy = operations?.worker_health === 'healthy';
-  const state = workerHealthy
-    ? operations?.overall === 'healthy'
-      ? 'OPERATING NORMALLY'
-      : 'OPERATING WITH WARNINGS'
-    : 'STATUS UNKNOWN';
-  return {
-    generated_at: operations?.generated_at || new Date().toISOString(),
-    period,
-    status: {
-      state,
-      plain_english: operations?.plain_english || 'AI Trader operations evidence has partially loaded. Full activity timeline is still hydrating.',
-      last_meaningful_activity: latestJob
-        ? {
-            title: `${latestJob.job_name || 'Job'} ${latestJob.status || 'recorded'}`,
-            timestamp: latestJob.completed_at || latestJob.started_at || latestJob.scheduled_for,
-          }
-        : null,
-      worker_status: operations?.worker_health,
-      scheduler_status: latestJob ? 'active' : 'not_proven',
-      database_status: operations?.database_backend?.active_backend,
-      database_durability: operations?.database_durability,
-      last_successful_research_run: operations?.last_research_run?.created_at,
-      last_broker_poll: latestJob?.job_name === 'broker-poll' ? (latestJob.completed_at || latestJob.started_at) : null,
-      last_report_generated: null,
-      unresolved_incident_count: (operations?.incidents || []).length,
-    },
-    summary: summary || {},
-    timeline: {
-      items: [],
-      returned: 0,
-      total: 0,
-      source_event_count: summary?.raw_evidence_counts
-        ? Object.values(summary.raw_evidence_counts).reduce((total, value) => total + (Number(value) || 0), 0)
-        : 0,
-      empty_state: 'Full activity timeline is still hydrating. Dashboard summary is built from operations, summary, and no-trade evidence.',
-    },
-    why_no_trade: noTrade || {
-      state: 'unknown',
-      conclusion: 'No-trade evidence has not loaded yet.',
-      counts: {},
-      top_reasons: [],
-    },
-    broker_activity: { brokers: [] },
-    founder_attention: {
-      plain_english: operations?.incidents?.length
-        ? `${operations.incidents.length} operational incident(s) need attention.`
-        : 'No Founder action is currently required from the lightweight operations evidence.',
-      items: operations?.incidents || [],
-    },
-    latest_completed_actions: latestJob
-      ? [
-          {
-            title: latestJob.job_name || 'Scheduled job',
-            timestamp: latestJob.completed_at || latestJob.started_at || latestJob.scheduled_for,
-            outcome: latestJob.status || 'recorded',
-          },
-        ]
-      : [],
-    truthfulness: {
-      source: 'operations-health, activity-summary, and why-no-trade endpoints',
-      mock_data_used: false,
-      synthetic_activity_used: false,
-    },
-  };
-}
-
-function statusFromFounderEvidence(evidence) {
-  const operating = evidence?.status || {};
-  const portfolio = evidence?.portfolio || {};
-  const researchRows = evidence?.research || [];
-  const latestResearch = researchRows[0] || null;
-  const trades = evidence?.trades || [];
-  const recommendations = evidence?.recommendations || [];
-  const learning = evidence?.learning || [];
-  const brokerPanels = (evidence?.brokers || []).map((row) => {
-    const raw = row.payload || {};
-    const brokerTrades = trades.filter((trade) => String(trade.broker).toLowerCase() === String(row.broker).toLowerCase());
-    return {
-      ...raw,
-      broker: row.broker,
-      label: String(row.broker || '').toLowerCase() === 'alpaca' ? 'Alpaca' : 'Kraken',
-      connection_status: row.connection_status,
-      account_mode: row.account_mode,
-      currency: row.currency,
-      portfolio_value: row.portfolio_value,
-      cash_available: row.cash,
-      buying_power: row.buying_power,
-      estimated_in_positions: row.deployed_capital,
-      todays_pnl: row.day_pnl,
-      week_pnl: row.week_pnl,
-      month_pnl: row.month_pnl,
-      open_positions: row.open_positions,
-      open_positions_detail: row.positions || [],
-      // Explicitly AI-owned open positions (MANAGED_TRADE_EXITS) - a strict subset of
-      // open_positions_detail. Never used to infer that a position NOT in this list is
-      // AI-managed; the absence of a managed-exit row means "not confirmed AI-managed",
-      // not "assume it is anyway" (see positionOwnership() in lib/founderPresentation.js).
-      managed_exits: row.managed_exits || [],
-      reconciliation_status: row.reconciliation_status,
-      source: `${row.source || 'broker adapter'}; captured ${formatDateTime(row.captured_at)}`,
-      latest_error: row.error,
-      trades_today: brokerTrades.length,
-      trade_history: brokerTrades.map(productionTradeForMobile),
-      research_status: brokerResearchStatus(researchRows, row.broker),
-      due_diligence_status: recommendations.some((item) => String(item.suggested_broker || item.broker).toLowerCase() === String(row.broker).toLowerCase())
-        ? 'Completed - recommendation evidence is available'
-        : 'No recommendation passed due diligence in the selected period',
-      // raw.auto_trading_enabled is a true tri-state (true/false/undefined) from the
-      // backend snapshot payload - undefined means the governance snapshot has not
-      // captured this broker yet, and must never be shown as "Disabled" (AT-ED-003
-      // Section 3). auto_trading_status/block_reason carry the plain-language reason.
-      auto_trading_enabled: raw.auto_trading_enabled === undefined ? null : Boolean(raw.auto_trading_enabled),
-      auto_trading_status: raw.auto_trading_status || (raw.auto_trading_enabled === undefined ? 'Unknown' : (raw.auto_trading_enabled ? 'Enabled' : 'Disabled')),
-      block_reason: raw.block_reason ?? null,
-      trading_permissions: raw.trading_permissions,
-      // SCHEDULED_JOB_RUNS is ordered completed_at/scheduled_for DESC by the query that
-      // populates evidence.jobs, so the first match is genuinely the latest.
-      latest_successful_poll: (evidence?.jobs || []).find(
-        (job) => job.job_name === `broker-poll-${String(row.broker).toLowerCase()}` && job.status === 'completed'
-      )?.completed_at || null,
-      // PRODUCTION_TRADE_EVIDENCE is ordered observed_at DESC, and brokerTrades preserves
-      // that order, so the first entry is the latest confirmed trade for this broker.
-      latest_confirmed_trade: brokerTrades[0] || null,
-    };
-  });
-  const deployed = portfolio.deployed_capital;
-  const total = portfolio.portfolio_value;
-  const dayPnl = portfolio.todays_pnl;
-  const researchSummary = evidence?.summary?.research || {};
-  const learningCount = learning.length;
-  const operations = {
-    generated_at: evidence?.generated_at,
-    overall: operating.state === 'OPERATING NORMALLY' ? 'healthy' : 'attention_needed',
-    plain_english: operating.plain_english,
-    api_health: 'available',
-    worker_health: operating.worker_status,
-    database_durability: operating.database_status === 'postgres' ? 'Durable shared Postgres evidence is active' : operating.database_status,
-    database_backend: {
-      requested_backend: 'postgres',
-      active_backend: operating.database_status,
-      plain_english: operating.database_status === 'postgres'
-        ? 'The API and background worker share production evidence in Supabase Postgres.'
-        : 'Production evidence is not currently reporting Postgres as the active backend.',
-    },
-    last_equity_research: researchRows.find((item) => String(item.broker).toLowerCase() === 'alpaca'),
-    last_crypto_research: researchRows.find((item) => String(item.broker).toLowerCase() === 'kraken'),
-    last_research_run: latestResearch,
-    last_job_runs: evidence?.jobs || [],
-    incidents: operating.unresolved_incident_count ? [{ title: `${operating.unresolved_incident_count} unresolved incident(s)` }] : [],
-  };
-  const portfolioHealth = total == null
-    ? 'Awaiting a successful broker snapshot'
-    : dayPnl == null
-      ? 'Broker balances are current; daily P&L awaits a comparison snapshot'
-      : `${dayPnl >= 0 ? 'Up' : 'Down'} ${moneyOrText(Math.abs(dayPnl))} today`;
-  const researchHealth = latestResearch
-    ? `${latestResearch.broker || 'Market'} research ${latestResearch.status || 'recorded'} at ${formatDateTime(latestResearch.completed_at)}`
-    : 'No production research evidence has been recorded in this period';
-  return {
-    system_status: operating.state,
-    paper_live_mode: 'Alpaca paper; Kraken controlled live permissions',
-    engine_health: operating.plain_english,
-    job_health: evidence?.summary?.operations?.job_health || [],
-    live_worker: operating.worker || null,
-    research_status: researchHealth,
-    due_diligence_status: recommendations.length
-      ? `${recommendations.length} persisted recommendation(s) available for review`
-      : evidence?.why_no_trade?.conclusion,
-    last_analysis_time: operating.last_successful_research_run,
-    last_research_run: latestResearch,
-    research_assets_reviewed: researchSummary.assets_analysed,
-    crypto_projects_reviewed: researchRows
-      .filter((item) => String(item.broker).toLowerCase() === 'kraken')
-      .reduce((totalCount, item) => totalCount + Number(item.assets_analysed || 0), 0),
-    research_recommendations_created: researchSummary.recommendations_created,
-    next_scheduled_research_run: null,
-    brokers: brokerPanels,
-    operations_health: operations,
-    recommendation_summary: {
-      active: recommendations.filter((item) => item.freshness_status !== 'Expired').length,
-      expired: recommendations.filter((item) => item.freshness_status === 'Expired').length,
-      auto_trade_mode: 'Broker-specific permissions and governance gates apply',
-    },
-    selected_active_brokers: brokerPanels.map((item) => item.broker),
-    connection_readiness: {
-      trade_ready: operating.worker_status === 'healthy' && operating.database_status === 'postgres',
-      note: 'This readiness view is derived from shared production evidence. Every order still requires orchestrator, portfolio, strategy, and risk approval.',
-      checks: [
-        { component: 'Render API', status: 'connected', ready: true, detail: 'The Founder evidence endpoint responded.' },
-        { component: 'Background Worker', status: operating.worker_status, ready: operating.worker_status === 'healthy', detail: operating.plain_english },
-        { component: 'Supabase Postgres', status: operating.database_status, ready: operating.database_status === 'postgres', detail: operations.database_backend.plain_english },
-        ...brokerPanels.map((broker) => ({
-          component: broker.label,
-          status: broker.connection_status,
-          ready: String(broker.connection_status).toLowerCase() === 'connected',
-          auto_trading_enabled: broker.auto_trading_enabled,
-          block_reason: broker.block_reason,
-          detail: broker.latest_error || broker.source,
-        })),
-      ],
-    },
-    founder_experience: {
-      executive_dashboard: {
-        portfolio_health: portfolioHealth,
-        headline: founderHeadline(evidence),
-        good_morning: [operating.plain_english, evidence?.why_no_trade?.conclusion].filter(Boolean),
-        what_to_do: founderAction(evidence),
-        what_to_worry_about: operating.state === 'OPERATING NORMALLY'
-          ? 'No operational fault is visible. Review individual broker and trade evidence before changing capital.'
-          : operating.plain_english,
-        todays_recommendation_count: recommendations.length,
-        open_positions: portfolio.open_positions?.length || 0,
-        capital_deployed: deployed,
-        cash_available: portfolio.cash_available,
-        learning_progress: learningCount ? `${learningCount} learning cycle(s) completed in this period` : 'No completed learning cycle in this period',
-      },
-      portfolio_command: {
-        portfolio_allocation: {
-          total,
-          deployed,
-          cash: portfolio.cash_available,
-          deployed_pct: total ? deployed / total : null,
-        },
-        diversification: portfolio.open_positions?.length
-          ? `${portfolio.open_positions.length} broker position(s) captured; detailed diversification requires normalized metadata`
-          : 'No open broker positions captured',
-        portfolio_risk: 'Governed per recommendation; aggregate risk attribution is not yet present in this evidence projection',
-        expected_portfolio_return: 'Not estimated - no forecast is fabricated from broker balances',
-        positions_requiring_attention: [],
-        rebalancing_suggestions: [],
-      },
-      market_intelligence_centre: {
-        market_health: latestResearch ? `Fresh production research evidence from ${latestResearch.broker}` : 'No fresh production research evidence',
-        current_market_regime: latestResearch?.summary || 'Not calculated in the production evidence projection',
-        volatility: 'See recommendation evidence where available',
-        momentum: 'See recommendation evidence where available',
-        breadth: `${researchSummary.assets_analysed || 0} asset review(s) recorded in this period`,
-        crypto_health: brokerResearchStatus(researchRows, 'kraken'),
-        sector_rotation: [],
-        major_themes: [],
-        important_news: [],
-        upcoming_risks: evidence?.why_no_trade?.top_reasons?.map((item) => `${item.reason}: ${item.count}`) || [],
-        watch_list: recommendations.map((item) => item.symbol).filter(Boolean),
-      },
-      learning_lab: {
-        learning_progress: learningCount ? `${learningCount} completed learning processor run(s)` : 'No completed learning run in this period',
-        prediction_accuracy: null,
-        calibration: learningCount ? 'Learning evidence exists; statistical calibration requires completed attributed trades' : 'Insufficient completed trade evidence',
-        best_strategy: null,
-        weakest_strategy: null,
-        strategy_validation_status: 'Governed strategy promotion remains separate from production evidence display',
-        lessons_learned: learning.map((item) => item.summary).filter(Boolean),
-        founder_suggestions: learning.length ? ['Review completed learning evidence before approving any strategy change.'] : [],
-        strategy_rankings: [],
-        signal_rankings: [],
-      },
-    },
-    world_class_evidence: {
-      first_conclusion: operating.state === 'OPERATING NORMALLY' ? 'No action required' : 'Operational attention required',
-      unavailable: [],
-      future_connections: [],
-      operational_truth: {
-        canonical_lifecycle_events: trades.length,
-        illegal_transition_rejections: 0,
-        reconciliation_health: brokerPanels.map((item) => `${item.label}: ${item.reconciliation_status}`),
-      },
-      portfolio_intelligence: {
-        plain_english: portfolioHealth,
-        warnings: dayPnl == null ? ['Daily P&L needs at least two comparable broker snapshots or broker-reported P&L.'] : [],
-      },
-    },
-    operational_summary: operationalRollup({
-      operatingState: operating.state,
-      plainEnglish: operating.plain_english,
-      liveWorker: operating.worker || null,
-      brokerPanels,
-      generatedAt: evidence?.generated_at,
-    }),
-  };
-}
-
-function activityFromFounderEvidence(evidence) {
-  const timeline = evidence?.timeline || { items: [], total: 0 };
-  return {
-    ...evidence,
-    timeline: {
-      ...timeline,
-      returned: timeline.items?.length || 0,
-      source_event_count: timeline.total || timeline.items?.length || 0,
-      empty_state: timeline.items?.length ? null : 'No autonomous activity has been recorded in the selected period.',
-    },
-    // Broker status is intentionally not recomputed here. The Activity screen never renders
-    // its own broker-status view - it reuses status.brokers (via BrokerPanel) exactly like
-    // Command and Portfolio do, so there is one authoritative broker-status computation, not
-    // several that could disagree (see brokerOverallReadiness() in lib/founderPresentation.js).
-    founder_attention: {
-      plain_english: evidence?.status?.state === 'OPERATING NORMALLY'
-        ? 'No Founder action is currently required.'
-        : evidence?.status?.plain_english || 'Operational evidence requires review.',
-      items: [],
-    },
-    latest_completed_actions: (timeline.items || []).slice(0, 8).map((item) => ({
-      label: item.category || item.component,
-      title: item.title,
-      timestamp: item.timestamp,
-      outcome: item.outcome,
-    })),
-  };
-}
-
-function productionTradeForMobile(trade) {
-  return {
-    ...trade,
-    created_at: trade.observed_at,
-    updated_at: trade.observed_at,
-    qty: trade.quantity,
-    filled_avg_price: trade.average_fill_price || trade.price,
-    profit_loss: trade.realized_pnl,
-    raw: trade.payload || {},
-  };
-}
-
-function brokerResearchStatus(rows, broker) {
-  const row = (rows || []).find((item) => String(item.broker).toLowerCase() === String(broker).toLowerCase());
-  return row
-    ? `${row.status || 'recorded'} - ${row.assets_analysed || 0} asset(s), ${formatDateTime(row.completed_at)}`
-    : 'No research evidence recorded for this broker in the selected period';
-}
-
-function founderHeadline(evidence) {
-  const pnl = evidence?.portfolio?.todays_pnl;
-  const tradeCount = evidence?.trades?.length || 0;
-  const state = evidence?.status?.state || 'STATUS UNKNOWN';
-  const pnlText = pnl == null ? 'Daily P&L is awaiting comparable broker evidence.' : `Today is ${pnl >= 0 ? 'up' : 'down'} ${moneyOrText(Math.abs(pnl))}.`;
-  return `${state}. ${pnlText} ${tradeCount} broker order or fill event(s) are visible in this period.`;
-}
-
-function founderAction(evidence) {
-  if (evidence?.status?.state !== 'OPERATING NORMALLY') {
-    return 'Open Activity and review the latest worker, research, or broker warning before changing trading permissions.';
-  }
-  if (evidence?.recommendations?.length) {
-    return `Review ${evidence.recommendations.length} persisted recommendation(s); governance remains the execution authority.`;
-  }
-  return evidence?.why_no_trade?.conclusion || 'No action is required.';
-}
 
 export default function App() {
   const [screen, setScreen] = useState('Dashboard');
@@ -589,58 +109,12 @@ export default function App() {
     },
   ]);
 
-  const request = useCallback(async (path, options = {}) => {
-    const { timeoutMs = PRIMARY_REFRESH_TIMEOUT_MS, ...fetchOptions } = options || {};
-    const headers = {
-      'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
-    };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(`${API_BASE}${path}`, {
-        headers,
-        ...fetchOptions,
-        signal: controller.signal,
-      });
-      const text = await response.text();
-      let json = {};
-      if (text) {
-        try {
-          json = JSON.parse(text);
-        } catch (error) {
-          throw new Error(
-            `Backend returned non-JSON data from ${path} (${response.status}). ${bodyPreview(text)}`
-          );
-        }
-      }
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error(
-            `${json.message || json.error || 'unauthorized'}. Mobile command token is ${
-              API_TOKEN ? `loaded (${API_TOKEN_MASK})` : 'missing'
-            }. It must exactly match AI_TRADER_API_TOKEN in Render.`
-          );
-        }
-        throw new Error(json.message || json.error || `Request failed: ${response.status}`);
-      }
-      return json;
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s: ${path}`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }, []);
-
   // AT-ED-010 requirement 3: fetch /founder-evidence once, with one bounded retry on
   // failure, before the caller decides whether to fall back to cache. No silent partial
   // states - the caller always learns definitively whether this attempt succeeded.
   const fetchFounderEvidenceOnce = useCallback(
-    () => request(`/founder-evidence?period=${activityPeriod}&trade_limit=100`, { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
-    [activityPeriod, request]
+    () => apiRequest(`/founder-evidence?period=${activityPeriod}&trade_limit=100`, { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
+    [activityPeriod]
   );
 
   const applyLiveFounderEvidence = useCallback(async (founderEvidence) => {
@@ -708,7 +182,7 @@ export default function App() {
       setLoading(false);
 
       const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
-        request(path, { timeoutMs }).catch(() => fallback);
+        apiRequest(path, { timeoutMs }).catch(() => fallback);
       Promise.all([
         optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
         optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
@@ -739,7 +213,7 @@ export default function App() {
       setCachedAt(null);
     }
     setLoading(false);
-  }, [fetchFounderEvidenceOnce, applyLiveFounderEvidence, applyCachedFounderEvidence, request]);
+  }, [fetchFounderEvidenceOnce, applyLiveFounderEvidence, applyCachedFounderEvidence]);
 
   useEffect(() => {
     loadCachedFounderEvidence().then((cached) => {
@@ -775,10 +249,10 @@ export default function App() {
     try {
       let result;
       try {
-        result = await request(path, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
+        result = await apiRequest(path, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
       } catch (error) {
         if (fallbackPath && String(error.message || error) === 'not_found') {
-          result = await request(fallbackPath, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
+          result = await apiRequest(fallbackPath, { method: 'POST', body: JSON.stringify(body), timeoutMs: COMMAND_TIMEOUT_MS });
         } else {
           throw error;
         }
@@ -811,7 +285,7 @@ export default function App() {
         date: body.date || todayIso(),
         broker: body.broker || 'all',
       }).toString();
-      const result = await request(`/trading-report?${query}`);
+      const result = await apiRequest(`/trading-report?${query}`);
       setLatestReport(result);
       if (result.report_url) {
         await Linking.openURL(absoluteApiUrl(result.report_url));
@@ -918,10 +392,10 @@ export default function App() {
         dailyLearning={dailyLearning}
         messages={askMessages}
         setMessages={setAskMessages}
-        request={request}
+        request={apiRequest}
       />
     );
-  }, [activity, activityPeriod, amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
+  }, [activity, activityPeriod, amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId, selectedExchange]);
 
   // AT-ED-010: one place derives what the Founder should be told about data freshness, so
   // every screen (via the header, which is always visible) shows the identical state - see
@@ -1412,196 +886,6 @@ function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
   );
 }
 
-function CommandCentre({ status, portfolio, brief, notifications, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onRefresh, onCommand, onReport, onAckNotifications }) {
-  const positions = portfolio?.open_positions || [];
-  const recommendationSummary = status?.recommendation_summary || {};
-  const executiveSummary = status?.executive_summary || portfolio?.executive_summary || [];
-  const founderSummary = status?.founder_executive_summary || null;
-  const brokerPanels = status?.brokers || [];
-  const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, brokerPanels));
-  const selectedSummary = exchangeSummary(executiveSummary, selectedExchange);
-  const policy = status?.trading_policy || {};
-  const summary = status?.operational_summary || {
-    level: status?.system_status === 'OPERATING NORMALLY' ? 'Normal' : 'Degraded',
-    reason: status?.engine_health,
-    deployed_commit: status?.live_worker?.deployment_commit,
-    last_heartbeat_at: status?.live_worker?.last_heartbeat_at,
-    generated_at: null,
-  };
-  const learningLab = status?.founder_experience?.learning_lab || {};
-  const blockedBrokers = brokerPanels.filter((broker) => broker.auto_trading_enabled === true && broker.block_reason);
-  const recentActivity = analysisActivity(status);
-  const researchIsRunning = Boolean(status?.last_research_run) || recentActivity.length > 0;
-
-  return (
-    <View>
-      {/* One concise, truthful top summary -- replaces the previously separate
-          Connection Readiness / Operations Health cards, which computed overlapping
-          "is everything OK" signals independently. */}
-      <View style={styles.summaryCard}>
-        <StatusPill label={`Overall: ${summary.level}`} tone={operationalLevelTone(summary.level)} />
-        <Text style={styles.summaryReason}>{notAvailable(summary.reason)}</Text>
-        <Metric label="Deployed Commit" value={summary.deployed_commit ? String(summary.deployed_commit).slice(0, 8) : null} />
-        <Metric label="Last Worker Heartbeat" value={formatDateTime(summary.last_heartbeat_at)} />
-        <Metric label="Last Refreshed" value={formatDateTime(summary.generated_at)} />
-        <View style={styles.buttonGrid}>
-          <Button label="Refresh" onPress={onRefresh} tone="neutral" />
-          <Button label="Resume All Trading" onPress={() => onCommand('/start-trading', {}, '/resume-trading')} />
-          <Button label="Emergency Stop All" onPress={() => onCommand('/stop-trading')} tone="danger" />
-        </View>
-        <Text style={styles.smallText}>
-          Emergency Stop All halts new autonomous entries and manual approvals across every broker. It does not disable
-          stop-loss/take-profit protection on positions already open - those continue to be monitored and closed
-          automatically regardless of trading state.
-        </Text>
-      </View>
-
-      <CollapsibleSection
-        title="Research"
-        subtitle="Is research running and producing fresh evidence?"
-        badge={{ label: researchIsRunning ? 'Running' : 'No Recent Activity', tone: researchIsRunning ? 'good' : 'warn' }}
-      >
-        <Metric label="Research Status" value={status?.research_status} />
-        <Metric label="Last Analysis Time" value={formatDateTime(status?.last_analysis_time)} />
-        <Metric label="Next Research Run" value={formatDateTime(status?.next_scheduled_research_run)} />
-        <Metric label="Assets Reviewed" value={status?.research_assets_reviewed} />
-        <Metric label="Crypto Projects Reviewed" value={status?.crypto_projects_reviewed} />
-        <Metric label="Recommendations Created" value={status?.research_recommendations_created} />
-        <View style={styles.buttonGrid}>
-          <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 30 })} />
-        </View>
-        <Text style={styles.metricLabel}>Recent Activity</Text>
-        {recentActivity.length === 0 ? (
-          <Empty />
-        ) : (
-          recentActivity.map((item, index) => (
-            <Text key={`${item.created_at}-${index}`} style={styles.bodyText}>
-              {formatDateTime(item.created_at)} - {friendlyEvent(item.event_type)} {item.symbol ? `(${item.symbol})` : ''}
-            </Text>
-          ))
-        )}
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="Recommendations and Decisions"
-        subtitle="Are fresh recommendations being generated and acted on?"
-        badge={{ label: `${recommendationSummary.active || 0} active`, tone: recommendationSummary.active ? 'good' : 'neutral' }}
-      >
-        <Metric label="Active Recommendations" value={recommendationSummary.active} />
-        <Metric label="Expired Recommendations" value={recommendationSummary.expired} />
-        <Metric label="Due Diligence Status" value={status?.due_diligence_status} />
-        <Metric label="Auto Trade Mode" value={recommendationSummary.auto_trade_mode} />
-        <Metric label="Last Orchestrator Decision" value={describeDecision(status?.last_orchestrator_decision)} />
-        <Metric label="Latest Trade" value={describeLatestTrade(portfolio?.latest_trade)} />
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="Broker Operations"
-        subtitle="Is Alpaca operational? Is Kraken enabled but blocked? Is polling healthy?"
-        badge={blockedBrokers.length
-          ? { label: `${blockedBrokers.length} Enabled but Blocked`, tone: 'warn' }
-          : { label: 'No Blocks', tone: 'good' }}
-      >
-        <View style={styles.buttonGrid}>
-          {['All', 'Alpaca', 'Kraken', 'Coinbase'].map((item) => (
-            <Button
-              key={item}
-              label={item}
-              tone={selectedExchange === item ? 'primary' : 'neutral'}
-              onPress={() => setSelectedExchange(item)}
-            />
-          ))}
-        </View>
-        <Metric label="Selected Active Brokers" value={formatListInline(status?.selected_active_brokers)} />
-        {brokerPanels.length ? brokerPanels.map((broker) => (
-          <BrokerPanel key={`${broker.broker}-command`} broker={broker} onCommand={onCommand} onReport={onReport} />
-        )) : <Empty />}
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="Trading and Portfolio"
-        subtitle="Portfolio value, cash, and today's P&L for the selected exchange filter."
-      >
-        <Metric label="Portfolio Value" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'portfolio')} />
-        <Metric label="Cash Available" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'cash')} />
-        <Metric label="Estimated In Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'invested')} />
-        <Metric label="Today's P&L" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'dayPnl')} />
-        <Metric label="Open Positions" value={selectedPortfolioValue(selectedExchange, selectedSummary, portfolio, 'positions') || (positions.length ? `${positions.length}` : 'Not available')} />
-        <View style={styles.buttonGrid}>
-          <Button label="Today Report" onPress={() => onReport({ type: 'daily', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} />
-          <Button label="Yesterday Report" onPress={() => onReport({ type: 'daily', date: yesterdayIso(), broker: selectedBrokerKey(selectedExchange) })} />
-          <Button label="Morning Report" onPress={() => onReport({ type: 'morning', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
-          <Button label="Evening Report" onPress={() => onReport({ type: 'evening', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
-          <Button label="Weekly Report" onPress={() => onReport({ type: 'weekly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
-          <Button label="Monthly Report" onPress={() => onReport({ type: 'monthly', date: todayIso(), broker: selectedBrokerKey(selectedExchange) })} tone="neutral" />
-        </View>
-        {latestReport ? <ReportPanel report={latestReport} /> : null}
-        {founderSummary ? (
-          <View style={styles.compactRow}>
-            <Text style={styles.cardTitle}>{notAvailable(founderSummary.headline)}</Text>
-            {(founderSummary.plain_english || []).map((line, index) => (
-              <Text key={`${line}-${index}`} style={styles.bodyText}>- {line}</Text>
-            ))}
-          </View>
-        ) : null}
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="Learning"
-        subtitle="Is learning receiving completed trade evidence?"
-      >
-        <Metric label="Learning Progress" value={learningLab.learning_progress} />
-        <Text style={styles.metricLabel}>Morning Brief</Text>
-        <Text style={styles.bodyText}>{notAvailable(status?.morning_brief?.summary)}</Text>
-        <Text style={styles.metricLabel}>Evening Brief</Text>
-        <Text style={styles.bodyText}>{notAvailable(status?.evening_brief?.summary)}</Text>
-        <Text style={styles.metricLabel}>Founder Brief</Text>
-        <Text style={styles.bodyText}>{notAvailable(brief?.report_markdown)}</Text>
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        title="System Health"
-        subtitle="Worker liveness, job history, connections, and Founder-approved risk limits."
-      >
-        <ConnectionReadinessCard readiness={readiness} />
-        <OperationsHealthCard jobHealth={status?.job_health} liveWorker={status?.live_worker} />
-        <Section title="Risk Limits">
-          <Text style={styles.bodyText}>
-            These are the Founder-approved limits the Investment Orchestrator enforces before any autonomous trade.
-          </Text>
-          <Metric label="Max Daily Loss" value={formatPercent(policy.max_daily_loss_pct)} />
-          <Metric label="Max Weekly Loss" value={formatPercent(policy.max_weekly_loss_pct)} />
-          <Metric label="Max Monthly Loss" value={formatPercent(policy.max_monthly_loss_pct)} />
-          <Metric label="Max Drawdown" value={formatPercent(policy.max_drawdown_pct)} />
-          <Metric label="Max Position Size" value={formatPercent(policy.max_position_size_pct)} />
-          <Metric label="Max Capital Allocation" value={formatPercent(policy.max_capital_allocation_pct)} />
-          <Metric label="Max Concurrent Exposure" value={formatPercent(policy.max_concurrent_exposure_pct)} />
-          <Metric label="Max Concurrent Positions" value={policy.max_concurrent_positions} />
-          <Metric label="Min Confidence Required" value={formatPercent(policy.min_ai_confidence)} />
-          <Metric label="Trailing Stops" value={policy.trailing_stop_enabled ? `Enabled (${formatPercent(policy.trailing_stop_pct)})` : 'Disabled'} />
-          <Metric label="Crypto Trading" value={policy.crypto_enabled ? 'Enabled by policy' : 'Disabled - requires Founder approval'} />
-        </Section>
-        <Metric label="Cloud API Health" value={status?.cloud_api_health} />
-        {notifications?.length ? (
-          <View>
-            <Text style={styles.metricLabel}>{`Notifications (${notifications.length} unread)`}</Text>
-            {notifications.slice(0, 15).map((item) => (
-              <View key={item.notification_id} style={styles.compactRow}>
-                <Text style={styles.cardTitle}>
-                  {item.delivery_status === 'queued' ? '● ' : ''}
-                  {notAvailable(item.title)}
-                </Text>
-                <Text style={styles.bodyText}>{notAvailable(item.message)}</Text>
-                <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
-              </View>
-            ))}
-          </View>
-        ) : null}
-      </CollapsibleSection>
-    </View>
-  );
-}
-
 function ReportPanel({ report }) {
   return (
     <View style={styles.compactRow}>
@@ -1667,31 +951,6 @@ function TradingPermissions({ permissions }) {
   );
 }
 
-function TradeHistorySection({ title, trades, onForceExit }) {
-  const [expanded, setExpanded] = useState({});
-  return (
-    <Section title={title}>
-      {!trades.length ? (
-        <Empty />
-      ) : (
-        trades.map((item, index) => {
-          const key = tradeKey(item, index);
-          const open = !!expanded[key];
-          return (
-            <View key={key} style={styles.compactRow}>
-              <TouchableOpacity onPress={() => setExpanded((prev) => ({ ...prev, [key]: !open }))}>
-                <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
-                <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
-              </TouchableOpacity>
-              {open ? <TradeDetail item={item} onForceExit={onForceExit} /> : null}
-            </View>
-          );
-        })
-      )}
-    </Section>
-  );
-}
-
 function TradeHistoryRow({ item, onCommand }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1706,38 +965,6 @@ function TradeHistoryRow({ item, onCommand }) {
           onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
         />
       ) : null}
-    </View>
-  );
-}
-
-function TradeHistoryScreen({ status, portfolio, performanceAttribution, selectedExchange, setSelectedExchange, onCommand }) {
-  const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
-  const summary = tradeHistorySummary(status, trades, selectedExchange);
-  return (
-    <View>
-      <Section title="Trade History">
-        <View style={styles.buttonGrid}>
-          {tradeHistoryBrokers(status).map((item) => (
-            <Button
-              key={`history-${item}`}
-              label={item}
-              tone={selectedExchange === item ? 'primary' : 'neutral'}
-              onPress={() => setSelectedExchange(item)}
-            />
-          ))}
-        </View>
-        <View style={styles.compactRow}>
-          <Metric label="Daily P&L" value={historyMoneyOrText(selectedExchange, summary.dailyPnl)} />
-          <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
-          <Metric label="Open Positions" value={summary.openPositions} />
-          <Metric label="Rows Shown" value={trades.length} />
-        </View>
-      </Section>
-      <TradeHistorySection
-        title={`${selectedExchange === 'All' ? 'All Brokers' : selectedExchange} Individual Trade History`}
-        trades={trades}
-        onForceExit={(item) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(item).managedExitId })}
-      />
     </View>
   );
 }
@@ -1781,53 +1008,6 @@ function TradeDetail({ item, onForceExit }) {
         </View>
       ) : null}
     </View>
-  );
-}
-
-function jobHealthTone(status) {
-  if (status === 'Healthy' || status === 'No Eligible Action') return 'good';
-  if (status === 'Awaiting First Run' || status === 'Disabled by Founder') return 'neutral';
-  if (status === 'Delayed' || status === 'Enabled but Blocked') return 'warn';
-  if (status === 'Timed Out' || status === 'Blocked') return 'danger';
-  return 'neutral';
-}
-
-function workerPresenceTone(status) {
-  if (status === 'Live') return 'good';
-  if (status === 'Stale') return 'warn';
-  return 'danger';
-}
-
-function OperationsHealthCard({ jobHealth, liveWorker }) {
-  const jobs = jobHealth || [];
-  return (
-    <Section title="24-Hour Operations">
-      {liveWorker ? (
-        <View style={styles.compactRow}>
-          <Text style={styles.cardTitle}>Scheduler Worker</Text>
-          <StatusPill label={liveWorker.presence_status || 'Unknown'} tone={workerPresenceTone(liveWorker.presence_status)} />
-          <Metric label="Deployed Commit" value={liveWorker.deployment_commit ? String(liveWorker.deployment_commit).slice(0, 8) : null} />
-          <Metric label="Last Heartbeat" value={formatDateTime(liveWorker.last_heartbeat_at)} />
-          <Metric label="Current Job" value={liveWorker.current_job} />
-        </View>
-      ) : null}
-      <Text style={styles.bodyText}>
-        Each scheduled job below is classified from its own recorded run history - a job only
-        reads "Healthy" when a recent run actually completed on schedule.
-      </Text>
-      {!jobs.length ? (
-        <Empty />
-      ) : (
-        jobs.map((job) => (
-          <View key={job.job} style={styles.compactRow}>
-            <Text style={styles.cardTitle}>{job.label}</Text>
-            <StatusPill label={job.status} tone={jobHealthTone(job.status)} />
-            <Metric label="Last Run" value={formatDateTime(job.last_run_at)} />
-            <Text style={styles.smallText}>{notAvailable(job.detail)}</Text>
-          </View>
-        ))
-      )}
-    </Section>
   );
 }
 
@@ -2064,7 +1244,7 @@ function RecommendationCard({ item, lifecycle, amount, setAmount, onApprove }) {
         <Metric label="Due Diligence Status" value={item.due_diligence_status} />
         <Metric label="Guardrail Result" value={yesNo(item.guardrails_passed)} />
         <TextBlock label="Passed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'passed') || formatList(enriched.guardrail_passes)} />
-        <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrails(enriched.guardrail_failures)} />
+        <TextBlock label="Failed Guardrails" value={formatGuardrailChecks(enriched.guardrail_checks, 'failed') || enriched.guardrail_summary || formatGuardrailFailures(enriched.guardrail_failures)} />
         <TextBlock label="Exit Plan" value={exitPlan(item)} />
         <TextBlock label="Manual Trade Amount" value="For manual approval, the amount box sets the requested trade notional. Guardrails, broker caps, and allocation limits still control execution." />
       </CollapsibleSection>
@@ -2368,53 +1548,6 @@ function AskAiTrader({ messages, setMessages, request }) {
   );
 }
 
-function Section({ title, children }) {
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {children}
-    </View>
-  );
-}
-
-// Same visual language as Section, but starts collapsed and can be expanded on tap -- used to
-// group Command-screen detail out of the way by default so the top summary card answers the
-// Founder's question at a glance instead of scrolling past a wall of always-open cards.
-function CollapsibleSection({ title, subtitle, defaultExpanded = false, badge, children }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  return (
-    <View style={styles.section}>
-      <TouchableOpacity onPress={() => setExpanded((value) => !value)} style={styles.collapsibleHeader}>
-        <View style={styles.collapsibleHeaderText}>
-          <Text style={styles.sectionTitle}>{title}</Text>
-          {subtitle ? <Text style={styles.smallText}>{subtitle}</Text> : null}
-        </View>
-        {badge ? <StatusPill label={badge.label} tone={badge.tone} /> : null}
-        <Text style={styles.collapsibleChevron}>{expanded ? '▲' : '▼'}</Text>
-      </TouchableOpacity>
-      {expanded ? <View style={styles.collapsibleBody}>{children}</View> : null}
-    </View>
-  );
-}
-
-function Metric({ label, value }) {
-  return (
-    <View style={styles.metric}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue}>{notAvailable(value)}</Text>
-    </View>
-  );
-}
-
-function TextBlock({ label, value }) {
-  return (
-    <View style={styles.textBlock}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.bodyText}>{notAvailable(value)}</Text>
-    </View>
-  );
-}
-
 function MonitoredCompaniesLinks({ theme, companies, recommendations, onOpenRecommendation }) {
   const matches = companiesForThemeList(theme, companies);
   if (!matches.length) {
@@ -2455,63 +1588,6 @@ function LinkedCompanyTitle({ company, recommendations, onOpenRecommendation }) 
   );
 }
 
-function Button({ label, onPress, tone = 'primary', disabled = false }) {
-  return (
-    <TouchableOpacity style={[styles.button, styles[tone], disabled && styles.disabledButton]} onPress={onPress} disabled={disabled}>
-      <Text style={styles.buttonText}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
-function StatusPill({ label, tone = 'neutral' }) {
-  const styleName = tone === 'good' ? 'pillGood' : tone === 'warn' ? 'pillWarn' : tone === 'danger' ? 'pillDanger' : 'pillNeutral';
-  return (
-    <View style={[styles.statusPill, styles[styleName]]}>
-      <Text style={styles.statusPillText}>{label}</Text>
-    </View>
-  );
-}
-
-function Empty() {
-  return <Text style={styles.bodyText}>Not available</Text>;
-}
-
-function money(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  return `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-}
-
-function gbp(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  return `£${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-}
-
-function moneyOrText(value) {
-  if (typeof value === 'string' && value.startsWith('Not available')) {
-    return value;
-  }
-  return money(value);
-}
-
-function gbpOrText(value) {
-  if (typeof value === 'string' && value.startsWith('Not available')) {
-    return value;
-  }
-  return gbp(value);
-}
-
-function brokerMoney(broker, value) {
-  return String(broker?.broker || '').toLowerCase() === 'kraken' ? gbpOrText(value) : moneyOrText(value);
-}
-
-function historyMoneyOrText(selectedExchange, value) {
-  return brokerKey(selectedExchange) === 'kraken' ? gbpOrText(value) : moneyOrText(value);
-}
-
 function riskTone(value) {
   const text = String(value || '').toLowerCase();
   if (text.includes('high') || text.includes('poor') || text.includes('weak') || text.includes('attention') || text.includes('risk')) {
@@ -2549,25 +1625,11 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function yesterdayIso() {
-  const value = new Date();
-  value.setDate(value.getDate() - 1);
-  return value.toISOString().slice(0, 10);
-}
-
 function selectedBrokerKey(selectedExchange) {
   if (!selectedExchange || selectedExchange === 'All') {
     return 'all';
   }
   return String(selectedExchange).toLowerCase();
-}
-
-function bodyPreview(text) {
-  const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!trimmed) {
-    return 'The response body was empty.';
-  }
-  return `Response started with: ${trimmed.slice(0, 80)}`;
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -2649,32 +1711,6 @@ async function loadCachedFounderEvidence() {
   }
 }
 
-function founderLearningForMobile(evidence) {
-  const learning = evidence?.learning || [];
-  const performance = evidence?.performance || {};
-  const trades = evidence?.trades || [];
-  const closed = trades.filter((trade) => ['closed', 'target_exit', 'stop_exit', 'manual_exit'].includes(String(trade.status).toLowerCase()));
-  const winners = closed.filter((trade) => Number(trade.realized_pnl) > 0).length;
-  return {
-    date: String(evidence?.generated_at || '').slice(0, 10),
-    summary: learning.length
-      ? `${learning.length} durable learning processor run(s) completed in the selected period.`
-      : 'No completed learning run is recorded in the selected period. Learning only follows terminal, reconciled trade evidence.',
-    trade_outcomes: {
-      closed_trades: closed.length,
-      win_rate: closed.length ? winners / closed.length : null,
-      total_profit_loss: performance.realized_pnl,
-    },
-    trade_lessons: learning.map((item) => item.summary).filter(Boolean),
-    benchmark_learning: [],
-    recommendations_for_founder: learning.length
-      ? ['Review learning evidence before approving any governed strategy change.']
-      : ['Allow terminal trades to reconcile before judging strategy improvement.'],
-    note: 'This view is derived from shared production evidence. Learning cannot silently change trading policy or production parameters.',
-    evidence_summary: learningSummary(evidence),
-  };
-}
-
 function commandMessage(path, result) {
   if (path === '/run-analysis') {
     const proposalCount = result.proposals?.length || 0;
@@ -2726,20 +1762,6 @@ function commandMessage(path, result) {
     return `${notAvailable(result.report_type)} report generated for ${notAvailable(result.broker)} on ${notAvailable(result.date)}.\n\n${notAvailable(result.summary)}`;
   }
   return result.message || result.status || 'Done';
-}
-
-function shortApiBase() {
-  return API_BASE.replace(/^https?:\/\//, '');
-}
-
-function absoluteApiUrl(path) {
-  if (!path) {
-    return API_BASE;
-  }
-  if (String(path).startsWith('http')) {
-    return path;
-  }
-  return `${API_BASE}${String(path).startsWith('/') ? '' : '/'}${path}`;
 }
 
 function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
@@ -2816,63 +1838,6 @@ function describeLatestTrade(value) {
   });
 }
 
-function analysisActivity(status) {
-  return (status?.latest_activity || [])
-    .filter((item) => item.event_type !== 'agent_no_trade')
-    .slice(0, 8);
-}
-
-function sortByConfidence(items) {
-  return [...items].sort((a, b) => {
-    const confidenceDelta = Number(b.confidence || 0) - Number(a.confidence || 0);
-    if (confidenceDelta !== 0) {
-      return confidenceDelta;
-    }
-    return dateMs(b.created_at) - dateMs(a.created_at);
-  });
-}
-
-function dateMs(value) {
-  if (typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()))) {
-    const number = Number(value);
-    if (Number.isFinite(number) && number > 1000000000) {
-      return number > 1000000000000 ? number : number * 1000;
-    }
-  }
-  const ms = Date.parse(value || '');
-  return Number.isFinite(ms) ? ms : 0;
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return null;
-  }
-  const epochMs = dateMs(value);
-  const date = epochMs ? new Date(epochMs) : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString(undefined, {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatPercent(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return value;
-  }
-  const percent = number <= 1 ? number * 100 : number;
-  return `${percent.toFixed(0)}%`;
-}
-
 function withRecommendationFreshness(item) {
   if (item.freshness_status && item.expires_at) {
     return item;
@@ -2905,7 +1870,7 @@ function withRecommendationFreshness(item) {
         && item.already_executed !== true
       ),
     auto_trade_reason: item.auto_trade_reason || clientAutoTradeReason(item, confidence, freshness),
-    guardrail_summary: item.guardrail_summary || formatGuardrails(item.guardrail_failures),
+    guardrail_summary: item.guardrail_summary || formatGuardrailFailures(item.guardrail_failures),
   };
 }
 
@@ -2920,20 +1885,13 @@ function clientAutoTradeReason(item, confidence, freshness) {
     return 'Confidence is below 85%.';
   }
   if (item.guardrails_passed === false) {
-    const guardrails = formatGuardrails(item.guardrail_failures);
+    const guardrails = formatGuardrailFailures(item.guardrail_failures);
     if (guardrails) {
       return `Execution guardrails failed: ${guardrails}.`;
     }
     return 'Execution guardrails did not pass, so auto-trade is blocked.';
   }
   return 'Eligible for paper auto-trade.';
-}
-
-function formatGuardrails(failures) {
-  if (!failures || !failures.length) {
-    return null;
-  }
-  return failures.map((item) => String(item).replaceAll('_', ' ')).join(', ');
 }
 
 function formatGuardrailChecks(checks, status) {
@@ -3001,86 +1959,11 @@ function lifecycleSummary(stages) {
     .join('\n');
 }
 
-function formatList(items) {
-  if (!items || !items.length) {
-    return null;
-  }
-  if (typeof items === 'string') {
-    return items;
-  }
-  if (!Array.isArray(items)) {
-    return String(items);
-  }
-  return items.map((item) => `- ${item}`).join('\n');
-}
-
-function formatListInline(items) {
-  if (!items || !items.length) {
-    return null;
-  }
-  if (typeof items === 'string') {
-    return items;
-  }
-  if (!Array.isArray(items)) {
-    return String(items);
-  }
-  return items.join(', ');
-}
-
 function describeDecision(decision) {
   if (!decision) {
     return null;
   }
   return `${notAvailable(decision.symbol)} ${notAvailable(decision.decision)}${decision.rejection_reason ? `: ${decision.rejection_reason}` : ''}`;
-}
-
-function exchangeSummary(items, selectedExchange) {
-  if (!items || selectedExchange === 'All') {
-    return null;
-  }
-  return items.find((item) => String(item.broker || '').toLowerCase() === selectedExchange.toLowerCase()) || null;
-}
-
-function selectedPortfolioValue(selectedExchange, summary, portfolio, field) {
-  if (selectedExchange === 'Kraken' || selectedExchange === 'Coinbase') {
-    if (!summary) {
-      return `${selectedExchange} not configured`;
-    }
-    if (summary.status && !summary.portfolio_balance) {
-      return summary.status;
-    }
-    if (field === 'portfolio') return moneyOrText(summary.portfolio_balance);
-    if (field === 'cash') return moneyOrText(summary.cash_balance);
-    if (field === 'invested') return moneyOrText(summary.estimated_in_positions ?? estimateInvested(summary.portfolio_balance, summary.cash_balance));
-    if (field === 'dayPnl') return moneyOrText(summary.last_day_pnl);
-    if (field === 'positions') return summary.open_positions;
-  }
-  if (field === 'portfolio') return moneyOrText(portfolio?.portfolio_value);
-  if (field === 'cash') return moneyOrText(portfolio?.cash_available);
-  if (field === 'invested') return moneyOrText(portfolio?.estimated_in_positions ?? estimateInvested(portfolio?.portfolio_value, portfolio?.cash_available));
-  if (field === 'dayPnl') return moneyOrText(portfolio?.todays_pnl);
-  if (field === 'positions') return portfolio?.open_positions_summary;
-  return null;
-}
-
-function estimateInvested(portfolioValue, cashValue) {
-  const portfolioNumber = numberValue(portfolioValue);
-  const cashNumber = numberValue(cashValue);
-  if (portfolioNumber === null || cashNumber === null) {
-    return null;
-  }
-  return portfolioNumber - cashNumber;
-}
-
-function numberValue(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const parsed = Number(value.replace(/[^0-9.-]/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function marketsOpenText(status) {
@@ -3098,13 +1981,6 @@ function latestLearningText(status, benchmark) {
     return `${observed}\nLast orchestrator decision: ${describeDecision(decision)}`;
   }
   return observed || describeDecision(decision);
-}
-
-function companiesForTheme(theme, companies) {
-  return companiesForThemeList(theme, companies)
-    .slice(0, 8)
-    .map((company) => `- ${company.company_name} (${company.ticker})`)
-    .join('\n') || null;
 }
 
 function companiesForThemeList(theme, companies) {
@@ -3229,10 +2105,6 @@ function titleCaseBroker(value) {
     return 'Unknown';
   }
   return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-function brokerKey(value) {
-  return String(value || 'All').toLowerCase().replace(/[\s_-]+/g, '');
 }
 
 function tradeHistorySummary(status, trades, selectedExchange) {
@@ -3480,17 +2352,6 @@ function enabledDisabled(value) {
   return value ? 'Enabled' : 'Disabled';
 }
 
-function notAvailable(value) {
-  if (value === null || value === undefined || value === '') {
-    return 'Not available - source data has not been recorded yet.';
-  }
-  return String(value);
-}
-
-function explainMissing(field, reason) {
-  return `Not available - ${field} is unavailable because ${reason}.`;
-}
-
 function connectedFounderBrokers(brokers) {
   return (brokers || []).filter((item) => ['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()));
 }
@@ -3534,42 +2395,6 @@ function operationsTone(operations) {
   return 'warn';
 }
 
-function phase5Tone(phase5) {
-  const text = String(`${phase5?.overall || ''} ${phase5?.database_spine?.status || ''} ${phase5?.worker_supervision?.status || ''}`).toLowerCase();
-  if (text.includes('production_ready') && text.includes('healthy')) return 'good';
-  if (text.includes('incident') || text.includes('attention')) return 'danger';
-  return 'warn';
-}
-
-function sprint6Tone(sprint6) {
-  const text = String(`${sprint6?.overall || ''} ${sprint6?.shared_runtime_truth || ''}`).toLowerCase();
-  if (text.includes('ready_for_controlled_operation')) return 'good';
-  if (text.includes('attention') || text.includes('sqlite')) return 'warn';
-  if (text.includes('kill') || text.includes('incident')) return 'danger';
-  return 'neutral';
-}
-
-function formatDecisionJournalCounts(counts) {
-  if (!counts || !Object.keys(counts).length) {
-    return 'No Sprint 6 pre-execution decision packets have been recorded yet.';
-  }
-  return Object.entries(counts).map(([key, value]) => `${key}: ${value}`).join('\n');
-}
-
-function formatOperationalEvents(items) {
-  if (!items || !items.length) {
-    return 'No Sprint 6 operational events have been recorded yet.';
-  }
-  return items.slice(0, 5).map((item) => `${formatDateTime(item.created_at)} - ${item.component}: ${item.summary}`).join('\n');
-}
-
-function formatSprint6Incidents(items) {
-  if (!items || !items.length) {
-    return 'No open Sprint 6 incidents.';
-  }
-  return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.explanation} Action: ${item.recommended_action}`).join('\n');
-}
-
 function latestJobTime(jobs, jobName) {
   const row = (jobs || []).find((item) => item.job_name === jobName);
   return row ? formatDateTime(row.completed_at || row.started_at || row.scheduled_for) : explainMissing(jobName, 'no durable job-run record has been returned yet');
@@ -3594,297 +2419,3 @@ function probabilityRange(value) {
   const upper = Math.min(1, number + 0.05);
   return `${Math.round(lower * 100)}%-${Math.round(upper * 100)}%`;
 }
-
-const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: '#0b1220',
-  },
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 8,
-    backgroundColor: '#0b1220',
-    borderBottomColor: '#1f2937',
-    borderBottomWidth: 1,
-  },
-  headerTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#f8fafc',
-  },
-  subtitle: {
-    marginTop: 2,
-    fontSize: 13,
-    color: '#94a3b8',
-  },
-  cacheBanner: {
-    marginTop: 8,
-    padding: 10,
-    borderRadius: 8,
-    backgroundColor: '#fef3c7',
-    borderWidth: 1,
-    borderColor: '#d97706',
-  },
-  cacheBannerHeadline: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#78350f',
-  },
-  cacheBannerDetail: {
-    fontSize: 12,
-    color: '#78350f',
-    marginTop: 2,
-  },
-  cacheBannerRetry: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#1f6feb',
-    marginTop: 6,
-  },
-  tabs: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    padding: 10,
-    backgroundColor: '#0b1220',
-  },
-  tab: {
-    flexGrow: 1,
-    flexBasis: '30%',
-    minHeight: 48,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
-    backgroundColor: '#111827',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  activeTab: {
-    backgroundColor: '#1f6feb',
-    borderColor: '#1f6feb',
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#cbd5e1',
-    textAlign: 'center',
-  },
-  activeTabText: {
-    color: '#ffffff',
-  },
-  loading: {
-    paddingVertical: 6,
-  },
-  content: {
-    padding: 14,
-    paddingBottom: 32,
-  },
-  section: {
-    marginBottom: 14,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#d9e2ec',
-    padding: 12,
-  },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#17202a',
-    marginBottom: 8,
-  },
-  collapsibleHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  collapsibleHeaderText: {
-    flex: 1,
-  },
-  collapsibleChevron: {
-    fontSize: 13,
-    color: '#667085',
-    marginLeft: 6,
-  },
-  collapsibleBody: {
-    marginTop: 8,
-  },
-  summaryCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#d9e2ec',
-    padding: 14,
-    marginBottom: 14,
-  },
-  summaryReason: {
-    marginTop: 4,
-    marginBottom: 10,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#243142',
-  },
-  metric: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 7,
-    borderBottomColor: '#e6e9ee',
-    borderBottomWidth: 1,
-  },
-  metricLabel: {
-    flex: 1,
-    fontSize: 13,
-    color: '#667085',
-    fontWeight: '700',
-  },
-  metricValue: {
-    flex: 1,
-    fontSize: 13,
-    color: '#17202a',
-    textAlign: 'right',
-  },
-  bodyText: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: '#243142',
-  },
-  linkText: {
-    color: '#1f6feb',
-    fontWeight: '800',
-  },
-  textBlock: {
-    marginTop: 8,
-  },
-  compactRow: {
-    borderBottomColor: '#e6e9ee',
-    borderBottomWidth: 1,
-    paddingVertical: 8,
-  },
-  recommendationHeader: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#dde1e7',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-  },
-  smallText: {
-    marginTop: 3,
-    fontSize: 12,
-    lineHeight: 17,
-    color: '#667085',
-  },
-  buttonGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  button: {
-    minHeight: 42,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primary: {
-    backgroundColor: '#1f6feb',
-  },
-  warn: {
-    backgroundColor: '#9a6700',
-  },
-  danger: {
-    backgroundColor: '#cf222e',
-  },
-  neutral: {
-    backgroundColor: '#57606a',
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  disabledButton: {
-    backgroundColor: '#98a2b3',
-  },
-  card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#dde1e7',
-    padding: 12,
-    marginBottom: 12,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#17202a',
-    marginBottom: 8,
-  },
-  statusPill: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 8,
-  },
-  pillGood: {
-    backgroundColor: '#dcfce7',
-  },
-  pillWarn: {
-    backgroundColor: '#fef3c7',
-  },
-  pillDanger: {
-    backgroundColor: '#fee2e2',
-  },
-  pillNeutral: {
-    backgroundColor: '#e5e7eb',
-  },
-  statusPillText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#111827',
-  },
-  input: {
-    minHeight: 42,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#cfd6df',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginVertical: 12,
-    fontSize: 14,
-  },
-  multilineInput: {
-    minHeight: 92,
-    textAlignVertical: 'top',
-  },
-  chatTurn: {
-    marginBottom: 8,
-  },
-  chatBubble: {
-    width: '100%',
-    borderRadius: 8,
-    borderWidth: 1,
-    padding: 10,
-    marginBottom: 10,
-  },
-  chatUser: {
-    backgroundColor: '#e7f0ff',
-    borderColor: '#b9d3ff',
-  },
-  chatAssistant: {
-    backgroundColor: '#ffffff',
-    borderColor: '#dde1e7',
-  },
-});
