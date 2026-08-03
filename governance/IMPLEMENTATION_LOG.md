@@ -1,5 +1,19 @@
 # Implementation Log
 
+## 2026-08-03 AI executive collaboration protocol — governance-only
+
+Created `governance/ai-collaboration/` per Founder instruction: a
+repository-based coordination channel between Founder, ChatGPT (CTO/reviewer),
+Claude (primary implementation agent), and Codex (supporting agent). Adds
+`README.md`, `CURRENT_HANDOFF.md`, `SHARED_CONTEXT.md`,
+`DECISION_REGISTER.md`, `HANDOFF_TEMPLATE.md`, `INSTRUCTION_TEMPLATE.md`, the
+`chatgpt-to-claude` / `claude-to-chatgpt` / `chatgpt-to-codex` /
+`codex-to-chatgpt` handoff folders (each with `active/completed/archive`),
+`checkpoints/` (seeded with a Phases 0-7 checkpoint placeholder), and
+`review-reports/`. Governance and documentation only — no application code,
+tests, configuration, database, deployment, or mobile files were touched, and
+no changes were made to Claude's concurrent AT-ED-011.5 work on this branch.
+
 ## 2026-08-03 AT-ED-011 Phase 2 — mobile modularisation complete, App.js reduced to an application shell
 
 Completes AT-ED-011 (mobile modularisation), continuing directly from Phase 1
