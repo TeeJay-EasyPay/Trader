@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import time
 from .database import POSTGRES_BACKENDS, connect, selected_backend
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -840,14 +839,8 @@ def strategy_promotion_decision(
 
 
 def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
-    # TEMPORARY diagnostic timing (AT-ED-010 follow-up) -- revert once the production
-    # bottleneck behind /phase5-status and /status hanging ~60s is proven, not guessed.
-    _t0 = time.perf_counter()
     spine = production_database_spine_status(db_path, database_backend=database_backend)
-    _t1 = time.perf_counter()
     supervision = supervise_workers(db_path)
-    _t2 = time.perf_counter()
-    _debug_timing = {"spine_status_seconds": _t1 - _t0, "supervise_workers_seconds": _t2 - _t1}
     worker_healthy = supervision["status"] == "healthy"
     backend_ready = database_backend in POSTGRES_BACKENDS
     operational = backend_ready and worker_healthy
@@ -869,7 +862,6 @@ def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[st
         "worker_supervision": supervision,
         "overall": overall,
         "plain_english": plain,
-        "_debug_timing": _debug_timing,
     }
 
 
