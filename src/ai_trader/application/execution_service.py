@@ -25,22 +25,17 @@ from ..kraken_reconciliation import register_kraken_order_ownership
 from ..operational import safe_float, safe_score
 from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe
 from ..persistence.query_executor import QueryExecutor
+from .shared_helpers import _int_or_default
 
 
-# Phase 8 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these five
+# Phase 8 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these
 # helpers are pure, stateless functions also used by parts of api/__init__.py that are out
 # of this phase's scope (recommendations() and friends -- founder-presentation-adjacent,
 # still un-extracted), so they cannot be imported without a circular import (api/__init__.py
 # imports ExecutionService at module load time, before its own later-defined functions
 # exist yet). Duplicated verbatim rather than imported, matching the established convention
 # from every prior phase. Behaviourally identical to api/__init__.py's copies.
-def _int_or_default(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
+# (_int_or_default itself was consolidated into shared_helpers.py in Phase 9.)
 def _parse_datetime(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

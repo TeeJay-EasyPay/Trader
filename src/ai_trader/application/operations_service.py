@@ -5,7 +5,6 @@ import sys
 from typing import Any, Callable
 
 from ..always_on import operations_health
-from ..autonomous_activity import autonomous_activity_payload
 from ..config import Settings
 from ..foundation import load_trading_policy
 from ..models import utc_now_iso
@@ -25,6 +24,7 @@ from ..persistence.query_executor import QueryExecutor
 from ..production_evidence import founder_evidence_payload
 from ..production_spine import phase5_status
 from ..sprint6 import sprint6_status
+from .shared_helpers import _int_or_default
 
 
 def _component(healthy: bool, detail: str) -> dict[str, Any]:
@@ -54,22 +54,16 @@ def _research_assets_reviewed(run: dict[str, Any] | None) -> int | None:
     return int(run.get("companies_reviewed") or 0) + int(run.get("crypto_assets_reviewed") or 0)
 
 
-# Phase 6b (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these two
-# small generic query-param helpers are also needed by parts of api/__init__.py's GET/POST
-# route dispatch that are out of this phase's scope (44 call sites total across the file), so
-# they cannot be imported without a circular import (api/__init__.py imports OperationsService
-# at module load time, before its own later-defined functions exist yet). Duplicated verbatim
-# -- research_service.py already duplicates _int_or_default for the same reason.
+# Phase 6b (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): this small
+# generic query-param helper is also needed by parts of api/__init__.py's GET/POST route
+# dispatch that are out of this phase's scope (44 call sites total across the file), so it
+# cannot be imported without a circular import (api/__init__.py imports OperationsService at
+# module load time, before its own later-defined functions exist yet). Duplicated verbatim.
+# (_int_or_default, previously duplicated alongside this one, was consolidated into
+# shared_helpers.py in Phase 9 -- see the import above.)
 def _first(query: dict[str, list[str]], key: str) -> str | None:
     values = query.get(key) or []
     return values[0] if values else None
-
-
-def _int_or_default(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 class OperationsService:
@@ -254,25 +248,6 @@ class OperationsService:
 
     def sprint6_status(self) -> dict[str, Any]:
         return sprint6_status(self.settings.db_path, database_backend=self.settings.database_backend)
-
-    def autonomous_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        # Note (found during Phase 6b extraction, not fixed per "do not move and redesign
-        # logic simultaneously"): this method has no callers anywhere in api/__init__.py's
-        # GET/POST route dispatch, tests, or elsewhere in the codebase -- the /autonomous-
-        # activity route calls production_activity() instead. Appears to be pre-existing
-        # dead code; moved as-is rather than removed, to keep this phase a pure relocation
-        # with zero behaviour change.
-        return autonomous_activity_payload(
-            self.settings.db_path,
-            period=_first(query, "period") or "24h",
-            category=_first(query, "category") or "all",
-            severity=_first(query, "severity") or "all",
-            important_only=_first(query, "important_only") == "true",
-            founder_action_required=_first(query, "founder_action_required") == "true",
-            limit=_int_or_default(_first(query, "limit"), 100),
-            broker_panels=self._broker_panels_lookup(),
-            database_backend=self.settings.database_backend,
-        )
 
     def production_activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
         payload = founder_evidence_payload(

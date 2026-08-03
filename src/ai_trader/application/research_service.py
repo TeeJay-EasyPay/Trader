@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -35,27 +34,9 @@ from ..trading_intelligence import (
     run_walk_forward_validation,
 )
 from ..always_on import record_research_funnel, record_shadow_trade
+from .shared_helpers import _csv_env, _int_or_default
 
 logger = logging.getLogger("ai_trader.api")
-
-
-# Phase 5 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): _csv_env and
-# _int_or_default are also used by parts of api/__init__.py that are out of this phase's
-# scope (Kraken broker permissions summaries, several other route handlers -- Phase 6
-# territory), so they cannot be imported without a circular import (api/__init__.py imports
-# ResearchService at module load time, before its own later-defined functions exist yet).
-# Duplicated verbatim, matching the established convention from Phases 3-4. Behaviourally
-# identical to api/__init__.py's copies.
-def _csv_env(key: str, default: str) -> list[str]:
-    value = os.getenv(key, default)
-    return [item.strip().upper() for item in value.split(",") if item.strip()]
-
-
-def _int_or_default(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 # The following three helpers had exactly one call site each, all inside this cluster, so

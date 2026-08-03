@@ -193,6 +193,72 @@ class WorldClassTransformationTests(unittest.TestCase):
                 self.assertEqual(impact["decision"], "Acceptable portfolio impact")
                 self.assertIsNone(impact["new_asset_class_weight"])
 
+    def test_record_trading_report_does_not_reinitialize_schema_on_every_call(self) -> None:
+        # Phase 9 (2026-08-02, architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md):
+        # record_trading_report used to run REPORT_SCHEMA's executescript on every single
+        # persisted report -- flagged as a known bug in Phase 3's log entry, deliberately
+        # left unfixed at the time. Now both record_trading_report and initialize_schema()
+        # go through the same ensure_schema_once guard, so the underlying executescript
+        # must run at most once per process for a given db_path, no matter how many
+        # reports are persisted, or how initialize_schema()/record_trading_report are
+        # interleaved.
+        from unittest.mock import patch
+
+        from ai_trader.application.reporting_service import ReportingService
+        from ai_trader.config import Settings
+        from ai_trader.models import GuardrailConfig
+        from ai_trader.persistence.query_executor import QueryExecutor
+        from ai_trader.persistence.schema_once import reset_for_tests
+
+        reset_for_tests()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                settings = Settings(
+                    alpaca_api_key=None,
+                    alpaca_secret_key=None,
+                    alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                    alpaca_data_base_url="https://data.alpaca.markets",
+                    openai_api_key=None,
+                    openai_model="gpt-4.1-mini",
+                    db_path=root / "audit.sqlite3",
+                    output_dir=root,
+                    trading_log_path=root / "TRADING_LOG.md",
+                    guardrails=GuardrailConfig(),
+                )
+                query_executor = QueryExecutor(settings.db_path)
+                service = ReportingService(
+                    settings=settings,
+                    audit=None,
+                    query_executor=query_executor,
+                    portfolio_lookup=lambda broker: {},
+                    daily_learning_lookup=lambda date: {},
+                )
+                service.initialize_schema()
+
+                # initialize_schema()'s _init() closure is the only thing in either
+                # record_trading_report or initialize_schema() that calls
+                # self._query_executor.connect() -- the INSERT itself uses a separate,
+                # direct sqlite3 connection. So once the schema-once cache is warm (from
+                # the call above), QueryExecutor.connect must never be called again by
+                # either method for this db_path in this process.
+                with patch.object(QueryExecutor, "connect", wraps=query_executor.connect) as mocked_connect:
+                    service.record_trading_report(
+                        report_date="2026-08-02", broker="all", report_type="daily",
+                        summary="s1", markdown="m1", path=None,
+                    )
+                    service.record_trading_report(
+                        report_date="2026-08-03", broker="all", report_type="daily",
+                        summary="s2", markdown="m2", path=None,
+                    )
+                    self.assertEqual(
+                        mocked_connect.call_count, 0,
+                        "record_trading_report must not re-run schema initialization when "
+                        "initialize_schema() already ran for this db_path in this process.",
+                    )
+        finally:
+            reset_for_tests()
+
     def test_experience_engine_governed_learning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"

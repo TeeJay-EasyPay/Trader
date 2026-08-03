@@ -804,9 +804,6 @@ class LocalApiService:
     def report_page(self, path: str) -> tuple[int, dict[str, Any]]:
         return self._reporting_service.report_page(path)
 
-    def _refresh_report_sources(self, broker: str) -> dict[str, Any]:
-        return self._reporting_service.refresh_report_sources(broker)
-
     def recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._rows(
             """
@@ -1213,8 +1210,8 @@ class LocalApiService:
     def broker_panels(self) -> list[dict[str, Any]]:
         # Delegates to BrokerService (Phase 6a, architecture/AI_TRADER_MODULARISATION_
         # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- get(), status(),
-        # autonomous_activity(), _ask_ai_context() all call this externally, and the
-        # GET/POST route dispatch table needed zero changes.
+        # _ask_ai_context() all call this externally, and the GET/POST route dispatch
+        # table needed zero changes.
         return self._broker_service.broker_panels()
 
     def _kraken_ai_capital_ledger(

@@ -1,5 +1,89 @@
 # Implementation Log
 
+## 2026-08-02 Modularisation Phase 9 (items 1-4) — wrapper audit, helper consolidation, dead code, schema fix
+
+Implements items 1-4 of the ChatGPT-authored Phase 9 directive (behaviour-preserving cleanup,
+following Founder authorization of Stage 0 through Phase 8). Items 5-11 (verification,
+git/deployment, production smoke checks, and the read-only UI investigation) are separate,
+later steps in the same directive, done by the coordinating session after this work is
+reviewed.
+
+**Item 1 - Compatibility wrapper audit.** Audited all 50 thin delegate methods remaining in
+`LocalApiService` (an AST-based scan of every one-line `return self._X_service.method(...)`
+method body, not a manual guess) against every possible external caller: the GET/POST route
+dispatch table, `run_server()`'s `IntervalWorker`/`ResearchScheduler` wiring, `cli.py`, the rest
+of `src/ai_trader/`, `tests/*.py`, and patch/patch.object targets. **49 of 50 are required** -
+each has a confirmed external caller in at least one of those places. **One delegate,
+`_refresh_report_sources`, has zero external callers anywhere** (not the route table, not
+`run_server()`, not `cli.py`, not any test, not any patch target) - removed. No delegate was
+redirected merely to shrink line count; only the one genuinely dead wrapper was touched.
+
+**Item 2 - Shared pure helpers.** Before consolidating, verified byte-for-byte that every
+existing duplicate of the 7 named helpers (`_broker_label`, `_money_text`,
+`_estimated_in_positions`, `_broker_trade_payload`, `_broker_trade_symbol`, `_int_or_default`,
+`_csv_env`) was identical across every `application/*.py` copy - confirmed no drift anywhere.
+Created `src/ai_trader/application/shared_helpers.py` (a dependency-free leaf: only stdlib and
+`..operational.safe_float`, no `application/*` imports, so it introduces no circular import).
+Every `application/*.py` file that previously duplicated one or more of these 7 now imports
+them from `shared_helpers.py` instead - `broker_service.py` (5 of 7), `reporting_service.py` (5
+of 7, `_broker_trade_side`/`_quantity`/`_price`/`_time` stayed since they were never on the
+list), `founder_experience_service.py` (2 of 7), `execution_service.py`/`operations_service.py`/
+`research_service.py` (`_int_or_default` each, plus `_csv_env` in `research_service.py`).
+`api/__init__.py` still has its own separate copies of 4 of these 7 - deliberately **not**
+touched, since the directive's item 2 explicitly scopes to "every application/*.py file," which
+`api/__init__.py` is not; flagged here rather than silently left inconsistent. Two now-unused
+imports (`json` in `broker_service.py` and `reporting_service.py`, `os` in `research_service.py`)
+were removed as a direct consequence. Added `tests/test_shared_helpers.py` (14 tests) since none
+of the 7 helpers had any direct test coverage before this (only indirect exercise through the
+services that called them).
+
+**Item 3 - Dead code.** Reconfirmed (not just trusted the Phase 6b log entry) that
+`OperationsService.autonomous_activity` has zero callers anywhere - route dispatch, `cli.py`,
+every test file, everywhere else in `src/ai_trader/` - and that `/autonomous-activity` genuinely
+calls `production_activity` instead. Removed the method, its now-unused
+`autonomous_activity_payload` import, and a stale docstring comment on `broker_panels()` in
+`api/__init__.py` that named the now-deleted method as one of its callers. `_broker_panels_lookup`
+(which the dead method also used) remains genuinely needed by `status()`, confirmed before
+leaving it in place.
+
+**Item 4 - Report schema-reinitialisation fix.** `record_trading_report` used to run
+`REPORT_SCHEMA`'s `executescript` on every single persisted report - a known bug, documented and
+deliberately left unfixed in Phase 3's log entry ("do not move and redesign logic
+simultaneously"). Root cause: `initialize_schema()` (called once from `LocalApiService.__init__`,
+but only when `initialize_runtime=True` - not guaranteed in the "worker owns runtime" split-
+process hosted path) ran the schema script unconditionally, and `record_trading_report`
+independently re-ran the identical script defensively, since it couldn't assume
+`initialize_schema()` had already run for this process. Fixed by routing both through the
+existing `persistence/schema_once.py` helper (`ensure_schema_once`) - `initialize_schema()` now
+only runs the real `executescript` once per (backend, db_path) per process, and
+`record_trading_report` now calls `self.initialize_schema()` first instead of duplicating the
+inline schema statement, so the defensive guarantee is preserved (self-healing if
+`initialize_schema()` was never called) while the redundant work disappears entirely after the
+first call in either order. `schema_once.py` is already backend-aware (Postgres and SQLite), so
+no new backend-specific logic was needed. Added
+`test_record_trading_report_does_not_reinitialize_schema_on_every_call`
+(`tests/test_world_class_transformation.py`): warms the schema-once cache, then proves
+`QueryExecutor.connect` (the only thing `initialize_schema()`'s guarded init closure calls) is
+never invoked again across two subsequent `record_trading_report` calls.
+
+**Verification.** `python -m py_compile` clean on every touched file. Full stable suite passed
+clean twice independently: 302 passed (287 + 14 new helper tests + 1 new schema-fix regression
+test), 0 failed both runs. `api/__init__.py`: 2,332 -> 2,329 lines (net roughly unchanged - one
+delegate removed, one stale comment shortened, offset by nothing added). `broker_service.py`:
+990 -> 943 (-47). `reporting_service.py`: 903 -> 872 (-31, partially offset by the schema-fix
+comments). `founder_experience_service.py`: 649 -> 623 (-26). `execution_service.py`: 711 -> 706
+(-5). `operations_service.py`: 389 -> 364 (-25). `research_service.py`: 933 -> 914 (-19). New
+`shared_helpers.py`: 74 lines.
+
+**Not committed yet** by this work - left in the working tree for the coordinating session's own
+independent verification (items 5-7 of the directive) before committing, matching the process
+established since an earlier phase's fork committed without waiting for review.
+
+**Next.** Items 5-7 (final architecture review, safety verification, full validation against the
+cumulative diff), then item 8 (git commit and push), item 9 (production smoke verification),
+item 10 (documentation/Founder briefing), and item 11 (the read-only UI data freshness
+investigation) proceed as separate steps.
+
 ## 2026-08-02 Modularisation Phase 8 — execution service extraction (final extraction phase)
 
 Implements Phase 8 of `architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md`

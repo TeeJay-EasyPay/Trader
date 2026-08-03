@@ -10,33 +10,7 @@ from ..operational import safe_float
 from ..persistence.query_executor import QueryExecutor
 from ..portfolio_intelligence import calculate_portfolio_exposure
 from ..trading_intelligence import calculate_performance_metrics
-
-
-# Phase 4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these two
-# small pure formatting helpers are also used by parts of api/__init__.py that are out of
-# this phase's scope (broker panels, broker permissions summaries -- Phase 6 territory), so
-# they cannot be imported without a circular import (api/__init__.py imports
-# FounderExperienceService at module load time, before its own later-defined functions
-# exist yet). Already duplicated once in application/reporting_service.py for the same
-# reason (Phase 3) -- each application/* module stays self-contained rather than importing
-# from a peer service, per the plan's dependency rules. Behaviourally identical to
-# api/__init__.py's copy.
-def _broker_label(broker: str) -> str:
-    labels = {
-        "alpaca": "Alpaca",
-        "kraken": "Kraken",
-        "coinbase": "Coinbase",
-        "binance": "Binance",
-        "interactive_brokers": "Interactive Brokers",
-    }
-    return labels.get(broker.lower(), broker.replace("_", " ").title())
-
-
-def _money_text(value: Any) -> str:
-    number = safe_float(value)
-    if number is None:
-        return "Not available"
-    return f"{number:,.2f}"
+from .shared_helpers import _broker_label, _money_text
 
 
 def _average_numeric(values: list[Any]) -> float | None:

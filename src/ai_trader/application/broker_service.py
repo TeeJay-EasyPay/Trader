@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -27,6 +26,7 @@ from ..orchestrator import InvestmentOrchestrator
 from ..persistence.query_executor import QueryExecutor
 from ..production_evidence import record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
 from ..sprint6 import normalize_broker_events, upsert_incident
+from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _csv_env, _estimated_in_positions
 
 logger = logging.getLogger("ai_trader.api")
 
@@ -68,31 +68,6 @@ def _recent_unique_broker_events(
     return selected
 
 
-# Phase 6a (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these four
-# small pure helpers are also used by parts of api/__init__.py that are out of this phase's
-# scope (_account_context_for_broker -- the Kraken capital-isolation logic itself -- and the
-# Ask AI Trader feature), so they cannot be imported without a circular import. Already
-# duplicated in reporting_service.py/founder_experience_service.py/research_service.py for the
-# same reason. Duplicated verbatim again here per the established convention.
-def _broker_label(broker: str) -> str:
-    labels = {
-        "alpaca": "Alpaca",
-        "kraken": "Kraken",
-        "coinbase": "Coinbase",
-        "binance": "Binance",
-        "interactive_brokers": "Interactive Brokers",
-    }
-    return labels.get(broker.lower(), broker.replace("_", " ").title())
-
-
-def _estimated_in_positions(portfolio_value: Any, cash: Any) -> float | None:
-    portfolio_number = safe_float(portfolio_value)
-    cash_number = safe_float(cash)
-    if portfolio_number is None or cash_number is None:
-        return None
-    return portfolio_number - cash_number
-
-
 def _float_env(key: str, default: float) -> float:
     try:
         return float(os.getenv(key, str(default)))
@@ -129,11 +104,6 @@ def _bool_env(key: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _csv_env(key: str, default: str) -> list[str]:
-    value = os.getenv(key, default)
-    return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
 def _broker_block_reason(broker: str, auto_enabled: bool, permissions: dict[str, Any] | None) -> str | None:
@@ -188,23 +158,6 @@ def _kraken_price_hints_from_panel(panel: dict[str, Any]) -> dict[str, float]:
         if symbol and price is not None:
             hints[str(symbol).upper()] = float(price)
     return hints
-
-
-def _broker_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
-    payload = row.get("payload_json")
-    if not payload:
-        return {}
-    try:
-        parsed = json.loads(payload)
-        return parsed if isinstance(parsed, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def _broker_trade_symbol(row: dict[str, Any]) -> str | None:
-    payload = _broker_trade_payload(row)
-    value = row.get("symbol") or payload.get("symbol") or payload.get("pair")
-    return str(value).upper() if value else None
 
 
 def _latest_trade(orders: list[dict[str, Any]], activities: list[dict[str, Any]]) -> dict[str, Any] | None:

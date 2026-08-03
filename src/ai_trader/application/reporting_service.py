@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 import logging
 from collections import Counter, defaultdict
 from contextlib import closing
@@ -16,6 +15,8 @@ from ..models import utc_now_iso
 from ..multi_broker import record_notification
 from ..operational import safe_float
 from ..persistence.query_executor import QueryExecutor
+from ..persistence.schema_once import ensure_schema_once
+from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _estimated_in_positions, _money_text
 
 logger = logging.getLogger("ai_trader.api")
 
@@ -33,14 +34,14 @@ CREATE TABLE IF NOT EXISTS TRADING_REPORTS (
 """
 
 
-# Phase 3 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these five
+# Phase 3 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these two
 # helpers are pure, stateless formatting utilities also used by parts of api/__init__.py
-# that are out of this phase's scope (broker panels, executive summaries, connection
-# readiness -- Phase 4/6 territory), so they cannot be moved without either reversing the
+# that are out of this phase's scope, so they cannot be moved without either reversing the
 # api->application dependency direction or introducing an import-order-sensitive lazy
-# import neither of which this codebase uses elsewhere. Duplicated verbatim here rather
-# than imported, pending a later consolidation once their other call sites are also
-# extracted. Behaviourally identical to api/__init__.py's copies.
+# import neither of which this codebase uses elsewhere. Duplicated verbatim here. The other
+# five formatting helpers that used to be duplicated alongside these two were consolidated
+# into shared_helpers.py in Phase 9 (see the import above) once every other duplicate site
+# had also been extracted.
 def _human_time(value: Any) -> str:
     if not value:
         return "Not available"
@@ -58,56 +59,10 @@ def _human_time(value: Any) -> str:
     return parsed.strftime("%d %b %Y, %H:%M UTC")
 
 
-def _money_text(value: Any) -> str:
-    number = safe_float(value)
-    if number is None:
-        return "Not available"
-    return f"{number:,.2f}"
-
-
 def _list_or_none(items: list[str]) -> str:
     if not items:
         return "- None recorded"
     return "\n".join(item if str(item).startswith("- ") else f"- {item}" for item in items)
-
-
-def _estimated_in_positions(portfolio_value: Any, cash: Any) -> float | None:
-    portfolio_number = safe_float(portfolio_value)
-    cash_number = safe_float(cash)
-    if portfolio_number is None or cash_number is None:
-        return None
-    return portfolio_number - cash_number
-
-
-def _broker_label(broker: str) -> str:
-    labels = {
-        "alpaca": "Alpaca",
-        "kraken": "Kraken",
-        "coinbase": "Coinbase",
-        "binance": "Binance",
-        "interactive_brokers": "Interactive Brokers",
-    }
-    return labels.get(broker.lower(), broker.replace("_", " ").title())
-
-
-# Also duplicated (not imported) for the same reason: _broker_trade_symbol is still used
-# by api/__init__.py's own _broker_trade_rows (Phase 6 broker-panel territory, out of
-# scope here), and _broker_trade_payload is needed by both that copy and this one.
-def _broker_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
-    payload = row.get("payload_json")
-    if not payload:
-        return {}
-    try:
-        parsed = json.loads(payload)
-        return parsed if isinstance(parsed, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def _broker_trade_symbol(row: dict[str, Any]) -> str | None:
-    payload = _broker_trade_payload(row)
-    value = row.get("symbol") or payload.get("symbol") or payload.get("pair")
-    return str(value).upper() if value else None
 
 
 def _broker_trade_side(row: dict[str, Any]) -> str | None:
@@ -612,9 +567,23 @@ class ReportingService:
         self._daily_learning_lookup = daily_learning_lookup
 
     def initialize_schema(self) -> None:
-        with closing(self._query_executor.connect()) as conn:
-            with conn:
-                conn.executescript(REPORT_SCHEMA)
+        # Process-level schema-once guard (Phase 9, architecture/AI_TRADER_MODULARISATION_
+        # ARCHITECTURE_2026-08-02.md): this used to just run REPORT_SCHEMA's executescript
+        # directly, relying on its one call site in LocalApiService.__init__ to make it
+        # naturally run only once per process. record_trading_report (below) independently
+        # re-ran the same executescript on every single persisted report -- a genuine
+        # redundant-schema-work bug, documented but deliberately left unfixed by Phase 3 to
+        # keep that extraction a pure move. Both call sites now go through the same
+        # ensure_schema_once guard already used by every other schema-owning module in this
+        # codebase, so record_trading_report's defensive call (needed for the "worker owns
+        # runtime" split-process path, where this LocalApiService instance's own __init__
+        # never calls this method) is now free after the first call in either order.
+        def _init() -> None:
+            with closing(self._query_executor.connect()) as conn:
+                with conn:
+                    conn.executescript(REPORT_SCHEMA)
+
+        ensure_schema_once(self.settings.db_path, "reporting_service", _init)
 
     def generate_report(self, body: dict[str, Any]) -> dict[str, Any]:
         report_type = str(body.get("type") or "daily").lower()
@@ -883,14 +852,14 @@ This report explains available evidence. It does not automatically change strate
         markdown: str,
         path: Path | None,
     ) -> int:
-        # NOTE (found during Phase 3 extraction, not fixed per "do not move and redesign
-        # logic simultaneously"): this re-runs REPORT_SCHEMA's executescript on every
-        # single persisted report, the same "schema re-init mistaken for slow work"
-        # pattern already fixed elsewhere this session via persistence/schema_once.py.
-        # Candidate for a follow-up fix, not in scope here.
+        # Fixed in Phase 9 (was: re-ran REPORT_SCHEMA's executescript on every single
+        # persisted report -- flagged as a known bug, deliberately left unfixed, in Phase
+        # 3's log entry). Now goes through the same ensure_schema_once guard as
+        # initialize_schema() itself, so this is a no-op after the first call in either
+        # order, per process -- see initialize_schema()'s docstring comment above.
+        self.initialize_schema()
         with closing(connect(self.settings.db_path)) as conn:
             with conn:
-                conn.executescript(REPORT_SCHEMA)
                 cursor = conn.execute(
                     """
                     INSERT INTO TRADING_REPORTS (
