@@ -6,7 +6,7 @@
 const React = require('react');
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
-const { Section, StatusPill, Metric, TextBlock, Button, Empty } = require('../components/shared');
+const { Section, CollapsibleSection, StatusPill, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
 const { ReportPanel } = require('../components/ReportPanel');
 const { notAvailable, explainMissing } = require('../lib/notAvailable');
@@ -119,7 +119,38 @@ function ConnectionReadinessCard({ readiness }) {
   );
 }
 
-function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
+function FounderBriefCard({ brief, briefLoading, briefError }) {
+  // AT-ED-011.5 finding (Data_Freshness_Findings.md): `/founder-brief` was already being
+  // fetched on every refresh but the resulting report text was never rendered anywhere -
+  // wiring it in here is the mapping correction, not a new feature.
+  if (!brief && briefLoading) {
+    return (
+      <Section title="Founder Brief">
+        <Text style={styles.bodyText}>Loading the latest founder brief...</Text>
+      </Section>
+    );
+  }
+  if (!brief) {
+    return (
+      <Section title="Founder Brief">
+        <Text style={styles.bodyText}>
+          {briefError ? `Founder brief unavailable: ${briefError}` : 'No founder brief has been generated yet.'}
+        </Text>
+      </Section>
+    );
+  }
+  return (
+    <CollapsibleSection
+      title="Founder Brief"
+      subtitle={brief.created_at ? `Generated ${formatDateTime(brief.created_at)}` : 'Latest generated founder brief report.'}
+    >
+      {briefError ? <Text style={styles.smallText}>Showing the last successfully loaded brief; the latest refresh failed: {briefError}</Text> : null}
+      <TextBlock label="Report" value={brief.report_markdown} />
+    </CollapsibleSection>
+  );
+}
+
+function ExecutiveDashboard({ status, portfolio, brief, briefLoading, briefError, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
   const evidence = status?.world_class_evidence || {};
   const operations = status?.operations_health || {};
@@ -174,6 +205,7 @@ function ExecutiveDashboard({ status, portfolio, brief, latestReport, onRefresh,
           ))}
         </Section>
       ) : null}
+      <FounderBriefCard brief={brief} briefLoading={briefLoading} briefError={briefError} />
       <Section title="Founder Actions">
         <View style={styles.buttonGrid}>
           <Button label="Refresh" onPress={onRefresh} tone="neutral" />

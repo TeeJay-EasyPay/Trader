@@ -54,9 +54,25 @@ function LinkedCompanyTitle({ company, recommendations, onOpenRecommendation }) 
   );
 }
 
+function brokerRow(status, brokerName) {
+  return (status?.brokers || []).find((item) => String(item.broker).toLowerCase() === brokerName) || {};
+}
+
 function MarketIntelligence({ benchmark, themes, companies, status, recommendations, dailyLearning, onOpenRecommendation }) {
   const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const items = benchmark?.items || [];
+  // AT-ED-011.5 data-freshness fix (Data_Freshness_Findings.md, API MAPPING BUG): the Alpaca
+  // and Kraken Intelligence sections below used to both read the same generic
+  // status.research_status/status.due_diligence_status/status.last_research_run - a single
+  // combined value, identical under both headings, giving the false impression of two
+  // distinct broker readings. status.brokers[].research_status/due_diligence_status and
+  // status.operations_health.last_equity_research/last_crypto_research are already computed
+  // per broker (see statusFromFounderEvidence in founderEvidenceMapping.js) and are used here
+  // instead so each section shows that broker's own evidence.
+  const alpaca = brokerRow(status, 'alpaca');
+  const kraken = brokerRow(status, 'kraken');
+  const equityResearch = status?.operations_health?.last_equity_research;
+  const cryptoResearch = status?.operations_health?.last_crypto_research;
   return (
     <View>
       <Section title="Market Intelligence Centre">
@@ -104,23 +120,23 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
         )}
       </Section>
       <Section title="Alpaca Intelligence">
-        <Metric label="Research Running" value={status?.research_status} />
-        <Metric label="Due Diligence Running" value={status?.due_diligence_status} />
-        <Metric label="Last Update" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
+        <Metric label="Research Running" value={alpaca.research_status} />
+        <Metric label="Due Diligence Running" value={alpaca.due_diligence_status} />
+        <Metric label="Last Update" value={formatDateTime(equityResearch?.completed_at || equityResearch?.created_at)} />
         <Metric label="Next Update" value={formatDateTime(status?.next_scheduled_research_run)} />
-        <Metric label="Companies Reviewed" value={status?.last_research_run?.companies_reviewed} />
+        <Metric label="Companies Reviewed" value={equityResearch?.assets_analysed} />
         <Metric label="Themes" value={themes.length} />
         <Metric label="Benchmark Investors" value={items.length} />
         <TextBlock label="Latest Learnings" value={latestLearningText(status, benchmark)} />
-        <Metric label="Research Freshness" value={status?.research_status} />
+        <Metric label="Research Freshness" value={alpaca.research_status} />
       </Section>
       <Section title="Kraken Intelligence">
-        <Metric label="Research Running" value={status?.research_status} />
-        <Metric label="Due Diligence Running" value={status?.due_diligence_status} />
-        <Metric label="Last Update" value={formatDateTime(status?.last_research_run?.completed_at || status?.last_research_run?.started_at)} />
+        <Metric label="Research Running" value={kraken.research_status} />
+        <Metric label="Due Diligence Running" value={kraken.due_diligence_status} />
+        <Metric label="Last Update" value={formatDateTime(cryptoResearch?.completed_at || cryptoResearch?.created_at)} />
         <Metric label="Next Update" value={formatDateTime(status?.next_scheduled_research_run)} />
         <Metric label="Crypto Projects Reviewed" value={status?.crypto_projects_reviewed} />
-        <Metric label="Research Freshness" value={status?.research_status} />
+        <Metric label="Research Freshness" value={kraken.research_status} />
         <TextBlock label="Latest Learnings" value="Crypto trading remains disabled until Founder approval and complete project due diligence." />
       </Section>
       <Section title="Daily Benchmark Intelligence Brief">

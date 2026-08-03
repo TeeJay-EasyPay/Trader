@@ -18,10 +18,15 @@ import { PortfolioCommandCentre } from './screens/Portfolio';
 import { MarketIntelligence } from './screens/Market';
 import { LearningStrategyLab } from './screens/Learning';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
+import { useMarketData } from './hooks/useMarketData';
+import { useFounderBrief } from './hooks/useFounderBrief';
 const {
   DISPLAY_STATE,
+  classifyDisplayState,
+  displayStateBadge,
   formatAgeSeconds,
 } = require('./lib/refreshState');
+const { buildScreenRefreshRegistry } = require('./lib/screenRefresh');
 const { formatDateTime } = require('./lib/datetime');
 const { shortApiBase, apiRequest } = require('./api/client');
 
@@ -42,11 +47,7 @@ export default function App() {
   const {
     status,
     portfolio,
-    brief,
     recommendations,
-    benchmark,
-    themes,
-    companies,
     notifications,
     performanceAttribution,
     dailyLearning,
@@ -55,6 +56,7 @@ export default function App() {
     activityPeriod,
     setActivityPeriod,
     loading,
+    bootstrapping,
     lastRefreshedAt,
     lastRefreshError,
     snapshotInfo,
@@ -65,6 +67,73 @@ export default function App() {
     command,
     reportCommand,
   } = useFounderEvidence();
+
+  // AT-ED-011.5: Market and the Dashboard founder-brief each own an endpoint no other screen
+  // consumes, so each gets its own independent loading/refresh, separate from the shared
+  // founder-evidence core above and from each other - see hooks/useMarketData.js and
+  // hooks/useFounderBrief.js for why these were split out and why they still live here (in
+  // App.js, constructed once) rather than inside their screen components.
+  const marketData = useMarketData();
+  const founderBrief = useFounderBrief();
+
+  // AT-ED-011.5 requirement 5 (see mobile/lib/screenRefresh.js and the ownership table in
+  // architecture/ARCHITECTURE_DELTA.md / Data_Freshness_Findings.md): every screen's own
+  // refresh/loading/last-refreshed/error is composed here, once, from only the source(s)
+  // SCREEN_DATA_SOURCES actually lists for it - Activity/Portfolio/Recommendations/Learning
+  // genuinely share the one founder-evidence payload (no narrower backend endpoint would
+  // reduce a real network/DB cost - see the ownership table), so they compose to that shared
+  // source only; Market and Dashboard's founder-brief are screen-exclusive and never appear in
+  // another screen's composition.
+  const screenRefresh = useMemo(
+    () =>
+      buildScreenRefreshRegistry({
+        shared: { refresh, loading, lastRefreshedAt, lastRefreshError },
+        market: { refresh: marketData.refresh, loading: marketData.loading, lastRefreshedAt: marketData.lastRefreshedAt, lastRefreshError: marketData.lastRefreshError },
+        founderBrief: { refresh: founderBrief.refresh, loading: founderBrief.loading, lastRefreshedAt: founderBrief.lastRefreshedAt, lastRefreshError: founderBrief.lastRefreshError },
+      }),
+    [
+      refresh,
+      loading,
+      lastRefreshedAt,
+      lastRefreshError,
+      marketData.refresh,
+      marketData.loading,
+      marketData.lastRefreshedAt,
+      marketData.lastRefreshError,
+      founderBrief.refresh,
+      founderBrief.loading,
+      founderBrief.lastRefreshedAt,
+      founderBrief.lastRefreshError,
+    ]
+  );
+  const activeScreenRefresh = screenRefresh[screen] || screenRefresh.Dashboard;
+  const activeRefreshing = activeScreenRefresh.loading;
+  const activeOnRefresh = activeScreenRefresh.refresh;
+
+  // AT-ED-011.5 data-truth fix: the header's freshness badge/banner used to always reflect the
+  // shared founder-evidence hook, even while viewing Market - so a founder-evidence failure
+  // could show "Refresh Failed" over Market's screen even though Market's own independent
+  // refresh had just succeeded, and vice versa. Market has no AsyncStorage cache and no backend
+  // snapshot-staleness concept (see useMarketData.js), so it only ever occupies four of
+  // classifyDisplayState's six states - Live/Refreshing/Refresh-Failed/No-Data-Available -
+  // never Cached or Backend-Snapshot-Stale.
+  const marketDataSourceState = useMemo(
+    () =>
+      classifyDisplayState({
+        isRefreshing: marketData.loading,
+        hasAttempted: !marketData.bootstrapping,
+        lastRefreshSucceeded: marketData.bootstrapping ? null : !marketData.lastRefreshError,
+        hasCachedData: false,
+        backendSnapshotStale: null,
+      }),
+    [marketData.loading, marketData.bootstrapping, marketData.lastRefreshError]
+  );
+  const marketDataSourceBadge = useMemo(() => displayStateBadge(marketDataSourceState), [marketDataSourceState]);
+  const isMarketScreen = screen === 'Market';
+  const activeDataSourceBadge = isMarketScreen ? marketDataSourceBadge : dataSourceBadge;
+  const activeLastRefreshedAt = isMarketScreen ? marketData.lastRefreshedAt : lastRefreshedAt;
+  const activeDataSourceState = isMarketScreen ? marketDataSourceState : dataSourceState;
+  const activeLastRefreshError = isMarketScreen ? marketData.lastRefreshError : lastRefreshError;
 
   const approve = async (proposalId, symbol = null) => {
     await command('/approve-and-execute', {
@@ -80,9 +149,11 @@ export default function App() {
         <ExecutiveDashboard
           status={status}
           portfolio={portfolio}
-          brief={brief}
+          brief={founderBrief.brief}
+          briefLoading={founderBrief.loading}
+          briefError={founderBrief.lastRefreshError}
           latestReport={latestReport}
-          onRefresh={refresh}
+          onRefresh={screenRefresh.Dashboard.refresh}
           onCommand={command}
           onReport={reportCommand}
           activity={activity}
@@ -96,7 +167,9 @@ export default function App() {
           activity={activity}
           period={activityPeriod}
           setPeriod={setActivityPeriod}
-          onRefresh={refresh}
+          onRefresh={screenRefresh.Activity.refresh}
+          notifications={notifications}
+          onCommand={command}
         />
       );
     }
@@ -109,7 +182,7 @@ export default function App() {
           amounts={amounts}
           setAmounts={setAmounts}
           onApprove={approve}
-          onRefresh={refresh}
+          onRefresh={screenRefresh.Recommendations.refresh}
           onRunAnalysis={(broker = 'kraken') => {
             if (String(broker).toLowerCase() === 'kraken') {
               return command('/run-crypto-analysis', { broker: 'kraken', limit: 10 });
@@ -140,9 +213,9 @@ export default function App() {
     if (screen === 'Market') {
       return (
       <MarketIntelligence
-        benchmark={benchmark}
-        themes={themes}
-        companies={companies}
+        benchmark={marketData.benchmark}
+        themes={marketData.themes}
+        companies={marketData.companies}
         status={status}
         recommendations={recommendations}
         dailyLearning={dailyLearning}
@@ -162,7 +235,29 @@ export default function App() {
         request={apiRequest}
       />
     );
-  }, [activity, activityPeriod, amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, screen, status, themes, targetRecommendationId, selectedExchange]);
+  }, [
+    activity,
+    activityPeriod,
+    amounts,
+    askMessages,
+    dailyLearning,
+    founderBrief.brief,
+    founderBrief.lastRefreshError,
+    founderBrief.loading,
+    latestReport,
+    marketData.benchmark,
+    marketData.companies,
+    marketData.themes,
+    notifications,
+    performanceAttribution,
+    portfolio,
+    recommendations,
+    screenRefresh,
+    screen,
+    status,
+    targetRecommendationId,
+    selectedExchange,
+  ]);
 
 
   return (
@@ -171,19 +266,24 @@ export default function App() {
       <View style={styles.header}>
         <View style={styles.headerTopRow}>
           <Text style={styles.title}>AI Trader</Text>
-          <StatusPill label={dataSourceBadge.label} tone={dataSourceBadge.tone} />
+          <StatusPill label={activeDataSourceBadge.label} tone={activeDataSourceBadge.tone} />
         </View>
         <Text style={styles.subtitle}>
-          {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
+          {activeLastRefreshedAt ? `Last refreshed ${formatDateTime(activeLastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
         </Text>
-        {snapshotInfo.known && (
+        {/* AT-ED-011.5: the backend evidence-snapshot-age line and the AsyncStorage cache
+            banner both describe the shared founder-evidence source specifically (its
+            persisted-snapshot age, its on-phone cache) - Market has neither concept (see
+            useMarketData.js), so both are suppressed while viewing Market rather than showing
+            the shared source's snapshot/cache state over Market's own independent data. */}
+        {!isMarketScreen && snapshotInfo.known && (
           <Text style={styles.subtitle}>
             Evidence as of {formatDateTime(snapshotInfo.generatedAt)}
             {typeof snapshotInfo.ageSeconds === 'number' ? ` (${formatAgeSeconds(snapshotInfo.ageSeconds)})` : ''}
             {snapshotInfo.stale ? ' - backend snapshot stale' : ''}
           </Text>
         )}
-        {cacheBanner && (
+        {!isMarketScreen && cacheBanner && (
           <View style={styles.cacheBanner}>
             <Text style={styles.cacheBannerHeadline}>{cacheBanner.headline}</Text>
             {cacheBanner.captured && (
@@ -196,13 +296,13 @@ export default function App() {
             </TouchableOpacity>
           </View>
         )}
-        {dataSourceState === DISPLAY_STATE.REFRESH_FAILED && (
+        {activeDataSourceState === DISPLAY_STATE.REFRESH_FAILED && (
           <View style={styles.cacheBanner}>
             <Text style={styles.cacheBannerHeadline}>No Data Available</Text>
             <Text style={styles.cacheBannerDetail}>
-              {lastRefreshError ? `Live refresh failed: ${lastRefreshError}` : 'Live refresh failed.'}
+              {activeLastRefreshError ? `Live refresh failed: ${activeLastRefreshError}` : 'Live refresh failed.'}
             </Text>
-            <TouchableOpacity onPress={refresh} disabled={loading}>
+            <TouchableOpacity onPress={activeOnRefresh} disabled={activeRefreshing}>
               <Text style={styles.cacheBannerRetry}>Retry now</Text>
             </TouchableOpacity>
           </View>
@@ -224,14 +324,18 @@ export default function App() {
           </TouchableOpacity>
         ))}
       </View>
-      {loading && (
+      {/* AT-ED-011.5 requirement 13/14: the full-screen indicator is reserved for the initial
+          app bootstrap (no founder-evidence data has ever loaded yet). A normal background or
+          manual refresh after that only drives the small per-screen RefreshControl spinner
+          below, plus the header's own "Refreshing" status pill - never this full-screen one. */}
+      {bootstrapping && (
         <View style={styles.loading}>
           <ActivityIndicator />
         </View>
       )}
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} />}
+        refreshControl={<RefreshControl refreshing={activeRefreshing} onRefresh={activeOnRefresh} />}
       >
         {content}
       </ScrollView>

@@ -4,11 +4,20 @@
 // (previously a comment on App.js's header render). App.js is left with only navigation/UI
 // state (screen, amounts, selectedExchange, targetRecommendationId, askMessages) and
 // composition; everything about founder-evidence data lives here.
+//
+// AT-ED-011.5: this hook owns the ONE `/founder-evidence` payload that Dashboard, Activity,
+// Portfolio, Recommendations, and Learning all genuinely share (status/portfolio/activity/
+// recommendations/performanceAttribution/dailyLearning are all fields of that single response)
+// - per the directive's own rule that shared data should use a shared hook only where multiple
+// screens genuinely consume the same authoritative payload. Data that has its OWN endpoint and
+// is only consumed by ONE screen (Market's themes/companies/benchmark, Dashboard's founder
+// brief) has been split into mobile/hooks/useMarketData.js and mobile/hooks/useFounderBrief.js
+// so those screens can refresh independently of this shared core and of each other.
 
 'use strict';
 
 const React = require('react');
-const { useCallback, useEffect, useMemo, useState } = React;
+const { useCallback, useEffect, useMemo, useRef, useState } = React;
 const AsyncStorage = require('@react-native-async-storage/async-storage').default;
 const { Alert, Linking } = require('react-native');
 const {
@@ -27,6 +36,7 @@ const {
   cacheBannerDetails,
   displayStateBadge,
 } = require('../lib/refreshState');
+const { resolveFounderEvidenceRefresh, shouldStartRefresh } = require('../lib/refreshLifecycle');
 const {
   PRIMARY_REFRESH_TIMEOUT_MS,
   SECONDARY_REFRESH_TIMEOUT_MS,
@@ -142,14 +152,17 @@ function commandMessage(path, result) {
 }
 
 function useFounderEvidence() {
+  // "loading" keeps its pre-existing meaning: true while ANY refresh (initial, auto, manual
+  // pull, or post-command) of the shared founder-evidence payload is in flight. AT-ED-011.5
+  // adds `hasAttempted` to the public return value so callers can distinguish "no refresh has
+  // ever completed yet" (bootstrap - worth a full-screen indicator) from "a later refresh is
+  // in flight" (should only show a small screen-level indicator, per the AT-ED-011.5
+  // directive's requirement that the top-level global spinner is reserved for initial
+  // bootstrap only).
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState(null);
   const [portfolio, setPortfolio] = useState(null);
-  const [brief, setBrief] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
-  const [benchmark, setBenchmark] = useState(null);
-  const [themes, setThemes] = useState([]);
-  const [companies, setCompanies] = useState([]);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
   // AT-ED-010 data-freshness state (mobile/lib/refreshState.js owns the derived
   // classification - these four are the raw signals it's computed from).
@@ -164,6 +177,21 @@ function useFounderEvidence() {
   const [latestReport, setLatestReport] = useState(null);
   const [activity, setActivity] = useState(null);
   const [activityPeriod, setActivityPeriod] = useState('24h');
+
+  // AT-ED-011.5 requirement ("Prevent concurrent duplicate refreshes for the same screen" /
+  // "any stale closure or unmounted-component issue"): isMountedRef guards every setState
+  // that runs after an await against firing post-unmount; refreshInFlightRef coalesces
+  // overlapping refresh() calls (repeated pull-to-refresh taps, the auto-refresh timer firing
+  // while a manual refresh is still running, a command's post-action refresh racing the timer)
+  // into the single already-running attempt instead of issuing duplicate network requests.
+  const isMountedRef = useRef(true);
+  const refreshInFlightRef = useRef(false);
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    []
+  );
 
   // AT-ED-010 requirement 3: fetch /founder-evidence once, with one bounded retry on
   // failure, before the caller decides whether to fall back to cache. No silent partial
@@ -183,6 +211,9 @@ function useFounderEvidence() {
       open_positions: [],
     };
     const nextRecommendationItems = sortByConfidence(founderEvidence.recommendations || []);
+    if (!isMountedRef.current) {
+      return;
+    }
     setStatus(nextStatus);
     setPortfolio(nextPortfolio);
     setActivity(activityFromFounderEvidence(founderEvidence));
@@ -193,10 +224,16 @@ function useFounderEvidence() {
       await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
     } else {
       const cached = await loadCachedRecommendations();
+      if (!isMountedRef.current) {
+        return;
+      }
       setRecommendations(cached.length ? cached : []);
     }
     const fetchedAt = new Date().toISOString();
     await AsyncStorage.setItem(FOUNDER_EVIDENCE_CACHE_KEY, JSON.stringify({ data: founderEvidence, fetchedAt }));
+    if (!isMountedRef.current) {
+      return;
+    }
     setSnapshotMeta(founderEvidence.snapshot || null);
     setCachedAt(fetchedAt);
     setLastRefreshedAt(fetchedAt);
@@ -212,93 +249,136 @@ function useFounderEvidence() {
     setCachedAt(cached.fetchedAt || null);
   }, []);
 
+  // AT-ED-011.5 root-cause fix for the permanent "Refreshing" spinner: the previous version
+  // called setLoading(false) from two separate points inside the function body instead of one
+  // guaranteed path. If ANYTHING between those two calls threw - most plausibly
+  // applyLiveFounderEvidence's AsyncStorage.setItem writes, which persist the full multi-
+  // megabyte founder-evidence payload and can fail on storage-constrained devices - the
+  // exception propagated out of refresh() with nothing to catch it (refresh() is called from
+  // a useEffect and from RefreshControl's onRefresh with no .catch()), so setLoading(false)
+  // never ran and the header's "Refreshing" badge/spinner stuck forever, even though the
+  // screen already had data because the setState calls in applyLiveFounderEvidence run BEFORE
+  // its AsyncStorage writes. Wrapping the whole body in try/finally guarantees setLoading(false)
+  // always runs, on every path, whatever throws - matching this phase's explicit requirement
+  // that loading state must clear via a finally block or an equivalent guaranteed path, and
+  // that failures must remain visible rather than being hidden merely to stop the spinner.
   const refresh = useCallback(async () => {
-    setLoading(true);
-    let founderEvidence = null;
-    let errorMessage = null;
-    try {
-      founderEvidence = await fetchFounderEvidenceOnce();
-    } catch (firstError) {
-      // AT-ED-010 requirement 3: one bounded retry before falling back to cache - a
-      // transient hiccup should recover to LIVE on its own, not immediately read as
-      // "the backend is down".
-      try {
-        founderEvidence = await fetchFounderEvidenceOnce();
-      } catch (secondError) {
-        errorMessage = String(secondError.message || secondError);
-      }
-    }
-
-    setHasAttempted(true);
-    setLastRefreshSucceeded(founderEvidence !== null);
-    setLastRefreshError(founderEvidence !== null ? null : errorMessage);
-
-    if (founderEvidence !== null) {
-      await applyLiveFounderEvidence(founderEvidence);
-      setLoading(false);
-
-      const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
-        apiRequest(path, { timeoutMs }).catch(() => fallback);
-      Promise.all([
-        optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
-        optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
-        optional('/intelligence/themes', { themes: [] }),
-        optional('/intelligence/companies', { companies: [] }),
-        optional('/notifications', { notifications: [] }),
-      ]).then(([nextBrief, nextBenchmark, nextThemes, nextCompanies, nextNotifications]) => {
-        setBrief(nextBrief);
-        setBenchmark(nextBenchmark);
-        setThemes(nextThemes.themes || []);
-        setCompanies(nextCompanies.companies || []);
-        setNotifications(nextNotifications.notifications || []);
-      });
+    if (!shouldStartRefresh(refreshInFlightRef.current)) {
       return;
     }
+    refreshInFlightRef.current = true;
+    setLoading(true);
+    try {
+      let founderEvidence = null;
+      let fetchError = null;
+      let applyError = null;
+      try {
+        founderEvidence = await fetchFounderEvidenceOnce();
+      } catch (firstError) {
+        // AT-ED-010 requirement 3: one bounded retry before falling back to cache - a
+        // transient hiccup should recover to LIVE on its own, not immediately read as
+        // "the backend is down".
+        try {
+          founderEvidence = await fetchFounderEvidenceOnce();
+        } catch (secondError) {
+          fetchError = String(secondError.message || secondError);
+        }
+      }
 
-    // Both the primary attempt and the one bounded retry failed. AT-ED-010 requirement 3:
-    // never silently keep showing whatever was on screen without recording the failure -
-    // fall back to cache if one exists, clearly marked (see the DISPLAY_STATE derivation
-    // in the render below), and otherwise show an explicit unavailable state.
-    const cached = await loadCachedFounderEvidence();
-    if (cached && cached.data) {
-      applyCachedFounderEvidence(cached);
-    } else {
-      setActivity(unavailableActivity(`Production evidence could not be loaded: ${errorMessage}`));
-      setStatus(unavailableStatus(String(errorMessage)));
-      setSnapshotMeta(null);
-      setCachedAt(null);
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      if (founderEvidence !== null) {
+        try {
+          await applyLiveFounderEvidence(founderEvidence);
+        } catch (error) {
+          // The fetch succeeded but applying/caching it failed (e.g. AsyncStorage rejected
+          // the write). This is a real, truthful failure - it must not be reported as a
+          // successful live refresh, and must not be swallowed just to let the spinner stop.
+          applyError = String(error.message || error);
+        }
+      }
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      // See lib/refreshLifecycle.js's resolveFounderEvidenceRefresh - this is the same
+      // decision logic AT-ED-011.5's tests exercise directly, applied here to the real fetch.
+      const outcome = resolveFounderEvidenceRefresh({ founderEvidence, fetchError, applyError });
+      setHasAttempted(true);
+      setLastRefreshSucceeded(outcome.succeeded);
+      setLastRefreshError(outcome.error);
+
+      if (outcome.succeeded) {
+        // Fire-and-forget: /notifications is fetched here (unchanged data ownership) and
+        // rendered by Activity's NotificationsCard (see Data_Freshness_Findings.md, notifications
+        // decision - AT-ED-011.5). The .catch() below already resolves to a fallback on its own
+        // failure, so this can never reject and does not need a second one; the mount guard
+        // stops it writing state after unmount instead.
+        apiRequest('/notifications', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
+          .catch(() => ({ notifications: [] }))
+          .then((nextNotifications) => {
+            if (isMountedRef.current) {
+              setNotifications(nextNotifications.notifications || []);
+            }
+          });
+        return;
+      }
+
+      // Either the fetch failed (both attempts) or the fetch succeeded but could not be
+      // applied/cached. AT-ED-010 requirement 3: never silently keep showing whatever was on
+      // screen without recording the failure - fall back to cache if one exists, clearly
+      // marked (see the DISPLAY_STATE derivation in the render below), and otherwise show an
+      // explicit unavailable state.
+      const cached = await loadCachedFounderEvidence();
+      if (!isMountedRef.current) {
+        return;
+      }
+      if (cached && cached.data) {
+        applyCachedFounderEvidence(cached);
+      } else {
+        setActivity(unavailableActivity(`Production evidence could not be loaded: ${outcome.error}`));
+        setStatus(unavailableStatus(String(outcome.error)));
+        setSnapshotMeta(null);
+        setCachedAt(null);
+      }
+    } finally {
+      refreshInFlightRef.current = false;
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }, [fetchFounderEvidenceOnce, applyLiveFounderEvidence, applyCachedFounderEvidence]);
 
   useEffect(() => {
     loadCachedFounderEvidence().then((cached) => {
-      if (cached && cached.data) {
+      if (isMountedRef.current && cached && cached.data) {
         applyCachedFounderEvidence(cached);
       }
     });
     loadCachedRecommendations().then((cached) => {
-      if (cached.length) {
+      if (isMountedRef.current && cached.length) {
         setRecommendations(cached);
       }
     });
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
   // AT-ED-010 requirement 3 ("continue normal scheduled refreshes" / "automatically
   // recover to LIVE mode as soon as a successful refresh occurs"): previously the only
   // triggers were the initial mount and manual/pull-to-refresh, so a Cached or Refresh
   // Failed state had no path back to Live without the Founder opening the app and pulling
-  // to refresh themselves. This does not fire while a manual refresh is already in flight
-  // (`loading`), and is cleared on unmount.
+  // to refresh themselves. refresh() itself now no-ops via refreshInFlightRef if a refresh
+  // is already running, so this no longer needs its own `loading` check to avoid overlap.
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!loading) {
-        refresh();
-      }
+      refresh();
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [loading, refresh]);
+  }, [refresh]);
 
   const command = async (path, body = {}, fallbackPath = null) => {
     setLoading(true);
@@ -312,6 +392,9 @@ function useFounderEvidence() {
         } else {
           throw error;
         }
+      }
+      if (!isMountedRef.current) {
+        return;
       }
       if (path === '/generate-report') {
         setLatestReport(result);
@@ -329,7 +412,9 @@ function useFounderEvidence() {
           : message
       );
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -342,6 +427,9 @@ function useFounderEvidence() {
         broker: body.broker || 'all',
       }).toString();
       const result = await apiRequest(`/trading-report?${query}`);
+      if (!isMountedRef.current) {
+        return;
+      }
       setLatestReport(result);
       if (result.report_url) {
         await Linking.openURL(absoluteApiUrl(result.report_url));
@@ -351,7 +439,9 @@ function useFounderEvidence() {
     } catch (error) {
       Alert.alert('Report failed', String(error.message || error));
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -383,11 +473,7 @@ function useFounderEvidence() {
   return {
     status,
     portfolio,
-    brief,
     recommendations,
-    benchmark,
-    themes,
-    companies,
     notifications,
     performanceAttribution,
     dailyLearning,
@@ -396,6 +482,11 @@ function useFounderEvidence() {
     activityPeriod,
     setActivityPeriod,
     loading,
+    // AT-ED-011.5: true only before the first refresh attempt of this app session has
+    // completed - the signal App.js uses to decide whether the full-screen bootstrap
+    // spinner should show, as distinct from `loading` (true for every refresh, which now
+    // only drives small screen-level indicators after bootstrap).
+    bootstrapping: !hasAttempted,
     lastRefreshedAt,
     lastRefreshError,
     snapshotInfo,

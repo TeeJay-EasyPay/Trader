@@ -10,8 +10,55 @@ const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { formatDateTime } = require('../lib/datetime');
 const { groupActivity, activityStatusTone, activitySeverityTone, noTradeTone } = require('../lib/founderPresentation');
+const { unreadNotifications, notificationsBadge } = require('../lib/notifications');
 
-function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
+// AT-ED-011.5 notifications decision (Data_Freshness_Findings.md): `/notifications` was
+// already being fetched on every refresh but rendered by no screen. It is a real, distinct
+// Founder-facing signal (NOTIFICATION_EVENTS - high-priority events also reach the phone as a
+// native push notification; this in-app list is the reviewable history, including the quieter
+// events that were never worth an interruptive push). Surfaced here, at the top of Activity,
+// using the same CollapsibleSection/Metric/StatusPill patterns as every other card on this
+// screen, since Activity is already this app's home for "what has AI Trader done and does it
+// need my attention".
+function NotificationsCard({ notifications, onCommand }) {
+  const items = notifications || [];
+  const unread = unreadNotifications(items);
+  return (
+    <CollapsibleSection
+      title="Notifications"
+      subtitle={`${items.length} notification(s) in the recent history`}
+      defaultExpanded={unread.length > 0}
+      badge={notificationsBadge(items)}
+    >
+      {items.length === 0 ? (
+        <Empty />
+      ) : (
+        <>
+          {items.slice(0, 20).map((item) => (
+            <View key={item.notification_id || `${item.title}-${item.created_at}`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{item.title}</Text>
+              <Text style={styles.smallText}>{formatDateTime(item.created_at)}</Text>
+              <Text style={styles.bodyText}>{item.message}</Text>
+              {item.broker ? <Metric label="Broker" value={item.broker} /> : null}
+              {item.symbol ? <Metric label="Symbol" value={item.symbol} /> : null}
+            </View>
+          ))}
+          {unread.length > 0 && onCommand ? (
+            <View style={styles.buttonGrid}>
+              <Button
+                label="Mark All Read"
+                tone="neutral"
+                onPress={() => onCommand('/notifications/ack', { notification_ids: unread.map((item) => item.notification_id).filter((id) => id !== undefined) })}
+              />
+            </View>
+          ) : null}
+        </>
+      )}
+    </CollapsibleSection>
+  );
+}
+
+function AutonomousActivity({ activity, period, setPeriod, onRefresh, notifications, onCommand }) {
   const [filterCategory, setFilterCategory] = useState('All');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const status = activity?.status || {};
@@ -51,6 +98,7 @@ function AutonomousActivity({ activity, period, setPeriod, onRefresh }) {
 
   return (
     <View>
+      <NotificationsCard notifications={notifications} onCommand={onCommand} />
       <View style={styles.summaryCard}>
         <StatusPill label={status.state || 'Status Unknown'} tone={activityStatusTone(status.state)} />
         <Text style={styles.summaryReason}>{status.plain_english || 'No autonomous status evidence was returned.'}</Text>
