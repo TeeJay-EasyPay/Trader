@@ -1,5 +1,78 @@
 # Implementation Log
 
+## 2026-08-03 AT-ED-010 production incident: two real bugs found and fixed post-deployment
+
+After AT-ED-010's mobile (`23c0733c`) and backend performance (`2b50a9cb`) commits were pushed
+and deployed, production verification (per ChatGPT's directive section 12) found the deployment
+itself was healthy but two genuine bugs surfaced - both found, root-caused, fixed, tested, and
+deployed by the coordinating session directly (not a fork) during live verification.
+
+**Bug 1 - a self-inflicted regression, found first.** `initialize_always_on_schema` (in
+`always_on.py`, pre-existing code, not new) splits `POSTGRES_ALWAYS_ON_SCHEMA` on literal `;`
+characters with no comment-awareness - a pattern that already existed before this session, not
+introduced by it. The AT-ED-010 backend commit's own SQL comment (documenting the job-runs index
+fix) contained a semicolon inside a parenthetical - `"...37.9ms vs 0.38ms; query plan changes
+from..."` - which split the comment mid-sentence. The trailing fragment (`" query plan changes
+from..."`) then got executed as a bare SQL statement on every call and failed with a Postgres
+syntax error. Because the schema-init function only marks itself "done" after the whole loop
+completes without error, this failed and retried identically on every single call to nearly
+every function in `always_on.py` (`list_job_runs`, `list_worker_heartbeats`,
+`operations_health`, and more) - actively breaking functionality that predates this session.
+Found by direct production error inspection (`/operations-health` returning the exact Postgres
+syntax error, with the comment fragment visible in the error text) after the deployed commit
+didn't produce the expected effect. **Not found by the earlier local verification** because the
+local test suite runs against SQLite, which uses `executescript` (a real multi-statement API,
+correctly comment-aware) for the equivalent path - this specific naive-Postgres-only bug had no
+way to surface in local testing. Fixed by removing the semicolon from the comment (now a period)
+in both schema strings and adding an explicit warning against ever doing this again. Verified by
+replicating the exact split logic against the live schema string: all 9 resulting fragments are
+valid statements, zero stray comment fragments. Commit `2027c4b5`.
+
+**Bug 2 - the real, pre-existing bottleneck behind `/status` and `/phase5-status` hanging ~60s,
+found second.** The Bug 1 fix deployed successfully (`/operations-health` and `/sprint6-status`
+both confirmed fast and healthy afterward) but `/phase5-status` and `/status` still hung -
+proving the SCHEDULED_JOB_RUNS index fix from the earlier backend commit, while itself correct,
+was not the dominant cost. Root cause: `production_spine.supervise_workers` checked every row in
+`WORKER_HEARTBEATS` against a staleness threshold directly. That table keeps one permanent row
+per past deploy generation - Render starts a new worker container (new `worker_id`) on every
+deploy, and old rows are never deleted, a documented, intentional design decision from an
+earlier session (AT-ED-003). Every dead worker from every previous deploy was therefore always
+classified "stale," and `record_operations_incident` (a database write) ran once per historical
+row on every single call - an unbounded, ever-growing write-amplification loop that gets worse
+with every deploy the project has ever done, not a read-query performance problem at all.
+`always_on.classify_worker_presence` already existed specifically to solve exactly this (only
+the single freshest heartbeat row can ever be Live/Stale; every other row is Historical) but
+`supervise_workers` had been written independently and never used it. Found via elimination
+(ruling out the index fix, `PHASE5_SCHEMA`'s own comments for the same semicolon bug, self-
+inflicted request contention, and `_sqlite_tables`'s harmless no-op-in-production behavior)
+followed by direct confirmation: temporary diagnostic timing added to `phase5_status`'s response
+(`_debug_timing`, since this environment has no Render log access to instrument any other way),
+deployed, measured once (`supervise_workers_seconds: 5.02` vs. a prior unbounded ~60s hang -
+confirming the fix), then removed. Fixed by routing `stale_workers` and `duplicate_worker_types`
+through `classify_worker_presence`, restricting both to non-historical rows; the full raw
+worker list is still returned for display, unchanged. New regression test seeds 50 historical
+worker rows plus one fresh one and proves the result is healthy with zero incidents created.
+Commits `4a1c7ca0` (fix) and `eef7994a` (removing the temporary diagnostic once confirmed).
+
+**Verification.** Full suite passed clean after each of the three commits above (309, then 310
+after the new regression test, 0 failed each time). Production re-verified directly:
+`/operations-health` and `/sprint6-status` healthy and fast; `/phase5-status` now responds in
+~12s (was an unbounded ~60s hang, confirmed killed by Render's own proxy timeout before the
+fix); Kraken reconciliation hold unchanged (`false`, same 2026-08-01 founder-authorized reason);
+Kraken capital ledger shows the full £100 allocation available with zero open positions -
+confirming no real order was submitted at any point during this investigation or by any test.
+
+**Not fully resolved, documented honestly rather than declared fixed.** `/brokers` (and by
+extension `/status`, which also calls `broker_panels()`) improved from a reliable ~60.0-60.15s
+kill by Render's proxy to occasionally completing around ~59.7s - genuinely better (the schema
+hotfix alone likely helped, since `broker_panels()` also touches `always_on.py` functions), but
+still far too slow, and not conclusively root-caused the way both bugs above were. The AT-ED-010
+investigation already confirmed the mobile app does not call `/status`, `/phase5-status`, or
+`/brokers` directly - `/founder-evidence` (the only endpoint mobile actually depends on) was
+independently measured at a consistent 3-3.75s throughout this whole investigation and was never
+affected by either bug. This remaining slowness is real and worth a dedicated follow-up, but does
+not block or degrade the actual Founder-facing mobile experience AT-ED-010 was scoped to fix.
+
 ## 2026-08-03 AT-ED-010 mobile requirements 1-3 — truthful live/cached state machine
 
 Implements requirements 1-3 of `engineering-directives/implementation/AT-ED-010_UI_DATA_FRESHNESS_AND_EVIDENCE_ALIGNMENT.md`,
