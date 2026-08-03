@@ -39,8 +39,13 @@ function formatPercent(value) {
   return `${percent.toFixed(0)}%`;
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 module.exports = {
   dateMs,
   formatDateTime,
   formatPercent,
+  todayIso,
 };

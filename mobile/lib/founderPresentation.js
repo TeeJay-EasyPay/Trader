@@ -11,6 +11,10 @@
 
 'use strict';
 
+const { formatDateTime } = require('./datetime');
+const { explainMissing } = require('./notAvailable');
+const { gbpOrText } = require('./money');
+
 // ---------------------------------------------------------------------------
 // Operational rollup (Command screen summary card)
 // ---------------------------------------------------------------------------
@@ -318,6 +322,157 @@ function learningSummary(evidence) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Cross-screen tone/status text (AT-ED-011 Phase 2: shared by 2+ screens, so kept here
+// rather than colocated in a single screen file - see architecture/ARCHITECTURE_DELTA.md)
+// ---------------------------------------------------------------------------
+
+function activityStatusTone(state) {
+  const text = String(state || '').toLowerCase();
+  if (text.includes('normal')) {
+    return 'good';
+  }
+  if (text.includes('warning') || text.includes('partial') || text.includes('unknown')) {
+    return 'warn';
+  }
+  if (text.includes('blocked') || text.includes('not operating')) {
+    return 'danger';
+  }
+  return 'neutral';
+}
+
+function activitySeverityTone(severity) {
+  const text = String(severity || '').toLowerCase();
+  if (text === 'success' || text === 'recovered') {
+    return 'good';
+  }
+  if (text === 'warning' || text === 'blocked') {
+    return 'warn';
+  }
+  if (text === 'failure' || text === 'failed' || text === 'error') {
+    return 'danger';
+  }
+  return 'neutral';
+}
+
+function noTradeTone(state) {
+  const text = String(state || '').toLowerCase();
+  if (text.includes('submitted') || text.includes('completed')) {
+    return 'good';
+  }
+  if (text.includes('did_not_run') || text.includes('not_submitted')) {
+    return 'warn';
+  }
+  return 'neutral';
+}
+
+function yesNo(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value ? 'Yes' : 'No';
+}
+
+function enabledDisabled(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value ? 'Enabled' : 'Disabled';
+}
+
+function connectedFounderBrokers(brokers) {
+  return (brokers || []).filter((item) => ['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()));
+}
+
+function futureBrokerPanels(brokers) {
+  return (brokers || [])
+    .filter((item) => !['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()))
+    .map((item) => ({
+      broker: item.broker,
+      label: item.label || item.broker,
+      status: item.connection_status || item.source || 'Not connected',
+    }));
+}
+
+function formatUnavailableReasons(items) {
+  if (!items || !items.length) {
+    return 'No explained missing values currently require attention.';
+  }
+  return items.slice(0, 5).map((item) => `${item.field}: ${item.why} Required: ${item.required}`).join('\n');
+}
+
+function formatReconciliation(items) {
+  if (!items || !items.length) {
+    return 'Awaiting broker reconciliation - no reconciliation run has been recorded yet.';
+  }
+  return items.slice(0, 5).map((item) => `${item.broker}: ${item.status}. ${item.summary}`).join('\n');
+}
+
+function summaryTone(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('no action')) return 'good';
+  if (text.includes('review')) return 'warn';
+  if (text.includes('issue') || text.includes('unsuitable')) return 'danger';
+  return 'neutral';
+}
+
+function operationsTone(operations) {
+  const text = String(operations?.overall || operations?.plain_english || '').toLowerCase();
+  if (text.includes('healthy') || text.includes('persisted research')) return 'good';
+  if (text.includes('attention') || text.includes('incident') || text.includes('stale')) return 'danger';
+  return 'warn';
+}
+
+function latestJobTime(jobs, jobName) {
+  const row = (jobs || []).find((item) => item.job_name === jobName);
+  return row ? formatDateTime(row.completed_at || row.started_at || row.scheduled_for) : explainMissing(jobName, 'no durable job-run record has been returned yet');
+}
+
+function sumRecentJobs(jobs, key) {
+  const total = (jobs || []).reduce((sum, item) => sum + Number(item?.[key] || 0), 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+function operationsIncidentText(items) {
+  if (!items || !items.length) {
+    return 'No open operations incidents recorded.';
+  }
+  return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.title || item.message}`).join('\n');
+}
+
+function riskTone(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('high') || text.includes('poor') || text.includes('weak') || text.includes('attention') || text.includes('risk')) {
+    return 'danger';
+  }
+  if (text.includes('medium') || text.includes('mixed') || text.includes('developing') || text.includes('caution')) {
+    return 'warn';
+  }
+  if (text.includes('healthy') || text.includes('good') || text.includes('ready') || text.includes('low')) {
+    return 'good';
+  }
+  return 'neutral';
+}
+
+function formatKrakenAssets(items, converted) {
+  if (!items || !items.length) {
+    return converted ? 'No priced crypto assets converted.' : 'No excluded assets reported.';
+  }
+  return items.map((item) => {
+    if (converted) {
+      return `- ${item.normalized_asset || item.asset}: ${item.quantity} via ${item.pair}, value ${gbpOrText(item.value_gbp)}`;
+    }
+    return `- ${item.normalized_asset || item.asset}: ${item.quantity}, reason ${item.reason || 'not valued'}`;
+  }).join('\n');
+}
+
+function formatRawKrakenBalances(items) {
+  if (!items || !items.length) {
+    return 'No non-zero Kraken balances were returned by the API.';
+  }
+  return items.map((item) => `- ${item.normalized_asset || item.asset}: ${item.quantity} (${item.asset})`).join('\n');
+}
+
 module.exports = {
   operationalRollup,
   operationalLevelTone,
@@ -330,4 +485,21 @@ module.exports = {
   positionOwnership,
   learningSummary,
   formatGuardrailFailures,
+  activityStatusTone,
+  activitySeverityTone,
+  noTradeTone,
+  yesNo,
+  enabledDisabled,
+  connectedFounderBrokers,
+  futureBrokerPanels,
+  formatUnavailableReasons,
+  formatReconciliation,
+  summaryTone,
+  operationsTone,
+  latestJobTime,
+  sumRecentJobs,
+  operationsIncidentText,
+  riskTone,
+  formatKrakenAssets,
+  formatRawKrakenBalances,
 };

@@ -1,5 +1,157 @@
 # Implementation Log
 
+## 2026-08-03 AT-ED-011 Phase 2 — mobile modularisation complete, App.js reduced to an application shell
+
+Completes AT-ED-011 (mobile modularisation), continuing directly from Phase 1
+(`b920578a`, logged retroactively below). The objective throughout was
+behaviour-preserving modularisation only - no UI redesign, no feature change,
+nothing visible to the Founder intentionally different. Governing references:
+`architecture/AT_ED_011_MOBILE_DISCOVERY_2026-08-03.md` (the original
+discovery report) and the two Phase 1 Founder Briefings in `ZIP-Updates/`.
+
+**App.js: 2,421 → 240 lines.** Every remaining responsibility identified in
+the discovery report as a clear extraction boundary was moved out. App.js now
+contains only: imports, the `SCREENS` constant, local navigation/UI state
+(`screen`, `amounts`, `selectedExchange`, `targetRecommendationId`,
+`askMessages` - kept local because Phase 2's own scope explicitly allows
+"application-level state" to remain), one call to the new
+`useFounderEvidence()` hook, the `approve()` wrapper (needs `amounts`, a
+local-state closure, so it stays here rather than in the hook), the
+screen-router `content` `useMemo`, and the header/tab-bar JSX shell.
+
+**New `mobile/hooks/useFounderEvidence.js` (411 lines).** All founder-evidence
+state (status, portfolio, brief, recommendations, benchmark, themes,
+companies, notifications, performance attribution, daily learning, latest
+report, activity, activity period), the AT-ED-010 fetch/retry/cache state
+machine (`fetchFounderEvidenceOnce`, `applyLiveFounderEvidence`,
+`applyCachedFounderEvidence`, `refresh`), the two lifecycle effects (initial
+mount, 2-minute auto-refresh), `command`/`reportCommand`, the two
+`AsyncStorage` cache helpers, and the header-freshness derivations
+(`snapshotInfo`, `dataSourceState`, `dataSourceBadge`, `cacheBanner` via
+`lib/refreshState.js`) moved here verbatim - this is exactly the
+`useFounderEvidence` hook the Phase 1 discovery report named as the single
+highest-value extraction target. App.js's JSX body was left character-for-
+character unchanged by destructuring the hook's return using the same
+variable names the render logic already referenced, which is also why this
+extraction carries essentially zero behavioural risk.
+
+**Five new `mobile/lib/` modules**, each with a plain-Node test file, taking
+the pure/presentation-logic functions previously duplicated or scattered
+across App.js: `tradeHistory.js` (336 lines - trade normalisation,
+formatting, and history summarisation, shared by the Dashboard and Portfolio
+screens via the new `BrokerPanel` component), `recommendations.js` (200
+lines - freshness/expiry derivation, auto-trade eligibility text, filtering,
+grouping, and per-recommendation evidence formatters), `market.js` (61
+lines), `chat.js` (54 lines - Ask AI Trader's text normalisation and
+timeout racing), and `json.js` (31 lines - generic parse/format, used by
+both the trade detail view and the learning lab). `lib/founderPresentation.js`
+gained 17 more cross-screen tone/status/broker functions (now 505 lines,
+still one cohesive "founder presentation" module) and `lib/datetime.js`
+gained `todayIso`.
+
+**Two new `mobile/components/`** (used by 2+ screens, so kept as shared
+components rather than colocated in a single screen file): `BrokerPanel.js`
+(131 lines, plus `TradingPermissions`) and `ReportPanel.js` (29 lines).
+
+**Six new `mobile/screens/` files**, one per `SCREENS` entry, each
+containing that screen's top-level component plus any screen-exclusive
+sub-component and presentation helper: `Dashboard.js` (190 lines),
+`Activity.js` (145 lines), `Portfolio.js` (193 lines), `Recommendations.js`
+(202 lines), `Market.js` (190 lines), `Learning.js` (182 lines). All well
+under the 500-800-line cohesive-file guidance; none were split further than
+that guidance calls for.
+
+**One dead-code removal**: `selectedBrokerKey` (defined in the pre-Phase-2
+App.js, never called anywhere) was not carried forward into any new module.
+Verified genuinely unreachable (`grep` found only its own definition) before
+dropping it - the only place this work knowingly changed observable code
+shape rather than purely relocating it, and it has no runtime effect since
+nothing called it.
+
+**A transcription error was caught and fixed during this work, not shipped.**
+While hand-assembling the new hook file, `commandMessage`'s
+`/run-analysis`/`/run-crypto-analysis`/`/auto-execute-recommendations`/
+`/approve-and-execute`/`/broker-auto-trading` branches were initially
+reconstructed from memory rather than copied, and came out wrong - three
+branches were fabricated outright (`/stop-trading`, `/force-managed-exit`,
+`/kraken-reconciliation/replay` don't exist in the original function) and the
+real branches' logic differed. Caught by systematically diffing every
+hand-typed file against the original extracted source before validation, not
+by a test (no test covered `commandMessage`'s exact text). Fixed by replacing
+the block with the verified original text. Every other hand-typed file
+(all 6 screens, both new components, the `founderPresentation.js` additions)
+was then also diffed against its source and found correct. This is the
+reason the validation step below treats file-level diffing as load-bearing,
+not optional, for any future phase that hand-assembles rather than
+mechanically concatenates extracted code.
+
+**Validation.**
+- All 169 mobile unit tests pass (7 new lib test files added this phase:
+  `json.test.js` 7, `tradeHistory.test.js` 26, `recommendations.test.js` 23,
+  `market.test.js` 10, `chat.test.js` 9; plus pre-existing
+  `founderPresentation.test.js` 24, `refreshState.test.js` 19,
+  `founderEvidenceMapping.test.js` 12, `money.test.js` 10, `datetime.test.js`
+  11, `lists.test.js` 5, `notAvailable.test.js` 3, `client.test.js` 10 - all
+  unchanged and still passing, confirming no regression).
+- Every one of the 32 non-test `.js` files under `mobile/` (App.js, styles.js,
+  and everything in `components/`, `screens/`, `hooks/`, `lib/`, `api/`)
+  individually transformed cleanly through the project's real
+  `babel-preset-expo` toolchain.
+- `npx expo export --platform android`: a full Metro production bundle,
+  569 modules (up from 555 at the end of Phase 1, consistent with the ~14
+  net new files), zero errors.
+- `npx expo-doctor`: 17/17 checks passed.
+- A manual static circular-import check (require-graph DFS across all 32
+  files, since `madge` is not installed and was not added) found none.
+- A manual unused-export/unused-import scan across every new/modified file
+  found none.
+- No backend Python file was touched; no backend test suite run needed.
+
+**Not done in this phase** (documented as open follow-on work, not silently
+dropped): relocating the 19 already-named screen/card sub-components was
+completed as part of this phase's screen extraction, but the client-side
+recommendation-freshness fallback (`withRecommendationFreshness` in
+`lib/recommendations.js`) still independently recomputes the confidence-tier
+lifetime rule that also lives in the backend
+(`execution_service._recommendation_freshness`) rather than solely trusting
+the backend's `freshness_status`/`expires_at` fields - flagged in the
+original Phase 1 discovery report as a deliberate decision still open, not
+resolved by this phase.
+
+**Not committed, not pushed, not deployed by this entry** - implementation,
+validation, and documentation only, per this phase's explicit instruction to
+stop and pause for Founder and ChatGPT review before AT-ED-012 or deployment
+begins.
+
+## 2026-08-03 AT-ED-011 Phase 1 — mobile modularisation checkpoint (logged retroactively)
+
+This entry documents work completed earlier in the same day as the Phase 2
+entry above, committed as `b920578a` (plus an unrelated leftover documentation
+commit `a59cfca0`) but never logged here at the time - recorded now, retroactively,
+for completeness before Phase 2 builds on it.
+
+Following a read-only discovery investigation
+(`architecture/AT_ED_011_MOBILE_DISCOVERY_2026-08-03.md`) that mapped
+duplicated and extractable logic in the then-3,890-line `mobile/App.js`,
+this checkpoint extracted the lowest-risk, highest-value pieces: the shared
+API client (`mobile/api/client.js` - the single `apiRequest`
+fetch/timeout/auth-header implementation, replacing App.js's inline
+`request` `useCallback` and three duplicated helper functions), the
+founder-evidence payload-shaping functions (`mobile/lib/founderEvidenceMapping.js`,
+ten functions), four small formatting-helper modules (`money.js`,
+`datetime.js`, `lists.js`, `notAvailable.js`), the app's `StyleSheet`
+(`mobile/styles.js`), and seven shared low-level UI components
+(`mobile/components/shared/` - `Section`, `CollapsibleSection`, `Metric`,
+`TextBlock`, `Button`, `StatusPill`, `Empty`). App.js also switched to
+importing `founderPresentation.js`'s existing `formatGuardrailFailures`
+instead of keeping its own byte-for-byte duplicate.
+
+App.js dropped from 3,890 to 2,421 lines with no behaviour change. 51 new
+unit tests were added across the new `lib/` and `api/` modules; every touched
+file was validated through `babel-preset-expo` and a full
+`expo export --platform android` Metro bundle (555 modules, zero errors).
+
+
 ## 2026-08-03 AT-ED-010 production incident: two real bugs found and fixed post-deployment
 
 After AT-ED-010's mobile (`23c0733c`) and backend performance (`2b50a9cb`) commits were pushed

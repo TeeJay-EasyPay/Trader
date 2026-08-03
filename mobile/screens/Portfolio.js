@@ -1,0 +1,193 @@
+// Portfolio screen: capital/risk summary, AI-managed positions, trade history, broker
+// diagnostics, and exposure detail. Extracted from App.js as part of AT-ED-011 Phase 2.
+
+'use strict';
+
+const React = require('react');
+const { useState } = React;
+const { Text, TouchableOpacity, View } = require('react-native');
+const { styles } = require('../styles');
+const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
+const { BrokerPanel } = require('../components/BrokerPanel');
+const { ReportPanel } = require('../components/ReportPanel');
+const { moneyOrText, historyMoneyOrText } = require('../lib/money');
+const { formatDateTime } = require('../lib/datetime');
+const { formatList } = require('../lib/lists');
+const { formatJsonText } = require('../lib/json');
+const { connectedFounderBrokers, formatReconciliation, positionOwnership } = require('../lib/founderPresentation');
+const {
+  combinedTransactions,
+  tradeHistorySummary,
+  tradeHistoryBrokers,
+  tradeKey,
+  describeTransaction,
+  normalizeTradeRow,
+  isOpenTrade,
+  unavailableReason,
+  formatHoldingDuration,
+} = require('../lib/tradeHistory');
+
+function TradeDetail({ item, onForceExit }) {
+  const raw = item.raw || item.payload || {};
+  const normalized = normalizeTradeRow(item);
+  const tradeMoney = (value) => historyMoneyOrText(normalized.broker, value);
+  const isOpen = isOpenTrade(normalized);
+  const [showTechnicalData, setShowTechnicalData] = useState(false);
+  return (
+    <View>
+      <Metric label="Broker" value={normalized.broker} />
+      <Metric label="Symbol" value={normalized.symbol} />
+      <Metric label="Side" value={normalized.side} />
+      <Metric label="Status" value={isOpen ? 'Holding / unsold' : (normalized.status || item.event_type)} />
+      <Metric label="Quantity" value={normalized.quantity} />
+      <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
+      <Metric label="Target Price" value={tradeMoney(normalized.targetPrice) || unavailableReason(normalized, 'target')} />
+      <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice) || unavailableReason(normalized, 'current')} />
+      <Metric label="Stop Loss" value={tradeMoney(normalized.stopLoss) || unavailableReason(normalized, 'stop')} />
+      <Metric label="Exit Price" value={isOpen ? 'Unsold' : tradeMoney(normalized.exitPrice)} />
+      <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
+      <Metric label="Entry Date & Time" value={formatDateTime(normalized.openedAt)} />
+      <Metric label="Exit Date & Time" value={isOpen ? 'Unsold' : formatDateTime(normalized.closedAt)} />
+      <Metric label="Time Held" value={formatHoldingDuration(normalized.openedAt, normalized.closedAt, isOpen)} />
+      <TextBlock label="Entry Reason" value={normalized.entryReason || unavailableReason(normalized, 'entryReason')} />
+      <TextBlock label="Exit Reason" value={normalized.exitReason || unavailableReason(normalized, 'exitReason')} />
+      <TextBlock label="Learning Factors" value={formatJsonText(item.primary_factors_json || item.primary_factors)} />
+      <View style={styles.buttonGrid}>
+        <Button
+          label={showTechnicalData ? 'Hide Technical Data' : 'Show Technical Data'}
+          tone="neutral"
+          onPress={() => setShowTechnicalData((value) => !value)}
+        />
+      </View>
+      {showTechnicalData ? <TextBlock label="Technical Broker Data" value={formatJsonText(raw)} /> : null}
+      {isOpen && normalized.managedExitId ? (
+        <View style={styles.buttonGrid}>
+          <Button label="Exit Trade Now" tone="danger" onPress={() => onForceExit?.(item)} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function TradeHistoryRow({ item, onCommand }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.compactRow}>
+      <TouchableOpacity onPress={() => setOpen((value) => !value)}>
+        <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
+        <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
+      </TouchableOpacity>
+      {open ? (
+        <TradeDetail
+          item={item}
+          onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function PortfolioCommandCentre({ status, portfolio, recommendations, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
+  const portfolioCommand = status?.founder_experience?.portfolio_command || {};
+  const evidence = status?.world_class_evidence || {};
+  const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
+  const summary = tradeHistorySummary(status, trades, selectedExchange);
+  const brokerPanels = connectedFounderBrokers(status?.brokers || []);
+
+  // AI-managed positions only ever come from a broker's own managed_exits (an explicit,
+  // open MANAGED_TRADE_EXITS row) - never inferred from the raw position list, so a manual
+  // Kraken holding can never be mislabeled as AI-managed.
+  const aiManagedPositions = brokerPanels.flatMap((broker) =>
+    (broker.open_positions_detail || [])
+      .map((position) => ({ position, broker, ownership: positionOwnership(position, broker.managed_exits) }))
+      .filter((row) => row.ownership.isAiManaged)
+  );
+  const positionsRequiringAttention = (portfolio?.open_positions || []).filter((position) => Number(position.unrealized_pl || 0) < 0);
+
+  return (
+    <View>
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryReason}>Where is capital, where is risk, and what needs attention?</Text>
+        <Metric label="Portfolio Value" value={moneyOrText(portfolio?.portfolio_value)} />
+        <Metric label="Cash Available" value={moneyOrText(portfolio?.cash_available)} />
+        <Metric label="Deployed Capital" value={moneyOrText(portfolio?.deployed_capital)} />
+        <Metric label="Today's P&L" value={moneyOrText(portfolio?.todays_pnl)} />
+        <Metric label="Open Positions" value={(portfolio?.open_positions || []).length} />
+        <Metric label="Positions Requiring Attention" value={positionsRequiringAttention.length} />
+        {positionsRequiringAttention.length ? (
+          <TextBlock
+            label="At a Loss"
+            value={positionsRequiringAttention.map((position) => `${position.symbol || 'Unknown'}: ${moneyOrText(position.unrealized_pl)}`).join('\n')}
+          />
+        ) : null}
+      </View>
+
+      <CollapsibleSection
+        title="AI-Managed Positions"
+        subtitle="Positions the AI opened and is tracking to a stop-loss/take-profit exit. Manual holdings are never included here."
+        defaultExpanded={true}
+        badge={{ label: `${aiManagedPositions.length}`, tone: aiManagedPositions.length ? 'good' : 'neutral' }}
+      >
+        {aiManagedPositions.length === 0 ? (
+          <Empty />
+        ) : aiManagedPositions.map(({ position, broker, ownership }, index) => {
+          const proposalId = ownership.managedExit?.payload?.proposal_id || null;
+          const recommendation = proposalId ? (recommendations || []).find((item) => item.proposal_id === proposalId) : null;
+          return (
+            <View key={`ai-managed-${broker.broker}-${position.symbol || index}`} style={styles.compactRow}>
+              <Text style={styles.cardTitle}>{position.symbol || 'Unknown symbol'}</Text>
+              <Metric label="Broker" value={broker.label} />
+              <Metric label="Originating Recommendation" value={proposalId || 'Not linked in this evidence'} />
+              <Metric label="Strategy" value={recommendation?.strategy_name || recommendation?.strategy_id || 'Not available'} />
+              <Metric label="Entry Time" value={formatDateTime(ownership.managedExit?.created_at)} />
+              <Metric label="Current State" value={ownership.managedExit?.status} />
+              <Metric label="Managed-Exit Status" value={ownership.managedExit?.status === 'open' ? 'Monitoring for stop-loss/take-profit' : ownership.managedExit?.status} />
+              <Metric label="Unrealised Result" value={moneyOrText(position.unrealized_pl)} />
+              <Metric label="Latest Learning State" value="Not available yet - learning only follows a closed, reconciled trade." />
+            </View>
+          );
+        })}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Trade History" subtitle="Every order, fill, and closed trade across brokers.">
+        <View style={styles.buttonGrid}>
+          {tradeHistoryBrokers(status).map((item) => (
+            <Button key={`history-${item}`} label={item} tone={selectedExchange === item ? 'primary' : 'neutral'} onPress={() => setSelectedExchange(item)} />
+          ))}
+        </View>
+        <Metric label="Daily P&L" value={moneyOrText(summary.dailyPnl)} />
+        <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
+        <Metric label="Open Positions" value={summary.openPositions} />
+        {trades.slice(0, 20).map((item, index) => (
+          <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+        ))}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Broker Diagnostics" subtitle="Per-broker connection, governance, and balance detail.">
+        {brokerPanels.length ? brokerPanels.map((broker) => (
+          <BrokerPanel key={`${broker.broker}-portfolio`} broker={broker} onCommand={onCommand} onReport={onReport} />
+        )) : <Empty />}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Exposure and Operational Detail" subtitle="Diversification, exposure checks, and reconciliation health.">
+        <Metric label="Diversification" value={portfolioCommand.diversification} />
+        <Metric label="Portfolio Risk" value={portfolioCommand.portfolio_risk} />
+        <Metric label="Expected Portfolio Return" value={portfolioCommand.expected_portfolio_return} />
+        <TextBlock label="Rebalancing Suggestions" value={formatList(portfolioCommand.rebalancing_suggestions)} />
+        <Metric label="Sector Exposure" value={portfolioCommand.sector_exposure} />
+        <Metric label="Country Exposure" value={portfolioCommand.country_exposure} />
+        <Metric label="Currency Exposure" value={portfolioCommand.currency_exposure} />
+        <Metric label="Correlation" value={portfolioCommand.correlation} />
+        <Metric label="Lifecycle Events" value={evidence.operational_truth?.canonical_lifecycle_events} />
+        <Metric label="Illegal Transition Rejections" value={evidence.operational_truth?.illegal_transition_rejections} />
+        <TextBlock label="Reconciliation Health" value={formatReconciliation(evidence.operational_truth?.reconciliation_health)} />
+        <TextBlock label="Portfolio Intelligence Notes" value={evidence.portfolio_intelligence?.plain_english} />
+        <TextBlock label="Warnings" value={formatList(evidence.portfolio_intelligence?.warnings)} />
+      </CollapsibleSection>
+
+      {latestReport ? <ReportPanel report={latestReport} /> : null}
+    </View>
+  );
+}
+
+module.exports = { PortfolioCommandCentre };
