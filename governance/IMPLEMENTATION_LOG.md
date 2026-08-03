@@ -1,5 +1,97 @@
 # Implementation Log
 
+## 2026-08-03 Modularisation Phase 9 (items 5-9) — verification, push, deployment, smoke verification
+
+Completes items 5-9 of the ChatGPT-authored Phase 9 directive, following the coordinating
+session's independent review and commit of items 1-4 (`8879aca9`).
+
+**Item 5, final architecture review.** Confirmed no `application/*.py` file imports another -
+the only cross-file import within `application/` is every service importing from
+`shared_helpers.py` (a genuine leaf: no class, no state, stdlib + `..operational.safe_float`
+only). Comprehensive import smoke test (`from ai_trader.api import LocalApiService, ApiHandler,
+run_server, AdministrationService, BrokerService, ExecutionService` plus every
+`application/*` module directly) succeeded with no circular-import error. Confirmed execution
+logic exists in exactly one real implementation each (`approve_and_execute`,
+`auto_execute_recommendations`, `monitor_managed_exits`, `force_managed_exit` all have exactly
+two `def` sites each across `src/`: the one-line delegate in `api/__init__.py` and the real body
+in `execution_service.py` - not a duplicate implementation).
+
+**Item 6, safety verification.** Re-ran every named safety category individually with verbose
+output: Alpaca paper-only, Kraken isolated capital/min-max order/allowed-pairs/buy-only/max-open-
+trades, the reconciliation hold, the kill switch, strategy entitlement, portfolio/risk rejection,
+order-intent locking (acquire/duplicate-prevention/definite-release/ambiguous-retention),
+scheduled-job idempotency, managed exits, forced exits, and all 20 API contract characterization
+tests - 85 tests across `test_orchestrator.py`, `test_multi_broker_platform.py`,
+`test_guardrails.py`, `test_api_contract_characterization.py`, plus 15 more in
+`test_production_completion.py` for scheduled-job idempotency specifically. All passed
+individually by name, not just as part of the full suite.
+
+**Item 7, full validation.** Full stable suite run clean twice independently after items 1-4
+were committed: 302 passed, 0 failed both runs. Cumulative diff review
+(`git diff --stat d732ba35^..HEAD`, the entire Stage 0 through Phase 9 effort as one unit): 36
+files changed, every one traceable to a documented phase. Explicitly grepped the full diff
+content (not just filenames) for credential/secret/API-key/private-key patterns, `.sqlite`/`.db`
+files, and `.apk` files - zero matches on all three.
+
+**Item 8, git and deployment.** Working tree confirmed clean of Phase 9 changes (the only
+uncommitted files were two pre-existing, unrelated items from before this session's work -
+`.gitignore` and the founding-principles constitution doc - left untouched, not part of this
+effort). Pushed `master` to `origin/master`: `32d33a5a..8879aca9`. Fetched and confirmed
+`git diff master origin/master` is empty - local and remote are identical, all 12 commits
+(`d732ba35` through `8879aca9`) present remotely. Render configuration was not modified.
+
+**Item 9, production smoke verification.** Polled the hosted worker's reported
+`deployment_commit` every 30s; confirmed it advanced from the pre-push commit
+(`32d33a5aa396896866ae3d6c0f8a193d6552b7ad`) to the new one
+(`8879aca9b5b3be85d1a150f203e5b6267aca2a10`) after approximately 8.5 minutes, with a new
+`worker_id` confirming a genuine process restart, not a stale cached value. Confirmed: API
+`/healthz` responds 200; worker heartbeat healthy and live; scheduled jobs actively running
+(`job_run_id` observed incrementing between two separate calls, `auto-execution-kraken` and
+`auto-execution-alpaca` both processing under the new worker); a crypto research run completed
+minutes before the check; `evidence-snapshot` jobs recorded as running; the Kraken reconciliation
+hold is unchanged (`hold_new_entries: false`, same founder-override reason string from
+2026-08-01, `last_replay_at` current); the Kraken capital ledger shows the full £100 allocation
+still available with zero open positions, confirming no real order was submitted by this
+deployment or by any test; DB-only endpoints (`/kraken-reconciliation`, `/notifications`,
+`/operations-health`, `/founder-evidence`, `/sprint6-status`) all responded correctly, ruling out
+Postgres connection-pool exhaustion or a broad outage.
+
+**Two genuine findings, both confirmed pre-existing and NOT caused by any of the 12 commits in
+this push - not fixed, per the explicit "stop before making unrelated fixes" instruction:**
+
+1. **`/status`, `/phase5-status`, and `/brokers` hang and time out** at a consistent ~60 seconds
+   (matching Render's own proxy timeout, not a client-side setting) across repeated attempts.
+   Root cause traced to two untouched code paths: `/status`/`/phase5-status` both call
+   `production_spine.supervise_workers`, which queries `list_job_runs(db_path, limit=200)`
+   against a `SCHEDULED_JOB_RUNS`-family table that has accumulated roughly 12,000 rows over
+   weeks of operation (`/operations-health` showed `job_run_id: 11914` and climbing) - plausibly
+   a missing-index/table-scan performance problem at this data volume, not something any phase
+   of this modularisation introduced. `production_spine.py` does not appear anywhere in the
+   Stage 0 - Phase 9 cumulative diff. `/brokers` calls `broker_panels()` (moved verbatim,
+   byte-for-byte verified, in Phase 6a and never touched again), which likely blocks on a live
+   external Kraken/Alpaca pricing lookup. Locally, `LocalApiService(...).status()` against a
+   fresh SQLite database returns in under 0.3 seconds - confirming the code path itself is not
+   broken, only slow/blocking at production data volume or on a live external call.
+2. **`/activity/status`'s payload is a periodically-refreshed snapshot, not computed live per
+   request.** Three requests spaced 30-90 seconds apart returned byte-identical
+   `heartbeat_age_seconds` values (down to six decimal places) and an unchanged
+   `last_heartbeat_at`/`current_job`/`last_broker_poll` - a live computation would never produce
+   identical timestamps across real elapsed wall-clock time. A later pair of requests two minutes
+   apart showed the same pattern (frozen between checks, having advanced once between the two
+   batches). This is very likely a material contributor to the Founder's long-standing reports of
+   stale/"Not available" data in the mobile app, and is the leading candidate finding for the
+   Phase 9 item 11 UI investigation below, not something to fix in this entry.
+
+**Rollback assessment: not required.** Both findings are confirmed pre-existing (the underlying
+code is unchanged by this push - either absent from the cumulative diff entirely, or verified
+byte-for-byte identical to its pre-Phase-9 source) and do not represent a regression introduced
+by Stage 0 through Phase 9. The deployment itself is healthy: correct commit live on both
+services, worker actively processing scheduled jobs, database layer fast and responsive, Kraken
+capital isolation and reconciliation hold state both unchanged, zero real orders submitted.
+
+**Next.** Item 10 (documentation/Founder briefing) and item 11 (the read-only UI data freshness
+investigation, informed directly by the two findings above) follow as separate steps.
+
 ## 2026-08-02 Modularisation Phase 9 (items 1-4) — wrapper audit, helper consolidation, dead code, schema fix
 
 Implements items 1-4 of the ChatGPT-authored Phase 9 directive (behaviour-preserving cleanup,
