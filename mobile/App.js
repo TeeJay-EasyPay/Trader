@@ -23,6 +23,14 @@ const {
   positionOwnership,
   learningSummary,
 } = require('./lib/founderPresentation');
+const {
+  DISPLAY_STATE,
+  classifyDisplayState,
+  snapshotFreshness,
+  formatAgeSeconds,
+  cacheBannerDetails,
+  displayStateBadge,
+} = require('./lib/refreshState');
 
 const API_BASE = process.env.EXPO_PUBLIC_AI_TRADER_API_URL || 'https://trader-no0f.onrender.com';
 const API_TOKEN = process.env.EXPO_PUBLIC_AI_TRADER_API_TOKEN || '';
@@ -33,6 +41,15 @@ const PRIMARY_REFRESH_TIMEOUT_MS = 18000;
 const SECONDARY_REFRESH_TIMEOUT_MS = 8000;
 const BACKGROUND_HYDRATION_TIMEOUT_MS = 60000;
 const COMMAND_TIMEOUT_MS = 45000;
+// AT-ED-010 requirement 3 ("continue normal scheduled refreshes" / "automatically recover
+// to LIVE mode as soon as a successful refresh occurs"): there was previously no periodic
+// refresh at all, only manual pull-to-refresh and the initial mount fetch, so a stale/cached
+// state could persist indefinitely with nothing to trigger auto-recovery. This is a new
+// mechanism, not a re-tuned existing value - 2 minutes is a conservative starting point,
+// not a measured figure (that measurement work is a separate, parallel task; production
+// /founder-evidence latency was independently sampled at a consistent 3-3.75s, so this
+// interval is not expected to cause request overlap in practice).
+const AUTO_REFRESH_INTERVAL_MS = 120000;
 
 const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
 
@@ -551,6 +568,13 @@ export default function App() {
   const [amounts, setAmounts] = useState({});
   const [selectedExchange, setSelectedExchange] = useState('All');
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
+  // AT-ED-010 data-freshness state (mobile/lib/refreshState.js owns the derived
+  // classification - these four are the raw signals it's computed from).
+  const [hasAttempted, setHasAttempted] = useState(false);
+  const [lastRefreshSucceeded, setLastRefreshSucceeded] = useState(null);
+  const [lastRefreshError, setLastRefreshError] = useState(null);
+  const [cachedAt, setCachedAt] = useState(null);
+  const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [targetRecommendationId, setTargetRecommendationId] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
@@ -611,40 +635,80 @@ export default function App() {
     }
   }, []);
 
+  // AT-ED-010 requirement 3: fetch /founder-evidence once, with one bounded retry on
+  // failure, before the caller decides whether to fall back to cache. No silent partial
+  // states - the caller always learns definitively whether this attempt succeeded.
+  const fetchFounderEvidenceOnce = useCallback(
+    () => request(`/founder-evidence?period=${activityPeriod}&trade_limit=100`, { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }),
+    [activityPeriod, request]
+  );
+
+  const applyLiveFounderEvidence = useCallback(async (founderEvidence) => {
+    const nextStatus = statusFromFounderEvidence(founderEvidence);
+    const nextPortfolio = founderEvidence.portfolio || {
+      portfolio_value: null,
+      cash_available: null,
+      deployed_capital: null,
+      todays_pnl: null,
+      open_positions: [],
+    };
+    const nextRecommendationItems = sortByConfidence(founderEvidence.recommendations || []);
+    setStatus(nextStatus);
+    setPortfolio(nextPortfolio);
+    setActivity(activityFromFounderEvidence(founderEvidence));
+    setPerformanceAttribution((founderEvidence.trades || []).map(productionTradeForMobile));
+    setDailyLearning(founderLearningForMobile(founderEvidence));
+    if (nextRecommendationItems.length) {
+      setRecommendations(nextRecommendationItems);
+      await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
+    } else {
+      const cached = await loadCachedRecommendations();
+      setRecommendations(cached.length ? cached : []);
+    }
+    const fetchedAt = new Date().toISOString();
+    await AsyncStorage.setItem(FOUNDER_EVIDENCE_CACHE_KEY, JSON.stringify({ data: founderEvidence, fetchedAt }));
+    setSnapshotMeta(founderEvidence.snapshot || null);
+    setCachedAt(fetchedAt);
+    setLastRefreshedAt(fetchedAt);
+  }, []);
+
+  const applyCachedFounderEvidence = useCallback((cached) => {
+    setStatus(statusFromFounderEvidence(cached.data));
+    setPortfolio(cached.data.portfolio || null);
+    setActivity(activityFromFounderEvidence(cached.data));
+    setPerformanceAttribution((cached.data.trades || []).map(productionTradeForMobile));
+    setDailyLearning(founderLearningForMobile(cached.data));
+    setSnapshotMeta(cached.data.snapshot || null);
+    setCachedAt(cached.fetchedAt || null);
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
+    let founderEvidence = null;
+    let errorMessage = null;
     try {
-      const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
-        request(path, { timeoutMs }).catch(() => fallback);
-      const founderEvidence = await request(
-        `/founder-evidence?period=${activityPeriod}&trade_limit=100`,
-        { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS }
-      );
-      const nextStatus = statusFromFounderEvidence(founderEvidence);
-      const nextPortfolio = founderEvidence.portfolio || {
-        portfolio_value: null,
-        cash_available: null,
-        deployed_capital: null,
-        todays_pnl: null,
-        open_positions: [],
-      };
-      const nextRecommendationItems = sortByConfidence(founderEvidence.recommendations || []);
-      setStatus(nextStatus);
-      setPortfolio(nextPortfolio);
-      setActivity(activityFromFounderEvidence(founderEvidence));
-      setPerformanceAttribution((founderEvidence.trades || []).map(productionTradeForMobile));
-      setDailyLearning(founderLearningForMobile(founderEvidence));
-      if (nextRecommendationItems.length) {
-        setRecommendations(nextRecommendationItems);
-        await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
-      } else {
-        const cached = await loadCachedRecommendations();
-        setRecommendations(cached.length ? cached : []);
+      founderEvidence = await fetchFounderEvidenceOnce();
+    } catch (firstError) {
+      // AT-ED-010 requirement 3: one bounded retry before falling back to cache - a
+      // transient hiccup should recover to LIVE on its own, not immediately read as
+      // "the backend is down".
+      try {
+        founderEvidence = await fetchFounderEvidenceOnce();
+      } catch (secondError) {
+        errorMessage = String(secondError.message || secondError);
       }
-      await AsyncStorage.setItem(FOUNDER_EVIDENCE_CACHE_KEY, JSON.stringify(founderEvidence));
-      setLastRefreshedAt(new Date().toISOString());
+    }
+
+    setHasAttempted(true);
+    setLastRefreshSucceeded(founderEvidence !== null);
+    setLastRefreshError(founderEvidence !== null ? null : errorMessage);
+
+    if (founderEvidence !== null) {
+      await applyLiveFounderEvidence(founderEvidence);
       setLoading(false);
 
+      const optional = (path, fallback, timeoutMs = SECONDARY_REFRESH_TIMEOUT_MS) =>
+        request(path, { timeoutMs }).catch(() => fallback);
       Promise.all([
         optional('/founder-brief', { report_markdown: 'Not available - founder brief endpoint did not respond.' }),
         optional(`/benchmark-daily-brief?date=${todayIso()}`, null),
@@ -657,32 +721,30 @@ export default function App() {
         setThemes(nextThemes.themes || []);
         setCompanies(nextCompanies.companies || []);
         setNotifications(nextNotifications.notifications || []);
-        setLastRefreshedAt(new Date().toISOString());
       });
-    } catch (error) {
-      const cached = await loadCachedFounderEvidence();
-      if (cached) {
-        setStatus(statusFromFounderEvidence(cached));
-        setPortfolio(cached.portfolio || null);
-        setActivity(activityFromFounderEvidence(cached));
-        setPerformanceAttribution((cached.trades || []).map(productionTradeForMobile));
-        setDailyLearning(founderLearningForMobile(cached));
-      } else {
-        setActivity(unavailableActivity(`Production evidence could not be loaded: ${String(error.message || error)}`));
-        setStatus(unavailableStatus(String(error.message || error)));
-      }
-      setLoading(false);
+      return;
     }
-  }, [activityPeriod, request]);
+
+    // Both the primary attempt and the one bounded retry failed. AT-ED-010 requirement 3:
+    // never silently keep showing whatever was on screen without recording the failure -
+    // fall back to cache if one exists, clearly marked (see the DISPLAY_STATE derivation
+    // in the render below), and otherwise show an explicit unavailable state.
+    const cached = await loadCachedFounderEvidence();
+    if (cached && cached.data) {
+      applyCachedFounderEvidence(cached);
+    } else {
+      setActivity(unavailableActivity(`Production evidence could not be loaded: ${errorMessage}`));
+      setStatus(unavailableStatus(String(errorMessage)));
+      setSnapshotMeta(null);
+      setCachedAt(null);
+    }
+    setLoading(false);
+  }, [fetchFounderEvidenceOnce, applyLiveFounderEvidence, applyCachedFounderEvidence, request]);
 
   useEffect(() => {
     loadCachedFounderEvidence().then((cached) => {
-      if (cached) {
-        setStatus(statusFromFounderEvidence(cached));
-        setPortfolio(cached.portfolio || null);
-        setActivity(activityFromFounderEvidence(cached));
-        setPerformanceAttribution((cached.trades || []).map(productionTradeForMobile));
-        setDailyLearning(founderLearningForMobile(cached));
+      if (cached && cached.data) {
+        applyCachedFounderEvidence(cached);
       }
     });
     loadCachedRecommendations().then((cached) => {
@@ -692,6 +754,21 @@ export default function App() {
     });
     refresh();
   }, [refresh]);
+
+  // AT-ED-010 requirement 3 ("continue normal scheduled refreshes" / "automatically
+  // recover to LIVE mode as soon as a successful refresh occurs"): previously the only
+  // triggers were the initial mount and manual/pull-to-refresh, so a Cached or Refresh
+  // Failed state had no path back to Live without the Founder opening the app and pulling
+  // to refresh themselves. This does not fire while a manual refresh is already in flight
+  // (`loading`), and is cleared on unmount.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!loading) {
+        refresh();
+      }
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [loading, refresh]);
 
   const command = async (path, body = {}, fallbackPath = null) => {
     setLoading(true);
@@ -846,14 +923,73 @@ export default function App() {
     );
   }, [activity, activityPeriod, amounts, askMessages, benchmark, brief, companies, dailyLearning, latestReport, loading, notifications, performanceAttribution, portfolio, recommendations, request, screen, status, themes, targetRecommendationId, selectedExchange]);
 
+  // AT-ED-010: one place derives what the Founder should be told about data freshness, so
+  // every screen (via the header, which is always visible) shows the identical state - see
+  // mobile/lib/refreshState.js for why Live/Refreshing/Cached/Backend-Snapshot-Stale/
+  // Refresh-Failed/No-Data-Available must never be merged into one ambiguous indicator.
+  const snapshotInfo = useMemo(() => snapshotFreshness(snapshotMeta), [snapshotMeta]);
+  const dataSourceState = useMemo(
+    () =>
+      classifyDisplayState({
+        isRefreshing: loading,
+        hasAttempted,
+        lastRefreshSucceeded,
+        hasCachedData: Boolean(cachedAt),
+        backendSnapshotStale: snapshotInfo.stale,
+      }),
+    [loading, hasAttempted, lastRefreshSucceeded, cachedAt, snapshotInfo.stale]
+  );
+  const dataSourceBadge = useMemo(() => displayStateBadge(dataSourceState), [dataSourceState]);
+  const cacheBanner = useMemo(
+    () =>
+      dataSourceState === DISPLAY_STATE.CACHED
+        ? cacheBannerDetails({ cachedAt, lastError: lastRefreshError })
+        : null,
+    [dataSourceState, cachedAt, lastRefreshError]
+  );
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor="#0b1220" translucent={false} />
       <View style={styles.header}>
-        <Text style={styles.title}>AI Trader</Text>
+        <View style={styles.headerTopRow}>
+          <Text style={styles.title}>AI Trader</Text>
+          <StatusPill label={dataSourceBadge.label} tone={dataSourceBadge.tone} />
+        </View>
         <Text style={styles.subtitle}>
           {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
         </Text>
+        {snapshotInfo.known && (
+          <Text style={styles.subtitle}>
+            Evidence as of {formatDateTime(snapshotInfo.generatedAt)}
+            {typeof snapshotInfo.ageSeconds === 'number' ? ` (${formatAgeSeconds(snapshotInfo.ageSeconds)})` : ''}
+            {snapshotInfo.stale ? ' - backend snapshot stale' : ''}
+          </Text>
+        )}
+        {cacheBanner && (
+          <View style={styles.cacheBanner}>
+            <Text style={styles.cacheBannerHeadline}>{cacheBanner.headline}</Text>
+            {cacheBanner.captured && (
+              <Text style={styles.cacheBannerDetail}>Captured: {formatDateTime(cacheBanner.captured)}</Text>
+            )}
+            {cacheBanner.age && <Text style={styles.cacheBannerDetail}>Age: {cacheBanner.age}</Text>}
+            <Text style={styles.cacheBannerDetail}>{cacheBanner.reason}</Text>
+            <TouchableOpacity onPress={refresh} disabled={loading}>
+              <Text style={styles.cacheBannerRetry}>Retry now</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {dataSourceState === DISPLAY_STATE.REFRESH_FAILED && (
+          <View style={styles.cacheBanner}>
+            <Text style={styles.cacheBannerHeadline}>No Data Available</Text>
+            <Text style={styles.cacheBannerDetail}>
+              {lastRefreshError ? `Live refresh failed: ${lastRefreshError}` : 'Live refresh failed.'}
+            </Text>
+            <TouchableOpacity onPress={refresh} disabled={loading}>
+              <Text style={styles.cacheBannerRetry}>Retry now</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
       <View style={styles.tabs}>
         {SCREENS.map((item) => (
@@ -2488,6 +2624,11 @@ async function loadCachedRecommendations() {
   }
 }
 
+// AT-ED-010: the cache now stores { data, fetchedAt } so the app can show the Founder how
+// old the *phone's own copy* is (distinct from the backend's snapshot age - see
+// lib/refreshState.js's module comment). Older installs may still have a bare founder-
+// evidence payload written by a previous app version under this same key; that's handled
+// as fetchedAt: null (age unknown) rather than discarding the cache outright.
 async function loadCachedFounderEvidence() {
   try {
     const raw = await AsyncStorage.getItem(FOUNDER_EVIDENCE_CACHE_KEY);
@@ -2495,7 +2636,14 @@ async function loadCachedFounderEvidence() {
       return null;
     }
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    if (parsed.data && typeof parsed.data === 'object') {
+      return { data: parsed.data, fetchedAt: parsed.fetchedAt || null };
+    }
+    // Pre-AT-ED-010 cache format: the raw founder-evidence payload itself.
+    return { data: parsed, fetchedAt: null };
   } catch (error) {
     return null;
   }
@@ -3460,6 +3608,11 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1f2937',
     borderBottomWidth: 1,
   },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   title: {
     fontSize: 24,
     fontWeight: '800',
@@ -3469,6 +3622,30 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontSize: 13,
     color: '#94a3b8',
+  },
+  cacheBanner: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#d97706',
+  },
+  cacheBannerHeadline: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#78350f',
+  },
+  cacheBannerDetail: {
+    fontSize: 12,
+    color: '#78350f',
+    marginTop: 2,
+  },
+  cacheBannerRetry: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1f6feb',
+    marginTop: 6,
   },
   tabs: {
     flexDirection: 'row',

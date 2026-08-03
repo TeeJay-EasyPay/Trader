@@ -1,5 +1,81 @@
 # Implementation Log
 
+## 2026-08-03 AT-ED-010 mobile requirements 1-3 — truthful live/cached state machine
+
+Implements requirements 1-3 of `engineering-directives/implementation/AT-ED-010_UI_DATA_FRESHNESS_AND_EVIDENCE_ALIGNMENT.md`,
+per ChatGPT's follow-up directive reframing the objective as "restore truthful LIVE
+operation," not merely labelling cached data. Backend performance work (requirements 4-5,
+committed separately as `2b50a9cb`) is a parallel task - not touched here. No backend code,
+and no trading/risk/governance logic anywhere, was touched by this entry.
+
+**New `mobile/lib/refreshState.js`** (dependency-free, matching `founderPresentation.js`'s
+established pure-function/no-React-import convention): `classifyDisplayState` derives one
+of six distinct states - Live / Refreshing / Cached / Backend Snapshot Stale / Refresh
+Failed / No Data Available - from four raw signals (`isRefreshing`, `hasAttempted`,
+`lastRefreshSucceeded`, `hasCachedData`, `backendSnapshotStale`), with an explicit
+precedence: an in-flight refresh always wins, then a distinction between "never attempted"
+and "attempted and failed," then live-success is split into Live vs Backend-Snapshot-Stale
+depending on the backend's own `snapshot.stale` flag, and failure is split into Cached vs
+Refresh-Failed depending on whether a local cache exists to fall back to. `snapshotFreshness`
+normalizes `founderEvidence.snapshot` (age_seconds/stale/generated_at, as
+`production_evidence.load_founder_evidence_snapshot` already attaches it) into a
+render-safe shape, including the case where the field is absent entirely
+(`_snapshot_not_ready_payload`, returned while the worker hasn't written its first
+snapshot). `cacheBannerDetails` computes the "Cached Data / Captured: / Age: / Live refresh
+failed" banner content from a cache timestamp and the last error. `displayStateBadge` is
+the single call site mapping each state to its label/tone, so no screen can render a state
+with different wording than another. 19 new tests in `mobile/lib/refreshState.test.js`
+(`node mobile/lib/refreshState.test.js`).
+
+**The state machine, wired into `App.js`'s `refresh()`.** Previously any failure (timeout,
+network error, non-200) silently fell back to `AsyncStorage` with the exact same setters as
+the success path - the confirmed root cause of the Founder's long-standing "Not available"
+reports (AT-ED-010 Finding 1). `refresh()` now: attempts `/founder-evidence` once, and on
+failure retries **once** (bounded, per the directive's exact state machine) before deciding
+between applying live data or falling back to cache. Every attempt sets `hasAttempted`,
+`lastRefreshSucceeded`, and `lastRefreshError` explicitly - there is no code path left where
+a failure updates the screen without also recording that a failure happened.
+
+**The `AsyncStorage` cache envelope changed** from the raw founder-evidence payload to
+`{ data, fetchedAt }`, so the app can report how old its *own local cache* is - a different
+concept from the backend's snapshot age, and the directive (section 5) explicitly requires
+keeping the two distinct. `loadCachedFounderEvidence` handles a pre-existing bare-payload
+cache from an older app version as `{ data: <payload>, fetchedAt: null }` (age unknown, not
+discarded).
+
+**A new periodic auto-refresh** (`AUTO_REFRESH_INTERVAL_MS = 120000`, a `useEffect` with
+`setInterval`, skipped while a refresh is already in flight, cleared on unmount) was added -
+previously the only refresh triggers were the initial mount and manual/pull-to-refresh, so a
+Cached or Refresh-Failed state had no path back to Live without the Founder opening the app
+themselves. This is a genuinely new mechanism, not a retuned existing value, and the interval
+was chosen conservatively (production `/founder-evidence` was independently measured at a
+consistent 3-3.75s, well under any overlap risk at this interval) rather than by
+measurement, since the measurement work is the parallel backend task's job, not this one's.
+
+**UI**: the app header (visible on every screen, not only Dashboard/Command, which is a
+superset of the directive's "at least" requirement) now shows a `StatusPill` badge for the
+current state, an "Evidence as of [time] (Xm ago)" line whenever the backend's snapshot
+metadata is present, and - only when the state is Cached or Refresh Failed - an amber
+banner with the captured time, age, failure reason, and a "Retry now" action that calls
+`refresh()` directly. Reused the existing `StatusPill`/tone system (`good`/`warn`/`danger`)
+rather than inventing new visual language.
+
+**Verification.** `npx expo-doctor`: 17/17 checks passed (this project's established mobile
+validation step, per prior log entries). `App.js` transformed successfully through the
+project's own local `@babel/core` + `babel-preset-expo` (its actual build toolchain) with
+zero syntax errors - a separate, more direct check than `expo-doctor` alone, independently
+re-verified by the coordinating session. Both pure-logic test files pass clean, independently
+re-run: `founderPresentation.test.js` 24/24 (unchanged, confirming this work didn't regress
+existing presentation logic), `refreshState.test.js` 19/19 (new). No backend test suite run
+needed - no backend file was touched.
+
+**Not committed by this work** - reviewed and committed separately by the coordinating
+session, matching this whole effort's established process.
+
+**Next.** AT-ED-010 requirement 2 (measuring and, if warranted, retuning
+`PRIMARY_REFRESH_TIMEOUT_MS`) is separate follow-on work, informed by the backend
+measurement/profiling now committed alongside requirements 4-5.
+
 ## 2026-08-03 AT-ED-010 requirements 4-5 — backend performance (job-runs index, broker_panels batching)
 
 Implements requirements 4 and 5 of `engineering-directives/implementation/AT-ED-010_UI_DATA_FRESHNESS_AND_EVIDENCE_ALIGNMENT.md`,
