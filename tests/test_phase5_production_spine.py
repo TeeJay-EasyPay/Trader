@@ -75,6 +75,49 @@ class Phase5ProductionSpineTests(unittest.TestCase):
             self.assertEqual(supervision["stale_workers"], 1)
             self.assertEqual(supervision["incidents_created"], 1)
 
+    def test_historical_worker_rows_from_past_deploys_are_never_treated_as_stale(self):
+        # Bug found investigating AT-ED-010's /status and /phase5-status hanging ~60s in
+        # production: WORKER_HEARTBEATS keeps one permanent row per past deploy generation
+        # (Render starts a new worker container, hence a new worker_id, on every deploy,
+        # and old rows are never deleted). supervise_workers used to check every row's raw
+        # heartbeat age directly, so every dead worker from every previous deploy was always
+        # "stale," and record_operations_incident (a DB write) ran once per historical row
+        # on every single call -- confirmed as the actual bottleneck, not a missing index.
+        # This proves many old rows plus one genuinely fresh row produces a healthy result
+        # with zero incidents, not one incident per historical row.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_always_on_schema(db_path)
+            now = datetime.now(timezone.utc)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    for i in range(50):
+                        old = (now - timedelta(days=i + 1)).isoformat()
+                        conn.execute(
+                            """
+                            INSERT INTO WORKER_HEARTBEATS (
+                                worker_id, worker_type, started_at, last_heartbeat_at, status
+                            ) VALUES (?, 'background-worker', ?, ?, 'running')
+                            """,
+                            (f"worker-deploy-{i}", old, old),
+                        )
+                    fresh = now.isoformat()
+                    conn.execute(
+                        """
+                        INSERT INTO WORKER_HEARTBEATS (
+                            worker_id, worker_type, started_at, last_heartbeat_at, status
+                        ) VALUES ('worker-current', 'background-worker', ?, ?, 'running')
+                        """,
+                        (fresh, fresh),
+                    )
+
+            supervision = supervise_workers(db_path, expected_worker_interval_seconds=60)
+
+            self.assertEqual(supervision["status"], "healthy")
+            self.assertEqual(supervision["stale_workers"], 0)
+            self.assertEqual(supervision["incidents_created"], 0)
+            self.assertEqual(supervision["duplicate_worker_types"], {})
+
     def test_canonical_reconciliation_is_idempotent_for_duplicate_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

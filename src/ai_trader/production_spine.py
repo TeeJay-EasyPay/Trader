@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from .database import POSTGRES_BACKENDS, connect, selected_backend
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .always_on import (
+    classify_worker_presence,
     list_job_runs,
     list_worker_heartbeats,
     record_operations_incident,
@@ -253,12 +255,27 @@ def supervise_workers(
     now = datetime.now(timezone.utc)
     workers = list_worker_heartbeats(db_path)
     jobs = list_job_runs(db_path, limit=200)
+    # Bug fix (found investigating AT-ED-010's /status and /phase5-status hang):
+    # WORKER_HEARTBEATS keeps one permanent row per past deploy generation (see
+    # WORKER_LIVE_THRESHOLD_SECONDS's docstring comment in always_on.py) -- every dead
+    # worker from every previous deploy was being checked against the staleness
+    # threshold directly, so all of them were always "stale," and record_operations_incident
+    # (a DB write) ran once per historical row on every single call, which is the
+    # confirmed source of the ~60s hang, not a missing index. classify_worker_presence
+    # already exists specifically to solve this (only the single freshest row can ever
+    # be Live/Stale; every other row is Historical) -- current_workers restricts both
+    # staleness and duplicate-type detection to that non-historical set, matching what
+    # the rest of the app already treats as "the current worker."
+    current_workers = [
+        worker for worker in classify_worker_presence(workers, now=now)
+        if worker["presence_status"] != "Historical"
+    ]
     stale_workers = [
-        worker for worker in workers
+        worker for worker in current_workers
         if (_age_seconds(worker.get("last_heartbeat_at"), now) or 999999) > expected_worker_interval_seconds * 2
     ]
     by_type: dict[str, int] = {}
-    for worker in workers:
+    for worker in current_workers:
         by_type[str(worker.get("worker_type") or "unknown")] = by_type.get(str(worker.get("worker_type") or "unknown"), 0) + 1
     duplicate_worker_types = {kind: count for kind, count in by_type.items() if kind == "background-worker" and count > 1}
     late_jobs = _late_jobs(jobs, expected_jobs or {}, now)
@@ -823,8 +840,14 @@ def strategy_promotion_decision(
 
 
 def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[str, Any]:
+    # TEMPORARY diagnostic timing (AT-ED-010 follow-up) -- revert once the production
+    # bottleneck behind /phase5-status and /status hanging ~60s is proven, not guessed.
+    _t0 = time.perf_counter()
     spine = production_database_spine_status(db_path, database_backend=database_backend)
+    _t1 = time.perf_counter()
     supervision = supervise_workers(db_path)
+    _t2 = time.perf_counter()
+    _debug_timing = {"spine_status_seconds": _t1 - _t0, "supervise_workers_seconds": _t2 - _t1}
     worker_healthy = supervision["status"] == "healthy"
     backend_ready = database_backend in POSTGRES_BACKENDS
     operational = backend_ready and worker_healthy
@@ -846,6 +869,7 @@ def phase5_status(db_path: Path, *, database_backend: str = "sqlite") -> dict[st
         "worker_supervision": supervision,
         "overall": overall,
         "plain_english": plain,
+        "_debug_timing": _debug_timing,
     }
 
 
