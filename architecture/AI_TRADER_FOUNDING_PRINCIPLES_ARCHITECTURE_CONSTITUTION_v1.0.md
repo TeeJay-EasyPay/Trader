@@ -36,6 +36,53 @@ platform through:
 
 ------------------------------------------------------------------------
 
+---
+
+# Mission-Focused Intelligence
+
+AI Trader exists for one purpose:
+
+> **To become the world's best autonomous trading intelligence platform.**
+
+Every capability within the platform exists to advance that mission.
+
+The platform is **not** intended to become the world's largest financial knowledge repository, the world's most comprehensive research platform, or a general-purpose artificial intelligence.
+
+Research is not collected for its own sake.
+
+Knowledge is not accumulated for its own sake.
+
+Learning is not performed for its own sake.
+
+Every dataset, model, algorithm, research activity, analytical capability and learning process must ultimately contribute to improving the platform's ability to make better autonomous investment decisions.
+
+Every capability should demonstrably improve one or more of the following:
+
+- Trading decision quality.
+- Portfolio management.
+- Probability estimation.
+- Risk management.
+- Execution quality.
+- Capital allocation.
+- Operational resilience.
+- Long-term autonomous performance.
+
+If a capability cannot demonstrate a meaningful contribution towards these objectives, it should not become part of the production platform.
+
+Ideas that are intellectually interesting but do not improve autonomous investment performance belong in research, not in production.
+
+Before any significant architectural or implementation decision is approved, the platform should always ask:
+
+> **"Will this make AI Trader a better autonomous investor?"**
+
+If the answer is not clearly "yes," the capability should be reconsidered.
+
+Mission alignment takes precedence over feature count.
+
+Every line of code, every database table, every model, every workflow and every learning process should exist because it helps AI Trader become a more capable, more disciplined and more trustworthy autonomous investment platform.
+
+-------------------------------------------------------------------------
+
 # Core Principles
 
 ## Principle 1 --- Truth Above Everything

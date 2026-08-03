@@ -17,3 +17,4 @@ mobile/dist/
 data/*.apk
 data/eas-build-*.log
 data/eas-build-*.txt
+screenshots/
