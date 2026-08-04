@@ -972,3 +972,55 @@ this pass is the automated test suite plus a proactive field-safety audit (every
 evidence field was grep-verified against an already-proven-safe call site before use, applying the
 AT-ED-015.1 lesson prospectively). On-device confirmation by the Founder remains the final
 acceptance step.
+
+# AT-ED-016.1 (Executive Communication Layer Refinement)
+
+An editorial-only pass - no calculation, committee logic, execution logic, or database schema
+touched, per the directive's explicit constraints. Full account in
+`ZIP-Updates/2026-08-05-at-ed-016-1-executive-communication-refinement/Test_Report.md`.
+
+## The two worst violations found and fixed
+
+`screens/ExecutiveBriefing.js`'s Current Position card called `explainMissing('week-to-date P&L',
+'no broker has reported a week_pnl figure yet')` - rendering literally as "...unavailable because
+no broker has reported a week_pnl figure yet," a raw backend field name shown directly to the
+Founder (same issue for `month_pnl`). Fixed by omitting the line entirely when data is missing,
+rather than explaining the gap in field-name terms. The Forecast Centre showed five stat rows per
+horizon including an identical, repeated technical sentence about the absence of a volatility
+model; collapsed to the directive's four-field structure (What I expect / Why / What could change
+it / Confidence), using the same unchanged Base/Bull/Bear numbers spoken as one sentence.
+
+## Every card collapsed to its directive-specified field list
+
+Principal Risks: six fields (Impact/Likelihood/Potential Effect/Mitigation/Monitoring Owner/
+Estimated Portfolio Effect) → four (Risk/Why It Matters/Probability/What I Am Doing About It).
+Principal Opportunities: six fields → four (Why I Like It/Potential Upside/Main Catalyst/
+Confidence). Founder Actions: six fields → one spoken recommendation + a consequence sentence,
+opening "I recommend..." instead of a bare status line. Investment Thesis: seven fields (AT-ED-016's
+Positive/Negative Factors, Unknowns, Assumptions, Catalysts, Evidence Strength, Alternative View)
+→ the directive's exact five (Current view/Why/Supporting evidence/What could invalidate this/
+Overall confidence). Investment Organisation: department conclusions rewritten as single clean
+sentences (dropped "Reporting"/"No Evidence Yet" status pills and log-like phrasing such as "1 of 2
+broker connection(s) currently confirmed connected" reworded to read naturally, though the real
+count is preserved). `lib/cio.js`'s `cioMarketOutlook()` and every honest-fallback sentence
+rewritten to first-person CIO belief framing ("I currently see..." instead of "The current market
+regime reads as...") and stripped of engineering phrases ("check back after the next successful
+refresh" → "check back shortly").
+
+## What did not change
+
+Every numeric formula in `lib/forecastEngine.js` (trade-pace extrapolation, Base/Bull/Bear case
+math), every evidence-selection rule in `lib/forecastFactors.js` and `lib/investmentThesis.js`,
+and every `hasEvidence` boolean in `lib/investmentCommittee.js` is unchanged - confirmed by the
+full test suite, which required only wording-assertion updates, never a logic change, to pass.
+
+## Verification
+
+All 30 mobile test files pass (362 tests total - a net +1, since this pass mostly renamed/
+re-worded existing fields; several assertions were updated to match new wording, none required a
+logic change). Babel parse clean (85 files). `expo-doctor` 17/17. `expo export --platform android`
+clean (591 modules, unchanged count - no files added or removed this pass). A live Android
+emulator session ran with no observed error in the bundle log or logcat, but as in AT-ED-016, Expo
+Go's automated navigation did not reliably confirm an on-screen render - reported as inconclusive,
+not a confirmed pass. On-device Founder confirmation remains the real acceptance test for a pass
+whose entire purpose is communication quality.

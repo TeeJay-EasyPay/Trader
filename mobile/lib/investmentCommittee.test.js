@@ -38,31 +38,30 @@ test('buildInvestmentCommittee: no evidence anywhere is honest for every departm
   });
 });
 
-test('buildInvestmentCommittee: Research reflects real research evidence when present', () => {
+test('buildInvestmentCommittee: Research reflects real research evidence when present, without leaking a raw broker id (AT-ED-016.1)', () => {
   const result = buildInvestmentCommittee({
     operationsHealth: { last_research_run: { broker: 'alpaca', assets_analysed: 12 } },
   });
   const research = result.find((item) => item.name === 'Research');
   assert.strictEqual(research.hasEvidence, true);
-  assert.ok(research.conclusion.includes('alpaca'));
   assert.ok(research.conclusion.includes('12'));
+  assert.ok(!research.conclusion.includes('alpaca'));
 });
 
 test('buildInvestmentCommittee: Risk Committee reflects real readiness evidence, both ready and not-ready', () => {
   const ready = buildInvestmentCommittee({ connectionReadiness: { trade_ready: true } });
   const notReady = buildInvestmentCommittee({ connectionReadiness: { trade_ready: false, note: 'Broker not connected.' } });
-  assert.ok(ready.find((item) => item.name === 'Risk Committee').conclusion.includes('currently pass'));
+  assert.strictEqual(ready.find((item) => item.name === 'Risk Committee').conclusion, 'Portfolio remains within acceptable limits.');
   assert.strictEqual(notReady.find((item) => item.name === 'Risk Committee').conclusion, 'Broker not connected.');
 });
 
-test('buildInvestmentCommittee: Forecast Engine reflects real tradeStatistics() availability', () => {
+test('buildInvestmentCommittee: Forecast Engine reflects real tradeStatistics() availability (AT-ED-016.1: one clean sentence, not a stat dump - the full reason still lives in the Forecast Centre section)', () => {
   const available = buildInvestmentCommittee({ forecastStats: { available: true, sampleSize: 10, winRate: 0.6 } });
   const unavailable = buildInvestmentCommittee({ forecastStats: { available: false, reason: 'Only 2 closed trades exist.' } });
   const forecastDept = available.find((item) => item.name === 'Forecast Engine');
   assert.strictEqual(forecastDept.hasEvidence, true);
-  assert.ok(forecastDept.conclusion.includes('10'));
-  assert.ok(forecastDept.conclusion.includes('60%'));
-  assert.strictEqual(unavailable.find((item) => item.name === 'Forecast Engine').conclusion, 'Only 2 closed trades exist.');
+  assert.strictEqual(forecastDept.conclusion, 'Producing live forecasts from real trade history.');
+  assert.strictEqual(unavailable.find((item) => item.name === 'Forecast Engine').conclusion, 'Not enough trade history yet to produce a forecast.');
 });
 
 test('buildInvestmentCommittee: Broker Monitoring counts real connected brokers out of the total', () => {

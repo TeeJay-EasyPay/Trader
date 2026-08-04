@@ -39,7 +39,7 @@ function cioGreeting(now = new Date()) {
 function cioExecutiveSummary({ headline, whatToDo, whatToWorryAbout }) {
   const sentences = [headline, whatToDo, whatToWorryAbout].filter(Boolean);
   if (!sentences.length) {
-    return 'I do not have enough evidence to brief you yet - check back after the next successful refresh.';
+    return 'I do not have a clear enough picture to brief you properly yet - check back shortly.';
   }
   return sentences.join(' ');
 }
@@ -72,22 +72,25 @@ function cioOvernightActivity({ researchRuns, recommendationsCreated, ordersSubm
 // a field is genuinely a placeholder ("no sector-rotation provider is configured yet" and
 // similar - see production_evidence.py/founderEvidenceMapping.js), this composer passes it
 // through unchanged rather than dressing it up as a confident market call.
+// AT-ED-016.1: first-person belief framing throughout ("I currently see/believe") rather than
+// third-person system-report phrasing ("the regime reads as") - the CIO owns opinions, per the
+// directive. Same inputs, same branching, wording only.
 function cioMarketOutlook({ marketHealth, currentRegime, cryptoHealth, upcomingRisks }) {
   const sentences = [];
   if (marketHealth) {
     sentences.push(marketHealth);
   }
   if (currentRegime) {
-    sentences.push(`The current market regime reads as ${currentRegime}.`);
+    sentences.push(`I currently see ${currentRegime} conditions.`);
   }
   if (cryptoHealth) {
     sentences.push(cryptoHealth);
   }
   if (!sentences.length) {
-    return 'Market intelligence has not produced a fresh regime summary yet.';
+    return 'I do not yet have a clear read on today\'s market conditions.';
   }
   if (upcomingRisks && upcomingRisks.length) {
-    sentences.push(`Watching: ${upcomingRisks.slice(0, 3).join('; ')}.`);
+    sentences.push(`The main thing I'm watching: ${upcomingRisks.slice(0, 3).join(', ')}.`);
   }
   return sentences.join(' ');
 }
@@ -184,13 +187,10 @@ function cioNoActionReason({ tradeReady, outstandingRecommendationsCount, unreso
   if (outstandingRecommendationsCount || unresolvedIncidentCount) {
     return null;
   }
-  const reasons = [];
-  reasons.push(tradeReady
-    ? 'the portfolio and every broker connection currently sit within normal governance and risk limits'
-    : (readinessNote || 'one or more readiness checks currently need attention, though nothing rises to requiring your intervention today'));
-  reasons.push('no fresh, high-confidence opportunity is currently awaiting your review');
-  reasons.push('no unresolved incident is currently open');
-  return `No Founder action is required today, because ${reasons.join('; ')}.`;
+  const comfortReason = tradeReady
+    ? 'I remain comfortable with our current positioning and nothing new currently clears our bar for action'
+    : (readinessNote || 'a few things need a closer look behind the scenes, though nothing serious enough to change my recommendation');
+  return `I recommend no intervention today, because ${comfortReason}. Should that change, I will recommend action immediately.`;
 }
 
 // AT-ED-013 Section 9: "quarterly performance review" framing for the Learning screen, built
@@ -217,7 +217,7 @@ function cioLearningNarrative({ completedTradesReviewed, latestLesson, hasEnough
 // claim about capability this app does not have.
 function cioClosingRecommendation({ convictionLevel, thesisAvailable, actionRequired }) {
   if (!thesisAvailable) {
-    return 'I do not yet have enough evidence to close with a firm recommendation - check back after the next successful refresh.';
+    return 'I do not yet have enough conviction to close with a firm recommendation - check back shortly.';
   }
   const stance = actionRequired
     ? 'review the items above before markets move further'
@@ -241,7 +241,7 @@ function cioClosingRecommendation({ convictionLevel, thesisAvailable, actionRequ
 function cioExecutiveBriefingSummary({ greeting, headlineSummary, overnightSummary, marketSummary, comfortSentence }) {
   const parts = [greeting, headlineSummary, overnightSummary, marketSummary, comfortSentence].filter(Boolean);
   if (!parts.length) {
-    return 'I do not have enough evidence to brief you yet - check back after the next successful refresh.';
+    return `${greeting || ''} I do not have a clear enough picture to brief you properly yet - check back shortly.`.trim();
   }
   return parts.join(' ');
 }

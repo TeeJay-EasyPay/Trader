@@ -1,39 +1,34 @@
-// AT-ED-015 Section 10: Founder Actions become genuinely actionable - each item answers What do
-// I need to do? Why? Expected benefit? Risk? Deadline? What happens if I do nothing? Kept
+// AT-ED-015 Section 10 / AT-ED-016.1 Communication Refinement: Founder Actions as advice, not
+// status. AT-ED-016.1 collapsed the original six-field grid (What/Why/Expected Benefit/Risk/
+// Deadline/If You Do Nothing) into a single spoken recommendation plus a plain consequence
+// sentence - the same real underlying fields (`reason_for_recommendation`, `expires_at`,
+// `incidents`), just said the way a CIO would say them rather than laid out as a form. Kept
 // dependency-free (no React/RN imports) - see founderActions.test.js.
 //
-// Built from the same real recommendation and operational fields every other module in this app
-// already reads (`reason_for_recommendation`, `expected_return_r`, `key_risks`, `expires_at` on
-// recommendations; `incidents` on operations_health) - not a new evidence source. When there is
-// genuinely nothing outstanding, `buildFounderActions()` returns an empty array and the caller
-// shows the honest, literal "No Founder action is required today" state (lib/cio.js's
-// `cioFounderActionRequired()`), matching the directive's own example verbatim.
+// When there is genuinely nothing outstanding, `buildFounderActions()` returns an empty array
+// and the caller uses `lib/cio.js`'s `cioNoActionReason()` - never pads the list to make the
+// organisation look busier.
 
 'use strict';
 
 const { formatDateTime } = require('./datetime');
 
 function recommendationAction(item) {
+  const name = item.ticker || item.symbol || 'this recommendation';
+  const reason = item.reason_for_recommendation ? ` ${item.reason_for_recommendation}` : '';
+  const byWhen = item.expires_at ? ` before ${formatDateTime(item.expires_at)}` : '';
   return {
-    what: `Review and decide on the ${item.ticker || item.symbol || 'recommendation'} recommendation.`,
-    why: item.reason_for_recommendation || 'No one-sentence thesis was recorded for this recommendation.',
-    expectedBenefit: item.expected_return_r !== undefined && item.expected_return_r !== null
-      ? `${Number(item.expected_return_r).toFixed(2)}R expected return`
-      : 'Not estimated for this recommendation',
-    risk: item.key_risks || 'Not documented for this recommendation',
-    deadline: item.expires_at ? formatDateTime(item.expires_at) : 'No expiry recorded',
-    ifNothing: 'This opportunity will expire unreviewed and no trade will be placed on it.',
+    title: name,
+    recommendation: `I recommend reviewing ${name}${byWhen}.${reason}`,
+    ifNothing: 'If you take no action, this simply expires unreviewed - no trade will be placed.',
   };
 }
 
 function incidentAction(count) {
   return {
-    what: `Review ${count} unresolved operational incident${count === 1 ? '' : 's'}.`,
-    why: 'An unresolved incident may be limiting research, execution, or reporting until addressed.',
-    expectedBenefit: 'Restores full operational capability.',
-    risk: 'Low direct capital risk; primarily an operational and evidence-quality risk.',
-    deadline: 'No fixed deadline - review at your convenience.',
-    ifNothing: 'The incident remains open and AI Trader continues operating with reduced evidence or capability in that area.',
+    title: `${count} operational item${count === 1 ? '' : 's'} behind the scenes`,
+    recommendation: `I recommend taking a look at ${count} open item${count === 1 ? '' : 's'} behind the scenes when convenient. Nothing here needs urgent attention.`,
+    ifNothing: 'These stay open and may quietly limit some of the evidence I can bring you until addressed.',
   };
 }
 

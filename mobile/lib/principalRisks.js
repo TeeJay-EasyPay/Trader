@@ -1,37 +1,28 @@
-// AT-ED-015 Section 6: Principal Risks as individual, structured cards - each risk gets its own
-// Impact / Likelihood / Potential Effect / Mitigation, rather than one joined paragraph
-// (AT-ED-013/014's `cioPrincipalRisks()`, kept as-is for the Morning Brief's one-line summary).
-// Kept dependency-free (no React/RN imports) - see principalRisks.test.js.
+// AT-ED-015 Section 6 / AT-ED-016.1 Communication Refinement: Principal Risks as individual,
+// structured cards. AT-ED-016.1 collapsed the original six-field structure (Impact/Likelihood/
+// Potential Effect/Mitigation/Monitoring Owner/Estimated Portfolio Effect) down to exactly the
+// four fields a CIO would actually say out loud: Risk / Why It Matters / Probability / What I Am
+// Doing About It - the same real evidence and the same real percentage math, spoken in fewer,
+// plainer sentences instead of a six-row label grid. Kept dependency-free (no React/RN imports)
+// - see principalRisks.test.js.
 //
-// Two real evidence sources are used, and impact/likelihood are only ever scored when this
-// backend actually provides a basis for scoring:
+// Two real evidence sources are used, and probability is only ever a real read when this backend
+// actually provides a basis for one:
 //  - `upcomingRisks` (market_intelligence_centre.upcoming_risks / a theme's key_risks) are plain
 //    strings with no attached severity or frequency data - this backend has no risk-scoring
-//    model, so both fields are honestly reported as not-yet-scored rather than guessed.
-//  - Positions currently at a loss DO have real, computable evidence (the actual £ amount at
-//    risk as a percentage of total portfolio value), so that one risk card gets a real Impact
-//    tier from a disclosed threshold, not a placeholder.
+//    model, so probability is honestly described as unscored rather than guessed.
+//  - Positions currently at a loss DO have real, computable evidence (the actual amount at risk
+//    as a percentage of total portfolio value), so that one risk card's "why it matters" carries
+//    a real, disclosed-threshold severity read.
 
 'use strict';
 
-const NOT_SCORED = 'Not currently scored - AI Trader does not yet model risk severity or likelihood.';
-
-// AT-ED-016 Part 1 Section 7: Monitoring Owner and Estimated Portfolio Effect, added alongside
-// the existing Impact/Likelihood/Potential Effect/Mitigation fields. Monitoring Owner maps each
-// risk to the real department (from lib/investmentCommittee.js's own department list) that
-// evidence concerns - Market Intelligence for market-sourced risks, Risk Committee for
-// portfolio-position risk. Estimated Portfolio Effect is a real £ figure where one is computable
-// (the position-loss card already has one), and an honest "not quantified" elsewhere - never a
-// guessed percentage for a risk this backend has no severity model for.
 function marketRiskCard(riskText) {
   return {
     title: riskText,
-    impact: NOT_SCORED,
-    likelihood: NOT_SCORED,
-    potentialEffect: riskText,
-    mitigation: 'Monitored; no portfolio action is currently triggered by this risk alone.',
-    monitoringOwner: 'Market Intelligence',
-    estimatedPortfolioEffect: 'Not quantified - no severity model exists for this risk yet.',
+    whyItMatters: riskText,
+    probability: 'Not something I can put a precise number on yet - I am watching it closely.',
+    whatImDoing: 'Monitoring it. Nothing here currently changes how I am running the portfolio.',
   };
 }
 
@@ -51,16 +42,14 @@ function positionsAtLossCard({ positionsAtLoss, portfolioValue }) {
   const totalAtRisk = list.reduce((sum, item) => sum + Math.abs(Number(item.unrealizedPl) || 0), 0);
   const pct = totalAtRisk / portfolioValue;
   const impact = impactTierForLossPct(pct);
+  const names = list.map((item) => item.symbol).filter(Boolean).join(', ');
   return {
     title: `${list.length} Position${list.length === 1 ? '' : 's'} Currently at a Loss`,
-    impact: `${impact} (${Math.round(pct * 100)}% of portfolio value)`,
-    likelihood: 'Currently occurring, not a future probability.',
-    potentialEffect: `${list.map((item) => item.symbol).filter(Boolean).join(', ')} currently show unrealised losses totalling approximately ${totalAtRisk.toFixed(2)}.`,
-    mitigation: impact === 'High'
-      ? 'Reviewed as part of standard stop-loss/take-profit management; no incremental Founder action required beyond existing governance.'
-      : 'No action required; within normal trading variance.',
-    monitoringOwner: 'Risk Committee',
-    estimatedPortfolioEffect: `Approximately ${totalAtRisk.toFixed(2)} (${Math.round(pct * 100)}% of portfolio value) currently at risk.`,
+    whyItMatters: `${names || 'These positions'} ${list.length === 1 ? 'is' : 'are'} down about ${totalAtRisk.toFixed(2)} in total - roughly ${Math.round(pct * 100)}% of the portfolio.`,
+    probability: 'This is already happening, not a future possibility.',
+    whatImDoing: impact === 'High'
+      ? 'Watching this closely through our normal stop-loss and take-profit process. No action is needed from you.'
+      : 'Nothing needed here - this is within normal day-to-day movement.',
   };
 }
 
@@ -79,7 +68,6 @@ function buildRiskCards({ upcomingRisks, positionsAtLoss, portfolioValue }) {
 }
 
 module.exports = {
-  NOT_SCORED,
   impactTierForLossPct,
   positionsAtLossCard,
   buildRiskCards,

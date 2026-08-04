@@ -55,11 +55,11 @@ function currentInvestmentThesis({ themes, recommendations }) {
   const evidence = [];
   if (theme) {
     sentences.push(`Our current thesis centres on ${theme.theme}: ${theme.summary || theme.current_outlook || 'evidence-backed outlook not yet summarised'}.`);
-    evidence.push(`Theme "${theme.theme}" at ${theme.confidence !== undefined && theme.confidence !== null ? `${Math.round(Number(theme.confidence) * 100)}% confidence` : 'unrated confidence'}`);
+    evidence.push(`My conviction in ${theme.theme} currently sits at ${theme.confidence !== undefined && theme.confidence !== null ? `${Math.round(Number(theme.confidence) * 100)}%` : 'a level I have not yet rated'}.`);
   }
   if (strategy) {
     sentences.push(`${strategy.count} of our current recommendation${strategy.count === 1 ? '' : 's'} lean on the ${strategy.name} approach.`);
-    evidence.push(`${strategy.count} active recommendation(s) using ${strategy.name}`);
+    evidence.push(`${strategy.count} of our current idea${strategy.count === 1 ? '' : 's'} follow the ${strategy.name} approach.`);
   }
   return { available: true, statement: sentences.join(' '), evidence };
 }

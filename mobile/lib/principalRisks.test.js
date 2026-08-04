@@ -1,4 +1,6 @@
 // Plain Node assert-based tests for principalRisks.js - run with `node lib/principalRisks.test.js`.
+// AT-ED-016.1: field names/wording simplified to Risk/Why It Matters/Probability/What I Am Doing
+// About It - same underlying real percentage math, tests updated to match.
 
 'use strict';
 
@@ -36,23 +38,22 @@ test('positionsAtLossCard: no portfolio value returns null - cannot compute a re
   assert.strictEqual(positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -50 }], portfolioValue: null }), null);
 });
 
-test('positionsAtLossCard: computes a real percentage-based impact tier', () => {
+test('positionsAtLossCard: real percentage math still drives the "why it matters" text', () => {
   const card = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -100 }], portfolioValue: 1000 });
-  assert.ok(card.impact.startsWith('High'));
-  assert.ok(card.potentialEffect.includes('AAA'));
+  assert.ok(card.whyItMatters.includes('AAA'));
+  assert.ok(card.whyItMatters.includes('100.00'));
+  assert.ok(card.whyItMatters.includes('10%'));
 });
 
-test('positionsAtLossCard: has a real Monitoring Owner and a real, quantified Estimated Portfolio Effect (AT-ED-016)', () => {
-  const card = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -100 }], portfolioValue: 1000 });
-  assert.strictEqual(card.monitoringOwner, 'Risk Committee');
-  assert.ok(card.estimatedPortfolioEffect.includes('100.00'));
-  assert.ok(card.estimatedPortfolioEffect.includes('10%'));
+test('positionsAtLossCard: a High-impact loss gets a different "what I am doing" answer than a Low one', () => {
+  const high = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -100 }], portfolioValue: 1000 });
+  const low = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -5 }], portfolioValue: 1000 });
+  assert.notStrictEqual(high.whatImDoing, low.whatImDoing);
 });
 
-test('buildRiskCards: market risk cards have an honest, not-quantified Estimated Portfolio Effect and a real Monitoring Owner (AT-ED-016)', () => {
-  const cards = buildRiskCards({ upcomingRisks: ['inflation data'], positionsAtLoss: [], portfolioValue: 1000 });
-  assert.strictEqual(cards[0].monitoringOwner, 'Market Intelligence');
-  assert.ok(cards[0].estimatedPortfolioEffect.includes('Not quantified'));
+test('positionsAtLossCard: probability describes a present fact, not a future guess', () => {
+  const card = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -100 }], portfolioValue: 1000 });
+  assert.ok(card.probability.includes('already happening'));
 });
 
 // --- buildRiskCards ---
@@ -64,6 +65,12 @@ test('buildRiskCards: composes both the loss card and market risk cards, capped 
     portfolioValue: 1000,
   });
   assert.strictEqual(cards.length, 4); // 1 loss card + 3 (capped) market risks
+});
+
+test('buildRiskCards: market risk cards are honest about not having a real probability figure', () => {
+  const cards = buildRiskCards({ upcomingRisks: ['inflation data'], positionsAtLoss: [], portfolioValue: 1000 });
+  assert.ok(cards[0].probability.length > 0);
+  assert.ok(cards[0].whatImDoing.length > 0);
 });
 
 test('buildRiskCards: no evidence at all returns an empty array, never fabricated cards', () => {

@@ -1,4 +1,6 @@
 // Plain Node assert-based tests for founderActions.js - run with `node lib/founderActions.test.js`.
+// AT-ED-016.1: collapsed to a single spoken recommendation + a plain consequence sentence -
+// same real fields, tests updated to match.
 
 'use strict';
 
@@ -18,30 +20,25 @@ function test(name, fn) {
   }
 }
 
-test('recommendationAction: answers every required field from real data', () => {
+test('recommendationAction: composes a real recommendation sentence naming the symbol and the real reason', () => {
   const action = recommendationAction({
     ticker: 'AAPL',
     reason_for_recommendation: 'Strong momentum.',
-    expected_return_r: 1.2,
-    key_risks: 'Earnings miss.',
     expires_at: '2026-08-05T12:00:00Z',
   });
-  assert.ok(action.what.includes('AAPL'));
-  assert.strictEqual(action.why, 'Strong momentum.');
-  assert.ok(action.expectedBenefit.includes('1.20R'));
-  assert.strictEqual(action.risk, 'Earnings miss.');
+  assert.ok(action.recommendation.includes('AAPL'));
+  assert.ok(action.recommendation.includes('Strong momentum.'));
   assert.ok(action.ifNothing.length > 0);
 });
 
-test('recommendationAction: missing fields are honest, not fabricated', () => {
+test('recommendationAction: missing reason is still a valid sentence, never fabricated', () => {
   const action = recommendationAction({ ticker: 'AAPL' });
-  assert.strictEqual(action.expectedBenefit, 'Not estimated for this recommendation');
-  assert.strictEqual(action.deadline, 'No expiry recorded');
+  assert.ok(action.recommendation.startsWith('I recommend reviewing AAPL'));
 });
 
 test('incidentAction: real count is named, with correct singular/plural grammar', () => {
-  assert.ok(incidentAction(1).what.includes('1 unresolved operational incident.'));
-  assert.ok(incidentAction(3).what.includes('3 unresolved operational incidents.'));
+  assert.ok(incidentAction(1).recommendation.includes('1 open item'));
+  assert.ok(incidentAction(3).recommendation.includes('3 open items'));
 });
 
 test('buildFounderActions: genuinely nothing outstanding returns an empty array', () => {

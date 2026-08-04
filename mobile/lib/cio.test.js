@@ -67,7 +67,7 @@ test('cioExecutiveSummary: joins real backend sentences into one paragraph', () 
 
 test('cioExecutiveSummary: no evidence yet is honest, not fabricated', () => {
   const text = cioExecutiveSummary({ headline: null, whatToDo: null, whatToWorryAbout: null });
-  assert.ok(text.includes('do not have enough evidence'));
+  assert.ok(text.includes('do not have a clear enough picture'));
 });
 
 // --- cioOvernightActivity ---
@@ -98,12 +98,12 @@ test('cioMarketOutlook: composes only fields that actually have content', () => 
 
 test('cioMarketOutlook: no market evidence at all is honest, not fabricated', () => {
   const text = cioMarketOutlook({ marketHealth: null, currentRegime: null, cryptoHealth: null, upcomingRisks: [] });
-  assert.ok(text.includes('has not produced a fresh regime summary yet'));
+  assert.ok(text.includes('do not yet have a clear read'));
 });
 
 test('cioMarketOutlook: names up to 3 upcoming risks when present', () => {
   const text = cioMarketOutlook({ marketHealth: 'Stable.', currentRegime: null, cryptoHealth: null, upcomingRisks: ['inflation data', 'rate decision', 'earnings season', 'a fourth risk'] });
-  assert.ok(text.includes('inflation data; rate decision; earnings season'));
+  assert.ok(text.includes('inflation data, rate decision, earnings season'));
   assert.ok(!text.includes('a fourth risk'));
 });
 
@@ -197,8 +197,8 @@ test('cioNoActionReason: something outstanding means there is no "no action" rea
 
 test('cioNoActionReason: genuinely nothing outstanding explains why, naming real readiness state', () => {
   const text = cioNoActionReason({ tradeReady: true, outstandingRecommendationsCount: 0, unresolvedIncidentCount: 0 });
-  assert.ok(text.startsWith('No Founder action is required today, because'));
-  assert.ok(text.includes('within normal governance and risk limits'));
+  assert.ok(text.startsWith('I recommend no intervention today, because'));
+  assert.ok(text.includes('comfortable with our current positioning'));
 });
 
 test('cioNoActionReason: readiness not fully clear is named honestly, not hidden behind a generic reason', () => {
@@ -210,7 +210,7 @@ test('cioNoActionReason: readiness not fully clear is named honestly, not hidden
 
 test('cioClosingRecommendation: no thesis evidence is honest, not a fabricated recommendation', () => {
   const text = cioClosingRecommendation({ convictionLevel: 'Not Established', thesisAvailable: false, actionRequired: false });
-  assert.ok(text.includes('do not yet have enough evidence'));
+  assert.ok(text.includes('do not yet have enough conviction'));
 });
 
 test('cioClosingRecommendation: high conviction and no action required recommends staying the course', () => {
@@ -234,7 +234,7 @@ test('cioExecutiveBriefingSummary: joins only the real, non-empty fragments prov
 
 test('cioExecutiveBriefingSummary: no fragments at all is honest, not fabricated', () => {
   const text = cioExecutiveBriefingSummary({});
-  assert.ok(text.includes('do not have enough evidence'));
+  assert.ok(text.includes('do not have a clear enough picture'));
 });
 
 console.log(`\n${passed} passed`);

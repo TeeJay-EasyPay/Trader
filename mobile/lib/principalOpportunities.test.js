@@ -1,5 +1,7 @@
 // Plain Node assert-based tests for principalOpportunities.js - run with
 // `node lib/principalOpportunities.test.js`.
+// AT-ED-016.1: field names/wording simplified to Why I Like It/Potential Upside/Main Catalyst/
+// Confidence - same underlying real fields, tests updated to match.
 
 'use strict';
 
@@ -29,26 +31,25 @@ test('recommendationOpportunityCard: uses real fields, with honest fallbacks for
     expires_at: '2026-08-05T12:00:00Z',
   });
   assert.strictEqual(card.title, 'AAPL');
-  assert.strictEqual(card.why, 'Strong momentum.');
-  assert.ok(card.expectedBenefit.includes('1.50R'));
-  assert.ok(card.timeHorizon.includes('Actionable until'));
+  assert.strictEqual(card.whyILikeIt, 'Strong momentum.');
+  assert.ok(card.potentialUpside.includes('1.50R'));
 });
 
 test('recommendationOpportunityCard: missing expected_return_r is honest, not fabricated', () => {
   const card = recommendationOpportunityCard({ ticker: 'AAPL' });
-  assert.strictEqual(card.expectedBenefit, 'Not estimated for this recommendation');
+  assert.strictEqual(card.potentialUpside, 'Not yet estimated');
 });
 
 test('themeOpportunityCard: uses real theme fields', () => {
   const card = themeOpportunityCard({ theme: 'AI Infrastructure', summary: 'Strong demand.', confidence: 0.8, key_drivers: ['a', 'b', 'c', 'd'] });
   assert.strictEqual(card.title, 'AI Infrastructure');
-  assert.strictEqual(card.evidence, 'a; b; c');
+  assert.strictEqual(card.whyILikeIt, 'Strong demand.');
 });
 
 test('recommendationOpportunityCard: catalyst uses the real, distinct strongest_argument_for field (AT-ED-016)', () => {
   const card = recommendationOpportunityCard({ ticker: 'AAPL', reason_for_recommendation: 'Strong momentum.', strongest_argument_for: 'Institutional accumulation observed.' });
   assert.strictEqual(card.catalyst, 'Institutional accumulation observed.');
-  assert.notStrictEqual(card.catalyst, card.why);
+  assert.notStrictEqual(card.catalyst, card.whyILikeIt);
 });
 
 test('themeOpportunityCard: catalyst uses the first key driver, honest fallback when none exist (AT-ED-016)', () => {
@@ -58,19 +59,14 @@ test('themeOpportunityCard: catalyst uses the first key driver, honest fallback 
   assert.ok(withoutDrivers.catalyst.includes('No specific catalyst'));
 });
 
-// --- AT-ED-015.1: production-representative regression (key_drivers is a plain string, not an
-// array, in real /intelligence/themes evidence - confirmed via live Android emulator
-// reproduction; see Root_Cause_Analysis.md). This is the exact shape that crashed
-// PrincipalOpportunitiesSection's render and blanked the whole app with no error boundary. ---
-
 test('themeOpportunityCard: production-representative key_drivers (a plain string) never throws', () => {
   const card = themeOpportunityCard({ theme: 'AI Infrastructure', summary: 'Strong demand.', confidence: 0.8, key_drivers: 'Strong capex growth, cloud demand' });
-  assert.strictEqual(card.evidence, 'Strong capex growth, cloud demand');
+  assert.strictEqual(card.catalyst, 'Strong capex growth, cloud demand');
 });
 
 test('themeOpportunityCard: missing or empty key_drivers is honest, never throws', () => {
-  assert.strictEqual(themeOpportunityCard({ theme: 'X' }).evidence, 'No key drivers recorded');
-  assert.strictEqual(themeOpportunityCard({ theme: 'X', key_drivers: '' }).evidence, 'No key drivers recorded');
+  assert.ok(themeOpportunityCard({ theme: 'X' }).catalyst.includes('No specific catalyst'));
+  assert.ok(themeOpportunityCard({ theme: 'X', key_drivers: '' }).catalyst.includes('No specific catalyst'));
 });
 
 test('keyDriversText: array input still joins the first three entries, unchanged behaviour', () => {

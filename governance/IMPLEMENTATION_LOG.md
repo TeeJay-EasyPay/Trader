@@ -1,5 +1,32 @@
 # Implementation Log
 
+## 2026-08-05 AT-ED-016.1 — Executive Communication Layer Refinement
+
+An editorial-only pass, per the directive's explicit instruction: no calculation, committee
+logic, execution logic, or database schema touched - only the words wrapped around already-
+unchanged numbers. Full account in `architecture/ARCHITECTURE_DELTA.md` under "AT-ED-016.1".
+
+**Worst violation found and fixed**: the Current Position card's missing-data fallback text
+literally read "...unavailable because no broker has reported a week_pnl figure yet" - a raw
+backend field name shown directly to the Founder (same for `month_pnl`). Fixed by omitting the
+line when data is missing rather than explaining the gap in field-name terms. The Forecast
+Centre's five-field-per-horizon grid (including an identical technical sentence about the absence
+of a volatility model, repeated five times) collapsed to the directive's four fields (What I
+expect/Why/What could change it/Confidence), using the same unchanged Base/Bull/Bear numbers
+spoken as prose.
+
+**Every card collapsed to its directive-specified field list**: Principal Risks (6→4 fields),
+Principal Opportunities (6→4), Founder Actions (6 fields → one spoken recommendation), Investment
+Thesis (7→5 fields, matching the directive's exact structure), Investment Organisation (status
+pills and log-like phrasing removed, one clean sentence per department). `lib/cio.js`'s market/
+fallback composers rewritten to first-person CIO belief framing, stripped of engineering phrases.
+
+362 tests pass (362, +1 net - mostly wording-assertion updates, zero logic changes required).
+Babel clean (85 files), `expo-doctor` 17/17, `expo export` clean (591 modules, unchanged count).
+A live Android emulator session showed no error in the bundle log or logcat, but Expo Go's
+automated navigation did not reliably confirm an on-screen render this time - reported as
+inconclusive, not verified. On-device Founder confirmation remains the acceptance step.
+
 ## 2026-08-06 AT-ED-016 — Executive Briefing Evolution & Forecasting Engine Phase 2
 
 Evolves the Executive Briefing into the directive's exact 11-section structure (Executive

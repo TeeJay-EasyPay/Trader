@@ -38,62 +38,64 @@ function buildInvestmentCommittee({
 }) {
   const research = operationsHealth?.last_research_run || operationsHealth?.last_equity_research || operationsHealth?.last_crypto_research;
   const connectedBrokers = (brokerPanels || []).filter((broker) => String(broker.connection_status).toLowerCase() === 'connected');
+  const ordersSubmitted = activitySummary?.orders_submitted;
+  const activeIdeas = recommendationSummary?.active || 0;
   return [
     departmentConclusion(
       'Market Intelligence',
       Boolean(marketCentre?.market_health),
       marketCentre?.market_health,
-      'No fresh market-health evidence recorded yet.'
+      'No fresh view on markets to share yet.'
     ),
     departmentConclusion(
       'Research',
       Boolean(research),
-      `Latest research: ${research?.broker || research?.summary || 'recorded'}, ${research?.assets_analysed || 0} asset(s) reviewed.`,
-      'No research run recorded yet in current evidence.'
+      research?.assets_analysed ? `Completed overnight research across ${research.assets_analysed} companies.` : 'Completed overnight research.',
+      'No research completed yet today.'
     ),
     departmentConclusion(
       'Learning',
       Boolean(learningSummary && learningSummary.hasEnoughEvidence),
-      `${learningSummary?.completedTradesReviewed || 0} closed trade(s) reviewed; latest lesson: ${learningSummary?.latestLesson || 'none recorded'}.`,
-      learningSummary?.missingEvidence || 'Not enough closed, reconciled trades to report yet.'
+      learningSummary?.latestLesson || 'No meaningful new behavioural improvements identified this period.',
+      'Not enough completed trades yet to draw a lesson from.'
     ),
     departmentConclusion(
       'Forecast Engine',
       Boolean(forecastStats && forecastStats.available),
-      `Projecting from ${forecastStats?.sampleSize || 0} closed trade(s) at a ${Math.round((forecastStats?.winRate || 0) * 100)}% historical win rate.`,
-      (forecastStats && forecastStats.reason) || 'Not enough closed-trade evidence to forecast yet.'
+      'Producing live forecasts from real trade history.',
+      'Not enough trade history yet to produce a forecast.'
     ),
     departmentConclusion(
       'Risk Committee',
       Boolean(connectionReadiness),
       connectionReadiness?.trade_ready
-        ? 'All governance and broker readiness checks currently pass.'
-        : (connectionReadiness?.note || 'One or more readiness checks require attention.'),
-      'No readiness evidence recorded yet.'
+        ? 'Portfolio remains within acceptable limits.'
+        : (connectionReadiness?.note || 'A few checks need a closer look.'),
+      'No readiness check completed yet.'
     ),
     departmentConclusion(
       'Strategy Committee',
       Boolean(recommendationSummary && (recommendationSummary.active || recommendationSummary.expired)),
-      `${recommendationSummary?.active || 0} active recommendation(s) currently under evaluation.`,
-      'No recommendation evidence recorded yet.'
+      activeIdeas ? `${activeIdeas} idea${activeIdeas === 1 ? '' : 's'} currently under review.` : 'No ideas currently under review.',
+      'No new ideas generated yet.'
     ),
     departmentConclusion(
       'Execution',
-      Boolean(activitySummary && (activitySummary.orders_submitted !== undefined)),
-      `${activitySummary?.orders_submitted || 0} order(s) submitted in this period.`,
-      'No execution evidence recorded yet in this period.'
+      Boolean(activitySummary && (ordersSubmitted !== undefined)),
+      ordersSubmitted ? `Placed ${ordersSubmitted} order${ordersSubmitted === 1 ? '' : 's'} today.` : 'No new trades were placed today.',
+      'No execution activity recorded yet.'
     ),
     departmentConclusion(
       'Broker Monitoring',
       Boolean((brokerPanels || []).length),
-      `${connectedBrokers.length} of ${(brokerPanels || []).length} broker connection(s) currently confirmed connected.`,
+      `${connectedBrokers.length} of ${(brokerPanels || []).length} broker connection${(brokerPanels || []).length === 1 ? '' : 's'} working normally.`,
       'No broker evidence recorded yet.'
     ),
     departmentConclusion(
       'Portfolio Intelligence',
       Boolean(portfolioIntelligence?.plain_english),
       portfolioIntelligence?.plain_english,
-      'No portfolio intelligence evidence recorded yet.'
+      'No portfolio commentary available yet.'
     ),
   ];
 }

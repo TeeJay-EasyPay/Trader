@@ -131,9 +131,9 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   const bullCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgWinPnl ?? stats.averagePnl, currentPortfolioValue });
   const bearCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgLossPnl ?? stats.averagePnl, currentPortfolioValue });
   const evidence = [
-    `${stats.sampleSize} closed trade(s) with realised profit or loss`,
-    `${Math.round(stats.winRate * 100)}% historical win rate across those trades`,
-    `Observed pace of roughly ${stats.tradesPerDay.toFixed(2)} closed trade(s) per day`,
+    `${stats.sampleSize} closed trade${stats.sampleSize === 1 ? '' : 's'} with a real result`,
+    `a ${Math.round(stats.winRate * 100)}% win rate across those trades`,
+    `roughly ${stats.tradesPerDay.toFixed(2)} closed trades a day, on average`,
   ];
   const assumptions = [
     'Assumes the historical pace of closed trades and their average realised result persist unchanged over this horizon.',
@@ -164,11 +164,11 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
     expectedVolatility: { available: false, reason: NO_VOLATILITY_MODEL_REASON },
     expectedDrawdown: { available: false, reason: NO_VOLATILITY_MODEL_REASON },
     confidence: confidence.level,
-    confidenceReason: `Based on ${confidence.description}, observed over the last ${Math.round(stats.spanDays)} day(s).`,
+    confidenceReason: `Based on ${confidence.description}, observed over the last ${Math.round(stats.spanDays) === 1 ? 'day' : `${Math.round(stats.spanDays)} days`}.`,
     evidence,
     assumptions,
     principalRisks,
-    explanation: `This forecast exists because ${stats.sampleSize} closed, dated trade${stats.sampleSize === 1 ? '' : 's'} give AI Trader a real historical pace (about ${stats.tradesPerDay.toFixed(2)} trade(s)/day) and a real historical win rate (${Math.round(stats.winRate * 100)}%) to extrapolate forward. The base case assumes that pace and average result continue unchanged; the bull and bear cases show what this horizon would look like if only the historically winning, or only the historically losing, trades recurred at that same pace - not best/worst-imaginable outcomes, but the honest range this specific evidence supports.`,
+    explanation: `This comes from ${stats.sampleSize} closed trade${stats.sampleSize === 1 ? '' : 's'} with a ${Math.round(stats.winRate * 100)}% win rate - a real track record to extrapolate from. The upper and lower range simply show what happens if only the winning, or only the losing, trades keep happening at the same pace.`,
     alternativeScenario: {
       description: 'If no further trades close in this period, the portfolio remains at its current value.',
       expectedValue: hasPortfolioValue ? currentPortfolioValue : null,

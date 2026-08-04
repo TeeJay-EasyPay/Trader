@@ -7,23 +7,22 @@
 
 'use strict';
 
-const { formatPercent, formatDateTime } = require('./datetime');
+const { formatPercent } = require('./datetime');
 
-// AT-ED-016 Part 1 Section 8: Catalyst, added alongside Why/Evidence/Expected Benefit/Confidence/
-// Time Horizon. For a recommendation, the catalyst is its `strongest_argument_for` - a real,
-// distinct field Recommendations.js already renders (`item.strongest_argument_for`), separate
-// from `reason_for_recommendation` ("Why") so the two fields never just repeat each other.
+// AT-ED-016.1 Communication Refinement: collapsed from six fields (Why/Evidence/Expected
+// Benefit/Confidence/Time Horizon/Catalyst) to exactly the four a CIO would actually say - Why I
+// Like It / Potential Upside / Main Catalyst / Confidence. The catalyst is `strongest_argument_for`
+// - a real, distinct field Recommendations.js already renders, separate from
+// `reason_for_recommendation` ("Why I Like It") so the two never just repeat each other.
 function recommendationOpportunityCard(item) {
   return {
     title: item.ticker || item.symbol || 'Recommendation',
-    why: item.reason_for_recommendation || 'No one-sentence thesis was recorded for this recommendation.',
-    evidence: item.strategy_name || item.strategy_id || 'Strategy not recorded',
-    expectedBenefit: item.expected_return_r !== undefined && item.expected_return_r !== null
-      ? `${Number(item.expected_return_r).toFixed(2)}R expected return`
-      : 'Not estimated for this recommendation',
+    whyILikeIt: item.reason_for_recommendation || 'I do not have a documented thesis for this one yet.',
+    potentialUpside: item.expected_return_r !== undefined && item.expected_return_r !== null
+      ? `${Number(item.expected_return_r).toFixed(2)}R if this plays out as expected`
+      : 'Not yet estimated',
+    catalyst: item.strongest_argument_for || 'No specific catalyst identified yet.',
     confidence: item.confidence !== undefined && item.confidence !== null ? formatPercent(item.confidence) : 'Not available',
-    timeHorizon: item.expires_at ? `Actionable until ${formatDateTime(item.expires_at)}` : 'Not specified',
-    catalyst: item.strongest_argument_for || 'No specific catalyst recorded for this recommendation.',
   };
 }
 
@@ -49,19 +48,17 @@ function keyDriversText(theme) {
   return list.length ? list.join('; ') : 'No key drivers recorded';
 }
 
-// AT-ED-016 Part 1 Section 8: for a theme, the catalyst is its first documented key driver - the
-// same real, already-normalized (string-or-array-safe, see keyDriversText's AT-ED-015.1 history)
-// evidence keyDriversText draws from, just the single leading item rather than a joined list.
+// AT-ED-016.1: the catalyst is the theme's first documented key driver - the same real,
+// already-normalized (string-or-array-safe, see keyDriversText's AT-ED-015.1 history) evidence
+// keyDriversText draws from, just the single leading item rather than a joined list.
 function themeOpportunityCard(theme) {
   const drivers = keyDriversList(theme);
   return {
     title: theme.theme,
-    why: theme.summary || theme.current_outlook || 'No thematic summary recorded.',
-    evidence: keyDriversText(theme),
-    expectedBenefit: theme.current_outlook || 'Not specified',
+    whyILikeIt: theme.summary || theme.current_outlook || 'I do not have a documented view on this yet.',
+    potentialUpside: theme.current_outlook || 'Not yet specified',
+    catalyst: drivers.length ? drivers[0] : 'No specific catalyst identified yet.',
     confidence: theme.confidence !== undefined && theme.confidence !== null ? formatPercent(theme.confidence) : 'Not available',
-    timeHorizon: 'Not specified - thematic view, not a dated trade',
-    catalyst: drivers.length ? drivers[0] : 'No specific catalyst recorded for this theme.',
   };
 }
 
