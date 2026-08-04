@@ -1,5 +1,42 @@
 # Implementation Log
 
+## 2026-08-04 AT-ED-012 — Founder Experience, Information Design & Executive UX
+
+Presentation-only pass across all six mobile screens (Dashboard, Activity, Recommendations,
+Portfolio, Market, Learning) — transforms the app from an engineering dashboard toward
+executive-grade UX while preserving every truthfulness guarantee AT-ED-011 established. No
+backend, trading, governance, risk, or database file touched (11 files, all under `mobile/`).
+Full account in `architecture/ARCHITECTURE_DELTA.md` under "AT-ED-012"; the Phase 1 executive
+review and full before/after change list ship separately as `Founder_Experience_Review.md` and
+`UX_Changes.md`.
+
+Reviewed every screen against purpose/audience/story before changing anything. Found Dashboard
+carrying two independently-computed executive summaries back to back plus a full page of
+always-open infrastructure diagnostics before Broker Panels; `BrokerPanel` (shared by Dashboard
+and Portfolio) at ~30-45 always-expanded fields per broker, appearing twice; Market with zero
+progressive disclosure across 9 permanently-expanded sections, including a duplicated internal
+metric and a full duplicate of the Learning screen's entire purpose.
+
+**Phase 4 financial-terminology audit** traced every Kraken money field to its exact backend
+source and confirmed the directive's named example was real: "Buying Power" was never a live
+figure — it's the static `KRAKEN_TRADING_ALLOCATION_GBP` ceiling — while the actual "what can
+the AI still spend" figure already existed in the data three taps deep. Relabelled and
+resurfaced; no calculation changed.
+
+Merged Dashboard's two summaries into one card; demoted "24-Hour Operations" and "Connection &
+Trading Readiness" to collapsed sections; restructured `BrokerPanel` to lead with a plain-
+English sentence and collapse deep governance/ledger detail behind one section; converted Market
+to the Activity screen's collapsible pattern and removed its two duplications; added dynamic,
+data-driven executive summaries to Recommendations and Portfolio (replacing static boilerplate);
+minor wording polish on Activity/Learning.
+
+4 new pure, tested helper functions (`brokerReadinessSentence`, `krakenWholeAccountNote`,
+`portfolioHeadline`, `recommendationsSummaryText`), 14 new tests. All 17 mobile test files pass,
+babel parse clean, `expo-doctor` 17/17, `expo export` clean (575 modules, unchanged - no new
+files this pass). No rendered browser/device check performed (no web runtime configured for
+this native app); verified via code review and the full toolchain, pending Founder on-device
+review.
+
 ## 2026-08-04 AT-ED-011.9 — Founder Evidence cache safety and mobile storage remediation
 
 Fixes the AT-ED-011.8 root cause. Full findings, measured payload composition, and the complete

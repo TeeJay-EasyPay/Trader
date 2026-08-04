@@ -17,6 +17,7 @@ const {
   filterRecommendations,
   exitPlan,
   probabilityRange,
+  recommendationsSummaryText,
 } = require('./recommendations');
 
 let passed = 0;
@@ -154,6 +155,33 @@ test('probabilityRange: builds a +/-5% band around the value', () => {
 
 test('probabilityRange: non-numeric input explains the missing model output', () => {
   assert.strictEqual(probabilityRange('n/a'), 'Not available - probability model did not return a value.');
+});
+
+// --- recommendationsSummaryText (AT-ED-012) ---
+
+test('recommendationsSummaryText: no recommendations at all', () => {
+  assert.strictEqual(recommendationsSummaryText([]), 'AI Trader has not generated any recommendations yet.');
+});
+
+test('recommendationsSummaryText: some fresh, some expired - names both counts', () => {
+  const text = recommendationsSummaryText([
+    { freshness_status: 'Fresh' },
+    { freshness_status: 'Fresh' },
+    { freshness_status: 'Expired' },
+  ]);
+  assert.ok(text.includes('2 opportunities are'));
+  assert.ok(text.includes('1 older one'));
+});
+
+test('recommendationsSummaryText: all expired says so plainly and suggests an action', () => {
+  const text = recommendationsSummaryText([{ freshness_status: 'Expired' }, { freshness_status: 'Expired' }]);
+  assert.ok(text.includes('none are fresh right now'));
+  assert.ok(text.includes('Run new analysis'));
+});
+
+test('recommendationsSummaryText: exactly one fresh opportunity uses singular grammar', () => {
+  const text = recommendationsSummaryText([{ freshness_status: 'Fresh' }]);
+  assert.ok(text.startsWith('1 opportunity is'));
 });
 
 console.log(`\n${passed} passed`);

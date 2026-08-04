@@ -183,6 +183,25 @@ function probabilityRange(value) {
   return `${Math.round(lower * 100)}%-${Math.round(upper * 100)}%`;
 }
 
+// AT-ED-012: one short, honest sentence for the top of the Recommendations screen - replaces
+// static boilerplate that never actually said how many opportunities exist right now. Reads
+// only freshness_status (already computed per item), invents nothing.
+function recommendationsSummaryText(recommendations) {
+  const items = (recommendations || []).map(withRecommendationFreshness);
+  const total = items.length;
+  if (!total) {
+    return 'AI Trader has not generated any recommendations yet.';
+  }
+  const fresh = items.filter((item) => item.freshness_status !== 'Expired').length;
+  const expired = total - fresh;
+  if (fresh === 0) {
+    return `AI Trader has found ${total} opportunit${total === 1 ? 'y' : 'ies'} in total, but none are fresh right now - every one has expired. Run new analysis for current ideas.`;
+  }
+  const freshText = fresh === 1 ? '1 opportunity is' : `${fresh} opportunities are`;
+  const expiredText = expired ? ` (plus ${expired} older ${expired === 1 ? 'one' : 'ones'} kept for reference, now expired)` : '';
+  return `${freshText} currently open for review${expiredText}.`;
+}
+
 module.exports = {
   withRecommendationFreshness,
   clientAutoTradeReason,
@@ -197,4 +216,5 @@ module.exports = {
   filterRecommendations,
   exitPlan,
   probabilityRange,
+  recommendationsSummaryText,
 };

@@ -490,3 +490,84 @@ services `render.yaml` declares (`ai-trader-daily-learning`, `ai-trader-weekly-r
 provisioned Render services at all — confirmed separately from this cache work, deliberately
 not mixed into it. Tracked as a proposed follow-up (verify and restore scheduled Founder Brief
 generation), not addressed here.
+
+---
+
+# AT-ED-012 (Founder Experience, Information Design & Executive UX)
+
+A presentation-only pass across all six mobile screens: no backend, trading, governance, risk,
+or database file touched (11 files changed, all under `mobile/`). Full per-screen findings in
+`Founder_Experience_Review.md`; summarized here.
+
+## What was reviewed
+
+Every screen (`Dashboard`, `Activity`, `Recommendations`, `Portfolio`, `Market`, `Learning`),
+the shared `BrokerPanel`/`ReportPanel` components, and every shared UI primitive
+(`Section`/`CollapsibleSection`/`Metric`/`TextBlock`/`Button`/`StatusPill`/`Empty`), documented
+against: purpose, audience, the question it should answer, information overload, duplicate
+information, missing information, technical wording, and misplaced content.
+
+**Findings:** Dashboard carried two independently-computed executive summaries back to back,
+plus a full page of always-open infrastructure diagnostics before reaching Broker Panels.
+`BrokerPanel` (shared by Dashboard and Portfolio) was the densest component in the app — roughly
+30-45 fields per broker, always fully expanded, appearing twice. Market had zero progressive
+disclosure at all (9 permanently-expanded sections) and duplicated both an internal metric
+(Research Running/Research Freshness — same field, two labels) and an entire other screen's
+purpose (a full copy of Learning's Trade Outcomes data). Activity and Learning were already
+close to the target shape (a short summary card, then collapsed detail) and needed only wording
+polish.
+
+## Phase 4 — financial terminology audit
+
+Traced every Kraken money field to its exact backend source
+(`application/broker_service.py:_exchange_portfolio`). Confirmed the ambiguity the directive
+named as an example is real: "Portfolio"/"Cash" describe the Founder's **whole personal Kraken
+account** (`balance_summary.total_estimated_gbp`/`gbp_cash`); "Buying Power" is **not a live
+figure at all** — it's the static, configured `KRAKEN_TRADING_ALLOCATION_GBP` ceiling
+(`balance_summary.trading_allocation_gbp`), which never changes as capital is deployed. The
+number that actually answers "what can the AI still spend" (`ai_capital_ledger.available_cash_gbp`)
+already existed in the data model but was three taps deep inside a collapsed "Trading
+Permissions & Seatbelts" section. No calculation was changed — only which existing, already-
+computed values are shown prominently and how they're labelled.
+
+## Changes made
+
+1. **Dashboard**: merged "Command Summary" and "Executive Summary" into one `CommandSummaryCard`
+   (status pill + 2-3 sentence plain-English summary + supporting metrics); "24-Hour Operations"
+   and "Connection & Trading Readiness" demoted to collapsed sections.
+2. **BrokerPanel**: leads with a new plain-English readiness sentence
+   (`brokerReadinessSentence()`); Kraken's money fields relabelled to make the whole-account-vs-
+   AI-sleeve distinction explicit, with the actual AI buying-power figure surfaced prominently
+   instead of buried; all deep governance/ledger/raw-balance detail moved behind one "Full
+   Broker Diagnostics" collapsible.
+3. **Market**: converted to the Activity-screen's collapsible pattern for reference/browse
+   content (Research Status, Benchmark Traders, Theme Definitions, Companies Monitored); removed
+   the duplicate Research Running/Freshness metric; replaced the full Learning-screen duplicate
+   with a one-line pointer plus two headline numbers.
+4. **Recommendations**: static description replaced with a dynamic summary
+   (`recommendationsSummaryText()`) naming how many opportunities are actually fresh right now.
+5. **Portfolio**: static question replaced with an actual answer (`portfolioHeadline()`) built
+   from the same position/P&L data already on screen.
+6. **Activity/Learning**: wording polish only ("Founder Action Required" → "Needs Your
+   Attention"; two Learning fallback strings de-jargoned).
+7. **Visual consistency**: Dashboard and Market's top cards now use the same
+   `summaryCard`/`summaryReason` treatment Activity/Portfolio/Learning already used, so every
+   screen's "here's the story" card looks and reads the same way — no new styles introduced.
+
+## New pure, tested functions
+
+`founderPresentation.js`: `brokerReadinessSentence()`, `krakenWholeAccountNote()`,
+`portfolioHeadline()`. `recommendations.js`: `recommendationsSummaryText()`. All four are
+dependency-free and unit-tested (14 new tests total) exactly like every other function in these
+files — no new data is invented by any of them; each composes plain-English sentences from
+fields the backend already computes and the screens already had access to.
+
+## Verification
+
+All 17 mobile test files pass. Babel parse clean on every touched file. `expo-doctor` 17/17.
+`expo export --platform android` clean (575 modules, zero errors — no new files this pass, so
+the module count is unchanged from AT-ED-011.9). No rendered browser/device check was performed
+— this project has no `react-native-web`/`react-dom` configured, and installing them to bootstrap
+a one-off web preview was judged out of scope for a presentation-only pass; verification is via
+code review, the full babel/expo-doctor/expo-export toolchain, and (pending) the Founder's own
+on-device review.

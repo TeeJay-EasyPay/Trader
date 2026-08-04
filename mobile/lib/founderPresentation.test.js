@@ -9,6 +9,9 @@ const {
   operationalRollup,
   operationalLevelTone,
   brokerOverallReadiness,
+  brokerReadinessSentence,
+  krakenWholeAccountNote,
+  portfolioHeadline,
   activityCategoryFor,
   groupActivity,
   recommendationLifecycle,
@@ -93,6 +96,53 @@ test('brokerOverallReadiness: missing auto_trading_enabled reads Unknown, never 
   const result = brokerOverallReadiness({ connection_status: 'Connected', auto_trading_enabled: null, block_reason: null });
   assert.strictEqual(result.label, 'Unknown');
   assert.strictEqual(result.newEntriesAllowed, null);
+});
+
+test('brokerReadinessSentence (AT-ED-012): disconnected broker explains why in plain English', () => {
+  const sentence = brokerReadinessSentence({ broker: 'kraken', label: 'Kraken', connection_status: 'not connected' });
+  assert.ok(sentence.includes('not currently connected'));
+});
+
+test('brokerReadinessSentence (AT-ED-012): enabled-but-blocked broker names the block reason, not just "Blocked"', () => {
+  const sentence = brokerReadinessSentence({
+    broker: 'kraken',
+    label: 'Kraken',
+    connection_status: 'Connected',
+    auto_trading_enabled: true,
+    block_reason: 'Reconciliation hold active',
+  });
+  assert.ok(sentence.includes('Reconciliation hold active'));
+});
+
+test('brokerReadinessSentence (AT-ED-012): ready broker names the correct trading mode per broker', () => {
+  const kraken = brokerReadinessSentence({ broker: 'kraken', label: 'Kraken', connection_status: 'Connected', auto_trading_enabled: true });
+  const alpaca = brokerReadinessSentence({ broker: 'alpaca', label: 'Alpaca', connection_status: 'Connected', auto_trading_enabled: true });
+  assert.ok(kraken.includes('live trading'));
+  assert.ok(alpaca.includes('paper trading'));
+});
+
+test('krakenWholeAccountNote (AT-ED-012 Phase 4): only returned for Kraken, explains the whole-account-vs-AI-sleeve distinction', () => {
+  assert.strictEqual(krakenWholeAccountNote({ broker: 'alpaca' }), null);
+  const note = krakenWholeAccountNote({ broker: 'kraken' });
+  assert.ok(note.includes('personal account'));
+});
+
+test('portfolioHeadline (AT-ED-012): no data yet is honest, not a fabricated summary', () => {
+  const text = portfolioHeadline({ openPositionsCount: null, pnlText: null, pnlIsPositive: null, atLossCount: null });
+  assert.ok(text.includes('not available yet'));
+});
+
+test('portfolioHeadline (AT-ED-012): zero open positions reads as a plain fact', () => {
+  const text = portfolioHeadline({ openPositionsCount: 0, pnlText: null, pnlIsPositive: null, atLossCount: 0 });
+  assert.ok(text.includes('holds no open positions'));
+  assert.ok(text.includes('Nothing here currently needs'));
+});
+
+test('portfolioHeadline (AT-ED-012): open positions with a loss names the count needing attention', () => {
+  const text = portfolioHeadline({ openPositionsCount: 3, pnlText: '$45.00', pnlIsPositive: true, atLossCount: 1 });
+  assert.ok(text.includes('3 open positions'));
+  assert.ok(text.includes('up $45.00 today'));
+  assert.ok(text.includes('1 position is currently at a loss'));
 });
 
 test('brokerOverallReadiness: disconnected broker reads Data Unavailable, not a false readiness claim', () => {

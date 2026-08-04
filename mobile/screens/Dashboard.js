@@ -10,11 +10,9 @@ const { Section, CollapsibleSection, StatusPill, Metric, TextBlock, Button, Empt
 const { BrokerPanel } = require('../components/BrokerPanel');
 const { ReportPanel } = require('../components/ReportPanel');
 const { notAvailable, explainMissing } = require('../lib/notAvailable');
-const { formatList } = require('../lib/lists');
 const { formatDateTime, todayIso } = require('../lib/datetime');
 const {
   summaryTone,
-  riskTone,
   operationsTone,
   activityStatusTone,
   enabledDisabled,
@@ -100,8 +98,11 @@ function AutonomousActivitySummaryCard({ activity, onOpenActivity }) {
 function ConnectionReadinessCard({ readiness }) {
   const checks = readiness?.checks || [];
   return (
-    <Section title="Connection & Trading Readiness">
-      <Metric label="Overall" value={readiness?.trade_ready ? 'Ready - connections visible' : 'Attention needed'} />
+    <CollapsibleSection
+      title="Connection & Trading Readiness"
+      subtitle="Technical checks behind the summary above - the app's connection to Render, the background worker, and each broker."
+      badge={{ label: readiness?.trade_ready ? 'Ready' : 'Attention needed', tone: readiness?.trade_ready ? 'good' : 'warn' }}
+    >
       <Text style={styles.smallText}>{notAvailable(readiness?.note)}</Text>
       {!checks.length ? (
         <Empty />
@@ -115,7 +116,37 @@ function ConnectionReadinessCard({ readiness }) {
           </View>
         ))
       )}
-    </Section>
+    </CollapsibleSection>
+  );
+}
+
+// AT-ED-012: replaces the previous "Command Summary" + separate "Executive Summary" sections,
+// which independently summarised the same underlying state back to back. One card, one story:
+// a status pill, a 2-4 sentence plain-English summary (headline + recommendation + what to
+// watch, exactly as the backend already computes them - nothing invented here), then the
+// supporting at-a-glance metrics. Uses the same summaryCard/summaryReason treatment as the
+// Activity/Portfolio/Learning screens' top cards, so every screen's "here's the story" card
+// looks and reads the same way.
+function CommandSummaryCard({ status, brokerPanels }) {
+  const executive = status?.founder_experience?.executive_dashboard || {};
+  const evidence = status?.world_class_evidence || {};
+  const marketHealth = status?.founder_experience?.market_intelligence_centre?.market_health;
+  const sentences = [executive.headline, executive.what_to_do, executive.what_to_worry_about].filter(Boolean);
+  return (
+    <View style={styles.summaryCard}>
+      <StatusPill label={notAvailable(evidence.first_conclusion)} tone={summaryTone(evidence.first_conclusion)} />
+      <Text style={styles.summaryReason}>
+        {sentences.length ? sentences.join(' ') : 'No executive summary is available yet - check back after the next refresh.'}
+      </Text>
+      <Metric label="Market" value={marketHealth || explainMissing('market health', 'market intelligence has not produced a fresh regime summary yet')} />
+      <Metric label="Portfolio" value={executive.portfolio_health || explainMissing('portfolio health', 'broker portfolio values or exposure evidence are incomplete')} />
+      <Metric label="Brokers" value={brokerPanels.length ? `${brokerPanels.map((item) => item.label || item.broker).join(', ')} connected` : explainMissing('broker status', 'Alpaca and Kraken are not both visible from the hosted API')} />
+      <Metric label="Research" value={status?.research_status || explainMissing('research status', 'no research run has been recorded yet')} />
+      <Metric label="Learning" value={evidence.experience_learning?.boundary || executive.learning_progress} />
+      {(evidence.unavailable || []).length ? (
+        <TextBlock label="Needs Explanation" value={formatUnavailableReasons(evidence.unavailable)} />
+      ) : null}
+    </View>
   );
 }
 
@@ -151,7 +182,6 @@ function FounderBriefCard({ brief, briefLoading, briefError }) {
 }
 
 function ExecutiveDashboard({ status, portfolio, brief, briefLoading, briefError, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
-  const executive = status?.founder_experience?.executive_dashboard || {};
   const evidence = status?.world_class_evidence || {};
   const operations = status?.operations_health || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
@@ -159,26 +189,17 @@ function ExecutiveDashboard({ status, portfolio, brief, briefLoading, briefError
   const futureConnections = evidence.future_connections || futureBrokerPanels(status?.brokers || []);
   return (
     <View>
-      <Section title="Command Summary">
-        <StatusPill label={evidence.first_conclusion || 'No action required'} tone={summaryTone(evidence.first_conclusion)} />
-        <Metric label="Market" value={status?.founder_experience?.market_intelligence_centre?.market_health || explainMissing('market health', 'market intelligence has not produced a fresh regime summary yet')} />
-        <Metric label="Portfolio" value={executive.portfolio_health || explainMissing('portfolio health', 'broker portfolio values or exposure evidence are incomplete')} />
-        <Metric label="Brokers" value={brokerPanels.length ? `${brokerPanels.map((item) => item.label || item.broker).join(', ')} connected or visible` : explainMissing('broker status', 'Alpaca and Kraken are not both visible from the hosted API')} />
-        <Metric label="Data" value={(evidence.unavailable || []).length ? `${evidence.unavailable.length} value(s) need explanation` : 'Measured values are currently usable'} />
-        <Metric label="Research" value={status?.research_status || explainMissing('research status', 'no research run has been recorded yet')} />
-        <Metric label="Learning" value={evidence.experience_learning?.boundary || executive.learning_progress} />
-        <TextBlock label="Attention Required" value={formatUnavailableReasons(evidence.unavailable)} />
-      </Section>
+      <CommandSummaryCard status={status} brokerPanels={brokerPanels} />
       <AutonomousActivitySummaryCard activity={activity} onOpenActivity={onOpenActivity} />
-      <Section title="Executive Summary">
-        <StatusPill label={notAvailable(executive.portfolio_health)} tone={riskTone(executive.portfolio_risk)} />
-        <Text style={styles.cardTitle}>{notAvailable(executive.headline)}</Text>
-        <TextBlock label="What changed overnight" value={formatList(executive.good_morning)} />
-        <TextBlock label="What I recommend" value={executive.what_to_do} />
-        <TextBlock label="What to worry about" value={executive.what_to_worry_about} />
-      </Section>
-      <Section title="24-Hour Operations">
-        <StatusPill label={operations.plain_english || explainMissing('operations health', 'no background worker heartbeat or scheduled job evidence has been returned yet')} tone={operationsTone(operations)} />
+      <CollapsibleSection
+        title="24-Hour Operations"
+        subtitle="Background worker, research, and job infrastructure detail - not needed day-to-day unless something above says otherwise."
+        badge={{
+          label: operationsTone(operations) === 'good' ? 'Healthy' : 'Check',
+          tone: operationsTone(operations),
+        }}
+      >
+        <Text style={styles.bodyText}>{operations.plain_english || explainMissing('operations health', 'no background worker heartbeat or scheduled job evidence has been returned yet')}</Text>
         <Metric label="API Health" value={operations.api_health || explainMissing('API health', 'the status endpoint did not include operations health yet')} />
         <Metric label="Worker Health" value={operations.worker_health || explainMissing('worker health', 'no durable worker heartbeat has been recorded yet')} />
         <Metric label="Database Durability" value={operations.database_durability || explainMissing('database durability', 'database path has not been checked by the operations module')} />
@@ -191,7 +212,7 @@ function ExecutiveDashboard({ status, portfolio, brief, briefLoading, briefError
         <Metric label="Alpaca Paper Orders" value={sumRecentJobs(operations.last_job_runs, 'paper_orders_submitted')} />
         <Metric label="Kraken Orders" value={connectedFounderBrokers(status?.brokers || []).find((item) => item.broker === 'kraken')?.trades_today} />
         <TextBlock label="Incidents" value={operationsIncidentText(operations.incidents)} />
-      </Section>
+      </CollapsibleSection>
       <ConnectionReadinessCard readiness={readiness} />
       <Section title="Broker Panels">
         {brokerPanels.length ? brokerPanels.map((broker) => (

@@ -25,6 +25,7 @@ const {
   lifecycleSummary,
   exitPlan,
   probabilityRange,
+  recommendationsSummaryText,
 } = require('../lib/recommendations');
 
 function RecommendationCard({ item, lifecycle, amount, setAmount, onApprove }) {
@@ -135,12 +136,13 @@ function Recommendations({ recommendations, trades, amounts, setAmounts, onAppro
   }
   return (
     <View>
-      <Section title="AI Recommendation History">
-        <Text style={styles.bodyText}>
-          Showing the live recommendation and governance record, ordered from highest confidence to lowest. Expired ideas stay visible
-          for reference, but execution is blocked until fresh analysis creates a new trade idea.
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryReason}>{recommendationsSummaryText(recommendations)}</Text>
+        <Text style={styles.smallText}>
+          Ordered from highest confidence to lowest. Expired ideas stay visible for reference, but execution is blocked until fresh
+          analysis creates a new trade idea.
         </Text>
-      </Section>
+      </View>
       <Section title="Filters">
         <View style={styles.buttonGrid}>
           {['All', ...uniqueValues(recommendations.map((item) => item.suggested_broker || item.exchange).filter(Boolean))].map((item) => (

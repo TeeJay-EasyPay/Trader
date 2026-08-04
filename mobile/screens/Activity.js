@@ -153,7 +153,7 @@ function AutonomousActivity({ activity, period, setPeriod, onRefresh, notificati
                 <Text style={styles.smallText}>Latest: {formatDateTime(event.latestAt)}</Text>
                 <Text style={styles.bodyText}>{event.why}</Text>
                 <Metric label="Outcome" value={event.outcome} />
-                <Metric label="Founder Action Required" value={event.actionRequired ? 'Yes' : 'No'} />
+                <Metric label="Needs Your Attention" value={event.actionRequired ? 'Yes' : 'No'} />
                 {event.broker ? <Metric label="Related Broker" value={event.broker} /> : null}
                 {event.symbol ? <Metric label="Related Symbol" value={event.symbol} /> : null}
               </View>

@@ -125,8 +125,8 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
         <Metric label="Completed Trades Reviewed" value={summary.completedTradesReviewed} />
         <Metric label="Strategies Evaluated" value={summary.strategiesEvaluated} />
         <Metric label="Latest Lesson" value={summary.latestLesson || 'No lesson recorded yet.'} />
-        <Metric label="Latest Strategy-Change Proposal" value={summary.latestProposal || 'Not yet exposed in this evidence projection.'} />
-        <Metric label="Proposal Approved" value={summary.proposalApproved === null ? 'Not applicable yet' : yesNo(summary.proposalApproved)} />
+        <Metric label="Latest Strategy-Change Proposal" value={summary.latestProposal || 'AI Trader has not proposed a strategy change yet.'} />
+        <Metric label="Proposal Approved" value={summary.proposalApproved === null ? 'No proposal to approve yet' : yesNo(summary.proposalApproved)} />
         {!summary.hasEnoughEvidence ? (
           <View style={styles.compactRow}>
             <Text style={styles.cardTitle}>Why learning has not progressed further</Text>

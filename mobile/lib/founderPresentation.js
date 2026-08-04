@@ -78,6 +78,41 @@ function brokerOverallReadiness(broker) {
   return { label: 'Unknown', tone: 'neutral', newEntriesAllowed: null };
 }
 
+// AT-ED-012: one plain-English sentence summarising a broker's connection/trading state,
+// read from the same fields brokerOverallReadiness() already classifies - shown above the
+// metric grid in BrokerPanel so the Founder gets the story before the numbers.
+function brokerReadinessSentence(broker) {
+  const label = broker?.label || broker?.broker || 'This broker';
+  const isKraken = String(broker?.broker || '').toLowerCase() === 'kraken';
+  const mode = isKraken ? 'live trading' : 'paper trading';
+  const connected = String(broker?.connection_status || '').toLowerCase() === 'connected';
+  if (!connected) {
+    return `${label} is not currently connected, so AI Trader cannot see live balances or place trades here.`;
+  }
+  if (broker.auto_trading_enabled === true && broker.block_reason) {
+    return `${label} is connected and set up for ${mode}, but new trades are paused right now: ${broker.block_reason}`;
+  }
+  if (broker.auto_trading_enabled === true) {
+    return `${label} is connected and ready - AI Trader can open new ${mode} positions here.`;
+  }
+  if (broker.auto_trading_enabled === false) {
+    return `${label} is connected, but automatic trading here is turned off by the Founder.`;
+  }
+  return `${label} is connected. Whether it's allowed to trade has not been recorded yet.`;
+}
+
+// AT-ED-012 Phase 4 financial-terminology audit: for Kraken specifically, "Portfolio"/"Cash"
+// (balance_summary.total_estimated_gbp/gbp_cash - see broker_service.py's _exchange_portfolio)
+// describe the Founder's WHOLE personal Kraken account, not just what AI Trader manages -
+// unlike Alpaca, which is a dedicated paper account with no such split. Read only, never
+// computed here: explains an existing distinction, invents nothing.
+function krakenWholeAccountNote(broker) {
+  if (String(broker?.broker || '').toLowerCase() !== 'kraken') {
+    return null;
+  }
+  return 'Kraken is your own personal account. The figures below cover everything in it - your existing holdings plus the amount AI Trader is allowed to manage - not just the AI\'s own activity.';
+}
+
 // ---------------------------------------------------------------------------
 // Activity screen: grouping, collapsing, and Founder-facing framing
 // ---------------------------------------------------------------------------
@@ -280,6 +315,24 @@ function positionOwnership(position, managedExits) {
   return { isAiManaged: true, managedExit: match };
 }
 
+// AT-ED-012: one short, honest sentence for the top of the Portfolio screen, replacing a
+// static question ("Where is capital, where is risk...") with an actual answer. Takes an
+// already-formatted, currency-correct P&L string rather than formatting money itself, so
+// currency handling stays in lib/money.js/the screen - this only composes sentence structure
+// from numbers the screen already computed.
+function portfolioHeadline({ openPositionsCount, pnlText, pnlIsPositive, atLossCount }) {
+  if (openPositionsCount === null || openPositionsCount === undefined) {
+    return 'Portfolio detail is not available yet - check back after the next successful refresh.';
+  }
+  const positionsSentence = openPositionsCount === 0
+    ? 'AI Trader currently holds no open positions.'
+    : `You have ${openPositionsCount} open position${openPositionsCount === 1 ? '' : 's'}${pnlText ? `, ${pnlIsPositive ? 'up' : 'down'} ${pnlText} today` : ''}.`;
+  const attentionSentence = atLossCount
+    ? ` ${atLossCount} position${atLossCount === 1 ? ' is' : 's are'} currently at a loss and worth a look.`
+    : ' Nothing here currently needs your attention.';
+  return `${positionsSentence}${attentionSentence}`;
+}
+
 // ---------------------------------------------------------------------------
 // Learning screen: concise summary + single empty-state
 // ---------------------------------------------------------------------------
@@ -477,12 +530,15 @@ module.exports = {
   operationalRollup,
   operationalLevelTone,
   brokerOverallReadiness,
+  brokerReadinessSentence,
+  krakenWholeAccountNote,
   ACTIVITY_CATEGORY_ORDER,
   activityCategoryFor,
   describeActivityEvent,
   groupActivity,
   recommendationLifecycle,
   positionOwnership,
+  portfolioHeadline,
   learningSummary,
   formatGuardrailFailures,
   activityStatusTone,

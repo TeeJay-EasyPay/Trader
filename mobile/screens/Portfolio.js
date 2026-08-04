@@ -14,7 +14,7 @@ const { moneyOrText, historyMoneyOrText } = require('../lib/money');
 const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
 const { formatJsonText } = require('../lib/json');
-const { connectedFounderBrokers, formatReconciliation, positionOwnership } = require('../lib/founderPresentation');
+const { connectedFounderBrokers, formatReconciliation, positionOwnership, portfolioHeadline } = require('../lib/founderPresentation');
 const {
   combinedTransactions,
   tradeHistorySummary,
@@ -103,11 +103,18 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
       .filter((row) => row.ownership.isAiManaged)
   );
   const positionsRequiringAttention = (portfolio?.open_positions || []).filter((position) => Number(position.unrealized_pl || 0) < 0);
+  const todaysPnl = portfolio?.todays_pnl;
+  const headline = portfolioHeadline({
+    openPositionsCount: portfolio?.open_positions ? portfolio.open_positions.length : null,
+    pnlText: typeof todaysPnl === 'number' ? moneyOrText(Math.abs(todaysPnl)) : null,
+    pnlIsPositive: typeof todaysPnl === 'number' ? todaysPnl >= 0 : null,
+    atLossCount: positionsRequiringAttention.length,
+  });
 
   return (
     <View>
       <View style={styles.summaryCard}>
-        <Text style={styles.summaryReason}>Where is capital, where is risk, and what needs attention?</Text>
+        <Text style={styles.summaryReason}>{headline}</Text>
         <Metric label="Portfolio Value" value={moneyOrText(portfolio?.portfolio_value)} />
         <Metric label="Cash Available" value={moneyOrText(portfolio?.cash_available)} />
         <Metric label="Deployed Capital" value={moneyOrText(portfolio?.deployed_capital)} />
