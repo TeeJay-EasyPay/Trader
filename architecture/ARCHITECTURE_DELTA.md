@@ -869,3 +869,106 @@ the same emulator but not cleanly achieved (Expo Go's automated navigation via `
 human tapping the screen, repeatedly returned to its own project picker) - the fix is proven via
 the source-level regression test and live pre-fix reproduction described above; on-device
 confirmation by the Founder remains the final acceptance step per the directive's Section 10.
+
+# AT-ED-016 (Executive Briefing Evolution & Forecasting Engine Phase 2)
+
+Evolves (not rewrites) the Executive Briefing into the directive's exact 11-section CIO-meeting
+format, extends the Forecast Intelligence Engine into a multi-factor Bull/Base/Bear model, and
+adds real, on-device forecast accountability persistence on top of AT-ED-014's scaffold. Required
+pre-code design review is
+`ZIP-Updates/2026-08-06-at-ed-016-executive-briefing-evolution/Executive_Briefing_Evolution_Design_Review.md`.
+No backend, trading, execution, governance, or broker-integration file touched.
+
+## Executive Briefing: 11-section restructure
+
+`screens/ExecutiveBriefing.js` reorganised into: Executive Summary, Current Position (extended
+with real week-to-date/month-to-date P&L, current allocation, largest winning/losing position -
+`lib/portfolioPosition.js`, new), What Happened Overnight (extended with trades-considered/
+rejected and risk-review evidence), Market Assessment, Investment Thesis (extended with real
+Positive/Negative Factors, Unknowns, Assumptions, Expected Catalysts, Evidence Strength, and the
+existing Alternative Thesis), Forecast Centre (rewritten - see below), Forecast Accountability
+(new), Principal Risks (extended with Monitoring Owner and Estimated Portfolio Effect), Principal
+Opportunities (extended with Catalyst), Founder Actions (extended - "no action required" is now
+always explained, never bare), Investment Organisation (renamed from Investment Committee,
+extended from 7 to the directive's 9 departments), Closing Recommendation (expanded to a full
+multi-sentence close). Investment Rhythm and Executive Messages remain below-the-fold supporting
+detail. The AT-ED-015 Trading Organisation card is retired - Investment Organisation now covers
+"is my organisation healthy" with real per-department evidence, so the two cards would otherwise
+duplicate each other.
+
+## New: `lib/forecastFactors.js` - the multi-factor evidence layer (19 tests)
+
+Eight independent, real evidence-based factors (historical performance, unrealised P&L, portfolio
+concentration, market regime, learning confidence, research conviction, opportunity capture, risk
+readiness), each returning `{ name, available, direction, note }` - never a synthesized score.
+Two directive-requested signals (volatility, momentum) were found during the design review to be
+**hardcoded placeholder strings** in `lib/founderEvidenceMapping.js`
+(`'See recommendation evidence where available'`, unconditional, never derived from real backend
+data) and are deliberately NOT implemented as factors - a direct, proactive application of the
+AT-ED-015.1 incident's lesson (verify a field's real shape/meaning before reading it, don't
+assume). Several other requested signals (trend persistence, sector rotation, macro events,
+economic calendar, broker liquidity) also have no real evidence source anywhere in this app and
+were left honestly unimplemented.
+
+## Extended: `lib/forecastEngine.js` - Bull/Base/Bear cases (6 new tests, fully backward compatible)
+
+`tradeStatistics()` now also computes real `avgWinPnl`/`avgLossPnl`/`winCount`/`lossCount`.
+`projectHorizon()` adds `baseCase`/`bullCase`/`bearCase` (bull/bear built from the real average of
+only winning/only losing trades in the same dated sample, falling back to the base case when the
+sample has no trade of that kind - never a fabricated number), `probability` (the real historical
+win rate, labelled as exactly that), `expectedReturnPct`, and a written `explanation` naming the
+real sample size and win rate. `expectedVolatility`/`expectedDrawdown` remain always honestly
+unavailable - no time-series or volatility model exists in this backend, confirmed again this
+pass. All existing fields/tests are unchanged and still pass.
+
+## New: `lib/forecastHistory.js` + `hooks/useForecastHistory.js` - real forecast accountability (14 tests)
+
+Turns AT-ED-014's `lib/forecastAccountability.js` scaffold into a working system for the first
+time. Only `available: true` horizons are ever stored as a promise; records use exactly
+`FORECAST_RECORD_SHAPE`'s field names so they flow directly into the existing, unmodified
+`forecastAccountability()` summary function. Persistence is local `AsyncStorage`
+(`ai-trader:forecast-history:v1`), following `lib/founderEvidenceCache.js`'s established read/
+parse-defensively/discard-on-incompatible pattern. A forecast is graded on **directional**
+accuracy only (did it correctly call up/down/flat) against the real portfolio value this device
+next observes on or after the target date - not a continuously-sampled time series, since none is
+collected; this bound is disclosed, not hidden. New forecasts are recorded at most once per
+horizon per ~20 hours (`shouldRecordNewForecast`) so an auto-refreshing screen never spams
+duplicate promises. Automated model retraining from this history is explicitly out of scope for
+this pass - the tracking is real; using it to improve the model is future, scaffolded work.
+
+## Extended: Investment Organisation, Principal Risks, Principal Opportunities, Founder Actions
+
+`lib/investmentCommittee.js` extended from 7 to 9 departments (adds Forecast Engine, Broker
+Monitoring, Portfolio Intelligence; drops the standalone "Chief Investment Officer" entry - this
+section is departments reporting to the CIO, not the CIO's own entry), each from a real evidence
+field (Forecast Engine from `tradeStatistics()`'s own availability; Broker Monitoring counts real
+connected brokers; Portfolio Intelligence from the same `world_class_evidence.portfolio_intelligence.plain_english`
+Portfolio.js already renders). `lib/principalRisks.js` gained Monitoring Owner (a real department
+mapping) and Estimated Portfolio Effect (a real quantified £ figure for the position-loss card, an
+honest "not quantified" for market-sourced risks). `lib/principalOpportunities.js` gained Catalyst
+(the real, distinct `strongest_argument_for` field for recommendations; the first real key driver
+for themes). `lib/cio.js` gained `cioNoActionReason()` (the directive's "never simply say no
+action required - explain why" requirement) and `cioExecutiveBriefingSummary()` (the Executive
+Summary's fragment-joining composer); `cioClosingRecommendation()` was expanded with a monitoring-
+commitment closing sentence.
+
+## Real bug caught by a new test
+
+`lib/portfolioPosition.js`'s week-to-date/month-to-date sum initially filtered only on
+`Number.isFinite()` after conversion - but `Number(null)` is `0`, a finite number, so a broker
+with no real evidence was being silently counted as a real £0. Caught by the "no brokers with real
+evidence returns null" test; fixed by filtering `null`/`undefined` explicitly before conversion.
+
+## Verification
+
+All 30 mobile test files pass (361 tests total - 58 new this pass). Babel parse clean on all 85
+files checked. `expo-doctor` 17/17. `expo export --platform android` clean (591 modules). A live
+Android emulator session (the same method that reproduced AT-ED-015.1's incident) was run against
+this pass's code and the real production API; no error was observed in the bundle log or logcat
+during the sessions that ran, but Expo Go's own automated navigation did not reliably confirm a
+clean on-screen render this time (the same tooling limitation disclosed in AT-ED-015.1), so this
+is reported as inconclusive live verification, not a confirmed pass - the primary verification for
+this pass is the automated test suite plus a proactive field-safety audit (every newly-read raw
+evidence field was grep-verified against an already-proven-safe call site before use, applying the
+AT-ED-015.1 lesson prospectively). On-device confirmation by the Founder remains the final
+acceptance step.

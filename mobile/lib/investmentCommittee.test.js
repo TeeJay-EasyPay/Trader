@@ -1,4 +1,8 @@
 // Plain Node assert-based tests for investmentCommittee.js - run with `node lib/investmentCommittee.test.js`.
+// AT-ED-016: extended from 7 to 9 departments (adds Forecast Engine, Broker Monitoring,
+// Portfolio Intelligence; drops the standalone "Chief Investment Officer" entry) - see
+// Executive_Briefing_Evolution_Design_Review.md for why this is an intentional evolution, not a
+// regression.
 
 'use strict';
 
@@ -18,11 +22,11 @@ function test(name, fn) {
   }
 }
 
-test('buildInvestmentCommittee: returns exactly the seven departments, in pipeline order', () => {
+test('buildInvestmentCommittee: returns exactly the nine departments, in the directive-specified order', () => {
   const result = buildInvestmentCommittee({});
   assert.deepStrictEqual(
     result.map((item) => item.name),
-    ['Research', 'Learning', 'Market Intelligence', 'Strategy', 'Risk', 'Execution', 'Chief Investment Officer']
+    ['Market Intelligence', 'Research', 'Learning', 'Forecast Engine', 'Risk Committee', 'Strategy Committee', 'Execution', 'Broker Monitoring', 'Portfolio Intelligence']
   );
 });
 
@@ -44,16 +48,35 @@ test('buildInvestmentCommittee: Research reflects real research evidence when pr
   assert.ok(research.conclusion.includes('12'));
 });
 
-test('buildInvestmentCommittee: Risk reflects real readiness evidence, both ready and not-ready', () => {
+test('buildInvestmentCommittee: Risk Committee reflects real readiness evidence, both ready and not-ready', () => {
   const ready = buildInvestmentCommittee({ connectionReadiness: { trade_ready: true } });
   const notReady = buildInvestmentCommittee({ connectionReadiness: { trade_ready: false, note: 'Broker not connected.' } });
-  assert.ok(ready.find((item) => item.name === 'Risk').conclusion.includes('currently pass'));
-  assert.strictEqual(notReady.find((item) => item.name === 'Risk').conclusion, 'Broker not connected.');
+  assert.ok(ready.find((item) => item.name === 'Risk Committee').conclusion.includes('currently pass'));
+  assert.strictEqual(notReady.find((item) => item.name === 'Risk Committee').conclusion, 'Broker not connected.');
 });
 
-test('buildInvestmentCommittee: Chief Investment Officer uses the real executive headline', () => {
-  const result = buildInvestmentCommittee({ executiveHeadline: 'Portfolio is stable.' });
-  assert.strictEqual(result.find((item) => item.name === 'Chief Investment Officer').conclusion, 'Portfolio is stable.');
+test('buildInvestmentCommittee: Forecast Engine reflects real tradeStatistics() availability', () => {
+  const available = buildInvestmentCommittee({ forecastStats: { available: true, sampleSize: 10, winRate: 0.6 } });
+  const unavailable = buildInvestmentCommittee({ forecastStats: { available: false, reason: 'Only 2 closed trades exist.' } });
+  const forecastDept = available.find((item) => item.name === 'Forecast Engine');
+  assert.strictEqual(forecastDept.hasEvidence, true);
+  assert.ok(forecastDept.conclusion.includes('10'));
+  assert.ok(forecastDept.conclusion.includes('60%'));
+  assert.strictEqual(unavailable.find((item) => item.name === 'Forecast Engine').conclusion, 'Only 2 closed trades exist.');
+});
+
+test('buildInvestmentCommittee: Broker Monitoring counts real connected brokers out of the total', () => {
+  const result = buildInvestmentCommittee({
+    brokerPanels: [{ connection_status: 'connected' }, { connection_status: 'disconnected' }],
+  });
+  const broker = result.find((item) => item.name === 'Broker Monitoring');
+  assert.strictEqual(broker.hasEvidence, true);
+  assert.ok(broker.conclusion.includes('1 of 2'));
+});
+
+test('buildInvestmentCommittee: Portfolio Intelligence uses the real plain_english field', () => {
+  const result = buildInvestmentCommittee({ portfolioIntelligence: { plain_english: 'Up 2% today.' } });
+  assert.strictEqual(result.find((item) => item.name === 'Portfolio Intelligence').conclusion, 'Up 2% today.');
 });
 
 console.log(`\n${passed} passed`);

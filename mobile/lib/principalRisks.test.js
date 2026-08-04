@@ -42,6 +42,19 @@ test('positionsAtLossCard: computes a real percentage-based impact tier', () => 
   assert.ok(card.potentialEffect.includes('AAA'));
 });
 
+test('positionsAtLossCard: has a real Monitoring Owner and a real, quantified Estimated Portfolio Effect (AT-ED-016)', () => {
+  const card = positionsAtLossCard({ positionsAtLoss: [{ symbol: 'AAA', unrealizedPl: -100 }], portfolioValue: 1000 });
+  assert.strictEqual(card.monitoringOwner, 'Risk Committee');
+  assert.ok(card.estimatedPortfolioEffect.includes('100.00'));
+  assert.ok(card.estimatedPortfolioEffect.includes('10%'));
+});
+
+test('buildRiskCards: market risk cards have an honest, not-quantified Estimated Portfolio Effect and a real Monitoring Owner (AT-ED-016)', () => {
+  const cards = buildRiskCards({ upcomingRisks: ['inflation data'], positionsAtLoss: [], portfolioValue: 1000 });
+  assert.strictEqual(cards[0].monitoringOwner, 'Market Intelligence');
+  assert.ok(cards[0].estimatedPortfolioEffect.includes('Not quantified'));
+});
+
 // --- buildRiskCards ---
 
 test('buildRiskCards: composes both the loss card and market risk cards, capped at 3 market risks', () => {

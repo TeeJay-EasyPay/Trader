@@ -84,9 +84,29 @@ function alternativeThesis({ themes }) {
   };
 }
 
+// AT-ED-016 Part 1 Section 5: "Evidence Strength" for the Investment Thesis section - a real,
+// disclosed ratio (how many of the tracked forecast factors from lib/forecastFactors.js
+// currently have real evidence, out of how many are tracked at all), not a fabricated confidence
+// score. Thresholds are the same disclosed-arbitrary-but-stated style already used elsewhere in
+// this codebase (e.g. lib/principalRisks.js's 2% concentration threshold).
+function evidenceStrength(factorSummary) {
+  if (!factorSummary || !factorSummary.consideredCount) {
+    return 'Not yet established - insufficient evidence.';
+  }
+  const ratio = factorSummary.availableCount / factorSummary.consideredCount;
+  if (ratio >= 0.75) {
+    return `Strong - ${factorSummary.availableCount} of ${factorSummary.consideredCount} tracked factors currently have real evidence.`;
+  }
+  if (ratio >= 0.4) {
+    return `Moderate - ${factorSummary.availableCount} of ${factorSummary.consideredCount} tracked factors currently have real evidence.`;
+  }
+  return `Weak - only ${factorSummary.availableCount} of ${factorSummary.consideredCount} tracked factors currently have real evidence.`;
+}
+
 module.exports = {
   leadTheme,
   dominantStrategy,
   currentInvestmentThesis,
   alternativeThesis,
+  evidenceStrength,
 };

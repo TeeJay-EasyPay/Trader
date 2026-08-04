@@ -65,7 +65,9 @@ function tradeStatistics(closedTrades) {
       reason: `Only ${valid.length} closed trade${valid.length === 1 ? '' : 's'} with dated, realised profit or loss exist - at least ${MIN_SAMPLE_SIZE} are needed before AI Trader will project a trajectory.`,
     };
   }
-  const wins = valid.filter((trade) => trade.profitLoss > 0).length;
+  const winningTrades = valid.filter((trade) => trade.profitLoss > 0);
+  const losingTrades = valid.filter((trade) => trade.profitLoss < 0);
+  const wins = winningTrades.length;
   const winRate = wins / valid.length;
   const averagePnl = valid.reduce((sum, trade) => sum + trade.profitLoss, 0) / valid.length;
   const closedMsValues = valid.map((trade) => trade.closedMs);
@@ -75,6 +77,14 @@ function tradeStatistics(closedTrades) {
     sampleSize: valid.length,
     winRate,
     averagePnl,
+    // AT-ED-016 Part 2: real per-trade averages restricted to only the winning / only the
+    // losing trades in the same dated sample - the honest basis for a Bull/Bear case (never a
+    // fabricated multiplier on the base case). null when there is no trade of that kind in the
+    // sample, so the caller can fall back to the base case rather than divide by zero.
+    avgWinPnl: winningTrades.length ? winningTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / winningTrades.length : null,
+    avgLossPnl: losingTrades.length ? losingTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / losingTrades.length : null,
+    winCount: wins,
+    lossCount: losingTrades.length,
     spanDays,
     tradesPerDay: valid.length / spanDays,
   };
@@ -90,37 +100,75 @@ function confidenceFromSampleSize(sampleSize) {
   return { level: 'High', description: `a substantial sample of ${sampleSize} closed trades` };
 }
 
+// AT-ED-016 Part 2: no time-series or volatility model exists in this backend (confirmed again
+// this pass) - expected volatility and expected drawdown are always honestly unavailable, with
+// one shared reason string so there is exactly one "no such model exists" statement across
+// lib/forecasting.js and lib/forecastEngine.js, not two that could drift apart.
+const NO_VOLATILITY_MODEL_REASON = 'AI Trader has no time-series or volatility model - only a single realised-P&L-per-trade distribution exists, which cannot honestly support a volatility or drawdown estimate.';
+
+function caseValue({ tradesPerDay, horizonDays, perTradePnl, currentPortfolioValue }) {
+  const hasPortfolioValue = typeof currentPortfolioValue === 'number' && Number.isFinite(currentPortfolioValue);
+  const expectedChange = tradesPerDay * horizonDays * perTradePnl;
+  return {
+    expectedChange,
+    expectedValue: hasPortfolioValue ? currentPortfolioValue + expectedChange : null,
+    expectedReturnPct: hasPortfolioValue && currentPortfolioValue ? expectedChange / currentPortfolioValue : null,
+  };
+}
+
 function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   if (!stats || !stats.available) {
     return { horizon: horizon.label, horizonKey: horizon.key, available: false, reason: stats ? stats.reason : 'No closed-trade evidence is available yet.' };
   }
-  const expectedTrades = stats.tradesPerDay * horizon.days;
-  const expectedChange = expectedTrades * stats.averagePnl;
   const hasPortfolioValue = typeof currentPortfolioValue === 'number' && Number.isFinite(currentPortfolioValue);
   const confidence = confidenceFromSampleSize(stats.sampleSize);
+  const baseCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.averagePnl, currentPortfolioValue });
+  // Bull/Bear use the real average of only the winning/only the losing trades in the same dated
+  // sample as the per-trade result - never an arbitrary multiplier on the base case. Falls back
+  // to the base case itself when the sample has no trade of that kind (e.g. a 100% win-rate
+  // sample has no real losing-trade average to build a bear case from - reporting one anyway
+  // would be a fabricated number, not evidence).
+  const bullCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgWinPnl ?? stats.averagePnl, currentPortfolioValue });
+  const bearCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgLossPnl ?? stats.averagePnl, currentPortfolioValue });
+  const evidence = [
+    `${stats.sampleSize} closed trade(s) with realised profit or loss`,
+    `${Math.round(stats.winRate * 100)}% historical win rate across those trades`,
+    `Observed pace of roughly ${stats.tradesPerDay.toFixed(2)} closed trade(s) per day`,
+  ];
+  const assumptions = [
+    'Assumes the historical pace of closed trades and their average realised result persist unchanged over this horizon.',
+    'Does not account for a change in capital deployed, strategy mix, or market regime.',
+  ];
+  const principalRisks = [
+    'A shift in market conditions could invalidate the historical averages this projection is built on.',
+    horizon.days <= 7
+      ? 'A short horizon like this one is especially sensitive to the outcome of just the next trade or two.'
+      : 'Over a longer horizon, any drift between historical and future trade pace or outcome compounds.',
+  ];
   return {
     horizon: horizon.label,
     horizonKey: horizon.key,
     available: true,
-    expectedValue: hasPortfolioValue ? currentPortfolioValue + expectedChange : null,
-    expectedChange,
+    // Kept at the top level (not just inside baseCase) for backward compatibility with existing
+    // callers/tests that already read horizon.expectedValue/expectedChange directly.
+    expectedValue: baseCase.expectedValue,
+    expectedChange: baseCase.expectedChange,
+    expectedReturnPct: baseCase.expectedReturnPct,
+    baseCase,
+    bullCase,
+    bearCase,
+    // AT-ED-016 Part 2: the historical win rate used as a simple, disclosed proxy for forward
+    // likelihood - not a rigorously modelled probability. Labelled as exactly that wherever it
+    // is rendered (see screens/ExecutiveBriefing.js).
+    probability: stats.winRate,
+    expectedVolatility: { available: false, reason: NO_VOLATILITY_MODEL_REASON },
+    expectedDrawdown: { available: false, reason: NO_VOLATILITY_MODEL_REASON },
     confidence: confidence.level,
     confidenceReason: `Based on ${confidence.description}, observed over the last ${Math.round(stats.spanDays)} day(s).`,
-    evidence: [
-      `${stats.sampleSize} closed trade(s) with realised profit or loss`,
-      `${Math.round(stats.winRate * 100)}% historical win rate across those trades`,
-      `Observed pace of roughly ${stats.tradesPerDay.toFixed(2)} closed trade(s) per day`,
-    ],
-    assumptions: [
-      'Assumes the historical pace of closed trades and their average realised result persist unchanged over this horizon.',
-      'Does not account for a change in capital deployed, strategy mix, or market regime.',
-    ],
-    principalRisks: [
-      'A shift in market conditions could invalidate the historical averages this projection is built on.',
-      horizon.days <= 7
-        ? 'A short horizon like this one is especially sensitive to the outcome of just the next trade or two.'
-        : 'Over a longer horizon, any drift between historical and future trade pace or outcome compounds.',
-    ],
+    evidence,
+    assumptions,
+    principalRisks,
+    explanation: `This forecast exists because ${stats.sampleSize} closed, dated trade${stats.sampleSize === 1 ? '' : 's'} give AI Trader a real historical pace (about ${stats.tradesPerDay.toFixed(2)} trade(s)/day) and a real historical win rate (${Math.round(stats.winRate * 100)}%) to extrapolate forward. The base case assumes that pace and average result continue unchanged; the bull and bear cases show what this horizon would look like if only the historically winning, or only the historically losing, trades recurred at that same pace - not best/worst-imaginable outcomes, but the honest range this specific evidence supports.`,
     alternativeScenario: {
       description: 'If no further trades close in this period, the portfolio remains at its current value.',
       expectedValue: hasPortfolioValue ? currentPortfolioValue : null,

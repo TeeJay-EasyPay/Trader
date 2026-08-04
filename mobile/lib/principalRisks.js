@@ -16,6 +16,13 @@
 
 const NOT_SCORED = 'Not currently scored - AI Trader does not yet model risk severity or likelihood.';
 
+// AT-ED-016 Part 1 Section 7: Monitoring Owner and Estimated Portfolio Effect, added alongside
+// the existing Impact/Likelihood/Potential Effect/Mitigation fields. Monitoring Owner maps each
+// risk to the real department (from lib/investmentCommittee.js's own department list) that
+// evidence concerns - Market Intelligence for market-sourced risks, Risk Committee for
+// portfolio-position risk. Estimated Portfolio Effect is a real £ figure where one is computable
+// (the position-loss card already has one), and an honest "not quantified" elsewhere - never a
+// guessed percentage for a risk this backend has no severity model for.
 function marketRiskCard(riskText) {
   return {
     title: riskText,
@@ -23,6 +30,8 @@ function marketRiskCard(riskText) {
     likelihood: NOT_SCORED,
     potentialEffect: riskText,
     mitigation: 'Monitored; no portfolio action is currently triggered by this risk alone.',
+    monitoringOwner: 'Market Intelligence',
+    estimatedPortfolioEffect: 'Not quantified - no severity model exists for this risk yet.',
   };
 }
 
@@ -50,6 +59,8 @@ function positionsAtLossCard({ positionsAtLoss, portfolioValue }) {
     mitigation: impact === 'High'
       ? 'Reviewed as part of standard stop-loss/take-profit management; no incremental Founder action required beyond existing governance.'
       : 'No action required; within normal trading variance.',
+    monitoringOwner: 'Risk Committee',
+    estimatedPortfolioEffect: `Approximately ${totalAtRisk.toFixed(2)} (${Math.round(pct * 100)}% of portfolio value) currently at risk.`,
   };
 }
 

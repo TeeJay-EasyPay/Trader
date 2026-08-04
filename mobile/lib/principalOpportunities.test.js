@@ -45,6 +45,19 @@ test('themeOpportunityCard: uses real theme fields', () => {
   assert.strictEqual(card.evidence, 'a; b; c');
 });
 
+test('recommendationOpportunityCard: catalyst uses the real, distinct strongest_argument_for field (AT-ED-016)', () => {
+  const card = recommendationOpportunityCard({ ticker: 'AAPL', reason_for_recommendation: 'Strong momentum.', strongest_argument_for: 'Institutional accumulation observed.' });
+  assert.strictEqual(card.catalyst, 'Institutional accumulation observed.');
+  assert.notStrictEqual(card.catalyst, card.why);
+});
+
+test('themeOpportunityCard: catalyst uses the first key driver, honest fallback when none exist (AT-ED-016)', () => {
+  const withDrivers = themeOpportunityCard({ theme: 'AI Infrastructure', key_drivers: ['Datacentre demand', 'Cloud capex'] });
+  const withoutDrivers = themeOpportunityCard({ theme: 'AI Infrastructure' });
+  assert.strictEqual(withDrivers.catalyst, 'Datacentre demand');
+  assert.ok(withoutDrivers.catalyst.includes('No specific catalyst'));
+});
+
 // --- AT-ED-015.1: production-representative regression (key_drivers is a plain string, not an
 // array, in real /intelligence/themes evidence - confirmed via live Android emulator
 // reproduction; see Root_Cause_Analysis.md). This is the exact shape that crashed

@@ -8,6 +8,7 @@ const {
   dominantStrategy,
   currentInvestmentThesis,
   alternativeThesis,
+  evidenceStrength,
 } = require('./investmentThesis');
 
 let passed = 0;
@@ -88,6 +89,20 @@ test('alternativeThesis: built from the lead theme\'s own key_risks, capped at 3
   assert.strictEqual(result.available, true);
   assert.ok(result.statement.includes('rate shock; demand slowdown; regulation'));
   assert.ok(!result.statement.includes('a fourth risk'));
+});
+
+// --- evidenceStrength (AT-ED-016) ---
+
+test('evidenceStrength: no factors considered is honestly "not yet established"', () => {
+  assert.ok(evidenceStrength(null).includes('Not yet established'));
+  assert.ok(evidenceStrength({ consideredCount: 0 }).includes('Not yet established'));
+});
+
+test('evidenceStrength: real ratio drives the Strong/Moderate/Weak tier, with the real counts named', () => {
+  assert.ok(evidenceStrength({ consideredCount: 8, availableCount: 7 }).startsWith('Strong'));
+  assert.ok(evidenceStrength({ consideredCount: 8, availableCount: 4 }).startsWith('Moderate'));
+  assert.ok(evidenceStrength({ consideredCount: 8, availableCount: 1 }).startsWith('Weak'));
+  assert.ok(evidenceStrength({ consideredCount: 8, availableCount: 7 }).includes('7 of 8'));
 });
 
 console.log(`\n${passed} passed`);

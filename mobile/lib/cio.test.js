@@ -16,7 +16,9 @@ const {
   cioPrincipalRisks,
   cioPrincipalOpportunities,
   cioFounderActionRequired,
+  cioNoActionReason,
   cioClosingRecommendation,
+  cioExecutiveBriefingSummary,
 } = require('./cio');
 
 let passed = 0;
@@ -187,6 +189,23 @@ test('cioFounderActionRequired: real outstanding counts are named, not summarise
   assert.ok(text.includes('1 unresolved incident needing attention'));
 });
 
+// --- cioNoActionReason (AT-ED-016 Part 1 Section 9: never bare "no action required") ---
+
+test('cioNoActionReason: something outstanding means there is no "no action" reason to give', () => {
+  assert.strictEqual(cioNoActionReason({ tradeReady: true, outstandingRecommendationsCount: 1, unresolvedIncidentCount: 0 }), null);
+});
+
+test('cioNoActionReason: genuinely nothing outstanding explains why, naming real readiness state', () => {
+  const text = cioNoActionReason({ tradeReady: true, outstandingRecommendationsCount: 0, unresolvedIncidentCount: 0 });
+  assert.ok(text.startsWith('No Founder action is required today, because'));
+  assert.ok(text.includes('within normal governance and risk limits'));
+});
+
+test('cioNoActionReason: readiness not fully clear is named honestly, not hidden behind a generic reason', () => {
+  const text = cioNoActionReason({ tradeReady: false, outstandingRecommendationsCount: 0, unresolvedIncidentCount: 0, readinessNote: 'Kraken connection degraded.' });
+  assert.ok(text.includes('Kraken connection degraded.'));
+});
+
 // --- cioClosingRecommendation (AT-ED-015 Section 2) ---
 
 test('cioClosingRecommendation: no thesis evidence is honest, not a fabricated recommendation', () => {
@@ -204,6 +223,18 @@ test('cioClosingRecommendation: low conviction is named as a real caveat, not hi
   const text = cioClosingRecommendation({ convictionLevel: 'Low', thesisAvailable: true, actionRequired: true });
   assert.ok(text.includes('currently low'));
   assert.ok(text.includes('review the items above'));
+});
+
+// --- cioExecutiveBriefingSummary (AT-ED-016 Part 1 Section 1) ---
+
+test('cioExecutiveBriefingSummary: joins only the real, non-empty fragments provided', () => {
+  const text = cioExecutiveBriefingSummary({ greeting: 'Good morning Tarik.', headlineSummary: 'Markets are stable.', overnightSummary: null, marketSummary: 'Tech continues to lead.', comfortSentence: null });
+  assert.strictEqual(text, 'Good morning Tarik. Markets are stable. Tech continues to lead.');
+});
+
+test('cioExecutiveBriefingSummary: no fragments at all is honest, not fabricated', () => {
+  const text = cioExecutiveBriefingSummary({});
+  assert.ok(text.includes('do not have enough evidence'));
 });
 
 console.log(`\n${passed} passed`);

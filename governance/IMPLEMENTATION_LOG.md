@@ -1,5 +1,44 @@
 # Implementation Log
 
+## 2026-08-06 AT-ED-016 — Executive Briefing Evolution & Forecasting Engine Phase 2
+
+Evolves the Executive Briefing into the directive's exact 11-section structure (Executive
+Summary, Current Position, What Happened Overnight, Market Assessment, Investment Thesis,
+Forecast Centre, Principal Risks, Principal Opportunities, Founder Actions, Investment
+Organisation, Closing Recommendation) and extends the Forecast Intelligence Engine into a
+multi-factor Bull/Base/Bear model. Required pre-code design review, Founder Briefing, Test
+Report, and ZIP package all produced per the directive's own checklist. No backend, trading,
+execution, governance, or broker-integration file touched. Full account in
+`architecture/ARCHITECTURE_DELTA.md` under "AT-ED-016".
+
+**Forecast Engine Phase 2**: `lib/forecastFactors.js` (new, 8 real evidence-based factors) and
+`lib/forecastEngine.js` (extended - Bull/Base/Bear cases from real winning/losing-trade averages,
+probability from real win rate, a written explanation per forecast). Two directive-requested
+signals (volatility, momentum) were found to be hardcoded placeholder strings in
+`lib/founderEvidenceMapping.js`, never real data, and deliberately not implemented - a proactive
+application of the AT-ED-015.1 incident's lesson.
+
+**Forecast Accountability, now real**: `lib/forecastHistory.js` + `hooks/useForecastHistory.js`
+give AT-ED-014's `forecastAccountability()` scaffold its first real records, persisted locally via
+AsyncStorage, resolved by directional accuracy against the real portfolio value this device next
+observes on or after each forecast's target date.
+
+**Extended, not replaced**: Investment Organisation (7 -> 9 departments), Principal Risks
+(+Monitoring Owner, +Estimated Portfolio Effect), Principal Opportunities (+Catalyst), Founder
+Actions ("no action required" is now always explained, never bare), Current Position (+real
+week-to-date/month-to-date P&L via `lib/portfolioPosition.js`, new).
+
+**Real bug caught by a new test**: `lib/portfolioPosition.js`'s WTD/MTD sum initially let
+`Number(null) === 0` silently count a broker with no real evidence as a real zero; fixed.
+
+58 new tests (361 total, 30 files, all passing). Babel parse clean (85 files). `expo-doctor`
+17/17, `expo export --platform android` clean (591 modules). A live Android emulator session (the
+AT-ED-015.1 method) ran cleanly against the real production API with no observed error, but Expo
+Go's own automated navigation did not reliably confirm an on-screen render this time - reported
+as inconclusive, not a confirmed pass; primary verification is the automated suite plus a
+proactive field-safety grep audit of every newly-read evidence field. On-device Founder
+confirmation remains the final acceptance step.
+
 ## 2026-08-04 AT-ED-015.1 — Executive Briefing White-Screen Production Regression
 
 Production incident: the Executive Briefing rendered live data successfully, then blanked to a

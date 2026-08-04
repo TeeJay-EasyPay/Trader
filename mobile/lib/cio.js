@@ -176,6 +176,23 @@ function cioFounderActionRequired({ outstandingRecommendationsCount, unresolvedI
   return `Founder action is required today: ${parts.join(', and ')}.`;
 }
 
+// AT-ED-016 Part 1 Section 9: the directive is explicit - never simply say "No action required,"
+// explain WHY. Composed from the same three real facts cioFounderActionRequired() already checks
+// (readiness, outstanding recommendations, incidents) plus the real readiness note when available
+// - never a new evidence source, just the reasoning made explicit instead of left implicit.
+function cioNoActionReason({ tradeReady, outstandingRecommendationsCount, unresolvedIncidentCount, readinessNote }) {
+  if (outstandingRecommendationsCount || unresolvedIncidentCount) {
+    return null;
+  }
+  const reasons = [];
+  reasons.push(tradeReady
+    ? 'the portfolio and every broker connection currently sit within normal governance and risk limits'
+    : (readinessNote || 'one or more readiness checks currently need attention, though nothing rises to requiring your intervention today'));
+  reasons.push('no fresh, high-confidence opportunity is currently awaiting your review');
+  reasons.push('no unresolved incident is currently open');
+  return `No Founder action is required today, because ${reasons.join('; ')}.`;
+}
+
 // AT-ED-013 Section 9: "quarterly performance review" framing for the Learning screen, built
 // from the same fields learningSummary()/dailyLearning already compute - not a new evidence
 // source.
@@ -193,6 +210,11 @@ function cioLearningNarrative({ completedTradesReviewed, latestLesson, hasEnough
 // the way a real CIO would end a briefing. Composed entirely from values already computed
 // elsewhere (lib/forecasting.js's deriveConviction(), lib/investmentThesis.js's
 // currentInvestmentThesis(), lib/cio.js's own cioFounderActionRequired()) - never a new claim.
+// AT-ED-016 Part 1 Section 11: expanded from one sentence to the directive's example structure -
+// still composed entirely from the same three real values, plus a closing monitoring commitment
+// that is always true of this app's own behaviour (it does refresh and re-evaluate on every
+// visit and on its own auto-refresh cycle - see AT-ED-010's AUTO_REFRESH_INTERVAL_MS), not a new
+// claim about capability this app does not have.
 function cioClosingRecommendation({ convictionLevel, thesisAvailable, actionRequired }) {
   if (!thesisAvailable) {
     return 'I do not yet have enough evidence to close with a firm recommendation - check back after the next successful refresh.';
@@ -200,13 +222,28 @@ function cioClosingRecommendation({ convictionLevel, thesisAvailable, actionRequ
   const stance = actionRequired
     ? 'review the items above before markets move further'
     : 'stay the course - no change to our current positioning is warranted today';
+  const monitoring = 'I will continue monitoring the markets and will flag it here immediately should my outlook materially change.';
   if (convictionLevel === 'High') {
-    return `Given strong conviction in our current thesis, my recommendation is to ${stance}.`;
+    return `Given strong conviction in our current thesis, my recommendation is to ${stance}. ${monitoring}`;
   }
   if (convictionLevel === 'Low') {
-    return `Conviction in our current thesis is currently low, so my recommendation is to proceed cautiously and ${stance}.`;
+    return `Conviction in our current thesis is currently low, so my recommendation is to proceed cautiously and ${stance}. ${monitoring}`;
   }
-  return `My recommendation is to ${stance}, while we continue building conviction in our current thesis.`;
+  return `My recommendation is to ${stance}, while we continue building conviction in our current thesis. ${monitoring}`;
+}
+
+// AT-ED-016 Part 1 Section 1: the Executive Summary, capped around 8-10 sentences and written
+// exactly as a CIO speaking to the Founder - composed by joining sentence-fragments this module
+// already produces (cioGreeting/cioExecutiveSummary/cioOvernightActivity/cioMarketOutlook, each
+// independently tested above) rather than a new prose-generation path. Each fragment is already
+// gated on its own real evidence by the function that produced it, so the only new logic here is
+// selecting and ordering the pieces, and dropping any that came back empty/unavailable.
+function cioExecutiveBriefingSummary({ greeting, headlineSummary, overnightSummary, marketSummary, comfortSentence }) {
+  const parts = [greeting, headlineSummary, overnightSummary, marketSummary, comfortSentence].filter(Boolean);
+  if (!parts.length) {
+    return 'I do not have enough evidence to brief you yet - check back after the next successful refresh.';
+  }
+  return parts.join(' ');
 }
 
 module.exports = {
@@ -222,5 +259,7 @@ module.exports = {
   cioPrincipalRisks,
   cioPrincipalOpportunities,
   cioFounderActionRequired,
+  cioNoActionReason,
   cioClosingRecommendation,
+  cioExecutiveBriefingSummary,
 };

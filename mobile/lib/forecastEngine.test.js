@@ -107,6 +107,54 @@ test('projectHorizon: a missing portfolio value never produces a fabricated expe
   assert.strictEqual(result.alternativeScenario.expectedValue, null);
 });
 
+// --- AT-ED-016 Part 2: Bull/Base/Bear cases, probability, explanation ---
+
+test('projectHorizon: bull case uses the real average of only winning trades, bear case only losing trades', () => {
+  const stats = tradeStatistics([
+    closedTrade(20, 1), closedTrade(20, 2), closedTrade(-10, 3), closedTrade(20, 4), closedTrade(-10, 5),
+  ]);
+  const result = projectHorizon({ stats, horizon: { key: 'sevenDay', label: '7 Days', days: 7 }, currentPortfolioValue: 1000 });
+  // tradesPerDay is 5 trades over 4 days = 1.25/day; avgWinPnl = 20, avgLossPnl = -10
+  assert.ok(result.bullCase.expectedChange > result.baseCase.expectedChange);
+  assert.ok(result.bearCase.expectedChange < result.baseCase.expectedChange);
+  assert.strictEqual(result.bullCase.expectedValue > result.bearCase.expectedValue, true);
+});
+
+test('projectHorizon: no losing trades in the sample falls back the bear case to the base case, never a fabricated loss', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(10, 3), closedTrade(10, 4), closedTrade(10, 5)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.strictEqual(result.bearCase.expectedChange, result.baseCase.expectedChange);
+});
+
+test('projectHorizon: probability is the real historical win rate, not a fabricated figure', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(-5, 3), closedTrade(10, 4), closedTrade(-5, 5)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.strictEqual(result.probability, 0.6);
+});
+
+test('projectHorizon: expected volatility and drawdown are always honestly unavailable - no model exists', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(-5, 3), closedTrade(10, 4), closedTrade(-5, 5)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.strictEqual(result.expectedVolatility.available, false);
+  assert.strictEqual(result.expectedDrawdown.available, false);
+  assert.ok(result.expectedVolatility.reason.length > 0);
+});
+
+test('projectHorizon: every available forecast includes a written explanation naming the real sample size and win rate', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(-5, 3), closedTrade(10, 4), closedTrade(-5, 5)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.ok(result.explanation.includes('5 closed'));
+  assert.ok(result.explanation.includes('60%'));
+});
+
+test('tradeStatistics: exposes real winCount/lossCount/avgWinPnl/avgLossPnl alongside the existing fields', () => {
+  const stats = tradeStatistics([closedTrade(20, 1), closedTrade(20, 2), closedTrade(-10, 3), closedTrade(20, 4), closedTrade(-10, 5)]);
+  assert.strictEqual(stats.winCount, 3);
+  assert.strictEqual(stats.lossCount, 2);
+  assert.strictEqual(stats.avgWinPnl, 20);
+  assert.strictEqual(stats.avgLossPnl, -10);
+});
+
 // --- projectPortfolioHorizons ---
 
 test('projectPortfolioHorizons: returns exactly the five directive-named horizons, in order', () => {
