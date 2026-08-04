@@ -15,6 +15,7 @@ const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
 const { formatJsonText } = require('../lib/json');
 const { connectedFounderBrokers, formatReconciliation, positionOwnership, portfolioHeadline } = require('../lib/founderPresentation');
+const { portfolioProjection } = require('../lib/cio');
 const {
   combinedTransactions,
   tradeHistorySummary,
@@ -111,14 +112,21 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
     atLossCount: positionsRequiringAttention.length,
   });
 
+  // AT-ED-013 Section 8: 7/30/90-day figures only where evidence supports them - this backend
+  // has no portfolio-value forecasting model, so portfolioProjection() always returns the
+  // honest unavailable state (see lib/cio.js). Calculations above are untouched; this only adds
+  // a clearly-labelled Forecast line beneath the Facts, per the directive's "distinguish Facts
+  // from Forecasts" and "do NOT alter calculations, improve clarity only" instructions.
+  const projection = portfolioProjection();
+
   return (
     <View>
       <View style={styles.summaryCard}>
         <Text style={styles.summaryReason}>{headline}</Text>
-        <Metric label="Portfolio Value" value={moneyOrText(portfolio?.portfolio_value)} />
-        <Metric label="Cash Available" value={moneyOrText(portfolio?.cash_available)} />
-        <Metric label="Deployed Capital" value={moneyOrText(portfolio?.deployed_capital)} />
-        <Metric label="Today's P&L" value={moneyOrText(portfolio?.todays_pnl)} />
+        <Metric label="Portfolio Value (Fact)" value={moneyOrText(portfolio?.portfolio_value)} />
+        <Metric label="Cash Available (Fact)" value={moneyOrText(portfolio?.cash_available)} />
+        <Metric label="Deployed Capital (Fact)" value={moneyOrText(portfolio?.deployed_capital)} />
+        <Metric label="Today's P&L (Fact)" value={moneyOrText(portfolio?.todays_pnl)} />
         <Metric label="Open Positions" value={(portfolio?.open_positions || []).length} />
         <Metric label="Positions Requiring Attention" value={positionsRequiringAttention.length} />
         {positionsRequiringAttention.length ? (
@@ -127,6 +135,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
             value={positionsRequiringAttention.map((position) => `${position.symbol || 'Unknown'}: ${moneyOrText(position.unrealized_pl)}`).join('\n')}
           />
         ) : null}
+        <TextBlock label="Portfolio Projection (Forecast - 7/30/90 Day)" value={projection.reason} />
       </View>
 
       <CollapsibleSection

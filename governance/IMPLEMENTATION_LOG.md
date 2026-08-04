@@ -1,5 +1,38 @@
 # Implementation Log
 
+## 2026-08-04 AT-ED-013 — Founder Intelligence Experience, Chief Investment Officer & Autonomous Investment Organisation
+
+Presentation-only pass introducing the "Chief Investment Officer" narrative voice, making
+Dashboard the primary CIO morning briefing, adding a plain-English trading narrative to Activity,
+narrative framing to Market and Learning, an honest Facts-vs-Forecast distinction on Portfolio, a
+consistent 🟢🔵🟡🔴 visual status language, and a new Founder-facing `AI_TRADER_CONSTITUTION.md`.
+No backend, trading, execution, governance, or broker-integration file touched (11 files under
+`mobile/`, plus one new root-level document). Full account in `architecture/ARCHITECTURE_DELTA.md`
+under "AT-ED-013"; per-screen review in `Founder_Experience_Review.md`; design rationale in
+`Chief_Investment_Officer_Design.md`.
+
+**The CIO is explicitly not a new AI system.** New module `mobile/lib/cio.js` is a pure,
+dependency-free presentation layer (matching every other `lib/*.js` convention) that composes
+plain-English, first-person prose entirely out of evidence fields the app already had access to.
+No network call, no model, no invented data. 16 new tests, including a "deliberate honesty check"
+that `portfolioProjection()` — the directive's requested 7/30/90-day portfolio value forecast —
+never returns a fabricated number: this backend has no portfolio-value forecasting model anywhere
+(confirmed by reviewing `production_evidence.py` and every `application/*.py` service this pass),
+only per-trade R-multiple estimates, so the honest answer is "not available yet," always shown as
+such rather than invented.
+
+**Technical-detail leak sweep (Section 12).** Two real leaks found and fixed: Learning's "Ask AI
+Trader" no longer echoes a raw exception string on non-timeout failures; the app-header and
+cached-data banners no longer interpolate `api/client.js`'s raw HTTP-status/timeout/path error
+text (e.g. `"Request failed: 500"`) — a new `friendlyRefreshFailureReason()` reduces any such
+error to one of two honest, plain-English reasons.
+
+21 new tests this pass. All 18 mobile test files pass (225 tests total — a full `find` sweep
+caught that AT-ED-012's "17 mobile test files" figure had omitted `api/client.test.js`). Babel
+parse clean on every touched file, `expo-doctor` 17/17, `expo export --platform android` clean
+(576 modules). No rendered browser/device check performed (no web runtime configured for this
+native app); verified via code review and the full toolchain, pending Founder on-device review.
+
 ## 2026-08-04 AT-ED-012 — Founder Experience, Information Design & Executive UX
 
 Presentation-only pass across all six mobile screens (Dashboard, Activity, Recommendations,

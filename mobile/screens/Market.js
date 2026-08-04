@@ -13,6 +13,7 @@ const { formatList } = require('../lib/lists');
 const { moneyOrText } = require('../lib/money');
 const { riskTone, yesNo } = require('../lib/founderPresentation');
 const { marketsOpenText, latestLearningText, companiesForThemeList, findRecommendationForCompany } = require('../lib/market');
+const { cioMarketOutlook } = require('../lib/cio');
 
 function MonitoredCompaniesLinks({ theme, companies, recommendations, onOpenRecommendation }) {
   const matches = companiesForThemeList(theme, companies);
@@ -76,7 +77,19 @@ function MarketIntelligence({ benchmark, themes, companies, status, recommendati
   return (
     <View>
       <View style={styles.summaryCard}>
-        <Text style={styles.summaryReason}>What kind of market are we in, what matters right now, and where is AI Trader focused?</Text>
+        {/* AT-ED-013 Section 7: institutional-morning-briefing framing - a real narrative paragraph
+            composed entirely from this same marketCentre evidence (lib/cio.js's cioMarketOutlook),
+            replacing the previous static question. Every theme/company/benchmark item below still
+            carries its own real confidence figure from the backend - nothing here invents a
+            market-wide confidence number that doesn't exist in the evidence. */}
+        <Text style={styles.summaryReason}>
+          {cioMarketOutlook({
+            marketHealth: marketCentre.market_health,
+            currentRegime: marketCentre.current_market_regime,
+            cryptoHealth: marketCentre.crypto_health,
+            upcomingRisks: marketCentre.upcoming_risks,
+          })}
+        </Text>
         <StatusPill label={notAvailable(marketCentre.market_health)} tone={riskTone(marketCentre.market_health)} />
         <Metric label="Current Market Regime" value={marketCentre.current_market_regime} />
         <Metric label="Volatility" value={marketCentre.volatility} />

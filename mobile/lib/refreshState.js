@@ -82,6 +82,24 @@ function formatAgeSeconds(seconds) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+// AT-ED-013 Section 12: api/client.js's raw error messages (e.g. "Request failed: 500",
+// "Backend returned non-JSON data from /founder-evidence (502)...", "Request timed out after
+// 18s: /founder-evidence") are engineering-facing by design - useful in a technical-diagnostics
+// context, not something to interpolate into a Founder-facing banner. This turns any such
+// message into one of two honest, plain-English reasons: the backend was slow, or AI Trader
+// could not reach it at all. Neither case is ever left unexplained - a lastError is always
+// distinguished from "no error recorded" (see the null-case tests).
+function friendlyRefreshFailureReason(lastError) {
+  if (!lastError) {
+    return 'Live refresh failed.';
+  }
+  const text = String(lastError).toLowerCase();
+  if (text.includes('timed out') || text.includes('timeout')) {
+    return 'Live refresh failed: the backend took too long to respond.';
+  }
+  return 'Live refresh failed: AI Trader could not reach the backend.';
+}
+
 // The banner content for Requirement 1's "Cached Data / Captured: / Age: / Live refresh
 // failed." card. cachedAt is the ISO timestamp the currently-displayed cache was originally
 // fetched LIVE (stored alongside the cached payload - see App.js's AsyncStorage envelope),
@@ -94,7 +112,7 @@ function cacheBannerDetails({ cachedAt, lastError, nowMs = Date.now() }) {
     headline: 'Cached Data',
     captured: cachedAt || null,
     age: formatAgeSeconds(ageSeconds),
-    reason: lastError ? `Live refresh failed: ${lastError}` : 'Live refresh failed.',
+    reason: friendlyRefreshFailureReason(lastError),
   };
 }
 
@@ -117,32 +135,52 @@ function connectionMessage({ isRefreshing, isRetrying, hasAttempted }) {
   return isRetrying ? 'Backend slow to respond - retrying...' : 'Refreshing...';
 }
 
+// AT-ED-013 Section 12: one consistent visual status language (🟢 Live / 🔵 Refreshing /
+// 🟡 Cached / 🔴 Attention Required) applied identically everywhere this app shows a data-
+// freshness state. Mapped by tone, not by adding a fifth/sixth icon, so the existing six
+// DISPLAY_STATE values (each still a distinct, Founder-meaningful label - see the "every
+// DISPLAY_STATE value has a distinct label" test) collapse onto exactly those four icons:
+// good -> green, the in-progress neutral state -> blue, anything merely stale/degraded-but-
+// available (warn) -> yellow, anything that needs the Founder's attention (danger) -> red.
+const TONE_EMOJI = Object.freeze({
+  good: '🟢',
+  neutral: '🔵',
+  warn: '🟡',
+  danger: '🔴',
+});
+
 // Short label + tone for the StatusPill shown in the app header, one call site so every
 // screen renders the identical wording/colour for a given state.
 function displayStateBadge(state) {
-  switch (state) {
-    case DISPLAY_STATE.LIVE:
-      return { label: 'Live', tone: 'good' };
-    case DISPLAY_STATE.REFRESHING:
-      return { label: 'Refreshing', tone: 'neutral' };
-    case DISPLAY_STATE.CACHED:
-      return { label: 'Cached', tone: 'warn' };
-    case DISPLAY_STATE.BACKEND_SNAPSHOT_STALE:
-      return { label: 'Backend Snapshot Stale', tone: 'warn' };
-    case DISPLAY_STATE.REFRESH_FAILED:
-      return { label: 'Refresh Failed', tone: 'danger' };
-    case DISPLAY_STATE.NO_DATA_AVAILABLE:
-    default:
-      return { label: 'No Data Available', tone: 'danger' };
-  }
+  const badge = (() => {
+    switch (state) {
+      case DISPLAY_STATE.LIVE:
+        return { label: 'Live', tone: 'good' };
+      case DISPLAY_STATE.REFRESHING:
+        return { label: 'Refreshing', tone: 'neutral' };
+      case DISPLAY_STATE.CACHED:
+        return { label: 'Cached', tone: 'warn' };
+      case DISPLAY_STATE.BACKEND_SNAPSHOT_STALE:
+        return { label: 'Backend Snapshot Stale', tone: 'warn' };
+      case DISPLAY_STATE.REFRESH_FAILED:
+        return { label: 'Refresh Failed', tone: 'danger' };
+      case DISPLAY_STATE.NO_DATA_AVAILABLE:
+      default:
+        return { label: 'No Data Available', tone: 'danger' };
+    }
+  })();
+  const emoji = TONE_EMOJI[badge.tone] || '';
+  return { ...badge, emoji, label: `${emoji} ${badge.label}`.trim() };
 }
 
 module.exports = {
   DISPLAY_STATE,
+  TONE_EMOJI,
   classifyDisplayState,
   snapshotFreshness,
   formatAgeSeconds,
   cacheBannerDetails,
+  friendlyRefreshFailureReason,
   displayStateBadge,
   connectionMessage,
 };

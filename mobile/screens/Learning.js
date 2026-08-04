@@ -15,6 +15,7 @@ const { formatJsonText } = require('../lib/json');
 const { moneyOrText } = require('../lib/money');
 const { yesNo } = require('../lib/founderPresentation');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
+const { cioLearningNarrative } = require('../lib/cio');
 
 function AskAiTrader({ messages, setMessages, request }) {
   const [question, setQuestion] = useState('');
@@ -46,10 +47,14 @@ function AskAiTrader({ messages, setMessages, request }) {
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) }]);
       setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
     } catch (error) {
+      // AT-ED-013 Section 12: never surface a raw exception/stack-trace string to the
+      // Founder - only the timeout case gets a specific explanation (it has a genuine,
+      // actionable business meaning: the backend is slow to wake up); anything else is
+      // reported honestly but in plain English, with no exception text attached.
       const message = String(error.message || error);
       const friendly = message.includes('AbortError') || message.includes('aborted') || message.includes('timed out')
         ? 'The Ask request timed out before the backend replied. Render or OpenAI may still be waking up. Try again in a moment, or ask a shorter question.'
-        : `I could not answer that yet: ${message}`;
+        : 'I could not answer that yet - something went wrong reaching AI Trader. Please try again in a moment.';
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(friendly) }]);
       setAskStatus('Ask failed or timed out.');
     } finally {
@@ -121,7 +126,17 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
   return (
     <View>
       <View style={styles.summaryCard}>
-        <Text style={styles.summaryReason}>Is AI Trader learning, and what needs Founder approval before behaviour changes?</Text>
+        {/* AT-ED-013 Section 9: the Learning screen framed as a CIO quarterly performance
+            review - a real narrative built from the same evidence_summary fields already
+            computed below, via lib/cio.js's cioLearningNarrative. */}
+        <Text style={styles.summaryReason}>
+          {cioLearningNarrative({
+            completedTradesReviewed: summary.completedTradesReviewed,
+            latestLesson: summary.latestLesson,
+            hasEnoughEvidence: summary.hasEnoughEvidence,
+            missingEvidence: summary.missingEvidence,
+          })}
+        </Text>
         <Metric label="Completed Trades Reviewed" value={summary.completedTradesReviewed} />
         <Metric label="Strategies Evaluated" value={summary.strategiesEvaluated} />
         <Metric label="Latest Lesson" value={summary.latestLesson || 'No lesson recorded yet.'} />

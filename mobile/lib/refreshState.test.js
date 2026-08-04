@@ -7,10 +7,12 @@
 const assert = require('assert');
 const {
   DISPLAY_STATE,
+  TONE_EMOJI,
   classifyDisplayState,
   snapshotFreshness,
   formatAgeSeconds,
   cacheBannerDetails,
+  friendlyRefreshFailureReason,
   displayStateBadge,
   connectionMessage,
 } = require('./refreshState');
@@ -162,13 +164,35 @@ test('cacheBannerDetails: computes a human age from cachedAt against a fixed clo
   assert.strictEqual(result.headline, 'Cached Data');
   assert.strictEqual(result.captured, '2026-08-03T01:00:00.000Z');
   assert.strictEqual(result.age, '5m ago');
-  assert.strictEqual(result.reason, 'Live refresh failed: Request timed out after 18s: /founder-evidence');
+  // AT-ED-013 Section 12: the raw "/founder-evidence" path is engineering detail and must
+  // never reach this Founder-facing reason string.
+  assert.strictEqual(result.reason, 'Live refresh failed: the backend took too long to respond.');
+  assert.ok(!result.reason.includes('/founder-evidence'));
 });
 
 test('cacheBannerDetails: falls back to a generic reason when no error message was captured', () => {
   const result = cacheBannerDetails({ cachedAt: null, lastError: null, nowMs: Date.now() });
   assert.strictEqual(result.age, null);
   assert.strictEqual(result.reason, 'Live refresh failed.');
+});
+
+// --- friendlyRefreshFailureReason (AT-ED-013 Section 12) ---
+
+test('friendlyRefreshFailureReason: no error recorded is distinguished from a real failure', () => {
+  assert.strictEqual(friendlyRefreshFailureReason(null), 'Live refresh failed.');
+  assert.strictEqual(friendlyRefreshFailureReason(undefined), 'Live refresh failed.');
+});
+
+test('friendlyRefreshFailureReason: a raw HTTP status/path error never leaks into the Founder-facing reason', () => {
+  const result = friendlyRefreshFailureReason('Request failed: 500');
+  assert.ok(!result.includes('500'));
+  assert.strictEqual(result, 'Live refresh failed: AI Trader could not reach the backend.');
+});
+
+test('friendlyRefreshFailureReason: a timeout is named as slow, not as a generic failure', () => {
+  const result = friendlyRefreshFailureReason('Request timed out after 18s: /founder-evidence');
+  assert.strictEqual(result, 'Live refresh failed: the backend took too long to respond.');
+  assert.ok(!result.includes('founder-evidence'));
 });
 
 // --- displayStateBadge ---
@@ -184,6 +208,19 @@ test('displayStateBadge: Live is the only "good" tone; everything else is a visi
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.BACKEND_SNAPSHOT_STALE).tone, 'good');
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.REFRESH_FAILED).tone, 'good');
   assert.notStrictEqual(displayStateBadge(DISPLAY_STATE.NO_DATA_AVAILABLE).tone, 'good');
+});
+
+test('displayStateBadge: AT-ED-013 Section 12 visual language - Live is green, Refreshing is blue', () => {
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.LIVE).emoji, TONE_EMOJI.good);
+  assert.ok(displayStateBadge(DISPLAY_STATE.LIVE).label.startsWith(TONE_EMOJI.good));
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.REFRESHING).emoji, TONE_EMOJI.neutral);
+});
+
+test('displayStateBadge: warn-tone states are yellow, danger-tone states are red, matching the tone exactly', () => {
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.CACHED).emoji, TONE_EMOJI.warn);
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.BACKEND_SNAPSHOT_STALE).emoji, TONE_EMOJI.warn);
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.REFRESH_FAILED).emoji, TONE_EMOJI.danger);
+  assert.strictEqual(displayStateBadge(DISPLAY_STATE.NO_DATA_AVAILABLE).emoji, TONE_EMOJI.danger);
 });
 
 // --- connectionMessage ---

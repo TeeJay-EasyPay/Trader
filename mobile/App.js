@@ -25,6 +25,7 @@ const {
   classifyDisplayState,
   displayStateBadge,
   formatAgeSeconds,
+  friendlyRefreshFailureReason,
 } = require('./lib/refreshState');
 const { buildScreenRefreshRegistry } = require('./lib/screenRefresh');
 const { formatDateTime } = require('./lib/datetime');
@@ -151,6 +152,7 @@ export default function App() {
         <ExecutiveDashboard
           status={status}
           portfolio={portfolio}
+          recommendations={recommendations}
           brief={founderBrief.brief}
           briefLoading={founderBrief.loading}
           briefError={founderBrief.lastRefreshError}
@@ -167,6 +169,10 @@ export default function App() {
       return (
         <AutonomousActivity
           activity={activity}
+          founderStatus={status}
+          portfolio={portfolio}
+          performanceAttribution={performanceAttribution}
+          recommendations={recommendations}
           period={activityPeriod}
           setPeriod={setActivityPeriod}
           onRefresh={screenRefresh.Activity.refresh}
@@ -321,7 +327,7 @@ export default function App() {
           <View style={styles.cacheBanner}>
             <Text style={styles.cacheBannerHeadline}>Backend temporarily unavailable</Text>
             <Text style={styles.cacheBannerDetail}>
-              {activeLastRefreshError ? `Live refresh failed: ${activeLastRefreshError}` : 'Live refresh failed.'}
+              {friendlyRefreshFailureReason(activeLastRefreshError)}
             </Text>
             {activeLastRefreshedAt && (
               <Text style={styles.cacheBannerDetail}>

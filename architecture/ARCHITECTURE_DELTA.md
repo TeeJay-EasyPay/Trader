@@ -571,3 +571,83 @@ the module count is unchanged from AT-ED-011.9). No rendered browser/device chec
 a one-off web preview was judged out of scope for a presentation-only pass; verification is via
 code review, the full babel/expo-doctor/expo-export toolchain, and (pending) the Founder's own
 on-device review.
+
+# AT-ED-013 (Founder Intelligence Experience, Chief Investment Officer & Autonomous Investment Organisation)
+
+A presentation-only pass introducing the "Chief Investment Officer" narrative voice across the
+mobile app, making Dashboard the primary CIO morning briefing, and adding a Founder-facing
+`AI_TRADER_CONSTITUTION.md`. No backend, trading, execution, governance, or broker-integration
+file touched (11 files changed under `mobile/`, plus one new root-level document). Full
+per-screen findings in `Founder_Experience_Review.md`; design rationale in
+`Chief_Investment_Officer_Design.md`.
+
+## New module: `mobile/lib/cio.js`
+
+The CIO is explicitly not a new AI system, model, or chat — it is a pure, dependency-free
+presentation module (matching every other `lib/*.js` convention) that composes plain-English,
+first-person prose entirely out of evidence fields the app already had access to
+(`status.founder_experience`, `status.world_class_evidence`, `activity.summary`,
+`recommendations[]`). Seven exported functions: `cioGreeting`, `cioExecutiveSummary`,
+`cioOvernightActivity`, `cioMarketOutlook`, `cioAverageConfidence`, `portfolioProjection`,
+`cioLearningNarrative`. 16 new tests (`lib/cio.test.js`), including a "deliberate honesty check"
+asserting `portfolioProjection()` never returns a fabricated number — this backend has no
+portfolio-value forecasting model anywhere (confirmed by reviewing `production_evidence.py` and
+every `application/*.py` service this pass), only per-trade R-multiple estimates, so the
+directive's 7/30/90-day projection request is satisfied by an honest "not available yet" state
+rather than an invented figure.
+
+## Changes made
+
+1. **Dashboard**: `CommandSummaryCard` replaced by `CIOBriefingCard` — the new primary "home"
+   experience. Opens with a time-of-day CIO greeting, then executive summary, overnight
+   activity, market outlook, portfolio health, brokers, Founder decisions required, current-
+   recommendation confidence (a real average, not a forecast), and the honest portfolio-
+   trajectory line.
+2. **Activity**: new `TradingNarrativeCard` — a narrative paragraph (`cioOvernightActivity`)
+   followed by a compact trade-by-trade table (entry, current price, target exit, P&L,
+   confidence-if-linked), reusing `lib/tradeHistory.js`'s existing, already-tested
+   `combinedTransactions`/`normalizeTradeRow` rather than recomputing anything.
+3. **Market**: the summary card's static lead question replaced with a real `cioMarketOutlook()`
+   narrative built from the same market-intelligence-centre fields already shown below it.
+4. **Portfolio**: Facts explicitly labelled ("Portfolio Value (Fact)", etc.); a "Portfolio
+   Projection (Forecast — 7/30/90 Day)" line added beneath them, always honest about the
+   forecasting-model gap. No calculation changed, per the directive's explicit instruction.
+5. **Learning**: summary narrative now uses `cioLearningNarrative()`, framed as a CIO quarterly
+   performance review.
+6. **Visual status language (Section 12)**: `lib/refreshState.js`'s `displayStateBadge()` now
+   attaches a 🟢/🔵/🟡/🔴 emoji derived from each state's existing tone (good/neutral/warn/
+   danger) — the six existing `DISPLAY_STATE` values keep their distinct, Founder-meaningful
+   labels; the four-icon language layers on top rather than collapsing them.
+7. **Technical-detail leak sweep (Section 12)**: two raw-error leaks found and fixed. Learning's
+   "Ask AI Trader" no longer echoes a raw exception string on non-timeout failures. The app-
+   header "Live refresh failed: …" banner and the cached-data banner's reason line no longer
+   interpolate `api/client.js`'s raw HTTP-status/timeout/path error text (e.g. `"Request failed:
+   500"`, `"/founder-evidence"`) — a new `friendlyRefreshFailureReason()` in `refreshState.js`
+   reduces any such error to one of two honest, plain-English reasons (slow backend vs.
+   unreachable backend).
+8. **`AI_TRADER_CONSTITUTION.md`** (repo root, new): a ~800-word Founder-facing constitution
+   covering the eleven principles named in the directive (preserve capital, compound capital
+   through disciplined evidence-based Shariah-compliant trading, explainability, facts-vs-
+   forecasts, earned confidence, continuous learning, protecting the Founder from complexity,
+   honest communication, continuous improvement, feature-mission alignment). Explicitly
+   cross-references rather than duplicates the existing engineering constitution
+   (`architecture/AI_TRADER_FOUNDING_PRINCIPLES_ARCHITECTURE_CONSTITUTION_v1.0.md`).
+
+## New pure, tested functions
+
+`lib/cio.js`'s 7 functions (16 tests). `lib/refreshState.js`'s new `friendlyRefreshFailureReason()`
+(3 new tests) plus 2 new tests on the existing `displayStateBadge()` covering the emoji mapping.
+21 new tests total this pass, all dependency-free and following the same convention as every
+other function in these files.
+
+## Verification
+
+All 18 mobile test files pass (225 tests total across the suite — AT-ED-012's count of "17 mobile
+test files" did not include `api/client.test.js`; re-counted this pass with a full
+`find . -name "*.test.js"` sweep, not a `lib/*.test.js` glob, after that omission was caught
+mid-pass). Babel parse clean on every touched file. `expo-doctor` 17/17. `expo export --platform
+android` clean (576 modules, zero errors — one net new file, `lib/cio.js`, plus its test file
+which is not bundled). No rendered browser/device check was performed, for the same reason
+recorded in AT-ED-012: this project has no `react-native-web`/`react-dom` configured;
+verification is via code review, the full babel/expo-doctor/expo-export toolchain, and the
+Founder's own on-device review after the OTA update lands.

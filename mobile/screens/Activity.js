@@ -8,9 +8,59 @@ const { useState } = React;
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Metric, TextBlock, Button, Empty } = require('../components/shared');
-const { formatDateTime } = require('../lib/datetime');
+const { formatDateTime, formatPercent } = require('../lib/datetime');
 const { groupActivity, activityStatusTone, activitySeverityTone, noTradeTone } = require('../lib/founderPresentation');
 const { unreadNotifications, notificationsBadge } = require('../lib/notifications');
+const { combinedTransactions, normalizeTradeRow, isOpenTrade, tradeKey, unavailableReason } = require('../lib/tradeHistory');
+const { historyMoneyOrText } = require('../lib/money');
+const { cioOvernightActivity } = require('../lib/cio');
+
+// AT-ED-013 Section 6: the Activity screen's "Trading Narrative" - a plain-English paragraph
+// (built from the same activity.summary counts AutonomousActivitySummaryCard already showed as
+// separate metrics, via lib/cio.js's cioOvernightActivity) followed by a compact trade-by-trade
+// table. Every row is the same evidence Portfolio's Trade History already renders
+// (lib/tradeHistory.js's combinedTransactions/normalizeTradeRow - unchanged, not recalculated),
+// just surfaced here too since Activity is the screen that answers "what has AI Trader done".
+// Confidence is only ever shown when a real recommendation links to the trade by proposal_id -
+// never guessed or defaulted, matching Portfolio's AI-Managed Positions pattern.
+function TradingNarrativeCard({ activity, status, portfolio, performanceAttribution, recommendations }) {
+  const activitySummary = activity?.summary || {};
+  const narrative = cioOvernightActivity({
+    researchRuns: activitySummary.research?.runs,
+    recommendationsCreated: activitySummary.research?.recommendations_created,
+    ordersSubmitted: activitySummary.execution?.orders_submitted,
+  });
+  const trades = combinedTransactions(status, portfolio, 'All', performanceAttribution, 10);
+  return (
+    <CollapsibleSection
+      title="Trading Narrative"
+      subtitle="What AI Trader has actually traded, in plain English, with the evidence behind it."
+      defaultExpanded={true}
+    >
+      <Text style={styles.bodyText}>{narrative}</Text>
+      {trades.length === 0 ? (
+        <Empty />
+      ) : trades.map((item, index) => {
+        const normalized = normalizeTradeRow(item);
+        const tradeMoney = (value) => historyMoneyOrText(normalized.broker, value);
+        const isOpen = isOpenTrade(normalized);
+        const proposalId = item.proposal_id || item.raw?.proposal_id || normalized.managedExitId;
+        const recommendation = proposalId ? (recommendations || []).find((r) => r.proposal_id === proposalId) : null;
+        const confidence = recommendation ? (recommendation.confidence_score ?? recommendation.confidence) : null;
+        return (
+          <View key={tradeKey(item, index)} style={styles.compactRow}>
+            <Text style={styles.cardTitle}>{normalized.symbol || 'Unknown symbol'} ({normalized.broker})</Text>
+            <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
+            <Metric label="Current Price" value={isOpen ? (tradeMoney(normalized.currentPrice) || unavailableReason(normalized, 'current')) : 'Closed'} />
+            <Metric label="Target Exit" value={tradeMoney(normalized.targetPrice) || unavailableReason(normalized, 'target')} />
+            <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
+            <Metric label="Confidence" value={confidence !== null && confidence !== undefined ? formatPercent(confidence) : 'Not linked to a recommendation in this evidence'} />
+          </View>
+        );
+      })}
+    </CollapsibleSection>
+  );
+}
 
 // AT-ED-011.5 notifications decision (Data_Freshness_Findings.md): `/notifications` was
 // already being fetched on every refresh but rendered by no screen. It is a real, distinct
@@ -58,7 +108,7 @@ function NotificationsCard({ notifications, onCommand }) {
   );
 }
 
-function AutonomousActivity({ activity, period, setPeriod, onRefresh, notifications, onCommand }) {
+function AutonomousActivity({ activity, founderStatus, portfolio, performanceAttribution, recommendations, period, setPeriod, onRefresh, notifications, onCommand }) {
   const [filterCategory, setFilterCategory] = useState('All');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const status = activity?.status || {};
@@ -99,6 +149,13 @@ function AutonomousActivity({ activity, period, setPeriod, onRefresh, notificati
   return (
     <View>
       <NotificationsCard notifications={notifications} onCommand={onCommand} />
+      <TradingNarrativeCard
+        activity={activity}
+        status={founderStatus}
+        portfolio={portfolio}
+        performanceAttribution={performanceAttribution}
+        recommendations={recommendations}
+      />
       <View style={styles.summaryCard}>
         <StatusPill label={status.state || 'Status Unknown'} tone={activityStatusTone(status.state)} />
         <Text style={styles.summaryReason}>{status.plain_english || 'No autonomous status evidence was returned.'}</Text>
