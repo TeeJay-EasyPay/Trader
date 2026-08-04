@@ -1,5 +1,71 @@
 # Implementation Log
 
+## 2026-08-04 AT-ED-011.9 — Founder Evidence cache safety and mobile storage remediation
+
+Fixes the AT-ED-011.8 root cause. Full findings, measured payload composition, and the complete
+fix are in `architecture/ARCHITECTURE_DELTA.md` under "AT-ED-011.9"; summarized here.
+
+**Root cause (from AT-ED-011.8, confirmed): a real, on-device Android SQLite error, not a
+backend issue.** `mobile/hooks/useFounderEvidence.js` wrote the full `/founder-evidence`
+response (measured 4,555,434 bytes, 94.9% of it a 100-item `recommendations` array averaging
+~43KB/item) to AsyncStorage on every refresh; AsyncStorage's Android backing store is itself a
+small SQLite database with its own size ceiling, a known upstream defect
+(`react-native-async-storage/async-storage#427`, literally titled "database or disk is full
+(code 13 SQLITE_FULL)"). A second key, `RECOMMENDATION_CACHE_KEY`, independently wrote the same
+untrimmed ~4.3MB array on every refresh. Worse: the cache-write failure was indistinguishable
+from a live-fetch failure, so a fully successful, fully live response got discarded and replaced
+with "Refresh Failed" fallback text exposing the raw device-storage error.
+
+**Fix.** New `mobile/lib/founderEvidenceCache.js` builds a versioned, bounded cache projection
+(recommendations trimmed to 10 tiny stubs instead of 100 full ~43KB dossiers; trades/jobs/
+timeline/research/learning arrays capped; two confirmed-duplicate fields —
+`portfolio.brokers` and each broker's `payload_json`/`positions_json` — dropped entirely) that
+stays shape-compatible with every existing mapping function, so nothing downstream needed to
+change. A representative multi-megabyte test fixture shrinks to comfortably under 500KB.
+`useFounderEvidence.js`'s `applyLiveFounderEvidence()` now performs zero AsyncStorage writes —
+cache persistence moved into two new, non-blocking, independently-caught, overlap-guarded,
+fire-and-forget functions that run only after a live refresh has already succeeded, so a local
+storage failure can never again invalidate a successful network refresh. A cache-write failure
+now sets a new, deliberately never-rendered `cacheWarning` state instead of `lastRefreshError`.
+Also corrected `unavailableStatus()`'s hardcoded "Render API: timeout" label, which presented
+every possible failure cause as if it were specifically a slow Render API.
+
+12 new tests (`founderEvidenceCache.test.js`) plus 2 more in `refreshLifecycle.test.js` and
+`founderEvidenceMapping.test.js`. All 17 mobile test files pass, babel parse clean, `expo-doctor`
+17/17, `expo export --platform android` clean (575 modules, zero errors). No backend file, and
+no trading/risk/governance/reconciliation/capital logic anywhere, was touched.
+
+**Separate, not fixed here:** Founder Brief generation is ~12 days stale because the three
+report-generating cron jobs `render.yaml` declares were found, during this investigation, to
+not exist as provisioned Render services at all. Tracked as a proposed follow-up task, not
+mixed into this cache fix.
+
+## 2026-08-04 AT-ED-011.8 — production SQLite forensic investigation (no code changes)
+
+Investigation only, per explicit Founder instruction not to implement any fix until the exact
+origin was proven. A production mobile screenshot showed the Command screen's top banner and
+several cards displaying "database or disk is full (Sqlite code 13 SQLITE_FULL), (OS error -
+2:No such file or directory)" — apparently contradicting AT-ED-011.7's finding that production
+runs Postgres only.
+
+Confirmed via EXIF metadata (`DateTimeOriginal`) that the screenshot was genuinely current (not
+historical), then found zero occurrences of "sqlite"/"SQLITE_FULL"/"disk is full" anywhere in
+either Render service's logs across the full 30-day retention window, and a complete absence of
+any log activity at all in the exact minute the screenshot's clock showed — meaning the error
+never reached the backend's request-handling code at all. Traced the error text's structure
+(genuine SQLite vocabulary, a real `SQLite code 13 SQLITE_FULL`) to Android's
+`@react-native-async-storage/async-storage`, which is itself backed by a real, small SQLite
+database on-device (externally corroborated: `react-native-async-storage/async-storage#427`,
+titled with this exact error string) — `mobile/hooks/useFounderEvidence.js` was writing the
+full, multi-megabyte `/founder-evidence` response into it on every refresh, and a cache-write
+failure was being treated identically to a live-fetch failure, discarding successfully-received
+live data and replacing it with the raw device-storage exception text. Both the AT-ED-011.7
+Postgres conclusion and this finding are simultaneously true: two unrelated SQLite databases
+(the backend's, never used in production; Android's own on-device local storage, used by every
+React Native app) were both in scope, and only the second was ever actually hit.
+
+Root cause identified and accepted; fix implemented separately as AT-ED-011.9 (above).
+
 ## 2026-08-04 AT-ED-011.7 — Command screen data failure and SQLite-wording root-cause fix
 
 Investigated a second report after the AT-ED-011.6 Render Starter-plan restoration: the Command

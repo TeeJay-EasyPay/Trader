@@ -404,3 +404,89 @@ Full backend suite: 313 passed (two pre-existing, unrelated `test_cli_startup.py
 Windows temp-directory permission issue on this machine, reproducing identically before this
 change — not a regression). All 16 mobile test files pass. Babel parse clean on every touched
 file, `expo-doctor` 17/17, `expo export --platform android` clean (574 modules, zero errors).
+
+---
+
+# AT-ED-011.9 (Founder Evidence Cache Safety and Mobile Storage Remediation)
+
+Fixes the AT-ED-011.8 root cause: `mobile/hooks/useFounderEvidence.js` writing the full
+`/founder-evidence` response to AsyncStorage on every successful refresh, which threw a real
+Android `SQLiteException: database or disk is full (code 13 SQLITE_FULL)` (AsyncStorage's
+Android backing store is itself a small SQLite database with its own size ceiling — a known
+upstream defect, `react-native-async-storage/async-storage#427`) — and, critically, the
+cache-write failure was previously indistinguishable from a live-fetch failure, so a
+successful, fully-live response got discarded and replaced with "Refresh Failed" fallback text.
+
+## Measured payload composition (production, 2026-08-04)
+
+A representative `/founder-evidence` fetch: 4,555,434 bytes total. `recommendations` alone was
+**4,324,201 bytes — 94.9% of the entire payload** — across 100 items (~43KB each), dominated by
+per-item fields (`intelligence`, `committee`, `strategy`, `signals`, `probability`) that
+`statusFromFounderEvidence` never reads beyond a handful of scalars. Every other section
+combined was under 230KB. Two further redundancies were found: `portfolio.brokers` is a
+verbatim duplicate of the top-level `brokers` array (63,551 of portfolio's 64,736 bytes) and is
+never read; each broker's `payload_json`/`positions_json` are raw-JSON-string re-encodings of
+the already-present `payload`/`positions` objects.
+
+A **second** AsyncStorage key was also found contributing to the same failure mode:
+`RECOMMENDATION_CACHE_KEY` wrote the entire untrimmed `recommendations` array (the same ~4.3MB)
+to a separate key on every successful refresh, independent of the main founder-evidence cache.
+
+## Fix
+
+**New `mobile/lib/founderEvidenceCache.js`** (pure, tested): `buildFounderEvidenceCacheSnapshot()`
+produces a versioned (`v: 2`), bounded projection — same top-level shape as `/founder-evidence`
+(so `statusFromFounderEvidence()`/`activityFromFounderEvidence()`/`founderLearningForMobile()`
+need zero changes to consume it), with every array capped (recommendations → 10 tiny stubs of
+just `proposal_id`/`symbol`/`broker`/`suggested_broker`/`freshness_status`/`confidence`/
+`created_at`; trades/jobs/timeline items/research/learning → 20/20/20/10/10) and the two
+duplicate fields dropped entirely. A representative multi-megabyte test fixture (mirroring the
+production measurement) shrinks from 4MB+ to comfortably under 500KB. `parseCachedFounderEvidenceEnvelope()`
+validates the `v` field and treats any pre-AT-ED-011.9 or unrecognised-version cache as
+incompatible — discarded (safe, simple "migration"), never guessed at or partially reused.
+
+**`mobile/hooks/useFounderEvidence.js` restructured**: `applyLiveFounderEvidence()` now only
+sets display state — it performs zero AsyncStorage writes, so it can no longer be the thing
+that throws and gets reported as a failed refresh. Two new functions,
+`persistFounderEvidenceCache()` and `persistRecommendationsCache()` (capped to 15 full-fidelity
+items for the Recommendations screen's own offline view), run **after** success is already
+determined, are **never awaited** by `refresh()` (fire-and-forget with their own
+`.then/.catch/.finally` — no unhandled rejection, no blocking the loading spinner), are guarded
+against overlapping writes to the same key via dedicated in-flight refs, and are safe post-unmount
+(`isMountedRef` checked before every `setState` inside their callbacks). A cache-write failure
+now sets a new `cacheWarning` state, never `lastRefreshError` — and `cacheWarning` is
+deliberately not rendered anywhere, satisfying "no Founder-facing banner for a cache-only
+failure" without inventing new UI.
+
+**`founderEvidenceMapping.js`**: `unavailableStatus()`'s connection-readiness check hardcoded
+`component: 'Render API', status: 'timeout'` regardless of the actual cause (auth failure,
+malformed response, or a genuine timeout) — corrected to `component: 'Founder Evidence',
+status: 'unavailable'`; `detail` already carries the real, specific reason.
+
+## Tests
+
+12 new tests in `founderEvidenceCache.test.js` (bounded-array maximums, heavy-field stripping,
+duplicate-field dropping, the size-budget assertion against a representative large fixture,
+envelope version compatibility/incompatibility including the exact AT-ED-011.8-shaped legacy
+cache). `refreshLifecycle.test.js` gained a test proving the core AT-ED-011.9 contract
+structurally: a cache-only failure has no code path back into `applyError`, so an otherwise
+successful refresh can never be marked failed by one. `founderEvidenceMapping.test.js` gained a
+wording-correction regression test. Hook-level integration behaviour (the actual React state
+wiring) is not unit-tested — this project has no React Native test renderer configured, and
+`useFounderEvidence.js` cannot be `require()`'d under plain Node (it pulls in `react-native` and
+the AsyncStorage native module) — verified instead via code inspection (documented per-function
+above) plus the full babel/expo-doctor/expo-export toolchain and on-device verification.
+
+All 17 mobile test files pass (185 mobile tests total), babel parse clean on every touched file,
+`expo-doctor` 17/17, `expo export --platform android` clean (575 modules, zero errors, +1 from
+the new lib file). No backend file, and no trading/risk/governance/reconciliation/capital
+logic anywhere, was touched.
+
+## Separate, not fixed in this pass
+
+Founder Brief generation is stale (~12 days as of this investigation) because the three cron
+services `render.yaml` declares (`ai-trader-daily-learning`, `ai-trader-weekly-report`,
+`ai-trader-monthly-report`) were found, via Render's own service listing, to not exist as
+provisioned Render services at all — confirmed separately from this cache work, deliberately
+not mixed into it. Tracked as a proposed follow-up (verify and restore scheduled Founder Brief
+generation), not addressed here.

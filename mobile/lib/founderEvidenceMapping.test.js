@@ -37,6 +37,13 @@ test('unavailableStatus: builds a degraded-but-honest shape, never fabricating a
   assert.ok(result.research_status.includes('backend timed out'));
 });
 
+test('unavailableStatus (AT-ED-011.9): does not presume every failure is specifically a Render API timeout', () => {
+  const result = unavailableStatus('unauthorized: token mismatch');
+  const check = result.connection_readiness.checks[0];
+  assert.notStrictEqual(check.status, 'timeout');
+  assert.strictEqual(check.detail, 'unauthorized: token mismatch');
+});
+
 test('unavailableActivity: builds a degraded-but-honest activity shape with all 9 sections present', () => {
   const result = unavailableActivity('network error');
   assert.strictEqual(result.status.state, 'STATUS UNKNOWN');

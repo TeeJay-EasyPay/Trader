@@ -63,20 +63,43 @@ test('resolveFounderEvidenceRefresh: timeout surfaces as a fetch failure like an
   assert.strictEqual(outcome.shouldFallBackToCache, true);
 });
 
-test('resolveFounderEvidenceRefresh: fetch succeeded but applying/caching it threw - the AT-ED-011.5 permanent-spinner regression case', () => {
-  // This is exactly the scenario that used to leave `loading` stuck true forever: the fetch
-  // resolved with real data, but AsyncStorage.setItem (inside applyLiveFounderEvidence)
-  // rejected. A successful fetch with a failed apply must NOT be reported as a successful
-  // refresh - the Founder needs a truthful failure, not silently-stale data marked Live.
+test('resolveFounderEvidenceRefresh: fetch succeeded but applying it threw - the AT-ED-011.5 permanent-spinner regression case', () => {
+  // The scenario that used to leave `loading` stuck true forever: the fetch resolved with
+  // real data, but something in applyLiveFounderEvidence threw. A successful fetch with a
+  // failed apply must NOT be reported as a successful refresh - the Founder needs a truthful
+  // failure, not silently-stale data marked Live.
+  //
+  // AT-ED-011.9 note: as of this pass, applyLiveFounderEvidence no longer performs any
+  // AsyncStorage writes (see hooks/useFounderEvidence.js) - a genuine applyError here can now
+  // only come from a real display-mapping failure (e.g. malformed payload), never from local
+  // cache persistence. See the "cache-only failure" test below for the contract that replaced
+  // this scenario's original cause.
   const outcome = resolveFounderEvidenceRefresh({
     founderEvidence: { status: {}, portfolio: {} },
     fetchError: null,
-    applyError: 'Row too large to fit into CursorWindow',
+    applyError: 'Cannot read properties of undefined (reading \'state\')',
   });
   assert.strictEqual(outcome.succeeded, false);
-  assert.strictEqual(outcome.error, 'Row too large to fit into CursorWindow');
+  assert.strictEqual(outcome.error, 'Cannot read properties of undefined (reading \'state\')');
   assert.strictEqual(outcome.shouldFetchSecondary, false);
   assert.strictEqual(outcome.shouldFallBackToCache, true);
+});
+
+test('resolveFounderEvidenceRefresh (AT-ED-011.9): a cache-only failure is not representable as applyError, so it can never fail an otherwise-successful refresh', () => {
+  // This is the core AT-ED-011.8/011.9 contract, proven structurally rather than by a
+  // dedicated "cache failure" parameter: hooks/useFounderEvidence.js's persistFounderEvidenceCache
+  // and persistRecommendationsCache are fire-and-forget (never awaited by refresh()) and their
+  // .catch() handlers only ever call setCacheWarning - they have no path back into applyError
+  // at all. A real live payload that applied successfully is therefore always `succeeded: true`
+  // here, regardless of what AsyncStorage does afterwards - a SQLITE_FULL-style local storage
+  // error under this contract is structurally incapable of reaching this function as a failure.
+  const outcome = resolveFounderEvidenceRefresh({
+    founderEvidence: { status: {}, portfolio: {} },
+    fetchError: null,
+    applyError: null, // a cache-write failure has no way to set this any more
+  });
+  assert.strictEqual(outcome.succeeded, true);
+  assert.strictEqual(outcome.error, null);
 });
 
 test('resolveFounderEvidenceRefresh: an apply error takes precedence over a fetch error, since a fetch error only exists if founderEvidence is null (never both at once)', () => {

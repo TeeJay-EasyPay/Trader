@@ -19,8 +19,12 @@ function unavailableStatus(reason) {
       note: 'The app is showing a degraded status because the hosted status endpoint did not respond quickly enough. Check the Activity screen for persisted autonomous evidence.',
       checks: [
         {
-          component: 'Render API',
-          status: 'timeout',
+          component: 'Founder Evidence',
+          // AT-ED-011.9: this used to hardcode status: 'timeout', presenting every possible
+          // failure (auth, malformed response, genuine timeout) as if it were specifically a
+          // slow Render API - correct the misleading label to a neutral one; `detail` (reason)
+          // already carries the actual, specific cause.
+          status: 'unavailable',
           ready: false,
           detail: reason,
         },

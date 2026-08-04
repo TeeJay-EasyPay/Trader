@@ -39,6 +39,12 @@ const {
 } = require('../lib/refreshState');
 const { resolveFounderEvidenceRefresh, shouldStartRefresh } = require('../lib/refreshLifecycle');
 const {
+  FOUNDER_EVIDENCE_CACHE_VERSION,
+  MAX_CACHED_RECOMMENDATION_LIST_ITEMS,
+  buildFounderEvidenceCacheSnapshot,
+  parseCachedFounderEvidenceEnvelope,
+} = require('../lib/founderEvidenceCache');
+const {
   PRIMARY_REFRESH_TIMEOUT_MS,
   SECONDARY_REFRESH_TIMEOUT_MS,
   COMMAND_TIMEOUT_MS,
@@ -74,11 +80,14 @@ async function loadCachedRecommendations() {
   }
 }
 
-// AT-ED-010: the cache now stores { data, fetchedAt } so the app can show the Founder how
-// old the *phone's own copy* is (distinct from the backend's snapshot age - see
-// lib/refreshState.js's module comment). Older installs may still have a bare founder-
-// evidence payload written by a previous app version under this same key; that's handled
-// as fetchedAt: null (age unknown) rather than discarding the cache outright.
+// AT-ED-011.9: the cache now stores a small, versioned, deliberately trimmed projection (see
+// lib/founderEvidenceCache.js) instead of the full /founder-evidence payload - AT-ED-011.8
+// traced a production "database or disk is full (SQLite code 13 SQLITE_FULL)" Founder-visible
+// error to AsyncStorage's Android backing store choking on that full multi-megabyte write.
+// Any cache written before this fix (no `v` field, full raw payload under `data`) - or any
+// unrecognised future version - is treated as incompatible and discarded rather than guessed
+// at: the old shape doesn't match what statusFromFounderEvidence's callers now expect to be
+// small, and re-using it would silently reintroduce the exact failure mode this fixes.
 async function loadCachedFounderEvidence() {
   try {
     const raw = await AsyncStorage.getItem(FOUNDER_EVIDENCE_CACHE_KEY);
@@ -86,14 +95,16 @@ async function loadCachedFounderEvidence() {
       return null;
     }
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return null;
+    const envelope = parseCachedFounderEvidenceEnvelope(parsed);
+    if (envelope.compatible) {
+      return { data: envelope.data, fetchedAt: envelope.fetchedAt };
     }
-    if (parsed.data && typeof parsed.data === 'object') {
-      return { data: parsed.data, fetchedAt: parsed.fetchedAt || null };
-    }
-    // Pre-AT-ED-010 cache format: the raw founder-evidence payload itself.
-    return { data: parsed, fetchedAt: null };
+    // Safe, simple migration: discard rather than attempt to re-shape an old/incompatible
+    // cache. The next successful refresh repopulates it in the new, small format; a failed
+    // removal here is not fatal (the incompatible envelope is simply re-detected and
+    // re-discarded next launch, never used).
+    AsyncStorage.removeItem(FOUNDER_EVIDENCE_CACHE_KEY).catch(() => {});
+    return null;
   } catch (error) {
     return null;
   }
@@ -175,6 +186,13 @@ function useFounderEvidence() {
   // undifferentiated spinner - see lib/refreshState.js's connectionMessage.
   const [isRetrying, setIsRetrying] = useState(false);
   const [cachedAt, setCachedAt] = useState(null);
+  // AT-ED-011.9: set only when a background local-cache write fails after a successful live
+  // refresh (e.g. AsyncStorage rejecting the write). Deliberately never merged into
+  // lastRefreshError and never rendered as a Founder-facing banner - the live refresh already
+  // succeeded and the screen already shows real data; this is diagnostic-only (see
+  // Cache_Design.md). Kept in state (rather than only console.warn) so it's directly testable
+  // and available to development/diagnostic tooling.
+  const [cacheWarning, setCacheWarning] = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
@@ -191,6 +209,12 @@ function useFounderEvidence() {
   // into the single already-running attempt instead of issuing duplicate network requests.
   const isMountedRef = useRef(true);
   const refreshInFlightRef = useRef(false);
+  // AT-ED-011.9: guards against overlapping AsyncStorage writes to the same key (e.g. the
+  // 2-minute auto-refresh firing again while the previous refresh's background cache write is
+  // still in flight) - a second write is simply skipped rather than interleaved, matching
+  // shouldStartRefresh's existing coalescing pattern for refresh() itself.
+  const founderEvidenceCacheWriteInFlightRef = useRef(false);
+  const recommendationsCacheWriteInFlightRef = useRef(false);
   useEffect(
     () => () => {
       isMountedRef.current = false;
@@ -207,6 +231,13 @@ function useFounderEvidence() {
     [activityPeriod]
   );
 
+  // AT-ED-011.9: applies the live payload to every piece of display state and nothing else -
+  // no AsyncStorage writes happen here. This is the "live-data application" result state the
+  // directive asks be kept distinct from "local cache persistence": a payload that parses and
+  // applies successfully is a successful refresh regardless of whether the (separate,
+  // background) cache write that follows it succeeds. See persistFounderEvidenceCache /
+  // persistRecommendationsCache below for the write path, and refresh()'s call site for how
+  // the two are sequenced without one blocking or being able to fail the other.
   const applyLiveFounderEvidence = useCallback(async (founderEvidence) => {
     const nextStatus = statusFromFounderEvidence(founderEvidence);
     const nextPortfolio = founderEvidence.portfolio || {
@@ -227,8 +258,9 @@ function useFounderEvidence() {
     setDailyLearning(founderLearningForMobile(founderEvidence));
     if (nextRecommendationItems.length) {
       setRecommendations(nextRecommendationItems);
-      await AsyncStorage.setItem(RECOMMENDATION_CACHE_KEY, JSON.stringify(nextRecommendationItems));
     } else {
+      // A read, not a write - safe to keep inline and awaited; loadCachedRecommendations
+      // already catches its own errors and resolves to [].
       const cached = await loadCachedRecommendations();
       if (!isMountedRef.current) {
         return;
@@ -236,13 +268,65 @@ function useFounderEvidence() {
       setRecommendations(cached.length ? cached : []);
     }
     const fetchedAt = new Date().toISOString();
-    await AsyncStorage.setItem(FOUNDER_EVIDENCE_CACHE_KEY, JSON.stringify({ data: founderEvidence, fetchedAt }));
-    if (!isMountedRef.current) {
+    setSnapshotMeta(founderEvidence.snapshot || null);
+    setLastRefreshedAt(fetchedAt);
+    return { nextRecommendationItems, fetchedAt };
+  }, []);
+
+  // AT-ED-011.9: local cache persistence, fully decoupled from refresh success. Deliberately
+  // not awaited by refresh() (fire-and-forget with its own .then/.catch/.finally, never an
+  // unhandled rejection) so a large local write can never delay the loading spinner clearing
+  // or the UI reflecting the live data that already applied successfully above. Guarded
+  // against overlapping writes to the same key; safe to resolve after unmount (isMountedRef
+  // checked before every setState).
+  const persistFounderEvidenceCache = useCallback((founderEvidence, fetchedAt) => {
+    if (founderEvidenceCacheWriteInFlightRef.current) {
       return;
     }
-    setSnapshotMeta(founderEvidence.snapshot || null);
-    setCachedAt(fetchedAt);
-    setLastRefreshedAt(fetchedAt);
+    founderEvidenceCacheWriteInFlightRef.current = true;
+    const snapshot = buildFounderEvidenceCacheSnapshot(founderEvidence);
+    AsyncStorage.setItem(
+      FOUNDER_EVIDENCE_CACHE_KEY,
+      JSON.stringify({ v: FOUNDER_EVIDENCE_CACHE_VERSION, data: snapshot, fetchedAt })
+    )
+      .then(() => {
+        if (isMountedRef.current) {
+          setCachedAt(fetchedAt);
+          setCacheWarning(null);
+        }
+      })
+      .catch((error) => {
+        // Never Founder-facing (no banner reads cacheWarning) and never merged into
+        // lastRefreshError - the live refresh already succeeded. Kept for diagnostics only;
+        // see Cache_Design.md for why the raw message is safe to keep internally (it never
+        // reaches any rendered text).
+        if (isMountedRef.current) {
+          setCacheWarning(String(error.message || error));
+        }
+      })
+      .finally(() => {
+        founderEvidenceCacheWriteInFlightRef.current = false;
+      });
+  }, []);
+
+  const persistRecommendationsCache = useCallback((recommendationItems) => {
+    if (recommendationsCacheWriteInFlightRef.current) {
+      return;
+    }
+    recommendationsCacheWriteInFlightRef.current = true;
+    AsyncStorage.setItem(
+      RECOMMENDATION_CACHE_KEY,
+      JSON.stringify(recommendationItems.slice(0, MAX_CACHED_RECOMMENDATION_LIST_ITEMS))
+    )
+      .catch(() => {
+        // Same reasoning as persistFounderEvidenceCache: never Founder-facing, never affects
+        // refresh success. The Recommendations screen still has the live in-memory list this
+        // session; only a future offline launch would be affected, and that is an honest
+        // "no previous snapshot" state, not a hidden failure.
+      })
+      .finally(() => {
+        recommendationsCacheWriteInFlightRef.current = false;
+      });
   }, []);
 
   const applyCachedFounderEvidence = useCallback((cached) => {
@@ -257,17 +341,15 @@ function useFounderEvidence() {
 
   // AT-ED-011.5 root-cause fix for the permanent "Refreshing" spinner: the previous version
   // called setLoading(false) from two separate points inside the function body instead of one
-  // guaranteed path. If ANYTHING between those two calls threw - most plausibly
-  // applyLiveFounderEvidence's AsyncStorage.setItem writes, which persist the full multi-
-  // megabyte founder-evidence payload and can fail on storage-constrained devices - the
-  // exception propagated out of refresh() with nothing to catch it (refresh() is called from
-  // a useEffect and from RefreshControl's onRefresh with no .catch()), so setLoading(false)
-  // never ran and the header's "Refreshing" badge/spinner stuck forever, even though the
-  // screen already had data because the setState calls in applyLiveFounderEvidence run BEFORE
-  // its AsyncStorage writes. Wrapping the whole body in try/finally guarantees setLoading(false)
-  // always runs, on every path, whatever throws - matching this phase's explicit requirement
-  // that loading state must clear via a finally block or an equivalent guaranteed path, and
-  // that failures must remain visible rather than being hidden merely to stop the spinner.
+  // guaranteed path, so anything thrown between them left it stuck true forever. Wrapping the
+  // whole body in try/finally guarantees setLoading(false) always runs, on every path.
+  //
+  // AT-ED-011.9: applyLiveFounderEvidence no longer performs any AsyncStorage writes (see its
+  // own comment) - a large local cache write can therefore never again be the thing that
+  // throws here and gets reported as a failed refresh. applyError below is now genuinely only
+  // "the live payload was fetched but could not be applied" (e.g. a mapping crash on
+  // malformed data), matching the directive's requirement that an optional persistence
+  // failure must never invalidate a successful network refresh.
   const refresh = useCallback(async () => {
     if (!shouldStartRefresh(refreshInFlightRef.current)) {
       return;
@@ -311,13 +393,19 @@ function useFounderEvidence() {
         return;
       }
 
+      let appliedRecommendations = null;
+      let appliedFetchedAt = null;
       if (founderEvidence !== null) {
         try {
-          await applyLiveFounderEvidence(founderEvidence);
+          const applied = await applyLiveFounderEvidence(founderEvidence);
+          appliedRecommendations = applied?.nextRecommendationItems || null;
+          appliedFetchedAt = applied?.fetchedAt || null;
         } catch (error) {
-          // The fetch succeeded but applying/caching it failed (e.g. AsyncStorage rejected
-          // the write). This is a real, truthful failure - it must not be reported as a
-          // successful live refresh, and must not be swallowed just to let the spinner stop.
+          // A genuine failure to apply the live payload (e.g. a mapping crash on malformed
+          // data) - this is a real, truthful failure and must not be swallowed just to let
+          // the spinner stop. Local cache persistence is a separate, later step (below) and
+          // cannot reach this catch block at all any more - see applyLiveFounderEvidence's
+          // comment.
           applyError = String(error.message || error);
         }
       }
@@ -334,6 +422,17 @@ function useFounderEvidence() {
       setLastRefreshError(outcome.error);
 
       if (outcome.succeeded) {
+        // AT-ED-011.9: local cache persistence happens here - after success is already
+        // determined and the UI already reflects the live data - and is never awaited, so it
+        // cannot delay this function returning or setLoading(false) in the finally block
+        // below. Skipped only if founderEvidence/appliedFetchedAt are unexpectedly absent
+        // (outcome.succeeded already guarantees founderEvidence !== null in practice).
+        if (founderEvidence !== null && appliedFetchedAt) {
+          persistFounderEvidenceCache(founderEvidence, appliedFetchedAt);
+        }
+        if (appliedRecommendations && appliedRecommendations.length) {
+          persistRecommendationsCache(appliedRecommendations);
+        }
         // Fire-and-forget: /notifications is fetched here (unchanged data ownership) and
         // rendered by Activity's NotificationsCard (see Data_Freshness_Findings.md, notifications
         // decision - AT-ED-011.5). The .catch() below already resolves to a fallback on its own
@@ -372,7 +471,13 @@ function useFounderEvidence() {
         setLoading(false);
       }
     }
-  }, [fetchFounderEvidenceOnce, applyLiveFounderEvidence, applyCachedFounderEvidence]);
+  }, [
+    fetchFounderEvidenceOnce,
+    applyLiveFounderEvidence,
+    applyCachedFounderEvidence,
+    persistFounderEvidenceCache,
+    persistRecommendationsCache,
+  ]);
 
   useEffect(() => {
     loadCachedFounderEvidence().then((cached) => {
@@ -515,6 +620,10 @@ function useFounderEvidence() {
     bootstrapping: !hasAttempted,
     lastRefreshedAt,
     lastRefreshError,
+    // AT-ED-011.9: diagnostic-only - never rendered as a Founder-facing banner (a cache-write
+    // failure after a successful live refresh must stay invisible to the Founder; see
+    // Cache_Design.md). Exposed for development/diagnostic tooling and direct testing.
+    cacheWarning,
     snapshotInfo,
     dataSourceState,
     dataSourceBadge,
