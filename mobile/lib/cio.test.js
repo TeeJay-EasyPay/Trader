@@ -13,6 +13,9 @@ const {
   cioAverageConfidence,
   portfolioProjection,
   cioLearningNarrative,
+  cioPrincipalRisks,
+  cioPrincipalOpportunities,
+  cioFounderActionRequired,
 } = require('./cio');
 
 let passed = 0;
@@ -137,6 +140,50 @@ test('cioLearningNarrative: reports real trade count and latest lesson when evid
   const text = cioLearningNarrative({ completedTradesReviewed: 5, latestLesson: 'Momentum trades performed well.', hasEnoughEvidence: true, missingEvidence: null });
   assert.ok(text.includes('reviewed 5 closed trades'));
   assert.ok(text.includes('Momentum trades performed well.'));
+});
+
+// --- cioPrincipalRisks (AT-ED-014) ---
+
+test('cioPrincipalRisks: composes real at-loss count and real upcoming risks', () => {
+  const text = cioPrincipalRisks({ upcomingRisks: ['inflation data', 'rate decision'], positionsAtLossCount: 2 });
+  assert.ok(text.includes('2 open positions are currently at a loss'));
+  assert.ok(text.includes('inflation data; rate decision'));
+});
+
+test('cioPrincipalRisks: no risk evidence at all is honest, not fabricated', () => {
+  assert.strictEqual(
+    cioPrincipalRisks({ upcomingRisks: [], positionsAtLossCount: 0 }),
+    'No principal risks are currently flagged in the evidence.'
+  );
+});
+
+// --- cioPrincipalOpportunities (AT-ED-014) ---
+
+test('cioPrincipalOpportunities: names a real fresh-recommendation count', () => {
+  const text = cioPrincipalOpportunities({ freshRecommendationsCount: 3, topThemeSummary: null });
+  assert.ok(text.includes('3 fresh recommendations currently meet'));
+});
+
+test('cioPrincipalOpportunities: no opportunity evidence at all is honest, not fabricated', () => {
+  assert.strictEqual(
+    cioPrincipalOpportunities({ freshRecommendationsCount: 0, topThemeSummary: null }),
+    'No new opportunities currently clear our evidence bar.'
+  );
+});
+
+// --- cioFounderActionRequired (AT-ED-014 Section 3, question 10) ---
+
+test('cioFounderActionRequired: genuinely nothing outstanding says so plainly, matching the directive\'s own example', () => {
+  assert.strictEqual(
+    cioFounderActionRequired({ outstandingRecommendationsCount: 0, unresolvedIncidentCount: 0 }),
+    'No Founder action is required today.'
+  );
+});
+
+test('cioFounderActionRequired: real outstanding counts are named, not summarised away', () => {
+  const text = cioFounderActionRequired({ outstandingRecommendationsCount: 2, unresolvedIncidentCount: 1 });
+  assert.ok(text.includes('2 recommendations awaiting your review'));
+  assert.ok(text.includes('1 unresolved incident needing attention'));
 });
 
 console.log(`\n${passed} passed`);

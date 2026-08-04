@@ -1,5 +1,49 @@
 # Implementation Log
 
+## 2026-08-05 AT-ED-014 — Chief Investment Officer Workspace, Adaptive Forecasting & Strategic Intelligence
+
+Gives the CIO its own dedicated screen and navigation item - the app now launches directly into
+the CIO workspace instead of the CIO being a card inside Dashboard (AT-ED-013). Renames the
+former Dashboard to Operations (operational health only). Introduces the Adaptive Forecasting &
+Strategic Intelligence Engine (four evidence layers: Fact/Interpretation/Scenario/Forecast),
+Investment Thesis/Alternative Thesis, the Investment Rhythm (six-stage daily schedule), the
+Investment Committee (seven-department pipeline), and a Forecast Accountability scaffold. No
+backend, trading, execution, governance, or broker-integration file touched. Full account in
+`architecture/ARCHITECTURE_DELTA.md` under "AT-ED-014"; design detail in
+`Chief_Investment_Officer_Workspace.md`, `Adaptive_Forecasting_Engine.md`,
+`Investment_Rhythm.md`, and `Investment_Committee_Model.md`.
+
+**`mobile/screens/Dashboard.js` deleted**, replaced by `mobile/screens/CIO.js` (`CIOWorkspace`,
+17 modular components) and `mobile/screens/Operations.js` (`OperationsCentre`). `App.js`'s
+`SCREENS` is now `['CIO', 'Operations', 'Activity', 'Recommendations', 'Portfolio', 'Market',
+'Learning']`, initial screen `'CIO'`.
+
+**Five new pure lib modules** (35 tests): `lib/investmentThesis.js` derives a current/alternative
+thesis from real theme and strategy evidence rather than inventing a thesis object that doesn't
+exist in the backend. `lib/forecasting.js` implements `deriveConviction()` (requires 2+ agreeing
+real signals, else honestly "Not Established" - caught and fixed a real bug where
+`'unfavourable'.includes('favourable')` silently miscounted a negative signal as positive) and
+`autoTradeScenario()` (built from the real 85% auto-trade threshold); `portfolioForecast()`'s
+7/30/90-day value, drawdown, and volatility projections stay honestly unavailable - this backend
+has no time-series or volatility model, confirmed by reviewing every `application/*.py` service
+again this pass. `lib/investmentRhythm.js` separates the published daily schedule (a pure
+clock-vs-schedule comparison) from each stage's real evidence-backed completion status - Learning/
+Strategy Committee/Risk Committee are always honestly `not_tracked`, since no batch-level evidence
+for them exists. `lib/investmentCommittee.js` synthesises the seven-department pipeline from
+existing evidence. `lib/forecastAccountability.js` scaffolds forecast-vs-outcome tracking - with
+no persisted forecast history yet (this pass introduces forecasting at all), it always honestly
+reports no track record rather than a fabricated accuracy figure.
+
+**`lib/cio.js`** gained three composer functions (`cioPrincipalRisks`,
+`cioPrincipalOpportunities`, `cioFounderActionRequired`) supporting the Morning Brief's
+ten-question structure (Section 3).
+
+42 new tests this pass. All 23 mobile test files pass (267 tests total). Babel parse clean on all
+57 tracked files (full sweep, since a file was deleted and navigation restructured). `expo-doctor`
+17/17, `expo export --platform android` clean (581 modules). No rendered browser/device check
+performed (no web runtime configured for this native app); verified via code review and the full
+toolchain, pending Founder on-device review.
+
 ## 2026-08-04 AT-ED-013 — Founder Intelligence Experience, Chief Investment Officer & Autonomous Investment Organisation
 
 Presentation-only pass introducing the "Chief Investment Officer" narrative voice, making

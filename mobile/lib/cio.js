@@ -124,6 +124,58 @@ function portfolioProjection() {
   };
 }
 
+// AT-ED-014 Section 3 (question 6: "what risks concern us?"): composed from real evidence only -
+// the same upcoming_risks list Market already renders, plus open positions currently at a loss
+// (Portfolio's own positionsRequiringAttention computation, passed in already-counted). Never
+// invents a risk that isn't already surfaced elsewhere in the app.
+function cioPrincipalRisks({ upcomingRisks, positionsAtLossCount }) {
+  const sentences = [];
+  if (positionsAtLossCount) {
+    sentences.push(`${positionsAtLossCount} open position${positionsAtLossCount === 1 ? ' is' : 's are'} currently at a loss and worth a look.`);
+  }
+  if (upcomingRisks && upcomingRisks.length) {
+    sentences.push(`The principal uncertaint${upcomingRisks.length === 1 ? 'y is' : 'ies are'}: ${upcomingRisks.slice(0, 3).join('; ')}.`);
+  }
+  if (!sentences.length) {
+    return 'No principal risks are currently flagged in the evidence.';
+  }
+  return sentences.join(' ');
+}
+
+// AT-ED-014 Section 3 (question 7: "what opportunities exist?") - built from the same fresh,
+// non-expired recommendations every other screen already treats as "current opportunities"
+// (see lib/recommendations.js's freshness logic), not a new opportunity-scoring model.
+function cioPrincipalOpportunities({ freshRecommendationsCount, topThemeSummary }) {
+  const sentences = [];
+  if (freshRecommendationsCount) {
+    sentences.push(`${freshRecommendationsCount} fresh recommendation${freshRecommendationsCount === 1 ? '' : 's'} currently meet${freshRecommendationsCount === 1 ? 's' : ''} our evidence bar for review.`);
+  }
+  if (topThemeSummary) {
+    sentences.push(topThemeSummary);
+  }
+  if (!sentences.length) {
+    return 'No new opportunities currently clear our evidence bar.';
+  }
+  return sentences.join(' ');
+}
+
+// AT-ED-014 Section 3 (question 10: "does the Founder need to act?"). Deliberately binary and
+// literal about its own evidence - "no action required" is only ever said when both inputs are
+// truthfully zero, matching the example brief's own "No Founder action is required today."
+function cioFounderActionRequired({ outstandingRecommendationsCount, unresolvedIncidentCount }) {
+  if (!outstandingRecommendationsCount && !unresolvedIncidentCount) {
+    return 'No Founder action is required today.';
+  }
+  const parts = [];
+  if (outstandingRecommendationsCount) {
+    parts.push(`${outstandingRecommendationsCount} recommendation${outstandingRecommendationsCount === 1 ? '' : 's'} awaiting your review`);
+  }
+  if (unresolvedIncidentCount) {
+    parts.push(`${unresolvedIncidentCount} unresolved incident${unresolvedIncidentCount === 1 ? '' : 's'} needing attention`);
+  }
+  return `Founder action is required today: ${parts.join(', and ')}.`;
+}
+
 // AT-ED-013 Section 9: "quarterly performance review" framing for the Learning screen, built
 // from the same fields learningSummary()/dailyLearning already compute - not a new evidence
 // source.
@@ -146,4 +198,7 @@ module.exports = {
   cioAverageConfidence,
   portfolioProjection,
   cioLearningNarrative,
+  cioPrincipalRisks,
+  cioPrincipalOpportunities,
+  cioFounderActionRequired,
 };

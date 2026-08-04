@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import { styles } from './styles';
 import { StatusPill } from './components/shared';
-import { ExecutiveDashboard } from './screens/Dashboard';
+import { CIOWorkspace } from './screens/CIO';
+import { OperationsCentre } from './screens/Operations';
 import { AutonomousActivity } from './screens/Activity';
 import { Recommendations } from './screens/Recommendations';
 import { PortfolioCommandCentre } from './screens/Portfolio';
@@ -31,10 +32,12 @@ const { buildScreenRefreshRegistry } = require('./lib/screenRefresh');
 const { formatDateTime } = require('./lib/datetime');
 const { shortApiBase, apiRequest } = require('./api/client');
 
-const SCREENS = ['Dashboard', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
+// AT-ED-014 Section 1: the CIO is the primary experience - the app launches directly into the
+// CIO workspace, not Operations (the renamed former Dashboard, now operational-health only).
+const SCREENS = ['CIO', 'Operations', 'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning'];
 
 export default function App() {
-  const [screen, setScreen] = useState('Dashboard');
+  const [screen, setScreen] = useState('CIO');
   const [amounts, setAmounts] = useState({});
   const [selectedExchange, setSelectedExchange] = useState('All');
   const [targetRecommendationId, setTargetRecommendationId] = useState(null);
@@ -71,7 +74,7 @@ export default function App() {
     reportCommand,
   } = useFounderEvidence();
 
-  // AT-ED-011.5: Market and the Dashboard founder-brief each own an endpoint no other screen
+  // AT-ED-011.5: Market and the CIO/Operations founder-brief each own an endpoint no other screen
   // consumes, so each gets its own independent loading/refresh, separate from the shared
   // founder-evidence core above and from each other - see hooks/useMarketData.js and
   // hooks/useFounderBrief.js for why these were split out and why they still live here (in
@@ -85,7 +88,7 @@ export default function App() {
   // SCREEN_DATA_SOURCES actually lists for it - Activity/Portfolio/Recommendations/Learning
   // genuinely share the one founder-evidence payload (no narrower backend endpoint would
   // reduce a real network/DB cost - see the ownership table), so they compose to that shared
-  // source only; Market and Dashboard's founder-brief are screen-exclusive and never appear in
+  // source only; Market and CIO/Operations' founder-brief are screen-exclusive and never appear in
   // another screen's composition.
   const screenRefresh = useMemo(
     () =>
@@ -109,7 +112,7 @@ export default function App() {
       founderBrief.lastRefreshError,
     ]
   );
-  const activeScreenRefresh = screenRefresh[screen] || screenRefresh.Dashboard;
+  const activeScreenRefresh = screenRefresh[screen] || screenRefresh.CIO;
   const activeRefreshing = activeScreenRefresh.loading;
   const activeOnRefresh = activeScreenRefresh.refresh;
 
@@ -147,17 +150,33 @@ export default function App() {
   };
 
   const content = useMemo(() => {
-    if (screen === 'Dashboard') {
+    if (screen === 'CIO') {
       return (
-        <ExecutiveDashboard
+        <CIOWorkspace
           status={status}
           portfolio={portfolio}
+          recommendations={recommendations}
+          activity={activity}
+          themes={marketData.themes}
+          dailyLearning={dailyLearning}
+          brief={founderBrief.brief}
+          notifications={notifications}
+          onRefresh={screenRefresh.CIO.refresh}
+          onOpenOperations={() => setScreen('Operations')}
+          onOpenRecommendations={() => setScreen('Recommendations')}
+        />
+      );
+    }
+    if (screen === 'Operations') {
+      return (
+        <OperationsCentre
+          status={status}
           recommendations={recommendations}
           brief={founderBrief.brief}
           briefLoading={founderBrief.loading}
           briefError={founderBrief.lastRefreshError}
           latestReport={latestReport}
-          onRefresh={screenRefresh.Dashboard.refresh}
+          onRefresh={screenRefresh.Operations.refresh}
           onCommand={command}
           onReport={reportCommand}
           activity={activity}

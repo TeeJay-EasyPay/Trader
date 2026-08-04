@@ -651,3 +651,81 @@ which is not bundled). No rendered browser/device check was performed, for the s
 recorded in AT-ED-012: this project has no `react-native-web`/`react-dom` configured;
 verification is via code review, the full babel/expo-doctor/expo-export toolchain, and the
 Founder's own on-device review after the OTA update lands.
+
+# AT-ED-014 (Chief Investment Officer Workspace, Adaptive Forecasting & Strategic Intelligence)
+
+Gives the CIO its own dedicated screen and navigation item (it was a card inside Dashboard as of
+AT-ED-013; this pass makes it the app's primary, launch-into experience), renames the former
+Dashboard to Operations (operational health only), and introduces the Adaptive Forecasting &
+Strategic Intelligence Engine. No backend, trading, execution, governance, or broker-integration
+file touched. Full account in `Chief_Investment_Officer_Workspace.md`,
+`Adaptive_Forecasting_Engine.md`, `Investment_Rhythm.md`, and `Investment_Committee_Model.md`
+(this pass's docs bundle); summarized here.
+
+## Screen restructure
+
+`mobile/screens/Dashboard.js` deleted; replaced by two files. `mobile/screens/CIO.js`
+(`CIOWorkspace`, new) takes over the executive/investment-leadership content (including
+AT-ED-013's `CIOBriefingCard`, now expanded) as its own screen. `mobile/screens/Operations.js`
+(`OperationsCentre`, new) keeps everything else Dashboard had - 24-hour operations, connection
+readiness, broker panels, founder brief. `App.js`'s `SCREENS` array is now `['CIO', 'Operations',
+'Activity', 'Recommendations', 'Portfolio', 'Market', 'Learning']`; initial `screen` state is
+`'CIO'`. `lib/screenRefresh.js`'s `SCREEN_DATA_SOURCES` key `Dashboard` renamed to `Operations`;
+new `CIO` key added (same sources: `shared` + `founderBrief` - CIO synthesises the same evidence
+Operations shows in detail, not a new backend source).
+
+## Five new pure lib modules (35 new tests)
+
+- `lib/investmentThesis.js` (8 tests) - current/alternative investment thesis derived from the
+  real, already-fetched `themes` evidence (`/intelligence/themes`, the same data Market's Theme
+  Definitions section renders) and the dominant strategy among active recommendations. No
+  "investment thesis" object exists in this backend; this module derives one honestly rather
+  than inventing a separately-tracked thesis.
+- `lib/forecasting.js` (10 tests) - the Adaptive Forecasting Engine's four layers (`FORECAST_LAYER`:
+  Fact/Interpretation/Scenario/Forecast). `deriveConviction()` requires at least two independently
+  agreeing real signals before naming a High/Medium/Low level, else honestly "Not Established".
+  `autoTradeScenario()` is built from the exact same 85% confidence threshold
+  `lib/recommendations.js` already gates auto-execution on. `portfolioForecast()`'s value/
+  drawdown/volatility projections are always `available: false` with a named reason - this
+  backend has no time-series or volatility model - reusing AT-ED-013's `portfolioProjection()`
+  for the value-projection reason specifically, so there is one "no forecasting model exists"
+  statement in the codebase, not two that could drift apart. Caught and fixed a real bug during
+  testing: `'unfavourable'.includes('favourable')` was silently double-counting a negative signal
+  as positive; fixed by tracking each signal's polarity as an explicit boolean.
+- `lib/investmentRhythm.js` (7 tests) - the six-stage published daily schedule (Research/Learning/
+  Strategy Committee/Risk Committee/CIO Review/Founder Brief). Schedule position
+  (`scheduledCurrent`/`scheduledNext`) is a pure function of the clock (UTC) against the published
+  times - not an evidence claim. Per-stage completion is separate and always evidence-gated:
+  Research and CIO-Review/Founder-Brief are `completed` only with a real timestamp; Learning,
+  Strategy Committee, and Risk Committee are always `not_tracked`, since no separately-
+  timestamped evidence exists for them in this backend (governance runs per-recommendation, not
+  as a scheduled batch) - the literal implementation of "never fabricate completion".
+- `lib/investmentCommittee.js` (5 tests) - the seven-department pipeline (Research -> Learning ->
+  Market Intelligence -> Strategy -> Risk -> Execution -> CIO), each department's conclusion
+  built from a real field this app already reads elsewhere. Returns a plain array (Section 12
+  future-readiness: a future specialist committee is one more array entry, not a CIO-screen
+  redesign).
+- `lib/forecastAccountability.js` (5 tests) - forecast-vs-outcome tracking. This backend has no
+  persisted forecast-history table yet (AT-ED-014 is the pass that introduces forecasting at
+  all), so with no records this always honestly reports "no track record yet" rather than a
+  fabricated accuracy figure - the scaffolded architecture Section 6 asked for, ready for a
+  future pass to wire up once forecast persistence exists.
+
+## `lib/cio.js` additions (6 new tests)
+
+Three new composer functions supporting the Morning Brief's ten-question structure (Section 3):
+`cioPrincipalRisks()`, `cioPrincipalOpportunities()`, `cioFounderActionRequired()` - the last one
+deliberately binary, only ever saying "No Founder action is required today" when both its inputs
+are truthfully zero.
+
+## Verification
+
+All 23 mobile test files pass (267 tests total - 42 new this pass: 8 in `investmentThesis.test.js`,
+10 in `forecasting.test.js`, 7 in `investmentRhythm.test.js`, 5 in `investmentCommittee.test.js`,
+5 in `forecastAccountability.test.js`, 6 in `cio.test.js`, and 1 net-new in `screenRefresh.test.js`
+after the Dashboard->Operations/CIO rename; see `Test_Report.md` for the full per-file table).
+Babel parse clean on all 57 tracked `.js` files under `mobile/` (a full sweep, not just touched
+files, since this pass deleted a file and restructured navigation). `expo-doctor` 17/17.
+`expo export --platform android` clean (581 modules). No rendered browser/device check performed,
+for the same disclosed reason as every prior pass - no `react-native-web`/`react-dom` configured
+in this project.

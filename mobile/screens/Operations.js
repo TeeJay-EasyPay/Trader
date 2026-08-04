@@ -1,5 +1,8 @@
-// Dashboard screen (Command Centre): executive summary, 24-hour operations, connection
-// readiness, and broker panels. Extracted from App.js as part of AT-ED-011 Phase 2.
+// Operations screen (formerly Dashboard/Command Centre): operational health only - 24-hour
+// operations, connection readiness, and broker panels. The executive/investment-leadership
+// content that used to live here (AT-ED-013's CIOBriefingCard) moved to its own dedicated
+// screens/CIO.js in AT-ED-014 Section 1 ("The CIO is NOT embedded within Dashboard... Operations
+// becomes responsible only for operational health").
 
 'use strict';
 
@@ -12,26 +15,16 @@ const { ReportPanel } = require('../components/ReportPanel');
 const { notAvailable, explainMissing } = require('../lib/notAvailable');
 const { formatDateTime, todayIso } = require('../lib/datetime');
 const {
-  summaryTone,
   operationsTone,
   activityStatusTone,
   enabledDisabled,
   connectedFounderBrokers,
   futureBrokerPanels,
-  formatUnavailableReasons,
   latestJobTime,
   sumRecentJobs,
   operationsIncidentText,
 } = require('../lib/founderPresentation');
 const { API_TOKEN, API_TOKEN_MASK } = require('../api/client');
-const {
-  cioGreeting,
-  cioExecutiveSummary,
-  cioOvernightActivity,
-  cioMarketOutlook,
-  cioAverageConfidence,
-  portfolioProjection,
-} = require('../lib/cio');
 
 function localConnectionReadiness(status, brokerPanels) {
   const panels = brokerPanels || [];
@@ -128,65 +121,6 @@ function ConnectionReadinessCard({ readiness }) {
   );
 }
 
-// AT-ED-013 Section 2: the CIO morning briefing - AI Trader's primary landing experience,
-// replacing AT-ED-012's CommandSummaryCard (itself a merge of two separately-computed
-// summaries) with a fuller executive-committee-style structure. Every sentence still comes
-// from backend evidence already present on `status`/`activity`/`recommendations` - see
-// lib/cio.js's module comment for why nothing here is a new AI system or a new data source,
-// and why Portfolio Projection deliberately never shows a fabricated number (no forecasting
-// model exists in this backend - see portfolioProjection()).
-function CIOBriefingCard({ status, activity, brokerPanels, recommendations }) {
-  const executive = status?.founder_experience?.executive_dashboard || {};
-  const evidence = status?.world_class_evidence || {};
-  const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
-  const activitySummary = activity?.summary || {};
-  const confidence = cioAverageConfidence(recommendations);
-  const projection = portfolioProjection();
-  const outstandingRecommendations = (recommendations || []).filter((item) => item.freshness_status !== 'Expired').length;
-  return (
-    <View style={styles.summaryCard}>
-      <Text style={styles.cardTitle}>{cioGreeting()}</Text>
-      <StatusPill label={notAvailable(evidence.first_conclusion)} tone={summaryTone(evidence.first_conclusion)} />
-      <Text style={styles.summaryReason}>
-        {cioExecutiveSummary({ headline: executive.headline, whatToDo: executive.what_to_do, whatToWorryAbout: executive.what_to_worry_about })}
-      </Text>
-
-      <Text style={styles.metricLabel}>Overnight Activity</Text>
-      <Text style={styles.bodyText}>
-        {cioOvernightActivity({
-          researchRuns: activitySummary.research?.runs,
-          recommendationsCreated: activitySummary.research?.recommendations_created,
-          ordersSubmitted: activitySummary.execution?.orders_submitted,
-        })}
-      </Text>
-
-      <Text style={styles.metricLabel}>Market Outlook</Text>
-      <Text style={styles.bodyText}>
-        {cioMarketOutlook({
-          marketHealth: marketCentre.market_health,
-          currentRegime: marketCentre.current_market_regime,
-          cryptoHealth: marketCentre.crypto_health,
-          upcomingRisks: marketCentre.upcoming_risks,
-        })}
-      </Text>
-
-      <Metric label="Portfolio Health" value={executive.portfolio_health || explainMissing('portfolio health', 'broker portfolio values or exposure evidence are incomplete')} />
-      <Metric label="Brokers" value={brokerPanels.length ? `${brokerPanels.map((item) => item.label || item.broker).join(', ')} connected` : explainMissing('broker status', 'Alpaca and Kraken are not both visible from the hosted API')} />
-      <Metric label="Founder Decisions Required" value={outstandingRecommendations ? `${outstandingRecommendations} recommendation(s) awaiting your review` : 'None right now'} />
-      <Metric
-        label="Confidence (current recommendations)"
-        value={confidence === null ? 'Not enough active recommendations to average yet' : `${confidence}%`}
-      />
-      {/* AT-ED-013 Section 8: deliberately honest, not a fabricated 7/30/90-day figure - see
-          lib/cio.js's portfolioProjection(). */}
-      <TextBlock label="Portfolio Trajectory" value={projection.reason} />
-      {(evidence.unavailable || []).length ? (
-        <TextBlock label="Needs Explanation" value={formatUnavailableReasons(evidence.unavailable)} />
-      ) : null}
-    </View>
-  );
-}
-
 function FounderBriefCard({ brief, briefLoading, briefError }) {
   // AT-ED-011.5 finding (Data_Freshness_Findings.md): `/founder-brief` was already being
   // fetched on every refresh but the resulting report text was never rendered anywhere -
@@ -218,25 +152,35 @@ function FounderBriefCard({ brief, briefLoading, briefError }) {
   );
 }
 
-function ExecutiveDashboard({ status, portfolio, recommendations, brief, briefLoading, briefError, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
-  const evidence = status?.world_class_evidence || {};
+// AT-ED-014 Section 1: Operations is responsible only for operational health - the executive/
+// investment-leadership summary (status pill, headline, market/overnight narrative, confidence,
+// portfolio trajectory) now lives on its own dedicated CIO screen (screens/CIO.js). This screen
+// keeps the operational detail a Founder or engineer would check when something the CIO
+// mentioned needs drilling into: worker health, research job timestamps, broker connections,
+// and the raw founder brief report.
+function OperationsCentre({ status, recommendations, brief, briefLoading, briefError, latestReport, onRefresh, onCommand, onReport, activity, onOpenActivity }) {
   const operations = status?.operations_health || {};
   const readiness = withMobileTokenReadiness(status?.connection_readiness || localConnectionReadiness(status, status?.brokers || []));
   const brokerPanels = connectedFounderBrokers(status?.brokers || []);
-  const futureConnections = evidence.future_connections || futureBrokerPanels(status?.brokers || []);
+  const futureConnections = status?.world_class_evidence?.future_connections || futureBrokerPanels(status?.brokers || []);
   return (
     <View>
-      <CIOBriefingCard status={status} activity={activity} brokerPanels={brokerPanels} recommendations={recommendations} />
+      <View style={styles.summaryCard}>
+        <StatusPill label={operationsTone(operations) === 'good' ? 'Operating Normally' : 'Attention Needed'} tone={operationsTone(operations)} />
+        <Text style={styles.summaryReason}>
+          {operations.plain_english || explainMissing('operations health', 'no background worker heartbeat or scheduled job evidence has been returned yet')}
+        </Text>
+      </View>
       <AutonomousActivitySummaryCard activity={activity} onOpenActivity={onOpenActivity} />
       <CollapsibleSection
         title="24-Hour Operations"
-        subtitle="Background worker, research, and job infrastructure detail - not needed day-to-day unless something above says otherwise."
+        subtitle="Background worker, research, and job infrastructure detail."
+        defaultExpanded={true}
         badge={{
           label: operationsTone(operations) === 'good' ? 'Healthy' : 'Check',
           tone: operationsTone(operations),
         }}
       >
-        <Text style={styles.bodyText}>{operations.plain_english || explainMissing('operations health', 'no background worker heartbeat or scheduled job evidence has been returned yet')}</Text>
         <Metric label="API Health" value={operations.api_health || explainMissing('API health', 'the status endpoint did not include operations health yet')} />
         <Metric label="Worker Health" value={operations.worker_health || explainMissing('worker health', 'no durable worker heartbeat has been recorded yet')} />
         <Metric label="Database Durability" value={operations.database_durability || explainMissing('database durability', 'database path has not been checked by the operations module')} />
@@ -253,7 +197,7 @@ function ExecutiveDashboard({ status, portfolio, recommendations, brief, briefLo
       <ConnectionReadinessCard readiness={readiness} />
       <Section title="Broker Panels">
         {brokerPanels.length ? brokerPanels.map((broker) => (
-          <BrokerPanel key={`${broker.broker}-dashboard`} broker={broker} onCommand={onCommand} onReport={onReport} />
+          <BrokerPanel key={`${broker.broker}-operations`} broker={broker} onCommand={onCommand} onReport={onReport} />
         )) : <Empty />}
       </Section>
       {futureConnections.length ? (
@@ -277,4 +221,4 @@ function ExecutiveDashboard({ status, portfolio, recommendations, brief, briefLo
   );
 }
 
-module.exports = { ExecutiveDashboard };
+module.exports = { OperationsCentre };
