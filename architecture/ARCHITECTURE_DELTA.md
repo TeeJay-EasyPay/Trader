@@ -294,3 +294,113 @@ this pass; assumed done by the Founder per their explicit direction.
 android` Metro bundle succeeded (574 modules, zero errors). Production verification against the
 restored Render plan and a published OTA update is pending Founder confirmation of the plan
 change — see the AT-ED-011.6 Production Verification report once available.
+
+---
+
+# AT-ED-011.7 (Command Screen Data Failure and SQLite Error Root-Cause Investigation)
+
+Investigates a second, separate report after the AT-ED-011.6 Render plan restoration: the
+Command screen still showed widespread unavailable data, and the top banner exposed an error
+message containing SQLite wording. Explicit instruction: do not assume SQLite was genuinely in
+use, and do not assume the wording was harmless — prove the exact source.
+
+## Database backend: proven Postgres, live
+
+Direct evidence against the live Starter API: `/founder-evidence` and `/phase5-status` both
+report `database_backend`/`status.database_status` as `"postgres"`; unauthenticated requests
+correctly `401`; authenticated requests return genuine live broker data. `database.py`'s
+`selected_backend()` fail-closed gate (raises if a hosted runtime would use SQLite) was not
+observed to trigger. **Production is genuinely using Postgres, not SQLite.**
+
+## Where "SQLite wording" could reach the Founder UI — two proven mechanisms
+
+Neither was reproducing at the moment of investigation (all live requests tested clean), but
+both are real, evidenced defects with a direct, traceable path to the Founder-facing UI:
+
+**1. A raw backend-identifier field, unfiltered on the non-happy path.**
+`production_evidence.py`'s `_assemble_founder_evidence_payload` sets
+`status.database_status = "postgres" if uses_postgres() else "sqlite"` — a literal string,
+computed by the *worker's* periodic snapshot write (every ~300s), not live per request.
+`mobile/lib/founderEvidenceMapping.js` rendered this raw value directly into two Founder-facing
+presentation fields: `operations_health.database_durability` and the "Connection and Trading
+Readiness" card's Supabase Postgres check row (`connection_readiness.checks[].status`). Had
+`database_status` ever briefly been anything other than `"postgres"` in a persisted snapshot
+(e.g. in the seconds around a worker container restart, before `DATABASE_URL` is confirmed
+available), the literal word "sqlite" would render directly on the Command screen with no
+translation, exactly matching the report. `database_backend.active_backend` — a field
+explicitly named and intended as the raw diagnostic value — is deliberately left showing the
+literal identifier; only the two human-status presentation fields were unsafe.
+
+**2. A systemic, codebase-wide exception-compatibility gap.** `database.py`'s
+`PostgresConnection.execute()`/`executemany()` translates `psycopg.IntegrityError` to
+`sqlite3.IntegrityError`, so pre-Postgres-migration code catching `sqlite3.IntegrityError`
+keeps working. It did **not** translate `psycopg.errors.UndefinedTable`/`UndefinedColumn` —
+the Postgres equivalents of SQLite's "no such table"/"no such column". Dozens of call sites
+across the codebase (`application/founder_experience_service.py`, `trading_intelligence.py`,
+`foundation.py`, `always_on.py`, `autonomous_activity.py`, and more) catch
+`sqlite3.OperationalError` specifically to treat "this table/column doesn't exist yet" as
+"no data available" rather than a hard failure — a pattern that only ever worked under a real
+sqlite3 connection. Under Postgres, that `except sqlite3.OperationalError` was dead code: a
+genuinely missing/not-yet-migrated table raised an **uncaught** `psycopg.errors.UndefinedTable`
+instead of being gracefully absorbed, which is a direct, evidenced mechanism for "Command
+screen sections show unavailable data" wherever they touch a table that isn't part of the
+Postgres schema yet (`/phase5-status`'s own `database_spine.unmigrated_families` names several,
+including `experience_learning` — the family `STRATEGY_LAB_RUNS`/`CONFIDENCE_CALIBRATION`/
+`PERFORMANCE_INTELLIGENCE` almost certainly belong to).
+
+**Separately found and fixed (same class of bug, not proven connected to this specific
+report):** `api/__init__.py`'s `.portfolio()` caught a live-Alpaca-fetch failure with
+`except Exception as exc:` and interpolated the raw exception directly into Founder-facing
+fields (`f"Not available - {exc}"`) — exactly the "error-serialization leaking internal
+implementation details" risk this investigation's own Section 5 named. `/portfolio` is not
+currently called by mobile (confirmed: mobile only calls `/founder-evidence`, `/founder-brief`,
+`/notifications`, `/trading-report`, and the POST command endpoints), so this could not be the
+report's specific banner, but is a live, reachable HTTP route with the same defect class.
+
+## Classification (per the investigation's own categories)
+
+- Database backend: **PROVEN POSTGRES** — not the "GENUINE MISSING DATA" or backend-selection
+  categories.
+- SQLite wording reaching the UI: **UI PRESENTATION BUG** (raw `database_status` passthrough).
+- Command screen incomplete data: **DATABASE QUERY FAILED**, specifically an
+  **uncaught-exception class mismatch** (Postgres `UndefinedTable`/`UndefinedColumn` not
+  translated to the `sqlite3.OperationalError` dozens of call sites already catch) — not a
+  genuine SQLite connection, not an API routing bug, not a mobile modularisation regression.
+
+## Fix (smallest safe correction, three files)
+
+- `src/ai_trader/database.py`: `PostgresConnection.execute()`/`executemany()` now also
+  translate `psycopg.errors.UndefinedTable`/`UndefinedColumn` to `sqlite3.OperationalError`,
+  restoring every existing `except sqlite3.OperationalError` call site's intended behaviour
+  under Postgres without touching any of them individually. Deliberately narrow: generic
+  `psycopg.OperationalError` (connection failures, timeouts) is *not* translated — those are
+  real, transient failures that must keep surfacing as errors, not be silently reinterpreted as
+  "table doesn't exist, treat as empty".
+- `src/ai_trader/api/__init__.py`: `.portfolio()`'s exception handler now logs the full
+  exception server-side (`logger.exception`) and returns a safe, generic "Not available" reason
+  instead of interpolating the raw exception into Founder-facing fields.
+- `mobile/lib/founderEvidenceMapping.js`: new `databaseStatusLabel()` helper — the two
+  Founder-facing presentation fields now show "Connected" / "Not Postgres - needs attention"
+  instead of the raw backend identifier; `database_backend.active_backend` (the field whose
+  explicit purpose is reporting the raw value) is untouched.
+
+Not changed: the dozens of individual `except sqlite3.OperationalError` call sites themselves
+(fixed for free by the `database.py` translation, per "delegation before deletion" — no
+call-site-by-call-site rewrite needed); `ReportingService`/other `except Exception as exc`
+sites not directly evidenced as reachable by this report.
+
+## Tests
+
+`tests/test_database.py`: 4 new tests on `PostgresConnection` (constructed via `__new__` with a
+fake underlying connection, no real Postgres required) proving `UndefinedTable`/`UndefinedColumn`
+translate to `sqlite3.OperationalError` with the real message preserved, `IntegrityError`
+translation is unchanged, and unrelated `psycopg.OperationalError` is *not* translated.
+`tests/test_developer_experience.py`: 1 new test proving `.portfolio()` never leaks a raw
+exception's text into a Founder-facing field. `mobile/lib/founderEvidenceMapping.test.js`: 1 new
+test proving a `database_status: 'sqlite'` input never renders the raw word to the Founder in
+the two presentation fields, while the diagnostic `active_backend` field still carries it.
+
+Full backend suite: 313 passed (two pre-existing, unrelated `test_cli_startup.py` errors are a
+Windows temp-directory permission issue on this machine, reproducing identically before this
+change — not a regression). All 16 mobile test files pass. Babel parse clean on every touched
+file, `expo-doctor` 17/17, `expo export --platform android` clean (574 modules, zero errors).

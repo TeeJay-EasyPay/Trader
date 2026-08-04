@@ -92,6 +92,26 @@ test('statusFromFounderEvidence: maps a minimal evidence payload without throwin
   assert.strictEqual(result.brokers[0].label, 'Alpaca');
 });
 
+test('statusFromFounderEvidence: a non-postgres database_status never renders the raw backend word to the Founder', () => {
+  const result = statusFromFounderEvidence({
+    status: { state: 'OPERATING WITH WARNINGS', plain_english: 'degraded', database_status: 'sqlite' },
+    portfolio: { portfolio_value: 100, todays_pnl: 1 },
+    brokers: [],
+    trades: [],
+    recommendations: [],
+    learning: [],
+    research: [],
+    jobs: [],
+  });
+  assert.ok(!result.operations_health.database_durability.toLowerCase().includes('sqlite'));
+  const postgresCheck = result.connection_readiness.checks.find((item) => item.component === 'Supabase Postgres');
+  assert.ok(!postgresCheck.status.toLowerCase().includes('sqlite'));
+  assert.strictEqual(postgresCheck.ready, false);
+  // The technical diagnostic field is allowed to carry the raw identifier - only the
+  // Founder-facing presentation fields above must never show it bare.
+  assert.strictEqual(result.operations_health.database_backend.active_backend, 'sqlite');
+});
+
 test('activityFromFounderEvidence: derives timeline counts and an empty-state message when there is no activity', () => {
   const result = activityFromFounderEvidence({ timeline: { items: [], total: 0 }, status: { state: 'OPERATING NORMALLY' } });
   assert.strictEqual(result.timeline.returned, 0);

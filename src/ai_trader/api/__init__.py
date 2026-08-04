@@ -631,12 +631,19 @@ class LocalApiService:
             portfolio = self._live_alpaca_portfolio()
             return {**portfolio, "executive_summary": self.executive_summary()}
         except Exception as exc:
+            # AT-ED-011.7: this previously interpolated the raw exception straight into
+            # Founder-facing fields (f"Not available - {exc}") - for a Postgres-layer failure
+            # that could include a psycopg/sqlite3-compatibility exception's low-level wording
+            # (table/column names, driver internals). The real exception is logged here, in
+            # full, for engineering; the Founder only ever sees a safe, generic reason.
+            logger.exception("Live Alpaca portfolio fetch failed")
+            reason = "Not available - the live Alpaca portfolio could not be loaded right now."
             return {
-                "portfolio_value": f"Not available - {exc}",
-                "cash_available": f"Not available - {exc}",
-                "todays_pnl": f"Not available - {exc}",
+                "portfolio_value": reason,
+                "cash_available": reason,
+                "todays_pnl": reason,
                 "open_positions": [],
-                "source": f"Not available: {exc}",
+                "source": reason,
                 "executive_summary": self.executive_summary(),
             }
 

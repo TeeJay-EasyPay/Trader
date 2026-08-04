@@ -120,6 +120,16 @@ function founderHeadline(evidence) {
   return `${state}. ${pnlText} ${tradeCount} broker order or fill event(s) are visible in this period.`;
 }
 
+// AT-ED-011.7: evidence.status.database_status is a raw backend identifier ("postgres" /
+// "sqlite") meant for the technical database_backend.active_backend diagnostic field below -
+// it must never be shown to the Founder as a bare status word, since a non-"postgres" value
+// (which should only ever occur transiently, e.g. moments after a worker restart) would
+// otherwise render literally as the word "sqlite" in a founder-facing status card, unexplained
+// and alarming, exactly like an implementation detail leaking through a raw error message.
+function databaseStatusLabel(databaseStatus) {
+  return databaseStatus === 'postgres' ? 'Connected' : 'Not Postgres - needs attention';
+}
+
 function founderAction(evidence) {
   if (evidence?.status?.state !== 'OPERATING NORMALLY') {
     return 'Open Activity and review the latest worker, research, or broker warning before changing trading permissions.';
@@ -200,7 +210,7 @@ function statusFromFounderEvidence(evidence) {
     plain_english: operating.plain_english,
     api_health: 'available',
     worker_health: operating.worker_status,
-    database_durability: operating.database_status === 'postgres' ? 'Durable shared Postgres evidence is active' : operating.database_status,
+    database_durability: operating.database_status === 'postgres' ? 'Durable shared Postgres evidence is active' : databaseStatusLabel(operating.database_status),
     database_backend: {
       requested_backend: 'postgres',
       active_backend: operating.database_status,
@@ -254,7 +264,7 @@ function statusFromFounderEvidence(evidence) {
       checks: [
         { component: 'Render API', status: 'connected', ready: true, detail: 'The Founder evidence endpoint responded.' },
         { component: 'Background Worker', status: operating.worker_status, ready: operating.worker_status === 'healthy', detail: operating.plain_english },
-        { component: 'Supabase Postgres', status: operating.database_status, ready: operating.database_status === 'postgres', detail: operations.database_backend.plain_english },
+        { component: 'Supabase Postgres', status: databaseStatusLabel(operating.database_status), ready: operating.database_status === 'postgres', detail: operations.database_backend.plain_english },
         ...brokerPanels.map((broker) => ({
           component: broker.label,
           status: broker.connection_status,

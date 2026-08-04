@@ -162,6 +162,19 @@ class PostgresConnection:
         # psycopg is configured with dict rows; callers may continue assigning sqlite3.Row.
         self._row_factory = value
 
+    # AT-ED-011.7: dozens of call sites across this codebase (founder_experience_service.py,
+    # trading_intelligence.py, foundation.py, always_on.py, autonomous_activity.py, and more)
+    # were written against sqlite3's DB-API and catch `sqlite3.OperationalError` specifically
+    # to treat "this table/column doesn't exist yet" (a table not yet migrated, or a schema
+    # not yet initialized) as "no data available" rather than a hard failure. Only
+    # `IntegrityError` was translated below, so under Postgres those `except
+    # sqlite3.OperationalError` blocks were dead code - psycopg raises its own
+    # `UndefinedTable`/`UndefinedColumn` (a different exception hierarchy entirely), which
+    # propagated uncaught instead of being gracefully treated as empty, silently breaking
+    # whichever payload sections queried a not-yet-migrated table. Deliberately narrow: only
+    # the two "missing structure" conditions are translated, not psycopg's broader
+    # `OperationalError` (connection failures, timeouts) - those are real, transient failures
+    # that must keep surfacing as errors, not be silently swallowed as "no data".
     def execute(self, sql: str, params: Iterable[Any] | Mapping[str, Any] | None = None):
         pragma = _pragma_table(sql)
         if pragma:
@@ -173,6 +186,8 @@ class PostgresConnection:
             return PostgresCursor(cursor, lastrowid=lastrowid)
         except self._psycopg.IntegrityError as exc:
             raise sqlite3.IntegrityError(str(exc)) from exc
+        except (self._psycopg.errors.UndefinedTable, self._psycopg.errors.UndefinedColumn) as exc:
+            raise sqlite3.OperationalError(str(exc)) from exc
 
     def executemany(self, sql: str, params_seq: Iterable[Iterable[Any]]):
         statement = _postgres_sql(sql)
@@ -182,6 +197,8 @@ class PostgresConnection:
             return PostgresCursor(cursor)
         except self._psycopg.IntegrityError as exc:
             raise sqlite3.IntegrityError(str(exc)) from exc
+        except (self._psycopg.errors.UndefinedTable, self._psycopg.errors.UndefinedColumn) as exc:
+            raise sqlite3.OperationalError(str(exc)) from exc
 
     def executescript(self, script: str):
         for statement in _split_sql_script(script):

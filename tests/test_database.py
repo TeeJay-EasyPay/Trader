@@ -115,5 +115,76 @@ class BackendSelectionTests(unittest.TestCase):
                 self.assertEqual(database.selected_backend(), "postgres")
 
 
+class PostgresCompatibilityExceptionTranslationTests(unittest.TestCase):
+    """AT-ED-011.7: dozens of call sites across this codebase (founder_experience_service.py,
+    trading_intelligence.py, foundation.py, always_on.py, autonomous_activity.py, and more)
+    catch sqlite3.OperationalError specifically to treat "this table/column doesn't exist yet"
+    as no-data-available rather than a hard failure - a pattern that only ever worked under a
+    real sqlite3 connection. PostgresConnection.execute() must translate the two psycopg
+    conditions that mean the same thing (UndefinedTable/UndefinedColumn) into
+    sqlite3.OperationalError so every one of those existing except blocks keeps working
+    unchanged under Postgres, without touching each call site individually. Constructs
+    PostgresConnection via __new__ (bypassing __init__, which opens a real network connection)
+    and substitutes a fake underlying connection so no real Postgres server is required.
+    """
+
+    def _connection_raising(self, exc):
+        import psycopg
+
+        from ai_trader.database import PostgresConnection
+
+        class _FakeConn:
+            def execute(self, *_args, **_kwargs):
+                raise exc
+
+        conn = PostgresConnection.__new__(PostgresConnection)
+        conn._psycopg = psycopg
+        conn._conn = _FakeConn()
+        conn._row_factory = None
+        return conn
+
+    def test_undefined_table_becomes_sqlite_operational_error(self):
+        import sqlite3
+
+        import psycopg.errors
+
+        conn = self._connection_raising(psycopg.errors.UndefinedTable('relation "strategy_lab_runs" does not exist'))
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            conn.execute("SELECT * FROM STRATEGY_LAB_RUNS")
+        # The real Postgres message is preserved (this is what engineers need in logs) - only
+        # the exception *type* changes, to match what the existing call sites already catch.
+        self.assertIn("strategy_lab_runs", str(ctx.exception))
+
+    def test_undefined_column_becomes_sqlite_operational_error(self):
+        import sqlite3
+
+        import psycopg.errors
+
+        conn = self._connection_raising(psycopg.errors.UndefinedColumn('column "foo" does not exist'))
+        with self.assertRaises(sqlite3.OperationalError):
+            conn.execute("SELECT foo FROM bar")
+
+    def test_integrity_error_translation_is_unchanged(self):
+        # Regression guard: the new except clause must not shadow or alter the existing,
+        # already-relied-upon IntegrityError -> sqlite3.IntegrityError translation.
+        import sqlite3
+
+        import psycopg
+
+        conn = self._connection_raising(psycopg.IntegrityError("duplicate key value violates unique constraint"))
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO x VALUES (1)")
+
+    def test_unrelated_postgres_errors_are_not_translated(self):
+        # A genuine connection/timeout failure must keep propagating as a real error, not be
+        # silently reinterpreted as "table doesn't exist, treat as empty" - only the two
+        # missing-structure conditions above are in scope for this translation.
+        import psycopg
+
+        conn = self._connection_raising(psycopg.OperationalError("server closed the connection unexpectedly"))
+        with self.assertRaises(psycopg.OperationalError):
+            conn.execute("SELECT 1")
+
+
 if __name__ == "__main__":
     unittest.main()

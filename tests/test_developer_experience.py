@@ -902,6 +902,28 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(result["status"], "not_available")
             self.assertEqual(len(result["symbols"]), 30)
 
+    def test_portfolio_never_leaks_a_raw_exception_to_the_founder(self):
+        # AT-ED-011.7: portfolio() previously interpolated the raw exception straight into
+        # Founder-facing fields (f"Not available - {exc}"). A failure at the database layer
+        # could include a psycopg/sqlite3-compatibility exception's low-level wording (table
+        # names, driver internals) - simulated here with a realistic example of exactly that.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = replace(settings_for(tmp), alpaca_api_key="key", alpaca_secret_key="secret")
+            service = LocalApiService(settings)
+
+            def _boom():
+                raise RuntimeError('relation "performance_attribution" does not exist')
+
+            service._broker_service._live_alpaca_portfolio = _boom
+
+            result = service.portfolio("alpaca")
+
+            for field in ("portfolio_value", "cash_available", "todays_pnl", "source"):
+                self.assertNotIn("relation", result[field])
+                self.assertNotIn("does not exist", result[field])
+                self.assertTrue(result[field].startswith("Not available"))
+            self.assertEqual(result["open_positions"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,48 @@
 # Implementation Log
 
+## 2026-08-04 AT-ED-011.7 — Command screen data failure and SQLite-wording root-cause fix
+
+Investigated a second report after the AT-ED-011.6 Render Starter-plan restoration: the Command
+screen still showed widespread unavailable data, and the top banner exposed an error message
+containing SQLite wording. Full findings in `architecture/ARCHITECTURE_DELTA.md` under
+"AT-ED-011.7"; summarized here.
+
+**Database backend: proven Postgres, not SQLite.** `/founder-evidence` and `/phase5-status`
+both report `"postgres"` live against the production Starter API; `selected_backend()`'s
+fail-closed gate was not observed to trigger.
+
+**Two proven mechanisms for how SQLite wording/unavailable data could reach the Founder UI**
+(neither reproducing at time of investigation, both real and evidenced): (1)
+`production_evidence.py` sets a raw `status.database_status` string ("postgres"/"sqlite"),
+written by the worker's periodic snapshot, that `mobile/lib/founderEvidenceMapping.js` rendered
+unfiltered into the Command screen's "Connection and Trading Readiness" card — any transient
+non-"postgres" snapshot value (e.g. moments around a worker restart) would show the literal
+word "sqlite" with no translation. (2) `database.py`'s `PostgresConnection` translated
+`psycopg.IntegrityError` to `sqlite3.IntegrityError` for DB-API compatibility, but never
+translated `psycopg.errors.UndefinedTable`/`UndefinedColumn` (Postgres's equivalent of SQLite's
+"no such table"/"no such column") — leaving dozens of `except sqlite3.OperationalError` call
+sites across the codebase (written to gracefully treat "table not migrated yet" as empty data)
+dead under Postgres, so a real missing-table condition raised an uncaught exception instead of
+degrading gracefully. Also found and fixed, same bug class but not proven connected to this
+specific report: `api/__init__.py`'s `.portfolio()` interpolated a raw exception directly into
+Founder-facing fields.
+
+**Fix, three files:** `database.py` now also translates `UndefinedTable`/`UndefinedColumn` to
+`sqlite3.OperationalError` (restoring every existing call site's intended behaviour for free,
+deliberately not translating generic `OperationalError` so real connection failures keep
+surfacing as errors); `.portfolio()` now logs the real exception server-side and returns a safe
+generic reason; `founderEvidenceMapping.js` gained a `databaseStatusLabel()` helper so the two
+Founder-facing presentation fields show "Connected"/"Not Postgres - needs attention" instead of
+the raw backend identifier (the diagnostic `active_backend` field, whose explicit purpose is
+reporting the raw value, is untouched).
+
+6 new tests (4 backend `PostgresConnection` translation tests using a fake connection, no real
+Postgres required; 1 `.portfolio()` leak-safety test; 1 mobile mapping test). Full backend
+suite: 313 passed (two pre-existing, unrelated Windows temp-directory permission errors in
+`test_cli_startup.py`, confirmed present before this change too - not a regression). All 16
+mobile test files pass, babel parse clean, `expo-doctor` 17/17, `expo export` clean (574
+modules). No trading, risk, governance, reconciliation, or capital-allocation logic touched.
+
 ## 2026-08-03 AT-ED-011.6 — backend data availability investigation and mobile resilience fix
 
 Investigated the Founder's production report following the AT-ED-011.5 OTA publish: "Refresh
