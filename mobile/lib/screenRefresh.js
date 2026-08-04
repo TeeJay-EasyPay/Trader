@@ -17,13 +17,14 @@
 // depends on. "Command" (the Founder's own name for the Dashboard/Command-Centre screen) and
 // "Broker Panels" (a component embedded in Dashboard and Portfolio, not an independently
 // navigable screen) are intentionally not separate keys here - see the ownership table for why.
-// AT-ED-014: CIO became the primary, dedicated screen (Section 1 - "The CIO is NOT embedded
+// AT-ED-014: the CIO became the primary, dedicated screen (Section 1 - "The CIO is NOT embedded
 // within Dashboard... shall have its own dedicated navigation item"); the former Dashboard was
-// renamed Operations and now covers operational health only. Both read the same shared +
-// founderBrief sources Dashboard always did - CIO synthesises the same evidence Operations
-// shows in detail, it does not introduce a new backend source.
+// renamed Operations and now covers operational health only. AT-ED-015 Section 11 renamed the
+// CIO screen itself to ExecutiveBriefing. Both read the same shared + founderBrief sources
+// Dashboard always did - the briefing synthesises the same evidence Operations shows in detail,
+// it does not introduce a new backend source.
 const SCREEN_DATA_SOURCES = Object.freeze({
-  CIO: ['shared', 'founderBrief'],
+  ExecutiveBriefing: ['shared', 'founderBrief'],
   Operations: ['shared', 'founderBrief'],
   Activity: ['shared'],
   Recommendations: ['shared'],

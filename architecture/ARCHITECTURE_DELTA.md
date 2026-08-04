@@ -729,3 +729,83 @@ files, since this pass deleted a file and restructured navigation). `expo-doctor
 `expo export --platform android` clean (581 modules). No rendered browser/device check performed,
 for the same disclosed reason as every prior pass - no `react-native-web`/`react-dom` configured
 in this project.
+
+# AT-ED-015 (Executive Communication, Founder Experience & Forecast Intelligence)
+
+Redesigns the CIO screen (renamed Executive Briefing, Section 11) from AT-ED-014's seventeen
+same-weight, occasionally self-repeating cards into a single flowing briefing matching Section 2's
+prescribed structure, and adds a real, evidence-based Forecast Intelligence Engine. No backend,
+trading, execution, governance, or broker-integration file touched. Section 1's required
+pre-code review is `Executive_Communication_Review.md`; full technical account in that file's
+sibling docs, summarized here.
+
+## Screen rename and restructure
+
+`mobile/screens/CIO.js` deleted; replaced by `mobile/screens/ExecutiveBriefing.js`
+(`ExecutiveBriefing`). `App.js`'s `SCREENS` key `CIO` renamed `ExecutiveBriefing`
+(`lib/screenRefresh.js`'s `SCREEN_DATA_SOURCES` key renamed to match); a new `SCREEN_LABELS` map
+renders the tab text as "Executive Briefing" rather than the one-word routing key. The Executive
+Briefing button is now rendered as a distinct, full-width `styles.primaryTab` above the regular
+tab row (two new styles: `primaryTab`/`primaryTabActive`, `primaryTabText`/`primaryTabTextActive`)
+rather than one equal-weight tab among seven.
+
+Removed as standalone cards, per Section 8: `ConvictionCard`, `ConfidenceCard` - conviction is now
+rendered directly beside the current investment thesis it supports; confidence is now rendered
+directly beside each forecast horizon that earned it. Removed the AT-ED-014 duplication where
+`MorningBriefCard` and the standalone `MarketOutlookCard`/`PrincipalRisksCard` computed and
+rendered the identical sentence twice on the same screen - each fact now has exactly one owning
+card. `ExecutiveMessagesCard` no longer surfaces an unread-notification count (Section 9); it
+renders `null` (nothing) when there are no material evidence gaps to report, rather than an empty
+shell. `TradingOrganisationCard` no longer exposes "Worker Health"/"Database Durability" labels
+(Section 12) - six departments (Research/Learning/Execution/Risk/Infrastructure/Governance) each
+report Healthy/Attention Needed in plain business language. `InvestmentRhythmTimeline` (formerly
+`DailyRhythmCard`) is now a single checklist (✓ complete / ▶ current / ○ upcoming) instead of six
+metric-heavy cards (Section 13).
+
+## New: `lib/forecastEngine.js` - the Forecast Intelligence Engine (11 tests)
+
+Real, evidence-based portfolio-value projections for Tomorrow / 7 Days / 30 Days / Quarter / Year
+End (Section 4), built from `performanceAttribution`'s dated, realised closed-trade evidence - the
+same data Learning's "Closed Trades"/"Win Rate" figures are already built from, filtered to the
+identical terminal-status list `founderLearningForMobile()` uses, so this engine's sample size can
+never silently disagree with what Learning already tells the Founder. A disclosed linear
+extrapolation (observed trades-per-day × horizon days × average realised P&L per trade); every
+projection carries `confidence` (from real sample size, three named tiers), `evidence`,
+`assumptions`, `principalRisks`, and an `alternativeScenario`. Below `MIN_SAMPLE_SIZE = 5` dated
+trades, every horizon is honestly `available: false` with the exact count and threshold named -
+never a partial or optimistic extrapolation from too little evidence. The interface
+(`projectPortfolioHorizons()`'s fixed output shape) is deliberately the only thing the UI depends
+on, so a future, more sophisticated model can replace the internals without a UI change - the
+directive's own requirement, implemented literally. Full design rationale in
+`Forecasting_Engine_Architecture.md` and `Forecast_Model_Design.md`.
+
+## New: structured Principal Risks / Opportunities / Founder Actions (18 tests)
+
+`lib/principalRisks.js` (6 tests) - individual risk cards (Impact/Likelihood/Potential Effect/
+Mitigation) replacing AT-ED-014's single joined-sentence summary. Positions-at-a-loss get a real,
+computed Impact tier from the actual percentage of portfolio value at risk (Low/Medium/High,
+disclosed thresholds); market-sourced risks (upcoming_risks/theme key_risks) honestly report
+"not currently scored" for Impact/Likelihood, since no severity/likelihood model exists for plain-
+string risk evidence. `lib/principalOpportunities.js` (6 tests) - individual opportunity cards
+(Why/Evidence/Expected Benefit/Confidence/Time Horizon) built from real recommendation fields
+already rendered on the Recommendations screen (`reason_for_recommendation`, `expected_return_r`,
+`confidence`, `expires_at`) plus the highest-confidence tracked theme. `lib/founderActions.js`
+(6 tests) - each outstanding recommendation becomes a structured action (What/Why/Expected
+Benefit/Risk/Deadline/What Happens If Nothing); with nothing outstanding, `buildFounderActions()`
+returns `[]` and the screen shows the honest, literal "No Founder action is required today" line
+via `lib/cio.js`'s existing `cioFounderActionRequired()`.
+
+## `lib/cio.js` addition: `cioClosingRecommendation()` (3 tests)
+
+The Executive Briefing's final line (Section 2), composed from conviction level, thesis
+availability, and whether Founder action is outstanding - never a new claim, only a synthesis of
+values already computed elsewhere on the same screen.
+
+## Verification
+
+All 27 mobile test files pass (299 tests total - 32 new this pass: 11 in `forecastEngine.test.js`,
+6 each in `principalRisks.test.js`/`principalOpportunities.test.js`/`founderActions.test.js`, 3 new
+in `cio.test.js`, 0 net-new in `screenRefresh.test.js` after the CIO->ExecutiveBriefing rename).
+Babel parse clean on every new/touched file (a full-repo sweep was also run). `expo-doctor` 17/17.
+`expo export --platform android` clean (585 modules). No rendered browser/device check performed,
+for the same disclosed reason as every prior pass.

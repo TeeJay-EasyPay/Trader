@@ -1,5 +1,40 @@
 # Implementation Log
 
+## 2026-08-05 AT-ED-015 — Executive Communication, Founder Experience & Forecast Intelligence
+
+Redesigns the CIO screen (renamed Executive Briefing) from AT-ED-014's seventeen same-weight,
+occasionally self-repeating cards into one flowing briefing matching a real CIO's structure:
+overall position, current market environment, what happened overnight, current and alternative
+thesis (conviction attached directly to the thesis, not floating), an Expected Outlook journey
+from Yesterday through Year End, individual Principal Risk and Opportunity cards, actionable
+Founder Actions, and a closing recommendation. Adds a real Forecast Intelligence Engine
+(`lib/forecastEngine.js`) - evidence-based portfolio projections for Tomorrow/7 Days/30 Days/
+Quarter/Year End, built from actual dated closed-trade history, always honestly unavailable below
+a 5-trade evidence floor. No backend, trading, execution, governance, or broker-integration file
+touched. Full account in `architecture/ARCHITECTURE_DELTA.md` under "AT-ED-015"; the required
+pre-code review is `Executive_Communication_Review.md`; forecasting design in
+`Forecasting_Engine_Architecture.md` and `Forecast_Model_Design.md`.
+
+**Removed as standalone, per-directive requirements:** the floating Conviction/Confidence cards
+(now attached to the thesis/forecast they qualify - Section 8); the notification-count in
+Executive Messages (now shows only material evidence gaps, or nothing - Section 9); the
+"Worker Health"/"Database Durability" engineering labels on Trading Organisation (now six plain-
+language department reads - Section 12); the six-card Investment Rhythm layout (now one ✓/▶/○
+checklist - Section 13); and a real duplication bug where Market Outlook and Principal Risks were
+computed and rendered twice on the same screen.
+
+**New structured evidence modules:** `lib/principalRisks.js` (individual risk cards with a real,
+computed Impact tier for positions-at-a-loss; honest "not currently scored" for risks with no
+severity basis), `lib/principalOpportunities.js` (individual opportunity cards from real
+recommendation/theme fields), `lib/founderActions.js` (each outstanding recommendation becomes a
+structured What/Why/Benefit/Risk/Deadline/If-Nothing action; empty when genuinely nothing is
+outstanding).
+
+32 new tests this pass. All 27 mobile test files pass (299 tests total). Babel parse clean.
+`expo-doctor` 17/17, `expo export --platform android` clean (585 modules). No rendered browser/
+device check performed (no web runtime configured for this native app); verified via code review
+and the full toolchain, pending Founder on-device review.
+
 ## 2026-08-05 AT-ED-014 — Chief Investment Officer Workspace, Adaptive Forecasting & Strategic Intelligence
 
 Gives the CIO its own dedicated screen and navigation item - the app now launches directly into

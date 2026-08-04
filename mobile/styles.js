@@ -84,6 +84,32 @@ export const styles = StyleSheet.create({
   activeTabText: {
     color: '#ffffff',
   },
+  // AT-ED-015 Section 11: the Executive Briefing is the app's primary landing entry, not one
+  // equal-weight tab among several - a distinct, full-width button rendered above the regular
+  // tab row so the Founder always sees it first.
+  primaryTab: {
+    minHeight: 56,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1f6feb',
+    backgroundColor: '#13294b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 10,
+    marginTop: 10,
+  },
+  primaryTabActive: {
+    backgroundColor: '#1f6feb',
+  },
+  primaryTabText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#e2e8f0',
+    letterSpacing: 0.3,
+  },
+  primaryTabTextActive: {
+    color: '#ffffff',
+  },
   loading: {
     paddingVertical: 6,
     alignItems: 'center',

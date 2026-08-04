@@ -16,6 +16,7 @@ const {
   cioPrincipalRisks,
   cioPrincipalOpportunities,
   cioFounderActionRequired,
+  cioClosingRecommendation,
 } = require('./cio');
 
 let passed = 0;
@@ -184,6 +185,25 @@ test('cioFounderActionRequired: real outstanding counts are named, not summarise
   const text = cioFounderActionRequired({ outstandingRecommendationsCount: 2, unresolvedIncidentCount: 1 });
   assert.ok(text.includes('2 recommendations awaiting your review'));
   assert.ok(text.includes('1 unresolved incident needing attention'));
+});
+
+// --- cioClosingRecommendation (AT-ED-015 Section 2) ---
+
+test('cioClosingRecommendation: no thesis evidence is honest, not a fabricated recommendation', () => {
+  const text = cioClosingRecommendation({ convictionLevel: 'Not Established', thesisAvailable: false, actionRequired: false });
+  assert.ok(text.includes('do not yet have enough evidence'));
+});
+
+test('cioClosingRecommendation: high conviction and no action required recommends staying the course', () => {
+  const text = cioClosingRecommendation({ convictionLevel: 'High', thesisAvailable: true, actionRequired: false });
+  assert.ok(text.includes('strong conviction'));
+  assert.ok(text.includes('stay the course'));
+});
+
+test('cioClosingRecommendation: low conviction is named as a real caveat, not hidden', () => {
+  const text = cioClosingRecommendation({ convictionLevel: 'Low', thesisAvailable: true, actionRequired: true });
+  assert.ok(text.includes('currently low'));
+  assert.ok(text.includes('review the items above'));
 });
 
 console.log(`\n${passed} passed`);

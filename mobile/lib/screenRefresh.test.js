@@ -48,7 +48,7 @@ test('latestTimestamp: null when no source has ever completed a refresh', () => 
   assert.strictEqual(latestTimestamp([source(), source()]), null);
 });
 
-test('latestTimestamp: picks the later of two independently-completed sources (CIO/Operations = shared + founderBrief)', () => {
+test('latestTimestamp: picks the later of two independently-completed sources (ExecutiveBriefing/Operations = shared + founderBrief)', () => {
   const earlier = '2026-08-03T10:00:00.000Z';
   const later = '2026-08-03T10:05:00.000Z';
   assert.strictEqual(
@@ -85,7 +85,7 @@ test('composeScreenRefresh: a single-source screen (Market) never reports anothe
   assert.strictEqual(composed.lastRefreshError, 'benchmark: timeout');
 });
 
-test('composeScreenRefresh: refresh() calls every underlying source exactly once and waits for all of them (CIO/Operations = shared + founderBrief)', async () => {
+test('composeScreenRefresh: refresh() calls every underlying source exactly once and waits for all of them (ExecutiveBriefing/Operations = shared + founderBrief)', async () => {
   const calls = [];
   const shared = source({ refresh: async () => { calls.push('shared'); } });
   const founderBrief = source({ refresh: async () => { calls.push('founderBrief'); } });
@@ -103,10 +103,10 @@ test('composeScreenRefresh: one failing source does not stop the composed refres
 
 // --- buildScreenRefreshRegistry / SCREEN_DATA_SOURCES --------------------------------------
 
-test('SCREEN_DATA_SOURCES: exactly the seven navigable screens are registered (AT-ED-014 added CIO as its own screen)', () => {
+test('SCREEN_DATA_SOURCES: exactly the seven navigable screens are registered (AT-ED-015 renamed CIO to ExecutiveBriefing)', () => {
   assert.deepStrictEqual(
     Object.keys(SCREEN_DATA_SOURCES).sort(),
-    ['Activity', 'CIO', 'Learning', 'Market', 'Operations', 'Portfolio', 'Recommendations']
+    ['Activity', 'ExecutiveBriefing', 'Learning', 'Market', 'Operations', 'Portfolio', 'Recommendations']
   );
 });
 
@@ -141,14 +141,14 @@ test('buildScreenRefreshRegistry: Market never fetches Founder Evidence and Lear
   assert.strictEqual(founderBriefCalls.length, 0);
 });
 
-test('buildScreenRefreshRegistry: CIO and Operations both compose shared + founderBrief only, never market', async () => {
+test('buildScreenRefreshRegistry: ExecutiveBriefing and Operations both compose shared + founderBrief only, never market', async () => {
   const marketCalls = [];
   const registry = buildScreenRefreshRegistry({
     shared: source(),
     market: source({ refresh: async () => { marketCalls.push(1); } }),
     founderBrief: source(),
   });
-  await registry.CIO.refresh();
+  await registry.ExecutiveBriefing.refresh();
   await registry.Operations.refresh();
   assert.strictEqual(marketCalls.length, 0);
 });
@@ -196,9 +196,9 @@ test('Market refresh does not refresh Founder Evidence', async () => {
   assert.strictEqual(calls.market, 1);
 });
 
-test('CIO refresh fetches only its required shared and exclusive (founderBrief) sources', async () => {
+test('ExecutiveBriefing refresh fetches only its required shared and exclusive (founderBrief) sources', async () => {
   const { registry, calls } = trackedRegistry();
-  await registry.CIO.refresh();
+  await registry.ExecutiveBriefing.refresh();
   assert.strictEqual(calls.shared, 1);
   assert.strictEqual(calls.founderBrief, 1);
   assert.strictEqual(calls.market, 0);

@@ -188,6 +188,27 @@ function cioLearningNarrative({ completedTradesReviewed, latestLesson, hasEnough
   return `${tradeText}${lessonText}`;
 }
 
+// AT-ED-015 Section 2: the Executive Briefing's closing line - a single sentence tying
+// conviction, the current thesis, and whether the Founder needs to act into one recommendation,
+// the way a real CIO would end a briefing. Composed entirely from values already computed
+// elsewhere (lib/forecasting.js's deriveConviction(), lib/investmentThesis.js's
+// currentInvestmentThesis(), lib/cio.js's own cioFounderActionRequired()) - never a new claim.
+function cioClosingRecommendation({ convictionLevel, thesisAvailable, actionRequired }) {
+  if (!thesisAvailable) {
+    return 'I do not yet have enough evidence to close with a firm recommendation - check back after the next successful refresh.';
+  }
+  const stance = actionRequired
+    ? 'review the items above before markets move further'
+    : 'stay the course - no change to our current positioning is warranted today';
+  if (convictionLevel === 'High') {
+    return `Given strong conviction in our current thesis, my recommendation is to ${stance}.`;
+  }
+  if (convictionLevel === 'Low') {
+    return `Conviction in our current thesis is currently low, so my recommendation is to proceed cautiously and ${stance}.`;
+  }
+  return `My recommendation is to ${stance}, while we continue building conviction in our current thesis.`;
+}
+
 module.exports = {
   FOUNDER_NAME,
   greetingForHour,
@@ -201,4 +222,5 @@ module.exports = {
   cioPrincipalRisks,
   cioPrincipalOpportunities,
   cioFounderActionRequired,
+  cioClosingRecommendation,
 };
