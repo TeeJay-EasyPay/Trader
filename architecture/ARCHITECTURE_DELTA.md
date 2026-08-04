@@ -809,3 +809,63 @@ in `cio.test.js`, 0 net-new in `screenRefresh.test.js` after the CIO->ExecutiveB
 Babel parse clean on every new/touched file (a full-repo sweep was also run). `expo-doctor` 17/17.
 `expo export --platform android` clean (585 modules). No rendered browser/device check performed,
 for the same disclosed reason as every prior pass.
+
+# AT-ED-015.1 (Executive Briefing White-Screen Production Regression)
+
+A production incident found and fixed with a live, reproduced root cause - not inferred from the
+white screen alone. Full account in `ZIP-Updates/2026-08-04-at-ed-015-1-executive-briefing-white-
+screen-fix/Root_Cause_Analysis.md`; summarized here.
+
+## Root cause
+
+`lib/principalOpportunities.js`'s `themeOpportunityCard()` called
+`theme.key_drivers.slice(0, 3).join('; ')` assuming `key_drivers` is always an array. Live
+`/intelligence/themes` evidence returns it as a plain string on at least some themes -
+`String.prototype.join` does not exist, so this threw a `TypeError` during
+`PrincipalOpportunitiesSection`'s render whenever the highest-confidence tracked theme had a
+string-shaped `key_drivers` field. With no error boundary anywhere in the app, the uncaught
+render exception unmounted the entire React tree - the reported blank white screen. Notably,
+`lib/investmentThesis.js`'s `alternativeThesis()` (AT-ED-014) already defended against the
+identical shape ambiguity on the sibling field `theme.key_risks`
+(`Array.isArray(theme.key_risks) ? theme.key_risks : [theme.key_risks]`) - this was a real,
+proven-live gap in the one new AT-ED-015 call site that didn't replicate that existing pattern,
+not a systemic issue across the codebase.
+
+## Proof, not inference
+
+Reproduced two independent ways: (1) an Android emulator (Pixel 9 AVD) ran the exact pre-fix
+`master` commit against the real production API, and `adb logcat` captured the exact error and
+full component stack trace live; (2) the exact pre-fix source was temporarily restored and run
+against a new production-representative regression test, which failed with the byte-identical
+error message, then passed once the fix was restored. Both are documented in full in
+`Test_Report.md` and `Root_Cause_Analysis.md`.
+
+## Fix
+
+`themeOpportunityCard()` now normalizes `theme.key_drivers` via a new `keyDriversText()` helper
+(`Array.isArray(raw) ? raw : [raw]`, the same pattern `investmentThesis.js` already used for
+`key_risks`) instead of assuming array shape. No forecasting methodology changed; no content was
+hardcoded or removed.
+
+## Defence-in-depth
+
+New `components/ErrorBoundary.js` - a screen-level React error boundary wrapping only
+`<ExecutiveBriefing>` in `App.js`. On any future uncaught render exception in that subtree, the
+app shell (header, tab bar) and every other screen remain fully usable; the Founder sees a calm
+"The Executive Briefing could not be displayed." message with Retry and Open Operations buttons
+and a safe diagnostic ID, never a stack trace or a blank screen. The real error is still logged via
+`console.error` for engineering diagnosis.
+
+## Verification
+
+All 27 mobile test files pass (303 tests total - 4 new, all in `principalOpportunities.test.js`).
+`lib/forecastEngine.js` was independently re-audited against this incident's own checklist (NaN/
+Infinity, invalid dates, divide-by-zero, malformed records, unavailable-state schema stability)
+and found not to be the source and not to require changes. Babel parse clean (78 files checked).
+`expo-doctor` 17/17 (one transient local-state finding - an uncommitted `mobile/.expo/` directory
+created during emulator testing - fixed via `.gitignore`, not a code defect). `expo export
+--platform android` clean (586 modules). A second live post-fix UI confirmation was attempted on
+the same emulator but not cleanly achieved (Expo Go's automated navigation via `adb`, without a
+human tapping the screen, repeatedly returned to its own project picker) - the fix is proven via
+the source-level regression test and live pre-fix reproduction described above; on-device
+confirmation by the Founder remains the final acceptance step per the directive's Section 10.

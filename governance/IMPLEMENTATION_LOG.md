@@ -1,5 +1,39 @@
 # Implementation Log
 
+## 2026-08-04 AT-ED-015.1 — Executive Briefing White-Screen Production Regression
+
+Production incident: the Executive Briefing rendered live data successfully, then blanked to a
+white screen with no error message. Root cause found and proven with a live emulator
+reproduction (not inferred from the white screen alone) - `lib/principalOpportunities.js`'s
+`themeOpportunityCard()` called `.slice(0, 3).join('; ')` on `theme.key_drivers` assuming it is
+always an array; live `/intelligence/themes` evidence returns it as a plain string on at least
+some themes, and `String.prototype.join` does not exist, throwing a `TypeError` during
+`PrincipalOpportunitiesSection`'s render. With no error boundary anywhere in the app, the
+uncaught render exception unmounted the entire tree. Full account in
+`architecture/ARCHITECTURE_DELTA.md` under "AT-ED-015.1"; forensic detail in this pass's docs
+bundle (`Root_Cause_Analysis.md`, `Render_State_Comparison.md`, `Implementation_Summary.md`).
+
+**Proven, not guessed:** reproduced live on an Android emulator against the real production API
+(exact error and full component stack captured via `adb logcat`), and independently confirmed by
+temporarily restoring the exact pre-fix source and running a new production-representative
+regression test against it (failed with the byte-identical error, passed once the fix was
+restored).
+
+**Fix:** `themeOpportunityCard()` now normalizes `key_drivers` via `Array.isArray(raw) ? raw :
+[raw]` - the same defensive pattern `lib/investmentThesis.js`'s `alternativeThesis()` already
+used for the sibling field `key_risks`. No forecasting methodology changed; the Executive Briefing
+was not redesigned.
+
+**Defence-in-depth added regardless of root cause:** new `components/ErrorBoundary.js` wraps only
+the Executive Briefing's render in `App.js` - any future uncaught render exception in that
+subtree now shows a calm fallback (Retry, Open Operations, a safe diagnostic ID) instead of
+blanking the whole app; the app shell and every other screen stay usable.
+
+4 new tests (303 total, 27 files, all passing). Babel parse clean (78 files). `expo-doctor` 17/17
+(an unrelated local-state gap found and fixed: `mobile/.expo/` was not gitignored). `expo export
+--platform android` clean (586 modules). On-device confirmation by the Founder is the final
+acceptance step for this pass.
+
 ## 2026-08-05 AT-ED-015 — Executive Communication, Founder Experience & Forecast Intelligence
 
 Redesigns the CIO screen (renamed Executive Briefing) from AT-ED-014's seventeen same-weight,

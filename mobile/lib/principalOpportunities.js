@@ -22,11 +22,29 @@ function recommendationOpportunityCard(item) {
   };
 }
 
+// AT-ED-015.1 root cause fix: /intelligence/themes returns `key_drivers` as a plain string in
+// production (confirmed via a live emulator reproduction - see Root_Cause_Analysis.md), not the
+// array this originally assumed. `.slice(0, 3).join('; ')` on a string throws
+// "theme.key_drivers.slice(...).join is not a function" (String has no .join), which crashed
+// PrincipalOpportunitiesSection's render with no error boundary to catch it, blanking the whole
+// app. Normalized the same way lib/investmentThesis.js's alternativeThesis() already handles the
+// identical shape ambiguity for theme.key_risks (Array.isArray(...) ? ... : [...]), so both
+// theme-derived list fields use one consistent, safe pattern.
+function keyDriversText(theme) {
+  const raw = theme.key_drivers;
+  if (!raw) {
+    return 'No key drivers recorded';
+  }
+  const list = Array.isArray(raw) ? raw : [raw];
+  const text = list.filter(Boolean).slice(0, 3).join('; ');
+  return text || 'No key drivers recorded';
+}
+
 function themeOpportunityCard(theme) {
   return {
     title: theme.theme,
     why: theme.summary || theme.current_outlook || 'No thematic summary recorded.',
-    evidence: (theme.key_drivers && theme.key_drivers.length) ? theme.key_drivers.slice(0, 3).join('; ') : 'No key drivers recorded',
+    evidence: keyDriversText(theme),
     expectedBenefit: theme.current_outlook || 'Not specified',
     confidence: theme.confidence !== undefined && theme.confidence !== null ? formatPercent(theme.confidence) : 'Not available',
     timeHorizon: 'Not specified - thematic view, not a dated trade',
@@ -53,6 +71,7 @@ function buildOpportunityCards({ recommendations, themes, maxRecommendations = 3
 
 module.exports = {
   recommendationOpportunityCard,
+  keyDriversText,
   themeOpportunityCard,
   buildOpportunityCards,
 };

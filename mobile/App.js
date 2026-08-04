@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { styles } from './styles';
 import { StatusPill } from './components/shared';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { OperationsCentre } from './screens/Operations';
 import { AutonomousActivity } from './screens/Activity';
@@ -155,19 +156,30 @@ export default function App() {
   const content = useMemo(() => {
     if (screen === 'ExecutiveBriefing') {
       return (
-        <ExecutiveBriefing
-          status={status}
-          portfolio={portfolio}
-          recommendations={recommendations}
-          activity={activity}
-          themes={marketData.themes}
-          dailyLearning={dailyLearning}
-          performanceAttribution={performanceAttribution}
-          brief={founderBrief.brief}
-          onRefresh={screenRefresh.ExecutiveBriefing.refresh}
+        // AT-ED-015.1 Section 5: defence-in-depth around the Executive Briefing subtree only -
+        // the app shell (header, tab bar) is rendered outside `content` in App.js's own JSX
+        // below, so a render exception here unmounts only this screen, never the whole app.
+        <ErrorBoundary
+          label="ExecutiveBriefing"
+          title="The Executive Briefing could not be displayed."
+          message="Something went wrong while preparing your briefing. Your other data and navigation are unaffected."
+          onRetry={() => screenRefresh.ExecutiveBriefing.refresh()}
           onOpenOperations={() => setScreen('Operations')}
-          onOpenRecommendations={() => setScreen('Recommendations')}
-        />
+        >
+          <ExecutiveBriefing
+            status={status}
+            portfolio={portfolio}
+            recommendations={recommendations}
+            activity={activity}
+            themes={marketData.themes}
+            dailyLearning={dailyLearning}
+            performanceAttribution={performanceAttribution}
+            brief={founderBrief.brief}
+            onRefresh={screenRefresh.ExecutiveBriefing.refresh}
+            onOpenOperations={() => setScreen('Operations')}
+            onOpenRecommendations={() => setScreen('Recommendations')}
+          />
+        </ErrorBoundary>
       );
     }
     if (screen === 'Operations') {

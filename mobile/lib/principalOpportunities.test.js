@@ -4,7 +4,7 @@
 'use strict';
 
 const assert = require('assert');
-const { recommendationOpportunityCard, themeOpportunityCard, buildOpportunityCards } = require('./principalOpportunities');
+const { recommendationOpportunityCard, keyDriversText, themeOpportunityCard, buildOpportunityCards } = require('./principalOpportunities');
 
 let passed = 0;
 function test(name, fn) {
@@ -43,6 +43,30 @@ test('themeOpportunityCard: uses real theme fields', () => {
   const card = themeOpportunityCard({ theme: 'AI Infrastructure', summary: 'Strong demand.', confidence: 0.8, key_drivers: ['a', 'b', 'c', 'd'] });
   assert.strictEqual(card.title, 'AI Infrastructure');
   assert.strictEqual(card.evidence, 'a; b; c');
+});
+
+// --- AT-ED-015.1: production-representative regression (key_drivers is a plain string, not an
+// array, in real /intelligence/themes evidence - confirmed via live Android emulator
+// reproduction; see Root_Cause_Analysis.md). This is the exact shape that crashed
+// PrincipalOpportunitiesSection's render and blanked the whole app with no error boundary. ---
+
+test('themeOpportunityCard: production-representative key_drivers (a plain string) never throws', () => {
+  const card = themeOpportunityCard({ theme: 'AI Infrastructure', summary: 'Strong demand.', confidence: 0.8, key_drivers: 'Strong capex growth, cloud demand' });
+  assert.strictEqual(card.evidence, 'Strong capex growth, cloud demand');
+});
+
+test('themeOpportunityCard: missing or empty key_drivers is honest, never throws', () => {
+  assert.strictEqual(themeOpportunityCard({ theme: 'X' }).evidence, 'No key drivers recorded');
+  assert.strictEqual(themeOpportunityCard({ theme: 'X', key_drivers: '' }).evidence, 'No key drivers recorded');
+});
+
+test('keyDriversText: array input still joins the first three entries, unchanged behaviour', () => {
+  assert.strictEqual(keyDriversText({ key_drivers: ['a', 'b', 'c', 'd'] }), 'a; b; c');
+});
+
+test('buildOpportunityCards: a string-shaped key_drivers on the top theme never crashes (the exact AT-ED-015.1 white-screen trigger)', () => {
+  const themes = [{ theme: 'AI Infrastructure', confidence: 0.8, key_drivers: 'Strong capex growth' }];
+  assert.doesNotThrow(() => buildOpportunityCards({ recommendations: [], themes }));
 });
 
 test('buildOpportunityCards: caps fresh recommendations and appends at most one top theme', () => {
