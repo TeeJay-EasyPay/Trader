@@ -401,6 +401,47 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertEqual(result, expected)
         replay.assert_called_once_with(service.settings.db_path)
 
+    def test_external_intelligence_refresh_is_a_named_job_reachable_from_the_worker_loop(self):
+        service = SimpleNamespace(
+            settings=SimpleNamespace(db_path=Path("runtime.sqlite3"), external_intelligence_enabled=False)
+        )
+        expected = {"status": "disabled", "message": "external_intelligence_enabled is False; no sources were queried."}
+        with patch("ai_trader.cli.run_external_intelligence_refresh", return_value=expected) as refresh:
+            from ai_trader.cli import _run_named_job
+
+            result = _run_named_job(service, "external-intelligence-refresh", limit=0)
+        self.assertEqual(result, expected)
+        refresh.assert_called_once_with(service.settings.db_path, service.settings)
+
+    def test_due_worker_jobs_omits_external_intelligence_refresh_when_disabled(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc))
+        self.assertNotIn("external-intelligence-refresh", [name for name, _ in due])
+
+    def test_due_worker_jobs_includes_external_intelligence_refresh_when_enabled(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=True,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc))
+        names = [name for name, _ in due]
+        self.assertIn("external-intelligence-refresh", names)
+
     def test_push_dispatch_is_a_named_job_reachable_from_the_worker_loop(self):
         """CRITICAL_REMEDIATION_PLAN.md P0-5: push notifications were previously
         wired only into the API service's background-worker set, which

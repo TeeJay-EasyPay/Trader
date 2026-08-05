@@ -21,6 +21,7 @@ from .briefing import generate_daily_briefing, generate_session_brief
 from .config import Settings, load_settings
 from .database import selected_backend
 from .execution import ExecutionEngine
+from .external_intelligence import run_external_intelligence_refresh
 from .intelligence import InvestmentIntelligenceDatabase
 from .proposals import load_proposals, save_proposals
 from .scheduler import ResearchScheduler
@@ -509,6 +510,11 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.dispatch_pending_push_notifications()
     if job_name == "strategy-lab-refresh":
         return service.refresh_strategy_lab()
+    if job_name == "external-intelligence-refresh":
+        # A true no-op (no HTTP calls, no writes) whenever
+        # settings.external_intelligence_enabled is False -- see
+        # run_external_intelligence_refresh's own docstring.
+        return run_external_intelligence_refresh(service.settings.db_path, service.settings)
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 
@@ -827,6 +833,12 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
     due.append(("crypto-research", _time_bucket(now, research_seconds)))
+    if settings.external_intelligence_enabled:
+        # Hourly, same bucket cadence as crypto-research's default. The job itself
+        # is also a defensive no-op when the flag is off (see
+        # run_external_intelligence_refresh), but there is no reason to even claim
+        # a scheduled-job slot for it every cycle while a human has it switched off.
+        due.append(("external-intelligence-refresh", _time_bucket(now, 3600)))
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     if market_now.weekday() >= 5:
         return due

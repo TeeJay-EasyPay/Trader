@@ -71,6 +71,9 @@ class Settings:
     process_role: str = "local"
     disable_api_background_workers: bool = False
     require_postgres_in_hosted: bool = True
+    external_intelligence_enabled: bool = False
+    cryptopanic_api_key: str | None = None
+    fred_api_key: str | None = None
 
     @property
     def has_alpaca_credentials(self) -> bool:
@@ -163,4 +166,7 @@ def load_settings() -> Settings:
             _bool_env("AI_TRADER_DISABLE_BACKGROUND_WORKERS", False),
         ),
         require_postgres_in_hosted=_bool_env("AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED", True),
+        external_intelligence_enabled=_bool_env("EXTERNAL_INTELLIGENCE_ENABLED", False),
+        cryptopanic_api_key=os.getenv("CRYPTOPANIC_API_KEY"),
+        fred_api_key=os.getenv("FRED_API_KEY"),
     )
