@@ -41,6 +41,35 @@ function dominantStrategy(recommendations) {
   return entries.length ? { name: entries[0][0], count: entries[0][1] } : null;
 }
 
+// AT-ED-017 (live-review fix): a real emulator check showed "My conviction in Airlines currently
+// sits at NaN%." - /intelligence/themes' seed/production data stores confidence as a string label
+// ("Low"/"Medium"/"High", see intelligence_data.py), not always the 0-1 fraction this line
+// assumed. Math.round(Number("Medium") * 100) is NaN, and NaN was rendered straight to the
+// Founder. Handles both real shapes honestly instead of assuming one.
+function formatThemeConviction(theme) {
+  const confidence = theme.confidence;
+  if (confidence === undefined || confidence === null || confidence === '') {
+    return `My conviction in ${theme.theme} is a level I have not yet rated.`;
+  }
+  const numeric = Number(confidence);
+  if (Number.isFinite(numeric)) {
+    return `My conviction in ${theme.theme} currently sits at ${Math.round(numeric * 100)}%.`;
+  }
+  return `My conviction in ${theme.theme} is currently rated ${confidence}.`;
+}
+
+// AT-ED-017 (live-review fix): theme.summary/current_outlook and each theme.key_risks entry
+// already end with their own period in production data - appending another "." unconditionally
+// produced visible double periods ("...route disruption..") on the emulator. Only adds one if
+// the text doesn't already end with sentence punctuation.
+function withPeriod(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 function currentInvestmentThesis({ themes, recommendations }) {
   const theme = leadTheme(themes);
   const strategy = dominantStrategy(recommendations);
@@ -54,12 +83,17 @@ function currentInvestmentThesis({ themes, recommendations }) {
   const sentences = [];
   const evidence = [];
   if (theme) {
-    sentences.push(`Our current thesis centres on ${theme.theme}: ${theme.summary || theme.current_outlook || 'evidence-backed outlook not yet summarised'}.`);
-    evidence.push(`My conviction in ${theme.theme} currently sits at ${theme.confidence !== undefined && theme.confidence !== null ? `${Math.round(Number(theme.confidence) * 100)}%` : 'a level I have not yet rated'}.`);
+    sentences.push(`Our current thesis centres on ${theme.theme}: ${withPeriod(theme.summary || theme.current_outlook || 'evidence-backed outlook not yet summarised')}`);
+    evidence.push(formatThemeConviction(theme));
   }
   if (strategy) {
-    sentences.push(`${strategy.count} of our current recommendation${strategy.count === 1 ? '' : 's'} lean on the ${strategy.name} approach.`);
-    evidence.push(`${strategy.count} of our current idea${strategy.count === 1 ? '' : 's'} follow the ${strategy.name} approach.`);
+    // AT-ED-017 (live-review fix): "1 of our current recommendation lean on..." - the noun was
+    // already pluralised for count, but the verb wasn't, so a sample of exactly 1 read as a
+    // subject-verb agreement error.
+    const verb = strategy.count === 1 ? 'leans' : 'lean';
+    const followVerb = strategy.count === 1 ? 'follows' : 'follow';
+    sentences.push(`${strategy.count} of our current recommendation${strategy.count === 1 ? '' : 's'} ${verb} on the ${strategy.name} approach.`);
+    evidence.push(`${strategy.count} of our current idea${strategy.count === 1 ? '' : 's'} ${followVerb} the ${strategy.name} approach.`);
   }
   // AT-ED-016.2: real paragraph break, not a space - the theme view and the strategy note are
   // two distinct ideas and were previously running together in one dense paragraph.
@@ -79,10 +113,16 @@ function alternativeThesis({ themes }) {
     };
   }
   const risks = Array.isArray(theme.key_risks) ? theme.key_risks : [theme.key_risks];
+  const topRisks = risks.slice(0, 3);
+  // AT-ED-017 (live-review fix): each key_risks entry already ends with its own period in
+  // production data - joining them and appending a final "." produced a visible double period
+  // ("...regulation..") on the emulator. Strip each entry's own trailing period before joining,
+  // so there is exactly one at the end of the sentence.
+  const cleanedRisks = topRisks.map((risk) => String(risk || '').trim().replace(/[.]+$/, ''));
   return {
     available: true,
-    statement: `We would be wrong if: ${risks.slice(0, 3).join('; ')}.`,
-    evidence: risks.slice(0, 3),
+    statement: `We would be wrong if: ${cleanedRisks.join('; ')}.`,
+    evidence: topRisks,
   };
 }
 
@@ -108,6 +148,8 @@ function evidenceStrength(factorSummary) {
 module.exports = {
   leadTheme,
   dominantStrategy,
+  formatThemeConviction,
+  withPeriod,
   currentInvestmentThesis,
   alternativeThesis,
   evidenceStrength,

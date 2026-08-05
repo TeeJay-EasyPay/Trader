@@ -6,6 +6,8 @@ const assert = require('assert');
 const {
   leadTheme,
   dominantStrategy,
+  formatThemeConviction,
+  withPeriod,
   currentInvestmentThesis,
   alternativeThesis,
   evidenceStrength,
@@ -75,6 +77,65 @@ test('currentInvestmentThesis: composes a real statement from theme + strategy e
   assert.strictEqual(result.evidence.length, 2);
 });
 
+// --- formatThemeConviction / withPeriod (AT-ED-017 live-review fix) ---
+
+test('formatThemeConviction: a real numeric confidence formats as a percentage', () => {
+  assert.strictEqual(formatThemeConviction({ theme: 'Airlines', confidence: 0.65 }), 'My conviction in Airlines currently sits at 65%.');
+});
+
+test('formatThemeConviction: a string confidence label (production evidence shape) is named, never a fabricated NaN%', () => {
+  const text = formatThemeConviction({ theme: 'Airlines', confidence: 'Medium' });
+  assert.ok(!text.includes('NaN'));
+  assert.ok(text.includes('rated Medium'));
+});
+
+test('formatThemeConviction: missing confidence is honest, not fabricated', () => {
+  assert.ok(formatThemeConviction({ theme: 'Airlines', confidence: null }).includes('have not yet rated'));
+});
+
+test('withPeriod: adds a period only when the text does not already end with sentence punctuation', () => {
+  assert.strictEqual(withPeriod('no punctuation'), 'no punctuation.');
+  assert.strictEqual(withPeriod('already punctuated.'), 'already punctuated.');
+  assert.strictEqual(withPeriod('a question?'), 'a question?');
+});
+
+test('currentInvestmentThesis: a string theme confidence never produces NaN in the statement or evidence', () => {
+  const result = currentInvestmentThesis({
+    themes: [{ theme: 'Airlines', confidence: 'Medium', summary: 'Passenger demand remains important.' }],
+    recommendations: [],
+  });
+  assert.ok(!result.statement.includes('NaN'));
+  assert.ok(!result.evidence.join(' ').includes('NaN'));
+});
+
+test('currentInvestmentThesis: a theme summary that already ends with a period never produces a double period', () => {
+  const result = currentInvestmentThesis({
+    themes: [{ theme: 'Airlines', confidence: 0.5, summary: 'Passenger demand remains important.' }],
+    recommendations: [],
+  });
+  assert.ok(!result.statement.includes('..'));
+});
+
+test('currentInvestmentThesis: exactly one recommendation uses singular subject-verb agreement, not "recommendation lean"', () => {
+  const result = currentInvestmentThesis({
+    themes: [],
+    recommendations: [{ strategy_name: 'Momentum', freshness_status: 'Fresh' }],
+  });
+  assert.ok(result.statement.includes('1 of our current recommendation leans on the Momentum approach.'));
+  assert.ok(result.evidence[0].includes('1 of our current idea follows the Momentum approach.'));
+});
+
+test('currentInvestmentThesis: more than one recommendation keeps plural subject-verb agreement', () => {
+  const result = currentInvestmentThesis({
+    themes: [],
+    recommendations: [
+      { strategy_name: 'Momentum', freshness_status: 'Fresh' },
+      { strategy_name: 'Momentum', freshness_status: 'Fresh' },
+    ],
+  });
+  assert.ok(result.statement.includes('2 of our current recommendations lean on the Momentum approach.'));
+});
+
 // --- alternativeThesis ---
 
 test('alternativeThesis: no documented risk evidence is honest, not fabricated', () => {
@@ -89,6 +150,14 @@ test('alternativeThesis: built from the lead theme\'s own key_risks, capped at 3
   assert.strictEqual(result.available, true);
   assert.ok(result.statement.includes('rate shock; demand slowdown; regulation'));
   assert.ok(!result.statement.includes('a fourth risk'));
+});
+
+test('alternativeThesis (AT-ED-017 live-review fix): risks that already end with a period never produce a double period', () => {
+  const result = alternativeThesis({
+    themes: [{ theme: 'Airlines', confidence: 0.5, key_risks: ['Fuel prices.', 'Airspace disruption.', 'Regulation.'] }],
+  });
+  assert.ok(!result.statement.includes('..'));
+  assert.ok(result.statement.endsWith('Fuel prices; Airspace disruption; Regulation.'));
 });
 
 // --- evidenceStrength (AT-ED-016) ---
