@@ -79,6 +79,12 @@ function cioOvernightActivity({ researchRuns, recommendationsCreated, ordersSubm
 // already owns all currency formatting via lib/money.js) - the raw realised/unrealised numbers
 // are only used here to pick the right words ("profit" vs "loss"), keeping this function
 // dependency-free like every other one in this file.
+//
+// Deliberately does NOT frame the unrealised figure as "the rest of" today's P&L - today's P&L
+// (portfolio.todays_pnl) is a day-over-day portfolio-value delta, while total unrealised P&L is
+// a point-in-time snapshot of every open position's current mark; they measure different things
+// and will not sum to today's change. Each is stated as its own real fact instead of implying an
+// arithmetic relationship that doesn't hold.
 function cioTodaysMoneyBreakdown({ realizedToday, realizedTodayText, unrealizedTotal, unrealizedTotalText, exitsToday, openPositionsCount }) {
   const hasRealized = realizedToday !== null && realizedToday !== undefined;
   const hasUnrealized = unrealizedTotal !== null && unrealizedTotal !== undefined;
@@ -88,13 +94,13 @@ function cioTodaysMoneyBreakdown({ realizedToday, realizedTodayText, unrealizedT
   const sentences = [];
   if (hasRealized) {
     const word = realizedToday >= 0 ? 'realised profit' : 'a realised loss';
-    sentences.push(`${realizedTodayText} of today's movement is ${word}, from ${exitsToday} closed position${exitsToday === 1 ? '' : 's'}.`);
+    sentences.push(`${realizedTodayText} of today's profit is already ${word}, from ${exitsToday} closed position${exitsToday === 1 ? '' : 's'}.`);
   } else {
-    sentences.push('No positions have closed today, so none of today\'s movement is realised yet.');
+    sentences.push('No positions have closed today, so nothing has been realised yet.');
   }
   if (hasUnrealized) {
     const word = unrealizedTotal >= 0 ? 'an unrealised gain' : 'an unrealised loss';
-    sentences.push(`The rest is ${word} of ${unrealizedTotalText}, still sitting in ${openPositionsCount} open position${openPositionsCount === 1 ? '' : 's'}.`);
+    sentences.push(`Separately, across all currently open positions, there is ${word} of ${unrealizedTotalText} sitting in ${openPositionsCount} open position${openPositionsCount === 1 ? '' : 's'}.`);
   }
   return sentences.join('\n\n');
 }

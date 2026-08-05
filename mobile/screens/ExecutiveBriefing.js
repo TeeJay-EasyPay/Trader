@@ -162,14 +162,22 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
     openPositionsCount: openPositions.length,
   });
   const brokerMoneyToday = brokerMoneyTodayText(status?.brokers);
+  const leadingPositionText = [
+    executive.portfolio_health ? `In short: ${executive.portfolio_health}.` : null,
+    moneyBreakdown,
+    brokerMoneyToday,
+  ].filter(Boolean).join('\n\n');
   return (
     <Section title="Current Position">
       {/* AT-ED-016.2: a plain-English brief leads every fact card, with the numbers below it -
           the numbers alone were reading as "just data" with nothing to tell the Founder what
-          they mean, even though the card correctly answers a facts question. */}
-      {executive.portfolio_health ? <Text style={styles.bodyText}>In short: {executive.portfolio_health}.</Text> : null}
-      {moneyBreakdown ? <Text style={styles.bodyText}>{moneyBreakdown}</Text> : null}
-      {brokerMoneyToday ? <Text style={styles.bodyText}>{brokerMoneyToday}</Text> : null}
+          they mean, even though the card correctly answers a facts question.
+          AT-ED-017: all three prose fragments are joined into ONE Text block with real '\n\n'
+          breaks, not separate sibling <Text> elements - React Native puts no visual gap between
+          adjacent <Text> siblings (only styles.bodyText's own lineHeight applies within one
+          block), so three separate elements here ran together into one dense paragraph on the
+          emulator, the exact same bug class AT-ED-016.2 fixed in lib/cio.js's composers. */}
+      {leadingPositionText ? <Text style={styles.bodyText}>{leadingPositionText}</Text> : null}
       <PositionLine label="Portfolio value" value={portfolio?.portfolio_value !== undefined && portfolio?.portfolio_value !== null ? moneyOrText(portfolio.portfolio_value) : null} />
       <PositionLine label="Today" value={portfolio?.todays_pnl !== undefined && portfolio?.todays_pnl !== null ? moneyOrText(portfolio.todays_pnl) : null} />
       <PositionLine label="This week" value={wtd !== null ? moneyOrText(wtd) : null} />
@@ -203,12 +211,14 @@ function OvernightNarrativeCard({ activity, connectionReadiness, unresolvedIncid
   const autonomyLine = connectionReadiness
     ? cioAutonomyStatement({ tradeReady: Boolean(connectionReadiness.trade_ready), unresolvedIncidentCount: unresolvedIncidentCount || 0 })
     : null;
+  // AT-ED-017: joined into one Text block with real '\n\n' breaks, not separate sibling <Text>
+  // elements - this card had the same no-visual-gap-between-siblings bug as CurrentPositionCard
+  // even before this pass added funnelLine/autonomyLine (overnightSummary and noTrade.conclusion
+  // already ran together); fixed for all four fragments at once while here.
+  const overnightText = [overnightSummary, noTrade.conclusion, funnelLine, autonomyLine].filter(Boolean).join('\n\n');
   return (
     <Section title="What Happened Overnight">
-      <Text style={styles.bodyText}>{overnightSummary}</Text>
-      {noTrade.conclusion ? <Text style={styles.bodyText}>{noTrade.conclusion}</Text> : null}
-      {funnelLine ? <Text style={styles.bodyText}>{funnelLine}</Text> : null}
-      {autonomyLine ? <Text style={styles.bodyText}>{autonomyLine}</Text> : null}
+      <Text style={styles.bodyText}>{overnightText}</Text>
     </Section>
   );
 }
@@ -277,12 +287,14 @@ function ForecastHorizonCard({ horizon }) {
     : null;
   const why = `That's based on ${horizon.evidence[0]}, with ${horizon.evidence[1]}.`;
   const whatCouldChange = horizon.principalRisks[0];
+  // AT-ED-017: joined into one Text block with a real '\n\n' break, not two sibling <Text>
+  // elements - see the identical fix and rationale in CurrentPositionCard above.
+  const whatIExpect = [range, exitTiming].filter(Boolean).join('\n\n');
   return (
     <View style={styles.compactRow}>
       <Text style={styles.cardTitle}>{horizon.horizon}</Text>
       <Text style={styles.metricLabel}>What I expect</Text>
-      <Text style={styles.bodyText}>{range}</Text>
-      {exitTiming ? <Text style={styles.bodyText}>{exitTiming}</Text> : null}
+      <Text style={styles.bodyText}>{whatIExpect}</Text>
       <Text style={styles.metricLabel}>Why</Text>
       <Text style={styles.bodyText}>{why}</Text>
       <Text style={styles.metricLabel}>What could change it</Text>

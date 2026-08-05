@@ -94,10 +94,11 @@ test('cioOvernightActivity: exactly one order uses singular grammar', () => {
 
 // --- cioTodaysMoneyBreakdown (AT-ED-017 Part 3) ---
 
-test('cioTodaysMoneyBreakdown: names both real realised and unrealised halves', () => {
+test('cioTodaysMoneyBreakdown: names both real realised and unrealised halves as separate facts, never implying they sum to one total', () => {
   const text = cioTodaysMoneyBreakdown({ realizedToday: 50, realizedTodayText: '£50', unrealizedTotal: 20, unrealizedTotalText: '£20', exitsToday: 2, openPositionsCount: 5 });
-  assert.ok(text.includes('£50 of today\'s movement is realised profit'));
+  assert.ok(text.includes('£50 of today\'s profit is already realised profit'));
   assert.ok(text.includes('2 closed positions'));
+  assert.ok(text.includes('Separately'));
   assert.ok(text.includes('an unrealised gain of £20'));
   assert.ok(text.includes('5 open positions'));
 });
