@@ -78,6 +78,20 @@ test('founderAction: not operating normally always asks to review Activity first
   assert.ok(founderAction({ status: { state: 'STATUS UNKNOWN' } }).startsWith('Open Activity'));
 });
 
+test('statusFromFounderEvidence (AT-ED-016.3): never leaks raw why-no-trade reason codes/counts into upcoming_risks', () => {
+  const result = statusFromFounderEvidence({
+    why_no_trade: {
+      conclusion: 'AI Trader reviewed 9 asset(s), but no opportunity progressed to a candidate.',
+      top_reasons: [
+        { reason: 'philosophy_fit_below_auto_trade_minimum', count: 24 },
+        { reason: 'Handled by the independent per-broker auto-execution jobs.', count: 4 },
+      ],
+    },
+  });
+  const upcomingRisks = result.founder_experience.market_intelligence_centre.upcoming_risks;
+  assert.deepStrictEqual(upcomingRisks, []);
+});
+
 test('founderAction: operating normally with recommendations asks to review them', () => {
   const action = founderAction({ status: { state: 'OPERATING NORMALLY' }, recommendations: [{}, {}] });
   assert.ok(action.includes('Review 2 persisted recommendation(s)'));

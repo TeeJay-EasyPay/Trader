@@ -56,7 +56,13 @@ function themeOpportunityCard(theme) {
   return {
     title: theme.theme,
     whyILikeIt: theme.summary || theme.current_outlook || 'I do not have a documented view on this yet.',
-    potentialUpside: theme.current_outlook || 'Not yet specified',
+    // AT-ED-016.3: theme.current_outlook is a sentiment word (e.g. "Cautious", "Positive"), not
+    // a magnitude of expected upside - it was previously reused here directly, so a cautious
+    // outlook showed up as the literal "potential upside" of the opportunity, which reads as a
+    // mismatched/nonsensical label. Themes carry no numeric return estimate (unlike
+    // recommendations' expected_return_r above), so this is honestly disclosed as unavailable
+    // rather than repurposing a field that means something different.
+    potentialUpside: 'Not yet estimated - AI Trader does not track a numeric return estimate for themes.',
     catalyst: drivers.length ? drivers[0] : 'No specific catalyst identified yet.',
     confidence: theme.confidence !== undefined && theme.confidence !== null ? formatPercent(theme.confidence) : 'Not available',
   };

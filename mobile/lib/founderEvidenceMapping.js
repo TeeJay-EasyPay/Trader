@@ -319,7 +319,16 @@ function statusFromFounderEvidence(evidence) {
         sector_rotation: [],
         major_themes: [],
         important_news: [],
-        upcoming_risks: evidence?.why_no_trade?.top_reasons?.map((item) => `${item.reason}: ${item.count}`) || [],
+        // AT-ED-016.3: evidence.why_no_trade.top_reasons is an engineering diagnostic (raw
+        // orchestrator/policy-gate codes like "philosophy_fit_below_auto_trade_minimum", or
+        // internal messages like "Handled by the independent per-broker auto-execution jobs.",
+        // paired with a raw occurrence count) - it was never written to be read by a Founder.
+        // Mapping it straight into upcoming_risks (`${reason}: ${count}`) put those raw codes
+        // directly into Market Assessment and Principal Risks cards. There is no Founder-safe,
+        // curated risk list behind this evidence yet, so this is left honestly empty rather than
+        // leaking internals or fabricating a translation - same pattern already used for
+        // positions_requiring_attention/rebalancing_suggestions below.
+        upcoming_risks: [],
         watch_list: recommendations.map((item) => item.symbol).filter(Boolean),
       },
       learning_lab: {
