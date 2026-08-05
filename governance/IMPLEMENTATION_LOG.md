@@ -1,5 +1,44 @@
 # Implementation Log
 
+## 2026-08-05 AT-ED-017 — Forecast Engine & Executive Briefing Refinement
+
+Evolution, not revolution, per the directive's explicit framing: no new cards, no new engines, no
+redesign. Two real gaps closed, both directly requested. Full account in
+`architecture/ARCHITECTURE_DELTA.md` under "AT-ED-017".
+
+**Forecast Engine**: `lib/forecastEngine.js` extended (not replaced) with `expectedRealisedProfit`
+(an explicit name for what `expectedChange` has always meant, since this engine only ever
+extrapolates from trades that closed = realised), `expectedExitCount`, `expectedNewEntryCount`
+(same pace, assumption disclosed - no separate entry-rate model exists), and
+`nextExpectedExitInDays`. All derived from the same `tradeStatistics()` sample the engine already
+computed; no existing formula changed.
+
+**Realised vs unrealised, by broker**: `portfolio.todays_pnl` has always been a blended,
+whole-account delta with no realised/unrealised split and no per-broker breakdown, despite the
+underlying evidence carrying both (`open_positions[]` carries a real `broker` field; closed-trade
+evidence carries `broker` + `profit_loss` + `closed_at`). New `lib/portfolioPosition.js` helpers
+and a new `lib/cio.js` composer (`cioTodaysMoneyBreakdown`) give Current Position a real
+realised/unrealised split and each broker's own today figure, labelled paper trading (Alpaca) /
+live trading (Kraken).
+
+**Autonomy clarity**: `cioAutonomyStatement` (explicit "AI Trader is/isn't operating autonomously
+today") and `cioActivityFunnel` (real structured reviewed/approved/rejected/submitted counts, never
+raw internal reason codes) added to What Happened Overnight.
+
+**Three real defects caught by mandated live-emulator visual review, not source review alone**:
+(1) new sentences rendering as one run-on paragraph - separate sibling `<Text>` elements have no
+visual gap in React Native, same bug class as a prior pass, fixed by merging into single `Text`
+blocks with real `\n\n` breaks; (2) the new autonomy statement directly contradicted the funnel
+conclusion above it when the funnel state signalled an execution anomaly - fixed by threading that
+state into `cioAutonomyStatement`; (3) a pre-existing, unrelated bug found while reviewing this
+screen - Investment Thesis showing a literal "My conviction ... currently sits at NaN%" because
+theme confidence is a string label in production data, not always the numeric fraction assumed -
+fixed along with two double-period typos and a subject-verb agreement error in the same card.
+
+388 tests pass (+27 net). Babel clean, `expo-doctor` 17/17, `expo export` clean. Every fix in this
+pass was confirmed on a live Android emulator screenshot against the hosted backend after
+redeployment, not just in source or unit tests - the same standard established after AT-ED-015.1.
+
 ## 2026-08-05 AT-ED-016.1 — Executive Communication Layer Refinement
 
 An editorial-only pass, per the directive's explicit instruction: no calculation, committee

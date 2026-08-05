@@ -1024,3 +1024,94 @@ emulator session ran with no observed error in the bundle log or logcat, but as 
 Go's automated navigation did not reliably confirm an on-screen render - reported as inconclusive,
 not a confirmed pass. On-device Founder confirmation remains the real acceptance test for a pass
 whose entire purpose is communication quality.
+
+# AT-ED-017 (Forecast Engine & Executive Briefing Refinement)
+
+Evolution of the existing Forecast Engine and Executive Briefing, per the directive's explicit
+framing: no new cards, no new engines, no redesign. This is the first pass in this project where a
+real, working `adb`-connected Android emulator (Pixel_9 AVD, Expo Go, hosted production backend)
+was available throughout - every fix below was confirmed on a live screenshot after redeployment,
+not inferred from source or unit tests alone.
+
+## Extended: `lib/forecastEngine.js` (4 new tests, fully backward compatible)
+
+`caseValue()` gained `expectedRealisedProfit` - an explicit name for what `expectedChange` has
+always meant, since this engine only ever extrapolates from trades that closed (= realised).
+`projectHorizon()` gained `expectedExitCount`, `expectedNewEntryCount` (same pace, assumption
+disclosed in `assumptions`), and `nextExpectedExitInDays` - all derived from the same
+`stats.tradesPerDay` the engine already computed. No existing field, formula, or branch changed.
+
+## New: realised/unrealised, by broker (`lib/portfolioPosition.js`, 9 new tests)
+
+`portfolio.todays_pnl` has always been a blended, whole-account delta with no realised/unrealised
+split and no per-broker breakdown, despite the underlying evidence already carrying both:
+`open_positions[]` carries a real `broker` field (`_portfolio_payload()` in
+`production_evidence.py` tags each position), and closed-trade evidence carries `broker` +
+`profit_loss` + `closed_at`. New: `unrealizedPnlByBroker`, `totalUnrealizedPnl`,
+`closedTradesToday`, `realizedPnlToday`, `realizedPnlByBrokerToday`, `exitsTodayCount` - all
+following this file's existing `Number(null) === 0` null-safety convention.
+
+## New: `lib/cio.js` composers (14 new/changed tests)
+
+`cioTodaysMoneyBreakdown` (realised/unrealised narrative - reworded mid-pass to stop implying the
+two figures sum to today's P&L, since they measure different things), `cioAutonomyStatement`
+(explicit autonomy claim - gained an `executionAnomaly` parameter mid-pass to fix a real
+contradiction, see below), `cioActivityFunnel` (structured reviewed/approved/rejected/submitted
+counts, never raw internal reason codes).
+
+## Screen changes: `screens/ExecutiveBriefing.js`
+
+`CurrentPositionCard` (realised/unrealised + per-broker breakdown), `ForecastHorizonCard` (exit
+timing + expected realised profit in "What I expect"), `OvernightNarrativeCard` (activity funnel +
+autonomy statement, replacing the old generic "risk checks came back clean" line).
+
+## Three real defects found via live emulator screenshot, not source review
+
+1. **Sibling `<Text>` spacing** - new prose fragments were built as separate sibling `<Text
+   style={styles.bodyText}>` elements, which React Native renders with zero visual gap between
+   them (`styles.bodyText` has no `marginBottom`, unlike `styles.summaryReason`, which does). Only
+   a literal `\n\n` inside one `Text` block produces a real paragraph break. Same bug class
+   AT-ED-016.2 fixed once already inside `lib/cio.js`'s composers; this pass reintroduced it
+   directly in the screen. Fixed by merging each group of sibling prose fragments (Current
+   Position, Forecast Centre, Overnight - the last of which pre-dated this pass) into one `Text`
+   block with real `\n\n` joins.
+2. **Autonomy statement contradicting the funnel conclusion above it** - when
+   `evidence.why_no_trade.state === 'approved_but_not_submitted'` (an opportunity cleared every
+   gate but no order was submitted), `noTrade.conclusion` already says "...This requires
+   attention." `cioAutonomyStatement`, only checking `connection_readiness`/incidents, rendered
+   "operating fully autonomously - no Founder action required" directly underneath that exact
+   sentence. Fixed by threading an `executionAnomaly` flag (derived from `noTrade.state`) into the
+   same "not fully autonomous" branch as unresolved incidents.
+3. **Pre-existing, unrelated bug found while reviewing this screen** - Investment Thesis
+   (`lib/investmentThesis.js`, untouched since AT-ED-016.2) showed a literal "My conviction in
+   Airlines currently sits at NaN%." Theme confidence is a string label ("Low"/"Medium"/"High") in
+   production/seed data (`intelligence_data.py`), not always the 0-1 fraction the code assumed.
+   Fixed via `formatThemeConviction()`, which handles both real shapes honestly. Also fixed in the
+   same card: double periods where `theme.summary`/each `key_risks` entry already ends with its
+   own period (`withPeriod()`, and stripping each risk's trailing period before joining), and a
+   subject-verb agreement error ("1 ... recommendation lean" → "leans").
+
+## What did not change
+
+No backend (Python) file touched. No API contract, database schema, committee logic, or execution
+logic touched. Every existing `lib/forecastEngine.js` formula, every existing
+`lib/investmentThesis.js` ranking rule, and every existing card's field structure is unchanged -
+confirmed by the full test suite, which required zero changes to any pre-existing assertion.
+
+## Verification
+
+All 29 mobile test files pass (388 tests total, +27 net). Babel parse clean on every touched file.
+`expo-doctor` 17/17. `expo export --platform android` clean. Every fix in this pass (not just the
+initial implementation) was deployed via EAS Update and re-verified on a live Android emulator
+screenshot against the hosted production backend before being called done - the first pass in this
+project where that full loop (code → deploy → live screenshot → fix → redeploy → re-verify) was
+actually available and used repeatedly in a single session.
+
+## Known limitation
+
+The live account's real closed-trade history is below the Forecast Engine's 5-trade minimum, so
+every live check this pass saw the honest "not enough evidence" fallback, not the enriched
+available-forecast path with real numbers. That path is unit-tested with synthetic data but has
+not yet been observed live. `portfolio.todays_pnl` is also still rendered with a `$` symbol despite
+blending USD (Alpaca) and GBP (Kraken) capital - observed but deliberately not touched, since the
+correct fix depends on a Founder decision, not a default this pass should make silently.
