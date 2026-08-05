@@ -91,8 +91,12 @@ test('formatByCurrency: a single-currency map returns just that one total, never
   assert.strictEqual(formatByCurrency({ GBP: 500 }), '£500');
 });
 
-test('formatByCurrency: negative totals keep the sign in front of the symbol', () => {
+test('formatByCurrency: a negative first total keeps the sign in front of the symbol', () => {
   assert.strictEqual(formatByCurrency({ USD: -50, GBP: 20 }), '-$50 + £20');
+});
+
+test('formatByCurrency (live-review fix): a negative second total reads "- £Y", never the "+ -£Y" double-sign found live on the emulator', () => {
+  assert.strictEqual(formatByCurrency({ USD: 2002.86, GBP: -103.12 }), '$2,002.86 - £103.12');
 });
 
 test('formatByCurrency: no real evidence in any currency returns null', () => {

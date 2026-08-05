@@ -47,28 +47,32 @@ function historyMoneyOrText(selectedExchange, value) {
   return brokerKey(selectedExchange) === 'kraken' ? gbpOrText(value) : moneyOrText(value);
 }
 
+const CURRENCY_SYMBOLS = { USD: '$', GBP: '£' };
+
 // AT-ED-017 (Founder request, 2026-08-05): "I should have 2 totals, one in pounds and one in
 // dollars" - formats a {currency: amount} map (see lib/portfolioPosition.js's
 // sumBrokerFieldByCurrency() and friends) as "$X + £Y", two honest per-currency totals instead of
 // one blended number wearing the wrong symbol on part of it. Returns null only when there is no
 // real evidence in any currency - a single-currency map still returns just that one formatted
-// total, not a fabricated "+ £0".
+// total, not a fabricated "+ £0". Each entry's own sign picks the join operator ("-" instead of
+// "+" before a negative one) so a negative second total reads "£X - £Y", never "£X + -£Y".
 function formatByCurrency(totals) {
-  const parts = [];
-  if (totals?.USD !== undefined && totals.USD !== null) {
-    parts.push(money(totals.USD));
-  }
-  if (totals?.GBP !== undefined && totals.GBP !== null) {
-    parts.push(gbp(totals.GBP));
-  }
-  Object.keys(totals || {}).forEach((currency) => {
-    if (currency !== 'USD' && currency !== 'GBP' && totals[currency] !== null && totals[currency] !== undefined) {
+  const order = ['USD', 'GBP', ...Object.keys(totals || {}).filter((currency) => currency !== 'USD' && currency !== 'GBP')];
+  const entries = order
+    .filter((currency) => totals?.[currency] !== undefined && totals[currency] !== null)
+    .map((currency) => {
       const number = Number(totals[currency]);
-      const sign = number < 0 ? '-' : '';
-      parts.push(`${sign}${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${currency}`);
-    }
-  });
-  return parts.length ? parts.join(' + ') : null;
+      const symbol = CURRENCY_SYMBOLS[currency] || `${currency} `;
+      return { negative: number < 0, text: `${symbol}${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 2 })}` };
+    });
+  if (!entries.length) {
+    return null;
+  }
+  return entries.reduce((result, entry, index) => (
+    index === 0
+      ? (entry.negative ? `-${entry.text}` : entry.text)
+      : `${result} ${entry.negative ? '-' : '+'} ${entry.text}`
+  ), '');
 }
 
 // AT-ED-017 (Founder request, 2026-08-05): "Today is up $X" previously blended Alpaca (USD) and
