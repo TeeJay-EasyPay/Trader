@@ -32,7 +32,12 @@ test('recommendationOpportunityCard: uses real fields, with honest fallbacks for
   });
   assert.strictEqual(card.title, 'AAPL');
   assert.strictEqual(card.whyILikeIt, 'Strong momentum.');
-  assert.ok(card.potentialUpside.includes('1.50R'));
+  assert.ok(card.potentialUpside.includes('1.50 times the amount being risked'));
+});
+
+test('recommendationOpportunityCard (AT-ED-017 live-review fix): potentialUpside never leaks the raw "R" trading-jargon unit', () => {
+  const card = recommendationOpportunityCard({ ticker: 'AAPL', expected_return_r: 0.15 });
+  assert.ok(!/\dR\b/.test(card.potentialUpside));
 });
 
 test('recommendationOpportunityCard: missing expected_return_r is honest, not fabricated', () => {
@@ -71,6 +76,19 @@ test('themeOpportunityCard: missing or empty key_drivers is honest, never throws
 
 test('keyDriversText: array input still joins the first three entries, unchanged behaviour', () => {
   assert.strictEqual(keyDriversText({ key_drivers: ['a', 'b', 'c', 'd'] }), 'a; b; c');
+});
+
+test('themeOpportunityCard (AT-ED-017 live-review fix): a real semicolon-joined production key_drivers string is split into individual items, so catalyst names only the first one', () => {
+  const card = themeOpportunityCard({
+    theme: 'Airlines',
+    key_drivers: 'Passenger demand; premium travel; cargo; capacity discipline; tourism flows.',
+  });
+  assert.strictEqual(card.catalyst, 'Passenger demand');
+});
+
+test('keyDriversText: a real semicolon-joined production string splits and rejoins the first three individual items', () => {
+  const text = keyDriversText({ key_drivers: 'Passenger demand; premium travel; cargo; capacity discipline; tourism flows.' });
+  assert.strictEqual(text, 'Passenger demand; premium travel; cargo');
 });
 
 test('buildOpportunityCards: a string-shaped key_drivers on the top theme never crashes (the exact AT-ED-015.1 white-screen trigger)', () => {

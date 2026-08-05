@@ -18,8 +18,11 @@ function recommendationOpportunityCard(item) {
   return {
     title: item.ticker || item.symbol || 'Recommendation',
     whyILikeIt: item.reason_for_recommendation || 'I do not have a documented thesis for this one yet.',
+    // AT-ED-017 (live-review fix): "0.15R if this plays out as expected" - "R" is a trading-desk
+    // risk-multiple unit (gain as a multiple of the amount risked) a non-technical Founder has no
+    // reason to know. Same real number, explained in plain English instead of jargon.
     potentialUpside: item.expected_return_r !== undefined && item.expected_return_r !== null
-      ? `${Number(item.expected_return_r).toFixed(2)}R if this plays out as expected`
+      ? `If this plays out as expected, the gain is about ${Number(item.expected_return_r).toFixed(2)} times the amount being risked on this trade.`
       : 'Not yet estimated',
     catalyst: item.strongest_argument_for || 'No specific catalyst identified yet.',
     confidence: item.confidence !== undefined && item.confidence !== null ? formatPercent(item.confidence) : 'Not available',
@@ -34,12 +37,20 @@ function recommendationOpportunityCard(item) {
 // app. Normalized the same way lib/investmentThesis.js's alternativeThesis() already handles the
 // identical shape ambiguity for theme.key_risks (Array.isArray(...) ? ... : [...]), so both
 // theme-derived list fields use one consistent, safe pattern.
+// AT-ED-017 (live-review fix): production key_drivers is consistently a single semicolon-joined
+// string (see intelligence_data.py - every theme's key_drivers is "Item A; Item B; Item C."), not
+// an array of individual items. Wrapping the whole string as one array element meant every
+// consumer of "the first driver" (themeOpportunityCard's catalyst, below) showed the ENTIRE
+// semicolon-joined list instead of one real catalyst - confirmed live on the emulator ("Main
+// catalyst: Passenger demand; premium travel; cargo; capacity discipline; tourism flows." where
+// only "Passenger demand" was intended). Splitting a string input on semicolons gives real
+// individual items; a genuine array input (or a string with no semicolon) behaves as before.
 function keyDriversList(theme) {
   const raw = theme.key_drivers;
   if (!raw) {
     return [];
   }
-  const list = Array.isArray(raw) ? raw : [raw];
+  const list = Array.isArray(raw) ? raw : String(raw).split(';').map((item) => item.trim());
   return list.filter(Boolean);
 }
 
