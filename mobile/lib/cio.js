@@ -89,7 +89,11 @@ function cioMarketOutlook({ marketHealth, currentRegime, cryptoHealth, upcomingR
     sentences.push(`I currently see ${currentRegime} conditions.`);
   }
   if (cryptoHealth) {
-    sentences.push(cryptoHealth);
+    // AT-ED-016.3: cryptoHealth (brokerResearchStatus()) is a raw, lowercase-starting status
+    // fragment built for label/value display (e.g. "completed - 9 asset(s), Aug 04, 11:29 PM") -
+    // pushed here unframed it read as an orphan, uncapitalised sentence in the middle of a CIO
+    // paragraph. Give it a real sentence frame instead of pasting it in raw.
+    sentences.push(`On the crypto side, Kraken research is ${cryptoHealth}.`);
   }
   if (!sentences.length) {
     return 'I do not yet have a clear read on today\'s market conditions.';

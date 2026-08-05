@@ -107,6 +107,11 @@ test('cioMarketOutlook: names up to 3 upcoming risks when present', () => {
   assert.ok(!text.includes('a fourth risk'));
 });
 
+test('cioMarketOutlook (AT-ED-016.3): frames the raw crypto research status fragment as a real sentence, never as an orphan lowercase fragment', () => {
+  const text = cioMarketOutlook({ marketHealth: null, currentRegime: null, cryptoHealth: 'completed - 9 asset(s), Aug 04, 2026, 11:29 PM', upcomingRisks: [] });
+  assert.strictEqual(text, 'On the crypto side, Kraken research is completed - 9 asset(s), Aug 04, 2026, 11:29 PM.');
+});
+
 // --- cioAverageConfidence ---
 
 test('cioAverageConfidence: computes a real mean across non-expired recommendations only', () => {

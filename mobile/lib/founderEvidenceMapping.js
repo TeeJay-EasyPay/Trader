@@ -311,7 +311,13 @@ function statusFromFounderEvidence(evidence) {
       },
       market_intelligence_centre: {
         market_health: latestResearch ? `Fresh production research evidence from ${latestResearch.broker}` : 'No fresh production research evidence',
-        current_market_regime: latestResearch?.summary || 'Not calculated in the production evidence projection',
+        // AT-ED-016.3: latestResearch.summary is an activity-log line describing what the last
+        // research run did (e.g. "Kraken research reviewed 9 asset(s) and created 6
+        // recommendation(s)."), not a market regime label - this backend has no regime
+        // classifier. Reusing it here previously produced narrative nonsense once
+        // cioMarketOutlook() wrapped it as "I currently see <this sentence> conditions." Left
+        // honestly null (no regime evidence) instead of mislabeling an unrelated field as one.
+        current_market_regime: null,
         volatility: 'See recommendation evidence where available',
         momentum: 'See recommendation evidence where available',
         breadth: `${researchSummary.assets_analysed || 0} asset review(s) recorded in this period`,

@@ -92,6 +92,13 @@ test('statusFromFounderEvidence (AT-ED-016.3): never leaks raw why-no-trade reas
   assert.deepStrictEqual(upcomingRisks, []);
 });
 
+test('statusFromFounderEvidence (AT-ED-016.3): never mislabels a research-run summary sentence as the current market regime', () => {
+  const result = statusFromFounderEvidence({
+    research: [{ broker: 'kraken', summary: 'Kraken research reviewed 9 asset(s) and created 6 recommendation(s).' }],
+  });
+  assert.strictEqual(result.founder_experience.market_intelligence_centre.current_market_regime, null);
+});
+
 test('founderAction: operating normally with recommendations asks to review them', () => {
   const action = founderAction({ status: { state: 'OPERATING NORMALLY' }, recommendations: [{}, {}] });
   assert.ok(action.includes('Review 2 persisted recommendation(s)'));
