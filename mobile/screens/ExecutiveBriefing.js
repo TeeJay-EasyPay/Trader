@@ -193,7 +193,7 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
           (realised + unrealised mixed, like "Today"), not specifically realised gains - a
           distinct line so the Founder can watch realised profit accumulate through the month
           without it being obscured by day-to-day unrealised swings. */}
-      <PositionLine label="Realised this month" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution))} />
+      <PositionLine label="Realised this month" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution, status?.brokers))} />
       <PositionLine label="Open positions" value={openPositions.length || null} />
       <PositionLine label="Cash available" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
       <PositionLine label="Best performer" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />

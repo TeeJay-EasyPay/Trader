@@ -218,8 +218,24 @@ function realizedPnlByBrokerThisMonth(trades) {
   return totals;
 }
 
-function realizedPnlByCurrencyThisMonth(trades) {
-  return regroupByCurrency(realizedPnlByBrokerThisMonth(trades));
+// AT-ED-017 (Founder request, live-review follow-up): "the realised this month line should be
+// visible regardless of whether any money has been made" - unlike the other *ByCurrency helpers,
+// which omit a currency entirely when there is no evidence for it (correctly distinguishing
+// "unknown" from "zero" elsewhere on this card), a genuinely quiet month for a broker that is
+// actively connected IS a real, knowable zero, not missing evidence - so it should read "£0.00",
+// not disappear. `brokers` (status.brokers[], each with a real `broker` name) is optional and
+// only used to default known-active currencies to 0 when they have no closed trades this month;
+// omitting it keeps the original "only show what has real evidence" behaviour for any other
+// caller.
+function realizedPnlByCurrencyThisMonth(trades, brokers) {
+  const totals = regroupByCurrency(realizedPnlByBrokerThisMonth(trades));
+  (brokers || []).forEach((broker) => {
+    const currency = brokerCurrency(broker?.broker);
+    if (totals[currency] === undefined) {
+      totals[currency] = 0;
+    }
+  });
+  return totals;
 }
 
 function exitsTodayCount(trades) {

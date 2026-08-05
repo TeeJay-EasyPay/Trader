@@ -245,6 +245,21 @@ test('realizedPnlByCurrencyThisMonth: the same real per-broker realised P&L this
   assert.deepStrictEqual(realizedPnlByCurrencyThisMonth(trades), { USD: 12, GBP: -6 });
 });
 
+test('realizedPnlByCurrencyThisMonth (Founder request, live-review follow-up): defaults an active broker\'s currency to a real 0, never omitted, when nothing has closed this month', () => {
+  const brokers = [{ broker: 'alpaca' }, { broker: 'kraken' }];
+  assert.deepStrictEqual(realizedPnlByCurrencyThisMonth([], brokers), { USD: 0, GBP: 0 });
+});
+
+test('realizedPnlByCurrencyThisMonth: a real closed trade still wins over the 0 default for that currency', () => {
+  const trades = [{ status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' }];
+  const brokers = [{ broker: 'alpaca' }, { broker: 'kraken' }];
+  assert.deepStrictEqual(realizedPnlByCurrencyThisMonth(trades, brokers), { USD: 12, GBP: 0 });
+});
+
+test('realizedPnlByCurrencyThisMonth: omitting brokers keeps the original omit-when-unknown behaviour', () => {
+  assert.deepStrictEqual(realizedPnlByCurrencyThisMonth([]), {});
+});
+
 console.log(`\n${passed} passed`);
 if (process.exitCode) {
   console.error('Some portfolioPosition tests failed.');
