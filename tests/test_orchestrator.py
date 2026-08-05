@@ -19,7 +19,7 @@ from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, O
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.operational import initialize_operational_schema
 from ai_trader.kraken_reconciliation import set_reconciliation_hold
-from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext, _snapshot_equity_basis_matches_context
+from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext, _snapshot_equity_basis_matches_context, _kraken_min_order_floor_notional
 from ai_trader.scheduler import ResearchScheduler
 from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry, set_kill_switch
 
@@ -589,6 +589,45 @@ class EquityBasisGuardTests(unittest.TestCase):
     def test_zero_or_negative_account_equity_never_matches(self):
         self.assertFalse(_snapshot_equity_basis_matches_context(100.0, 0.0))
         self.assertFalse(_snapshot_equity_basis_matches_context(100.0, -5.0))
+
+
+class KrakenMinOrderFloorTests(unittest.TestCase):
+    """Founder investigation (2026-08-05/06): every Kraken order attempt was rejected by the
+    exchange for "min_order_amount_not_met". Root cause: calculate_capital_allocation's
+    risk-based sizing (5% of the small isolated Kraken allocation, e.g. £38.23) produced a
+    per-trade notional (~£1.91) smaller than this deployment's configured
+    KRAKEN_MIN_ORDER_GBP - a real, checkable-in-advance value, submitted anyway. Each failed
+    attempt then permanently locked that proposal_id, compounding the problem every cycle.
+    _kraken_min_order_floor_notional is the fix: pins its exact behaviour in isolation, without
+    needing to stand up the full governance chain."""
+
+    def test_a_positive_but_undersized_notional_is_raised_to_the_exchange_minimum(self):
+        # The exact real numbers observed in hosted evidence: £1.91163 risk-sized notional,
+        # £38.23 account equity, a configured £2.00 exchange minimum.
+        self.assertEqual(
+            _kraken_min_order_floor_notional(approved_notional=1.91163, account_equity=38.23, min_notional=2.0),
+            2.0,
+        )
+
+    def test_a_notional_already_at_or_above_the_minimum_is_never_changed(self):
+        self.assertEqual(
+            _kraken_min_order_floor_notional(approved_notional=5.0, account_equity=38.23, min_notional=2.0),
+            5.0,
+        )
+
+    def test_a_genuinely_zero_or_rejected_notional_is_never_raised_into_a_fabricated_trade(self):
+        self.assertEqual(
+            _kraken_min_order_floor_notional(approved_notional=0.0, account_equity=38.23, min_notional=2.0),
+            0.0,
+        )
+
+    def test_never_raises_past_what_the_account_can_actually_afford(self):
+        # An account with less equity than the exchange minimum must never have a trade
+        # fabricated for it just to clear that minimum.
+        self.assertEqual(
+            _kraken_min_order_floor_notional(approved_notional=0.5, account_equity=1.5, min_notional=2.0),
+            0.5,
+        )
 
 
 if __name__ == "__main__":

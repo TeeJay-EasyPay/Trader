@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .broker_adapters import BrokerAdapter
+from .broker_adapters import BrokerAdapter, _float_env
 from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
     calculate_capital_allocation,
@@ -255,6 +255,40 @@ class InvestmentOrchestrator:
             kraken_control = reconciliation_control(self.db_path)
             if kraken_control.get("hold_new_entries"):
                 failures.append("kraken_reconciliation_hold")
+            # Founder investigation (2026-08-05/06): every Kraken order attempt was rejected by
+            # the exchange itself for "min_order_amount_not_met". Root cause: risk-based sizing
+            # (calculate_capital_allocation's max_position_size_pct, default 5%) applied to the
+            # small isolated Kraken allocation (context.account.equity, e.g. £38.23) produces a
+            # per-trade notional (~£1.91) that is smaller than this deployment's configured
+            # KRAKEN_MIN_ORDER_GBP - a real, checkable-in-advance value this code already knows,
+            # yet nothing upstream avoided producing an order guaranteed to fail it. Worse, each
+            # failed attempt permanently locks that proposal_id (order-intent locks are only
+            # released for ambiguous outcomes, not clean rejections like this one - see
+            # release_order_intent_lock's docstring), so the same undersized proposal then blocks
+            # itself from ever being retried, compounding the problem every research cycle.
+            #
+            # Fix: when the risk-based size is genuinely positive but falls short of the
+            # exchange's own minimum, raise it to that minimum instead of submitting an order
+            # already known to fail - never lower a size (that stays the honest risk-based
+            # figure), and never raise past what the account can actually afford. This is a
+            # sizing correctness fix, not a risk-appetite change: 5% of a small allocation was
+            # always intended to be a real, tradeable position, not a guaranteed rejection. Pulled
+            # out as its own pure function (below) so it is directly unit-testable without
+            # standing up the full governance chain.
+            min_notional = _float_env("KRAKEN_MIN_ORDER_GBP", 1.0)
+            floored_notional = _kraken_min_order_floor_notional(
+                approved_notional=float(allocation.get("approved_notional") or 0.0),
+                account_equity=context.account.equity,
+                min_notional=min_notional,
+            )
+            if floored_notional != allocation.get("approved_notional"):
+                print(
+                    f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=kraken_min_order_floor_applied "
+                    f"original_notional={allocation.get('approved_notional')} floored_to={floored_notional} elapsed={time.monotonic() - _eval_t0:.1f}s",
+                    flush=True,
+                )
+                allocation["approved_notional"] = floored_notional
+                allocation["approved_quantity"] = floored_notional / p.entry_price if p.entry_price > 0 else 0.0
         failures = list(dict.fromkeys(failures))
         record_broker_decision(
             self.db_path,
@@ -558,6 +592,16 @@ def _snapshot_equity_basis_matches_context(peak_equity: float, account_equity: f
     if account_equity <= 0:
         return False
     return peak_equity <= account_equity * 1.5
+
+
+# Founder investigation (2026-08-05/06): see the call site in evaluate_recommendation for the
+# full root-cause account. Pure function so the sizing rule can be proven correct in isolation:
+# raises a genuinely positive but sub-minimum notional up to the exchange's own minimum, never
+# lowers a size, and never raises past what the account can actually afford.
+def _kraken_min_order_floor_notional(*, approved_notional: float, account_equity: float, min_notional: float) -> float:
+    if 0 < approved_notional < min_notional <= account_equity:
+        return min_notional
+    return approved_notional
 
 
 def _stop_loss_pct(proposal: TradeProposal) -> float:
