@@ -69,9 +69,24 @@ test('brokerResearchStatus: no matching row reads as no evidence, not an error',
 });
 
 test('founderHeadline: reports the day P&L direction and trade count', () => {
-  const headline = founderHeadline({ portfolio: { todays_pnl: -5 }, trades: [1], status: { state: 'OPERATING NORMALLY' } });
+  const headline = founderHeadline({ brokers: [{ broker: 'alpaca', day_pnl: -5 }], trades: [1], status: { state: 'OPERATING NORMALLY' } });
   assert.ok(headline.includes('down'));
   assert.ok(headline.includes('1 broker order'));
+});
+
+test('founderHeadline (AT-ED-017 Founder request): names Alpaca (USD) and Kraken (GBP) separately, never blended under one currency symbol', () => {
+  const headline = founderHeadline({
+    brokers: [{ broker: 'alpaca', day_pnl: 490.15 }, { broker: 'kraken', day_pnl: -21.48 }],
+    trades: [],
+    status: { state: 'OPERATING NORMALLY' },
+  });
+  assert.ok(headline.includes('Alpaca is up $490.15'));
+  assert.ok(headline.includes('Kraken is down £21.48'));
+});
+
+test('founderHeadline: no per-broker P&L evidence is honest, not fabricated', () => {
+  const headline = founderHeadline({ brokers: [], trades: [], status: { state: 'OPERATING NORMALLY' } });
+  assert.ok(headline.includes('awaiting comparable broker evidence'));
 });
 
 test('founderAction: not operating normally always asks to review Activity first', () => {
@@ -90,6 +105,20 @@ test('statusFromFounderEvidence (AT-ED-016.3): never leaks raw why-no-trade reas
   });
   const upcomingRisks = result.founder_experience.market_intelligence_centre.upcoming_risks;
   assert.deepStrictEqual(upcomingRisks, []);
+});
+
+test('statusFromFounderEvidence (AT-ED-017 Founder request): portfolio_health names each broker in its own currency, never blended', () => {
+  const result = statusFromFounderEvidence({
+    portfolio: { portfolio_value: 95000 },
+    brokers: [
+      { broker: 'alpaca', portfolio_value: 65000, day_pnl: 490.15 },
+      { broker: 'kraken', portfolio_value: 30000, day_pnl: -21.48 },
+    ],
+  });
+  const health = result.founder_experience.executive_dashboard.portfolio_health;
+  assert.ok(health.includes('Alpaca is up $490.15'));
+  assert.ok(health.includes('Kraken is down £21.48'));
+  assert.ok(!health.endsWith('..'));
 });
 
 test('statusFromFounderEvidence (AT-ED-016.3): never mislabels a research-run summary sentence as the current market regime', () => {

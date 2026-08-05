@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { moneyOrText } = require('./money');
+const { moneyOrText, brokerMoneySentence } = require('./money');
 const { formatDateTime, dateMs } = require('./datetime');
 const { operationalRollup, learningSummary } = require('./founderPresentation');
 
@@ -116,11 +116,16 @@ function brokerResearchStatus(rows, broker) {
     : 'No research evidence recorded for this broker in the selected period';
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): this used to read evidence.portfolio.todays_pnl - a
+// server-side sum across every broker regardless of currency (Alpaca USD + Kraken GBP added
+// together with no conversion), then labelled the result with a single $ sign. Built from
+// evidence.brokers[] instead (each row's own real `day_pnl` and `broker` name), giving one real
+// sentence per broker in its own currency - never a blended figure with the wrong symbol on part
+// of it.
 function founderHeadline(evidence) {
-  const pnl = evidence?.portfolio?.todays_pnl;
   const tradeCount = evidence?.trades?.length || 0;
   const state = evidence?.status?.state || 'STATUS UNKNOWN';
-  const pnlText = pnl == null ? 'Daily P&L is awaiting comparable broker evidence.' : `Today is ${pnl >= 0 ? 'up' : 'down'} ${moneyOrText(Math.abs(pnl))}.`;
+  const pnlText = brokerMoneySentence(evidence?.brokers, 'day_pnl') || 'Daily P&L is awaiting comparable broker evidence.';
   return `${state}. ${pnlText} ${tradeCount} broker order or fill event(s) are visible in this period.`;
 }
 
@@ -228,11 +233,15 @@ function statusFromFounderEvidence(evidence) {
     last_job_runs: evidence?.jobs || [],
     incidents: operating.unresolved_incident_count ? [{ title: `${operating.unresolved_incident_count} unresolved incident(s)` }] : [],
   };
+  // AT-ED-017 (Founder request, 2026-08-05): same fix as founderHeadline() above - was
+  // `${dayPnl >= 0 ? 'Up' : 'Down'} ${moneyOrText(Math.abs(dayPnl))} today`, blending Alpaca (USD)
+  // and Kraken (GBP) into one $-labelled number. Built per-broker instead; trailing period is
+  // stripped by the one screen caller (CurrentPositionCard) before it appends its own, since this
+  // value is now a full sentence rather than a bare phrase.
   const portfolioHealth = total == null
     ? 'Awaiting a successful broker snapshot'
-    : dayPnl == null
-      ? 'Broker balances are current; daily P&L awaits a comparison snapshot'
-      : `${dayPnl >= 0 ? 'Up' : 'Down'} ${moneyOrText(Math.abs(dayPnl))} today`;
+    : brokerMoneySentence(brokerPanels, 'todays_pnl')?.replace(/\.$/, '')
+      || 'Broker balances are current; daily P&L awaits a comparison snapshot';
   const researchHealth = latestResearch
     ? `${latestResearch.broker || 'Market'} research ${latestResearch.status || 'recorded'} at ${formatDateTime(latestResearch.completed_at)}`
     : 'No production research evidence has been recorded in this period';

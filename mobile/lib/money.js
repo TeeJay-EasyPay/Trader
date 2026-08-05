@@ -2,18 +2,27 @@ function brokerKey(value) {
   return String(value || 'All').toLowerCase().replace(/[\s_-]+/g, '');
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): a negative amount previously formatted as "$-500" (the
+// minus sign landing after the currency symbol, from toLocaleString's own "-500" output being
+// pasted straight after "$"). Moved the sign in front of the symbol ("-$500") so combined-currency
+// totals (see lib/portfolioPosition.js's *ByCurrency helpers) can be passed a raw signed number
+// directly, instead of every call site needing its own abs()/sign-word workaround.
 function money(value) {
   if (value === null || value === undefined || value === '') {
     return null;
   }
-  return `$${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  const number = Number(value);
+  const sign = number < 0 ? '-' : '';
+  return `${sign}$${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
 function gbp(value) {
   if (value === null || value === undefined || value === '') {
     return null;
   }
-  return `£${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  const number = Number(value);
+  const sign = number < 0 ? '-' : '';
+  return `${sign}£${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
 function moneyOrText(value) {
@@ -38,6 +47,50 @@ function historyMoneyOrText(selectedExchange, value) {
   return brokerKey(selectedExchange) === 'kraken' ? gbpOrText(value) : moneyOrText(value);
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): "I should have 2 totals, one in pounds and one in
+// dollars" - formats a {currency: amount} map (see lib/portfolioPosition.js's
+// sumBrokerFieldByCurrency() and friends) as "$X + £Y", two honest per-currency totals instead of
+// one blended number wearing the wrong symbol on part of it. Returns null only when there is no
+// real evidence in any currency - a single-currency map still returns just that one formatted
+// total, not a fabricated "+ £0".
+function formatByCurrency(totals) {
+  const parts = [];
+  if (totals?.USD !== undefined && totals.USD !== null) {
+    parts.push(money(totals.USD));
+  }
+  if (totals?.GBP !== undefined && totals.GBP !== null) {
+    parts.push(gbp(totals.GBP));
+  }
+  Object.keys(totals || {}).forEach((currency) => {
+    if (currency !== 'USD' && currency !== 'GBP' && totals[currency] !== null && totals[currency] !== undefined) {
+      const number = Number(totals[currency]);
+      const sign = number < 0 ? '-' : '';
+      parts.push(`${sign}${Math.abs(number).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${currency}`);
+    }
+  });
+  return parts.length ? parts.join(' + ') : null;
+}
+
+// AT-ED-017 (Founder request, 2026-08-05): "Today is up $X" previously blended Alpaca (USD) and
+// Kraken (GBP) into one number under a single $ sign. Builds one real sentence per broker instead
+// - shared by lib/founderEvidenceMapping.js's founderHeadline() (the Executive Summary's opening
+// line) and screens/ExecutiveBriefing.js's Current Position card, so the two don't duplicate (and
+// risk drifting apart from) the same logic. `brokers` can be either the raw evidence.brokers rows
+// or the mapped status.brokers rows - both carry a real `broker` name field; `field` names which
+// money field to read off each ('day_pnl' vs 'todays_pnl' depending on which shape is passed).
+function brokerMoneySentence(brokers, field) {
+  const list = (brokers || []).filter((broker) => broker?.[field] !== null && broker?.[field] !== undefined && Number.isFinite(Number(broker[field])));
+  if (!list.length) {
+    return null;
+  }
+  const sentences = list.map((broker) => {
+    const value = Number(broker[field]);
+    const label = String(broker.broker || '').toLowerCase() === 'kraken' ? 'Kraken' : 'Alpaca';
+    return `${label} is ${value >= 0 ? 'up' : 'down'} ${brokerMoney(broker, Math.abs(value))} today`;
+  });
+  return `${sentences.join('; ')}.`;
+}
+
 module.exports = {
   brokerKey,
   money,
@@ -46,4 +99,6 @@ module.exports = {
   gbpOrText,
   brokerMoney,
   historyMoneyOrText,
+  formatByCurrency,
+  brokerMoneySentence,
 };

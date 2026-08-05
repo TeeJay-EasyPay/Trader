@@ -16,7 +16,7 @@ const React = require('react');
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
-const { moneyOrText } = require('../lib/money');
+const { moneyOrText, money, gbp, formatByCurrency, brokerMoney } = require('../lib/money');
 const { formatList } = require('../lib/lists');
 const { riskTone, connectedFounderBrokers } = require('../lib/founderPresentation');
 const {
@@ -42,13 +42,12 @@ const { buildRiskCards } = require('../lib/principalRisks');
 const { buildOpportunityCards } = require('../lib/principalOpportunities');
 const { buildFounderActions } = require('../lib/founderActions');
 const {
-  weekToDatePnl,
-  monthToDatePnl,
   largestPosition,
-  unrealizedPnlByBroker,
-  totalUnrealizedPnl,
-  realizedPnlToday,
-  exitsTodayCount,
+  sumBrokerFieldByCurrency,
+  unrealizedPnlByCurrency,
+  realizedPnlByCurrencyToday,
+  exitsTodayCountByCurrency,
+  openPositionsCountByCurrency,
 } = require('../lib/portfolioPosition');
 const { useForecastHistory } = require('../hooks/useForecastHistory');
 
@@ -125,67 +124,74 @@ function PositionLine({ label, value }) {
   );
 }
 
-// AT-ED-017 Part 3: "how much has Alpaca made, how much has Kraken made?" - status.brokers[]
-// already carries each broker's own todays_pnl (see founderEvidenceMapping.js); this just names
-// them separately instead of only ever showing the combined figure. Paper/live wording matches
-// lib/founderPresentation.js's brokerReadinessSentence() convention, since the Founder's real
-// capital risk is completely different between the two, not just a bookkeeping split.
-function brokerMoneyTodayText(brokers) {
-  const list = (brokers || []).filter((broker) => broker.todays_pnl !== null && broker.todays_pnl !== undefined && Number.isFinite(Number(broker.todays_pnl)));
-  if (!list.length) {
+// AT-ED-017 (Founder request, 2026-08-05): "I have to be able to trust the numbers - if the
+// final value is in dollars then Kraken numbers should have been converted to dollars before
+// adding them together. In fact I should have 2 totals, one in pounds and one in dollars." Alpaca
+// trades USD, Kraken trades GBP, and this backend has no live FX rate - converting would need a
+// rate this app can't verify, so every combined figure on this card now groups by real currency
+// (lib/portfolioPosition.js's *ByCurrency helpers, lib/money.js's formatByCurrency/
+// brokerMoneySentence) instead of summing across brokers regardless of currency.
+function currencyLabel(currency) {
+  return currency === 'GBP' ? 'In pounds (Kraken)' : 'In dollars (Alpaca)';
+}
+
+function currencyBreakdownText({ performanceAttribution, openPositions }) {
+  const realizedByCurrency = realizedPnlByCurrencyToday(performanceAttribution);
+  const unrealizedByCurrency = unrealizedPnlByCurrency(openPositions);
+  const exitsByCurrency = exitsTodayCountByCurrency(performanceAttribution);
+  const openByCurrency = openPositionsCountByCurrency(openPositions);
+  const currencies = Array.from(new Set([...Object.keys(realizedByCurrency), ...Object.keys(unrealizedByCurrency)]));
+  if (!currencies.length) {
     return null;
   }
-  return list.map((broker) => {
-    const value = Number(broker.todays_pnl);
-    const isKraken = String(broker.broker || '').toLowerCase() === 'kraken';
-    const mode = isKraken ? 'live trading' : 'paper trading';
-    const label = broker.label || broker.broker;
-    return `${label} (${mode}) is ${value >= 0 ? 'up' : 'down'} ${moneyOrText(Math.abs(value))} today.`;
-  }).join(' ');
+  const sentences = currencies.map((currency) => {
+    const formatFn = currency === 'GBP' ? gbp : money;
+    const realized = realizedByCurrency[currency] ?? null;
+    const unrealized = unrealizedByCurrency[currency] ?? null;
+    const text = cioTodaysMoneyBreakdown({
+      realizedToday: realized,
+      realizedTodayText: realized !== null ? formatFn(Math.abs(realized)) : null,
+      unrealizedTotal: unrealized,
+      unrealizedTotalText: unrealized !== null ? formatFn(Math.abs(unrealized)) : null,
+      exitsToday: exitsByCurrency[currency] || 0,
+      openPositionsCount: openByCurrency[currency] || 0,
+    });
+    return `${currencyLabel(currency)}: ${text}`;
+  });
+  return sentences.join('\n\n');
 }
 
 function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
-  const wtd = weekToDatePnl(status?.brokers);
-  const mtd = monthToDatePnl(status?.brokers);
-  const winner = largestPosition(portfolio?.open_positions, 'winning');
-  const loser = largestPosition(portfolio?.open_positions, 'losing');
   const openPositions = portfolio?.open_positions || [];
-  const realizedToday = realizedPnlToday(performanceAttribution);
-  const unrealizedTotal = totalUnrealizedPnl(openPositions);
-  const moneyBreakdown = cioTodaysMoneyBreakdown({
-    realizedToday,
-    realizedTodayText: realizedToday !== null ? moneyOrText(Math.abs(realizedToday)) : null,
-    unrealizedTotal,
-    unrealizedTotalText: unrealizedTotal !== null ? moneyOrText(Math.abs(unrealizedTotal)) : null,
-    exitsToday: exitsTodayCount(performanceAttribution),
-    openPositionsCount: openPositions.length,
-  });
-  const brokerMoneyToday = brokerMoneyTodayText(status?.brokers);
+  const winner = largestPosition(openPositions, 'winning');
+  const loser = largestPosition(openPositions, 'losing');
+  // AT-ED-017: executive.portfolio_health is now itself a real per-broker sentence (see
+  // founderEvidenceMapping.js) - it already ends with its own period, so any pre-existing
+  // trailing period is stripped before "In short:" adds exactly one, avoiding the double-period
+  // bug already found and fixed once this session in a different card.
   const leadingPositionText = [
-    executive.portfolio_health ? `In short: ${executive.portfolio_health}.` : null,
-    moneyBreakdown,
-    brokerMoneyToday,
+    executive.portfolio_health ? `In short: ${String(executive.portfolio_health).replace(/\.+$/, '')}.` : null,
+    currencyBreakdownText({ performanceAttribution, openPositions }),
   ].filter(Boolean).join('\n\n');
   return (
     <Section title="Current Position">
       {/* AT-ED-016.2: a plain-English brief leads every fact card, with the numbers below it -
           the numbers alone were reading as "just data" with nothing to tell the Founder what
           they mean, even though the card correctly answers a facts question.
-          AT-ED-017: all three prose fragments are joined into ONE Text block with real '\n\n'
-          breaks, not separate sibling <Text> elements - React Native puts no visual gap between
-          adjacent <Text> siblings (only styles.bodyText's own lineHeight applies within one
-          block), so three separate elements here ran together into one dense paragraph on the
-          emulator, the exact same bug class AT-ED-016.2 fixed in lib/cio.js's composers. */}
+          AT-ED-017: prose fragments are joined into ONE Text block with real '\n\n' breaks, not
+          separate sibling <Text> elements - React Native puts no visual gap between adjacent
+          <Text> siblings (only styles.bodyText's own lineHeight applies within one block), so
+          separate elements here ran together into one dense paragraph on the emulator, the same
+          bug class AT-ED-016.2 fixed in lib/cio.js's composers. */}
       {leadingPositionText ? <Text style={styles.bodyText}>{leadingPositionText}</Text> : null}
-      <PositionLine label="Portfolio value" value={portfolio?.portfolio_value !== undefined && portfolio?.portfolio_value !== null ? moneyOrText(portfolio.portfolio_value) : null} />
-      <PositionLine label="Today" value={portfolio?.todays_pnl !== undefined && portfolio?.todays_pnl !== null ? moneyOrText(portfolio.todays_pnl) : null} />
-      <PositionLine label="This week" value={wtd !== null ? moneyOrText(wtd) : null} />
-      <PositionLine label="This month" value={mtd !== null ? moneyOrText(mtd) : null} />
-      <PositionLine label="Open positions" value={(portfolio?.open_positions || []).length || null} />
-      <PositionLine label="Cash available" value={portfolio?.cash_available !== undefined && portfolio?.cash_available !== null ? moneyOrText(portfolio.cash_available) : null} />
-      <PositionLine label="Best performer" value={winner ? `${winner.symbol}, up ${moneyOrText(winner.unrealizedPl)}` : null} />
-      <PositionLine label="Worst performer" value={loser ? `${loser.symbol}, down ${moneyOrText(Math.abs(loser.unrealizedPl))}` : null} />
+      <PositionLine label="Portfolio value" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
+      <PositionLine label="This week" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
+      <PositionLine label="This month" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
+      <PositionLine label="Open positions" value={openPositions.length || null} />
+      <PositionLine label="Cash available" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
+      <PositionLine label="Best performer" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />
+      <PositionLine label="Worst performer" value={loser ? `${loser.symbol}, down ${brokerMoney({ broker: loser.broker }, Math.abs(loser.unrealizedPl))}` : null} />
     </Section>
   );
 }

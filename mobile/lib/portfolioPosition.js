@@ -28,6 +28,38 @@ function sumBrokerField(brokers, field) {
   return values.reduce((sum, value) => sum + value, 0);
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): "I have to be able to trust the numbers - if the final
+// value is in dollars then Kraken numbers should have been converted to dollars before adding
+// them together. In fact I should have 2 totals, one in pounds and one in dollars." Alpaca trades
+// USD, Kraken trades GBP - this backend has no live FX rate, so the honest fix is not to convert
+// (which would need a rate this app doesn't have and can't verify), but to stop blending them at
+// all: every combined figure on Current Position now groups by real currency instead of summing
+// across brokers regardless of currency. sumBrokerField() above is kept for any other caller that
+// still wants a single blended figure; nothing about it changed.
+function brokerCurrency(brokerName) {
+  return String(brokerName || '').toLowerCase() === 'kraken' ? 'GBP' : 'USD';
+}
+
+// Same null-safety convention as sumBrokerField() above, grouped by currency instead of blended
+// into one total. Returns e.g. { USD: 105233.45, GBP: 30500.12 } - only currencies with at least
+// one real value present are included, never a fabricated zero for a currency with no evidence.
+function sumBrokerFieldByCurrency(brokers, field) {
+  const totals = {};
+  (brokers || []).forEach((broker) => {
+    const raw = broker?.[field];
+    if (raw === null || raw === undefined) {
+      return;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const currency = brokerCurrency(broker.broker);
+    totals[currency] = (totals[currency] || 0) + value;
+  });
+  return totals;
+}
+
 function weekToDatePnl(brokers) {
   return sumBrokerField(brokers, 'week_pnl');
 }
@@ -38,10 +70,12 @@ function monthToDatePnl(brokers) {
 
 // direction: 'winning' picks the largest positive unrealized_pl, 'losing' picks the largest
 // (most negative) unrealized_pl. Returns null when no position qualifies - never a fabricated
-// "largest" pick from an empty or all-flat set.
+// "largest" pick from an empty or all-flat set. Carries the real `broker` field through (see
+// unrealizedPnlByBroker() below for where that field comes from) so callers can format the result
+// in its own real currency instead of assuming USD.
 function largestPosition(openPositions, direction) {
   const candidates = (openPositions || [])
-    .map((position) => ({ symbol: position.symbol, unrealizedPl: Number(position.unrealized_pl) }))
+    .map((position) => ({ symbol: position.symbol, unrealizedPl: Number(position.unrealized_pl), broker: position.broker }))
     .filter((position) => Number.isFinite(position.unrealizedPl) && (direction === 'winning' ? position.unrealizedPl > 0 : position.unrealizedPl < 0));
   if (!candidates.length) {
     return null;
@@ -79,6 +113,23 @@ function totalUnrealizedPnl(openPositions) {
   const byBroker = unrealizedPnlByBroker(openPositions);
   const values = Object.values(byBroker);
   return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+// Re-groups a {broker: amount} map (from unrealizedPnlByBroker/realizedPnlByBrokerToday) into a
+// {currency: amount} map, instead of duplicating each function's own broker-iteration logic.
+function regroupByCurrency(totalsByBroker) {
+  const totals = {};
+  Object.entries(totalsByBroker).forEach(([broker, value]) => {
+    const currency = brokerCurrency(broker);
+    totals[currency] = (totals[currency] || 0) + value;
+  });
+  return totals;
+}
+
+// AT-ED-017 (Founder request): the same real per-broker unrealised P&L, grouped by currency
+// instead of blended into one $-labelled total.
+function unrealizedPnlByCurrency(openPositions) {
+  return regroupByCurrency(unrealizedPnlByBroker(openPositions));
 }
 
 // Realised P&L is the closed-trade side of the same story - each performanceAttribution/
@@ -126,18 +177,53 @@ function realizedPnlByBrokerToday(trades) {
   return totals;
 }
 
+// AT-ED-017 (Founder request): the same real per-broker realised P&L today, grouped by currency.
+function realizedPnlByCurrencyToday(trades) {
+  return regroupByCurrency(realizedPnlByBrokerToday(trades));
+}
+
 function exitsTodayCount(trades) {
   return closedTradesToday(trades).length;
+}
+
+// AT-ED-017 (Founder request): per-currency versions of the same real counts, so a currency-split
+// realised/unrealised sentence can say "1 closed position" for the currency it's actually talking
+// about, not the combined count across both currencies.
+function exitsTodayCountByCurrency(trades) {
+  const totals = {};
+  closedTradesToday(trades).forEach((trade) => {
+    const currency = brokerCurrency(trade?.broker);
+    totals[currency] = (totals[currency] || 0) + 1;
+  });
+  return totals;
+}
+
+function openPositionsCountByCurrency(openPositions) {
+  const totals = {};
+  (openPositions || []).forEach((position) => {
+    if (!position?.broker) {
+      return;
+    }
+    const currency = brokerCurrency(position.broker);
+    totals[currency] = (totals[currency] || 0) + 1;
+  });
+  return totals;
 }
 
 module.exports = {
   weekToDatePnl,
   monthToDatePnl,
   largestPosition,
+  brokerCurrency,
+  sumBrokerFieldByCurrency,
   unrealizedPnlByBroker,
+  unrealizedPnlByCurrency,
   totalUnrealizedPnl,
   closedTradesToday,
   realizedPnlToday,
+  exitsTodayCountByCurrency,
+  openPositionsCountByCurrency,
   realizedPnlByBrokerToday,
+  realizedPnlByCurrencyToday,
   exitsTodayCount,
 };

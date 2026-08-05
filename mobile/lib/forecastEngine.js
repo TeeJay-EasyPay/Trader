@@ -11,10 +11,19 @@
 // (`performanceAttribution`, the same evidence Learning's "Closed Trades"/"Win Rate" figures and
 // Portfolio's trade history are already built from). It is a simple linear extrapolation of
 // historical trade frequency and average realised result - not a sophisticated model, and every
-// projection says exactly that in its own `assumptions` and `principalRisks` fields. With fewer
-// than MIN_SAMPLE_SIZE dated, realised trades, every horizon honestly reports why it cannot
-// project at all, rather than extrapolating from a handful of data points and calling it a
-// forecast.
+// projection says exactly that in its own `assumptions` and `principalRisks` fields. With zero
+// dated, realised trades, every horizon honestly reports why it cannot say anything at all.
+//
+// AT-ED-017 (Founder request, 2026-08-05): MIN_SAMPLE_SIZE lowered from 5 to 1 - "even 1 trade
+// can bring in substantial returns" and the Founder wants to know about it rather than be told
+// "not enough evidence" until a fifth trade closes. This does NOT mean a single trade produces a
+// fabricated trajectory: a pace (how often exits happen) genuinely cannot be measured from one
+// dated point - there is no interval to observe. tradeStatistics() returns tradesPerDay/spanDays
+// as null for exactly one trade, and projectHorizon() reports that one real result honestly
+// instead of inventing a pace from it (see the `stats.tradesPerDay === null` branch below). From
+// two trades onward, a real (if very noisy) pace exists and is used, with a new "Very Low"
+// confidence tier making that thinness explicit rather than presenting it at the same confidence
+// as a 14-trade sample.
 //
 // Architecture note (directive: "improved forecasting models can later replace the current
 // implementation without changing the UI"): every screen that renders a forecast consumes only
@@ -34,7 +43,7 @@ const HORIZONS = Object.freeze([
   { key: 'yearEnd', label: 'Year End', days: 365 },
 ]);
 
-const MIN_SAMPLE_SIZE = 5;
+const MIN_SAMPLE_SIZE = 1;
 
 // The same terminal-trade statuses founderLearningForMobile() already uses to compute Learning's
 // "Closed Trades"/"Win Rate" figures - reused here so this engine's sample size and win rate can
@@ -62,7 +71,7 @@ function tradeStatistics(closedTrades) {
     return {
       available: false,
       sampleSize: valid.length,
-      reason: `Only ${valid.length} closed trade${valid.length === 1 ? '' : 's'} with dated, realised profit or loss exist - at least ${MIN_SAMPLE_SIZE} are needed before AI Trader will project a trajectory.`,
+      reason: `No closed trades with a dated, realised profit or loss exist yet - at least ${MIN_SAMPLE_SIZE} is needed before AI Trader will report anything.`,
     };
   }
   const winningTrades = valid.filter((trade) => trade.profitLoss > 0);
@@ -70,27 +79,30 @@ function tradeStatistics(closedTrades) {
   const wins = winningTrades.length;
   const winRate = wins / valid.length;
   const averagePnl = valid.reduce((sum, trade) => sum + trade.profitLoss, 0) / valid.length;
+  // AT-ED-016 Part 2: real per-trade averages restricted to only the winning / only the losing
+  // trades in the same dated sample - the honest basis for a Bull/Bear case (never a fabricated
+  // multiplier on the base case). null when there is no trade of that kind in the sample.
+  const avgWinPnl = winningTrades.length ? winningTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / winningTrades.length : null;
+  const avgLossPnl = losingTrades.length ? losingTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / losingTrades.length : null;
+  const shared = { available: true, sampleSize: valid.length, winRate, averagePnl, avgWinPnl, avgLossPnl, winCount: wins, lossCount: losingTrades.length };
+  // AT-ED-017: with exactly one dated trade there is no second point to measure an interval from
+  // - a "pace" (trades per day) genuinely cannot be observed, only assumed, and this engine does
+  // not assume. spanDays/tradesPerDay are honestly null; the real single-trade result is still
+  // returned (winRate/averagePnl above), just not extrapolated into a trajectory.
+  if (valid.length < 2) {
+    return { ...shared, spanDays: null, tradesPerDay: null };
+  }
   const closedMsValues = valid.map((trade) => trade.closedMs);
   const spanDays = Math.max(1, (Math.max(...closedMsValues) - Math.min(...closedMsValues)) / 86400000);
-  return {
-    available: true,
-    sampleSize: valid.length,
-    winRate,
-    averagePnl,
-    // AT-ED-016 Part 2: real per-trade averages restricted to only the winning / only the
-    // losing trades in the same dated sample - the honest basis for a Bull/Bear case (never a
-    // fabricated multiplier on the base case). null when there is no trade of that kind in the
-    // sample, so the caller can fall back to the base case rather than divide by zero.
-    avgWinPnl: winningTrades.length ? winningTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / winningTrades.length : null,
-    avgLossPnl: losingTrades.length ? losingTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / losingTrades.length : null,
-    winCount: wins,
-    lossCount: losingTrades.length,
-    spanDays,
-    tradesPerDay: valid.length / spanDays,
-  };
+  return { ...shared, spanDays, tradesPerDay: valid.length / spanDays };
 }
 
+// AT-ED-017: added a "Very Low" tier below the pre-existing Low/Medium/High boundaries (which are
+// unchanged) so a 1-4 trade sample is never presented at the same confidence as a 5-14 trade one.
 function confidenceFromSampleSize(sampleSize) {
+  if (sampleSize < 5) {
+    return { level: 'Very Low', description: `a very small sample of ${sampleSize} closed trade${sampleSize === 1 ? '' : 's'}` };
+  }
   if (sampleSize < 15) {
     return { level: 'Low', description: `a small sample of ${sampleSize} closed trades` };
   }
@@ -126,6 +138,20 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   if (!stats || !stats.available) {
     return { horizon: horizon.label, horizonKey: horizon.key, available: false, reason: stats ? stats.reason : 'No closed-trade evidence is available yet.' };
   }
+  // AT-ED-017: exactly one closed trade has a real, dated result but no measurable pace (see
+  // tradeStatistics() above) - reporting the real trade honestly instead of fabricating a
+  // trajectory from a single point. This is not the same as "no evidence" (stats.available is
+  // true, singleTradeOnly distinguishes it from the fully unavailable case above).
+  if (stats.tradesPerDay === null) {
+    const outcome = stats.averagePnl >= 0 ? 'a realised gain' : 'a realised loss';
+    return {
+      horizon: horizon.label,
+      horizonKey: horizon.key,
+      available: false,
+      singleTradeOnly: true,
+      reason: `Only one closed trade exists so far, with ${outcome} of ${Math.abs(stats.averagePnl).toFixed(2)}. That's a real result, but with no second dated exit yet I can't responsibly estimate how often exits happen, so I'm not projecting a trajectory from it. As soon as a second trade closes, I'll be able to start estimating a pace.`,
+    };
+  }
   const hasPortfolioValue = typeof currentPortfolioValue === 'number' && Number.isFinite(currentPortfolioValue);
   const confidence = confidenceFromSampleSize(stats.sampleSize);
   const baseCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.averagePnl, currentPortfolioValue });
@@ -152,6 +178,12 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
       ? 'A short horizon like this one is especially sensitive to the outcome of just the next trade or two.'
       : 'Over a longer horizon, any drift between historical and future trade pace or outcome compounds.',
   ];
+  // AT-ED-017: with fewer than 5 trades (the new "Very Low" confidence tier), one more trade
+  // outcome can swing the pace/average dramatically - said explicitly rather than only implied by
+  // the confidence label.
+  if (stats.sampleSize < 5) {
+    principalRisks.push(`This is built from a very small sample (${stats.sampleSize} trade${stats.sampleSize === 1 ? '' : 's'}) - treat it as an early, rough indication, not a reliable pace yet.`);
+  }
   // AT-ED-017 Part 2: the same closed-trade pace (stats.tradesPerDay) that already drives
   // expectedChange also implies how many exits to expect in this window, and roughly when the
   // next one lands - this was always latent in the sample but never surfaced as its own fact.

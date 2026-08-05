@@ -11,6 +11,8 @@ const {
   gbpOrText,
   brokerMoney,
   historyMoneyOrText,
+  formatByCurrency,
+  brokerMoneySentence,
 } = require('./money');
 
 let passed = 0;
@@ -38,6 +40,14 @@ test('money: null/undefined/empty all return null', () => {
 
 test('gbp: formats a GBP amount with the pound sign', () => {
   assert.strictEqual(gbp(50), '£50');
+});
+
+test('money (AT-ED-017 Founder request): a negative amount puts the sign before the symbol, not after it', () => {
+  assert.strictEqual(money(-500), '-$500');
+});
+
+test('gbp: a negative amount puts the sign before the symbol, not after it', () => {
+  assert.strictEqual(gbp(-42.5), '-£42.5');
 });
 
 test('moneyOrText: passes through an existing "Not available" string unchanged', () => {
@@ -70,6 +80,37 @@ test('historyMoneyOrText: routes by the selected exchange, not the row broker', 
   assert.strictEqual(historyMoneyOrText('Kraken', 100), '£100');
   assert.strictEqual(historyMoneyOrText('Alpaca', 100), '$100');
   assert.strictEqual(historyMoneyOrText('All', 100), '$100');
+});
+
+test('formatByCurrency (AT-ED-017 Founder request): formats real USD and GBP totals as two separate figures, never blended', () => {
+  assert.strictEqual(formatByCurrency({ USD: 65000, GBP: 30000 }), '$65,000 + £30,000');
+});
+
+test('formatByCurrency: a single-currency map returns just that one total, never a fabricated "+ £0"', () => {
+  assert.strictEqual(formatByCurrency({ USD: 500 }), '$500');
+  assert.strictEqual(formatByCurrency({ GBP: 500 }), '£500');
+});
+
+test('formatByCurrency: negative totals keep the sign in front of the symbol', () => {
+  assert.strictEqual(formatByCurrency({ USD: -50, GBP: 20 }), '-$50 + £20');
+});
+
+test('formatByCurrency: no real evidence in any currency returns null', () => {
+  assert.strictEqual(formatByCurrency({}), null);
+  assert.strictEqual(formatByCurrency(null), null);
+});
+
+test('brokerMoneySentence (AT-ED-017 Founder request): one real sentence per broker, each in its own currency, never blended', () => {
+  const brokers = [
+    { broker: 'alpaca', todays_pnl: 490.15 },
+    { broker: 'kraken', todays_pnl: -21.48 },
+  ];
+  assert.strictEqual(brokerMoneySentence(brokers, 'todays_pnl'), 'Alpaca is up $490.15 today; Kraken is down £21.48 today.');
+});
+
+test('brokerMoneySentence: a broker with no real evidence for the field is excluded, never a fabricated zero', () => {
+  const brokers = [{ broker: 'alpaca', todays_pnl: null }];
+  assert.strictEqual(brokerMoneySentence(brokers, 'todays_pnl'), null);
 });
 
 console.log(`\n${passed} passed`);

@@ -7,12 +7,18 @@ const {
   weekToDatePnl,
   monthToDatePnl,
   largestPosition,
+  brokerCurrency,
+  sumBrokerFieldByCurrency,
   unrealizedPnlByBroker,
+  unrealizedPnlByCurrency,
   totalUnrealizedPnl,
   closedTradesToday,
   realizedPnlToday,
   realizedPnlByBrokerToday,
+  realizedPnlByCurrencyToday,
   exitsTodayCount,
+  exitsTodayCountByCurrency,
+  openPositionsCountByCurrency,
 } = require('./portfolioPosition');
 
 let passed = 0;
@@ -47,6 +53,12 @@ test('largestPosition: picks the real largest winning position by unrealized_pl'
   assert.strictEqual(result.symbol, 'BBB');
 });
 
+test('largestPosition (AT-ED-017 Founder request): carries the real broker through so callers can format it in its own currency', () => {
+  const positions = [{ symbol: 'XBT', unrealized_pl: 40, broker: 'kraken' }];
+  const result = largestPosition(positions, 'winning');
+  assert.strictEqual(result.broker, 'kraken');
+});
+
 test('largestPosition: picks the real largest losing position by unrealized_pl', () => {
   const positions = [{ symbol: 'AAA', unrealized_pl: 10 }, { symbol: 'BBB', unrealized_pl: -5 }, { symbol: 'CCC', unrealized_pl: -50 }];
   const result = largestPosition(positions, 'losing');
@@ -56,6 +68,53 @@ test('largestPosition: picks the real largest losing position by unrealized_pl',
 test('largestPosition: no qualifying position returns null, never fabricated', () => {
   assert.strictEqual(largestPosition([{ symbol: 'AAA', unrealized_pl: 10 }], 'losing'), null);
   assert.strictEqual(largestPosition([], 'winning'), null);
+});
+
+// --- AT-ED-017 (Founder request, 2026-08-05): currency-grouped totals, never blended without conversion ---
+
+test('brokerCurrency: Kraken is GBP, everything else is USD', () => {
+  assert.strictEqual(brokerCurrency('kraken'), 'GBP');
+  assert.strictEqual(brokerCurrency('Kraken'), 'GBP');
+  assert.strictEqual(brokerCurrency('alpaca'), 'USD');
+  assert.strictEqual(brokerCurrency(null), 'USD');
+});
+
+test('sumBrokerFieldByCurrency: groups by real currency instead of blending Alpaca (USD) and Kraken (GBP) into one number', () => {
+  const brokers = [
+    { broker: 'alpaca', portfolio_value: 65000 },
+    { broker: 'kraken', portfolio_value: 30000 },
+  ];
+  assert.deepStrictEqual(sumBrokerFieldByCurrency(brokers, 'portfolio_value'), { USD: 65000, GBP: 30000 });
+});
+
+test('sumBrokerFieldByCurrency: multiple brokers of the same currency are summed together within that currency', () => {
+  const brokers = [
+    { broker: 'alpaca', todays_pnl: 100 },
+    { broker: 'alpaca-secondary', todays_pnl: 50 },
+    { broker: 'kraken', todays_pnl: -20 },
+  ];
+  assert.deepStrictEqual(sumBrokerFieldByCurrency(brokers, 'todays_pnl'), { USD: 150, GBP: -20 });
+});
+
+test('sumBrokerFieldByCurrency: a broker with no real evidence for the field is excluded, never a fabricated zero', () => {
+  assert.deepStrictEqual(sumBrokerFieldByCurrency([{ broker: 'kraken', portfolio_value: null }], 'portfolio_value'), {});
+});
+
+test('unrealizedPnlByCurrency: the same real per-broker unrealised P&L, grouped by currency', () => {
+  const positions = [
+    { symbol: 'AAPL', broker: 'alpaca', unrealized_pl: 40 },
+    { symbol: 'XBT', broker: 'kraken', unrealized_pl: -10 },
+  ];
+  assert.deepStrictEqual(unrealizedPnlByCurrency(positions), { USD: 40, GBP: -10 });
+});
+
+test('realizedPnlByCurrencyToday: the same real per-broker realised P&L today, grouped by currency', () => {
+  const today = new Date().toISOString();
+  const trades = [
+    { status: 'closed', closed_at: today, profit_loss: 12, broker: 'alpaca' },
+    { status: 'closed', closed_at: today, profit_loss: -6, broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(realizedPnlByCurrencyToday(trades), { USD: 12, GBP: -6 });
 });
 
 // --- AT-ED-017 Part 3: realised vs unrealised, by broker ---
@@ -123,6 +182,24 @@ test('realizedPnlByBrokerToday: groups today\'s realised profit by broker', () =
 test('exitsTodayCount: counts real closed positions today, zero when genuinely none', () => {
   assert.strictEqual(exitsTodayCount([{ status: 'closed', closed_at: TODAY_ISO, profit_loss: 1, broker: 'alpaca' }]), 1);
   assert.strictEqual(exitsTodayCount([]), 0);
+});
+
+test('exitsTodayCountByCurrency (AT-ED-017 Founder request): counts closed positions today, grouped by currency', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 1, broker: 'alpaca' },
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 2, broker: 'alpaca' },
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: -1, broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(exitsTodayCountByCurrency(trades), { USD: 2, GBP: 1 });
+});
+
+test('openPositionsCountByCurrency: counts open positions grouped by currency', () => {
+  const positions = [
+    { symbol: 'AAPL', broker: 'alpaca' },
+    { symbol: 'MSFT', broker: 'alpaca' },
+    { symbol: 'XBT', broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(openPositionsCountByCurrency(positions), { USD: 2, GBP: 1 });
 });
 
 console.log(`\n${passed} passed`);

@@ -48,12 +48,27 @@ test('normalizeClosedTradesFromAttribution: falls back to created_at when closed
 
 // --- tradeStatistics ---
 
-test('tradeStatistics: fewer than MIN_SAMPLE_SIZE dated trades is honestly unavailable, never extrapolated from too little evidence', () => {
-  const trades = [closedTrade(10, 1), closedTrade(-5, 2)];
-  const result = tradeStatistics(trades);
+test('tradeStatistics: zero dated trades is honestly unavailable, never extrapolated from no evidence at all', () => {
+  const result = tradeStatistics([]);
   assert.strictEqual(result.available, false);
-  assert.strictEqual(result.sampleSize, 2);
+  assert.strictEqual(result.sampleSize, 0);
   assert.ok(result.reason.includes(String(MIN_SAMPLE_SIZE)));
+});
+
+test('tradeStatistics (AT-ED-017 Founder request): a single closed trade is available with a real result, but pace is honestly null, never fabricated from one point', () => {
+  const result = tradeStatistics([closedTrade(42, 3)]);
+  assert.strictEqual(result.available, true);
+  assert.strictEqual(result.sampleSize, 1);
+  assert.strictEqual(result.averagePnl, 42);
+  assert.strictEqual(result.spanDays, null);
+  assert.strictEqual(result.tradesPerDay, null);
+});
+
+test('tradeStatistics: two dated trades now compute a real (if noisy) pace, not honestly unavailable', () => {
+  const result = tradeStatistics([closedTrade(10, 1), closedTrade(-5, 3)]);
+  assert.strictEqual(result.available, true);
+  assert.strictEqual(result.sampleSize, 2);
+  assert.ok(Number.isFinite(result.tradesPerDay));
 });
 
 test('tradeStatistics: computes a real win rate and average P&L once enough evidence exists', () => {
@@ -73,7 +88,8 @@ test('tradeStatistics: ignores trades with no finite P&L or no closed date', () 
 
 // --- confidenceFromSampleSize ---
 
-test('confidenceFromSampleSize: scales with real sample size, capped at three named tiers', () => {
+test('confidenceFromSampleSize: scales with real sample size, capped at four named tiers', () => {
+  assert.strictEqual(confidenceFromSampleSize(3).level, 'Very Low');
   assert.strictEqual(confidenceFromSampleSize(10).level, 'Low');
   assert.strictEqual(confidenceFromSampleSize(20).level, 'Medium');
   assert.strictEqual(confidenceFromSampleSize(50).level, 'High');
@@ -181,6 +197,34 @@ test('projectHorizon: assumptions disclose that expected new entries reuse the e
   const stats = { available: true, sampleSize: 20, winRate: 0.6, averagePnl: 10, spanDays: 20, tradesPerDay: 1 };
   const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
   assert.ok(result.assumptions.some((item) => item.includes('no separate entry-rate model')));
+});
+
+test('projectHorizon (AT-ED-017 Founder request): a single closed trade reports the real result honestly instead of a fabricated trajectory', () => {
+  const stats = tradeStatistics([closedTrade(42, 3)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.strictEqual(result.available, false);
+  assert.strictEqual(result.singleTradeOnly, true);
+  assert.ok(result.reason.includes('42.00'));
+  assert.ok(result.reason.includes('realised gain'));
+});
+
+test('projectHorizon: a single losing trade is named as a loss, not a fabricated gain', () => {
+  const stats = tradeStatistics([closedTrade(-15, 1)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.ok(result.reason.includes('realised loss'));
+  assert.ok(result.reason.includes('15.00'));
+});
+
+test('projectHorizon: fewer than 5 trades adds an explicit small-sample caveat to principalRisks', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(-5, 3)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.ok(result.principalRisks.some((item) => item.includes('very small sample')));
+});
+
+test('projectHorizon: 5 or more trades does not add the small-sample caveat', () => {
+  const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(-5, 3), closedTrade(10, 4), closedTrade(-5, 5)]);
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.ok(!result.principalRisks.some((item) => item.includes('very small sample')));
 });
 
 // --- projectPortfolioHorizons ---
