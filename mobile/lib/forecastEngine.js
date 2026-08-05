@@ -111,6 +111,12 @@ function caseValue({ tradesPerDay, horizonDays, perTradePnl, currentPortfolioVal
   const expectedChange = tradesPerDay * horizonDays * perTradePnl;
   return {
     expectedChange,
+    // AT-ED-017 Part 2: this projection has only ever been built from trades that CLOSED (see
+    // normalizeClosedTradesFromAttribution's TERMINAL_STATUSES filter) - expectedChange has
+    // therefore always meant expected realised profit from the trades expected to close in this
+    // window, never a mark-to-market/unrealised estimate. Exposed under its own name so callers
+    // don't have to know that history to render it correctly as "expected realised profit".
+    expectedRealisedProfit: expectedChange,
     expectedValue: hasPortfolioValue ? currentPortfolioValue + expectedChange : null,
     expectedReturnPct: hasPortfolioValue && currentPortfolioValue ? expectedChange / currentPortfolioValue : null,
   };
@@ -138,6 +144,7 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   const assumptions = [
     'Assumes the historical pace of closed trades and their average realised result persist unchanged over this horizon.',
     'Does not account for a change in capital deployed, strategy mix, or market regime.',
+    'Assumes new positions open at roughly the same pace as positions close, since AI Trader has no separate entry-rate model - only the pace of trades that have already closed is real, dated evidence.',
   ];
   const principalRisks = [
     'A shift in market conditions could invalidate the historical averages this projection is built on.',
@@ -145,6 +152,14 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
       ? 'A short horizon like this one is especially sensitive to the outcome of just the next trade or two.'
       : 'Over a longer horizon, any drift between historical and future trade pace or outcome compounds.',
   ];
+  // AT-ED-017 Part 2: the same closed-trade pace (stats.tradesPerDay) that already drives
+  // expectedChange also implies how many exits to expect in this window, and roughly when the
+  // next one lands - this was always latent in the sample but never surfaced as its own fact.
+  // Expected new entries reuses the same pace under a disclosed assumption (this backend has no
+  // separate entry-rate model - every closed trade in the sample had exactly one entry, so the
+  // closed-trade pace is the only real, dated basis available for an entry estimate too).
+  const expectedExitCount = Math.round(stats.tradesPerDay * horizon.days * 10) / 10;
+  const nextExpectedExitInDays = stats.tradesPerDay > 0 ? Math.round((1 / stats.tradesPerDay) * 10) / 10 : null;
   return {
     horizon: horizon.label,
     horizonKey: horizon.key,
@@ -154,9 +169,15 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
     expectedValue: baseCase.expectedValue,
     expectedChange: baseCase.expectedChange,
     expectedReturnPct: baseCase.expectedReturnPct,
+    expectedRealisedProfit: baseCase.expectedRealisedProfit,
     baseCase,
     bullCase,
     bearCase,
+    // Exit count is the same regardless of bull/base/bear (those change the outcome per trade,
+    // not the pace at which trades close), so it is reported once, not per case.
+    expectedExitCount,
+    expectedNewEntryCount: expectedExitCount,
+    nextExpectedExitInDays,
     // AT-ED-016 Part 2: the historical win rate used as a simple, disclosed proxy for forward
     // likelihood - not a rigorously modelled probability. Labelled as exactly that wherever it
     // is rendered (see screens/ExecutiveBriefing.js).

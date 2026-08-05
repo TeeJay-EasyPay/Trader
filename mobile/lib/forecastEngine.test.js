@@ -155,6 +155,34 @@ test('tradeStatistics: exposes real winCount/lossCount/avgWinPnl/avgLossPnl alon
   assert.strictEqual(stats.avgLossPnl, -10);
 });
 
+// --- AT-ED-017 Part 2: expected realised profit, exit/entry pace, next exit timing ---
+
+test('projectHorizon: expectedRealisedProfit is the same real number as expectedChange, under an explicit name', () => {
+  const stats = { available: true, sampleSize: 20, winRate: 0.6, averagePnl: 10, spanDays: 20, tradesPerDay: 1 };
+  const result = projectHorizon({ stats, horizon: { key: 'sevenDay', label: '7 Days', days: 7 }, currentPortfolioValue: 1000 });
+  assert.strictEqual(result.expectedRealisedProfit, result.expectedChange);
+  assert.strictEqual(result.baseCase.expectedRealisedProfit, result.baseCase.expectedChange);
+});
+
+test('projectHorizon: expectedExitCount/expectedNewEntryCount extrapolate the real closed-trade pace over the horizon', () => {
+  const stats = { available: true, sampleSize: 20, winRate: 0.6, averagePnl: 10, spanDays: 20, tradesPerDay: 2 };
+  const result = projectHorizon({ stats, horizon: { key: 'sevenDay', label: '7 Days', days: 7 }, currentPortfolioValue: 1000 });
+  assert.strictEqual(result.expectedExitCount, 14); // 2/day * 7 days
+  assert.strictEqual(result.expectedNewEntryCount, 14);
+});
+
+test('projectHorizon: nextExpectedExitInDays is the real inverse of the closed-trade pace', () => {
+  const stats = { available: true, sampleSize: 20, winRate: 0.6, averagePnl: 10, spanDays: 20, tradesPerDay: 0.5 };
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.strictEqual(result.nextExpectedExitInDays, 2); // one exit every 2 days at a 0.5/day pace
+});
+
+test('projectHorizon: assumptions disclose that expected new entries reuse the exit pace, not a separate entry model', () => {
+  const stats = { available: true, sampleSize: 20, winRate: 0.6, averagePnl: 10, spanDays: 20, tradesPerDay: 1 };
+  const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
+  assert.ok(result.assumptions.some((item) => item.includes('no separate entry-rate model')));
+});
+
 // --- projectPortfolioHorizons ---
 
 test('projectPortfolioHorizons: returns exactly the five directive-named horizons, in order', () => {

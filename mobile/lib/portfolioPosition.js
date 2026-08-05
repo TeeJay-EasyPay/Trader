@@ -12,6 +12,9 @@
 
 'use strict';
 
+const { TERMINAL_STATUSES } = require('./forecastEngine');
+const { dateMs, todayIso } = require('./datetime');
+
 function sumBrokerField(brokers, field) {
   // `Number(null)` is 0, not NaN - filter out null/undefined explicitly before conversion, or a
   // broker with genuinely no evidence for this field would be silently counted as a real zero.
@@ -50,8 +53,91 @@ function largestPosition(openPositions, direction) {
   ), candidates[0]);
 }
 
+// AT-ED-017 Part 3: "how much has Alpaca made, how much has Kraken made, and is it realised or
+// unrealised?" - real evidence for both halves already exists, just never grouped by broker
+// before. Unrealised comes from portfolio.open_positions[].unrealized_pl, which
+// _portfolio_payload() in production_evidence.py already tags with a real `broker` field
+// (`positions.append({**position, "broker": row.get("broker")})`).
+function unrealizedPnlByBroker(openPositions) {
+  const totals = {};
+  (openPositions || []).forEach((position) => {
+    const broker = position?.broker;
+    const raw = position?.unrealized_pl;
+    if (!broker || raw === null || raw === undefined) {
+      return;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    totals[broker] = (totals[broker] || 0) + value;
+  });
+  return totals;
+}
+
+function totalUnrealizedPnl(openPositions) {
+  const byBroker = unrealizedPnlByBroker(openPositions);
+  const values = Object.values(byBroker);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+// Realised P&L is the closed-trade side of the same story - each performanceAttribution/
+// productionTradeForMobile item is one broker's PRODUCTION_TRADE_EVIDENCE row (real broker,
+// real status, real realized_pnl/profit_loss). Reuses forecastEngine's own TERMINAL_STATUSES so
+// "closed" never means something different in two places in the same screen. "Today" uses UTC
+// calendar-day boundaries via lib/datetime's todayIso(), matching every other "today" figure in
+// this codebase (portfolio.todays_pnl is computed the same way on the backend).
+function closedTradesToday(trades) {
+  const today = todayIso();
+  return (trades || []).filter((trade) => {
+    if (!TERMINAL_STATUSES.includes(String(trade?.status || '').toLowerCase())) {
+      return false;
+    }
+    const closedAt = trade?.closed_at || trade?.created_at;
+    if (!closedAt) {
+      return false;
+    }
+    const ms = dateMs(closedAt);
+    return ms && new Date(ms).toISOString().slice(0, 10) === today;
+  });
+}
+
+// `Number(null)`/`Number(undefined)` is 0/NaN respectively - a trade with a genuinely missing
+// profit_loss must never be silently counted as a real zero, so null/undefined are filtered out
+// before conversion (the same gotcha sumBrokerField() above guards against).
+function withRealProfitLoss(trades) {
+  return (trades || []).filter((trade) => trade?.profit_loss !== null && trade?.profit_loss !== undefined && Number.isFinite(Number(trade.profit_loss)));
+}
+
+function realizedPnlToday(trades) {
+  const closedToday = withRealProfitLoss(closedTradesToday(trades));
+  return closedToday.length ? closedToday.reduce((sum, trade) => sum + Number(trade.profit_loss), 0) : null;
+}
+
+function realizedPnlByBrokerToday(trades) {
+  const totals = {};
+  withRealProfitLoss(closedTradesToday(trades)).forEach((trade) => {
+    const broker = trade?.broker;
+    if (!broker) {
+      return;
+    }
+    totals[broker] = (totals[broker] || 0) + Number(trade.profit_loss);
+  });
+  return totals;
+}
+
+function exitsTodayCount(trades) {
+  return closedTradesToday(trades).length;
+}
+
 module.exports = {
   weekToDatePnl,
   monthToDatePnl,
   largestPosition,
+  unrealizedPnlByBroker,
+  totalUnrealizedPnl,
+  closedTradesToday,
+  realizedPnlToday,
+  realizedPnlByBrokerToday,
+  exitsTodayCount,
 };

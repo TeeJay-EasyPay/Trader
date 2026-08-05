@@ -9,6 +9,9 @@ const {
   cioGreeting,
   cioExecutiveSummary,
   cioOvernightActivity,
+  cioTodaysMoneyBreakdown,
+  cioAutonomyStatement,
+  cioActivityFunnel,
   cioMarketOutlook,
   cioAverageConfidence,
   portfolioProjection,
@@ -87,6 +90,62 @@ test('cioOvernightActivity: a genuinely quiet period is reported as quiet, not p
 test('cioOvernightActivity: exactly one order uses singular grammar', () => {
   const text = cioOvernightActivity({ researchRuns: 0, recommendationsCreated: 0, ordersSubmitted: 1 });
   assert.ok(text.includes('submitted 1 order.'));
+});
+
+// --- cioTodaysMoneyBreakdown (AT-ED-017 Part 3) ---
+
+test('cioTodaysMoneyBreakdown: names both real realised and unrealised halves', () => {
+  const text = cioTodaysMoneyBreakdown({ realizedToday: 50, realizedTodayText: '£50', unrealizedTotal: 20, unrealizedTotalText: '£20', exitsToday: 2, openPositionsCount: 5 });
+  assert.ok(text.includes('£50 of today\'s movement is realised profit'));
+  assert.ok(text.includes('2 closed positions'));
+  assert.ok(text.includes('an unrealised gain of £20'));
+  assert.ok(text.includes('5 open positions'));
+});
+
+test('cioTodaysMoneyBreakdown: a negative realised figure is named as a loss, not a fabricated profit', () => {
+  const text = cioTodaysMoneyBreakdown({ realizedToday: -30, realizedTodayText: '£30', unrealizedTotal: null, unrealizedTotalText: null, exitsToday: 1, openPositionsCount: 0 });
+  assert.ok(text.includes('a realised loss'));
+});
+
+test('cioTodaysMoneyBreakdown: nothing closed today is stated honestly, not silently omitted', () => {
+  const text = cioTodaysMoneyBreakdown({ realizedToday: null, realizedTodayText: null, unrealizedTotal: 20, unrealizedTotalText: '£20', exitsToday: 0, openPositionsCount: 3 });
+  assert.ok(text.includes('No positions have closed today'));
+});
+
+test('cioTodaysMoneyBreakdown: neither figure available returns null, never fabricated', () => {
+  assert.strictEqual(cioTodaysMoneyBreakdown({ realizedToday: null, realizedTodayText: null, unrealizedTotal: null, unrealizedTotalText: null, exitsToday: 0, openPositionsCount: 0 }), null);
+});
+
+// --- cioAutonomyStatement (AT-ED-017 Part 5) ---
+
+test('cioAutonomyStatement: fully ready and no incidents states autonomy plainly', () => {
+  const text = cioAutonomyStatement({ tradeReady: true, unresolvedIncidentCount: 0 });
+  assert.ok(text.includes('operating fully autonomously'));
+});
+
+test('cioAutonomyStatement: unresolved incidents mean it is honestly not fully autonomous', () => {
+  const text = cioAutonomyStatement({ tradeReady: true, unresolvedIncidentCount: 2 });
+  assert.ok(text.includes('not fully autonomous'));
+  assert.ok(text.includes('2 operational items'));
+});
+
+test('cioAutonomyStatement: not trade-ready without an incident count still flags caution', () => {
+  const text = cioAutonomyStatement({ tradeReady: false, unresolvedIncidentCount: 0 });
+  assert.ok(text.includes('some caution'));
+});
+
+// --- cioActivityFunnel (AT-ED-017 Part 5) ---
+
+test('cioActivityFunnel: reports real structured counts, never the raw internal reason codes', () => {
+  const text = cioActivityFunnel({ eligible_for_paper_execution: 1, rejected: 3, orders_submitted: 1 });
+  assert.ok(text.includes('1 opportunity cleared every gate'));
+  assert.ok(text.includes('3 were rejected by governance'));
+  assert.ok(text.includes('1 order was actually submitted'));
+});
+
+test('cioActivityFunnel: all-zero counts return null rather than a hollow zero-filled sentence', () => {
+  assert.strictEqual(cioActivityFunnel({ eligible_for_paper_execution: 0, rejected: 0, orders_submitted: 0 }), null);
+  assert.strictEqual(cioActivityFunnel(null), null);
 });
 
 // --- cioMarketOutlook ---

@@ -23,6 +23,9 @@ const {
   cioGreeting,
   cioExecutiveSummary,
   cioOvernightActivity,
+  cioTodaysMoneyBreakdown,
+  cioAutonomyStatement,
+  cioActivityFunnel,
   cioMarketOutlook,
   cioAverageConfidence,
   cioNoActionReason,
@@ -38,7 +41,15 @@ const { buildInvestmentCommittee } = require('../lib/investmentCommittee');
 const { buildRiskCards } = require('../lib/principalRisks');
 const { buildOpportunityCards } = require('../lib/principalOpportunities');
 const { buildFounderActions } = require('../lib/founderActions');
-const { weekToDatePnl, monthToDatePnl, largestPosition } = require('../lib/portfolioPosition');
+const {
+  weekToDatePnl,
+  monthToDatePnl,
+  largestPosition,
+  unrealizedPnlByBroker,
+  totalUnrealizedPnl,
+  realizedPnlToday,
+  exitsTodayCount,
+} = require('../lib/portfolioPosition');
 const { useForecastHistory } = require('../hooks/useForecastHistory');
 
 function marketOutlookText(marketCentre) {
@@ -114,18 +125,51 @@ function PositionLine({ label, value }) {
   );
 }
 
-function CurrentPositionCard({ portfolio, status }) {
+// AT-ED-017 Part 3: "how much has Alpaca made, how much has Kraken made?" - status.brokers[]
+// already carries each broker's own todays_pnl (see founderEvidenceMapping.js); this just names
+// them separately instead of only ever showing the combined figure. Paper/live wording matches
+// lib/founderPresentation.js's brokerReadinessSentence() convention, since the Founder's real
+// capital risk is completely different between the two, not just a bookkeeping split.
+function brokerMoneyTodayText(brokers) {
+  const list = (brokers || []).filter((broker) => broker.todays_pnl !== null && broker.todays_pnl !== undefined && Number.isFinite(Number(broker.todays_pnl)));
+  if (!list.length) {
+    return null;
+  }
+  return list.map((broker) => {
+    const value = Number(broker.todays_pnl);
+    const isKraken = String(broker.broker || '').toLowerCase() === 'kraken';
+    const mode = isKraken ? 'live trading' : 'paper trading';
+    const label = broker.label || broker.broker;
+    return `${label} (${mode}) is ${value >= 0 ? 'up' : 'down'} ${moneyOrText(Math.abs(value))} today.`;
+  }).join(' ');
+}
+
+function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
   const executive = status?.founder_experience?.executive_dashboard || {};
   const wtd = weekToDatePnl(status?.brokers);
   const mtd = monthToDatePnl(status?.brokers);
   const winner = largestPosition(portfolio?.open_positions, 'winning');
   const loser = largestPosition(portfolio?.open_positions, 'losing');
+  const openPositions = portfolio?.open_positions || [];
+  const realizedToday = realizedPnlToday(performanceAttribution);
+  const unrealizedTotal = totalUnrealizedPnl(openPositions);
+  const moneyBreakdown = cioTodaysMoneyBreakdown({
+    realizedToday,
+    realizedTodayText: realizedToday !== null ? moneyOrText(Math.abs(realizedToday)) : null,
+    unrealizedTotal,
+    unrealizedTotalText: unrealizedTotal !== null ? moneyOrText(Math.abs(unrealizedTotal)) : null,
+    exitsToday: exitsTodayCount(performanceAttribution),
+    openPositionsCount: openPositions.length,
+  });
+  const brokerMoneyToday = brokerMoneyTodayText(status?.brokers);
   return (
     <Section title="Current Position">
       {/* AT-ED-016.2: a plain-English brief leads every fact card, with the numbers below it -
           the numbers alone were reading as "just data" with nothing to tell the Founder what
           they mean, even though the card correctly answers a facts question. */}
       {executive.portfolio_health ? <Text style={styles.bodyText}>In short: {executive.portfolio_health}.</Text> : null}
+      {moneyBreakdown ? <Text style={styles.bodyText}>{moneyBreakdown}</Text> : null}
+      {brokerMoneyToday ? <Text style={styles.bodyText}>{brokerMoneyToday}</Text> : null}
       <PositionLine label="Portfolio value" value={portfolio?.portfolio_value !== undefined && portfolio?.portfolio_value !== null ? moneyOrText(portfolio.portfolio_value) : null} />
       <PositionLine label="Today" value={portfolio?.todays_pnl !== undefined && portfolio?.todays_pnl !== null ? moneyOrText(portfolio.todays_pnl) : null} />
       <PositionLine label="This week" value={wtd !== null ? moneyOrText(wtd) : null} />
@@ -140,7 +184,7 @@ function CurrentPositionCard({ portfolio, status }) {
 
 // --- Section 3: What Happened Overnight -----------------------------------------------------
 
-function OvernightNarrativeCard({ activity, connectionReadiness }) {
+function OvernightNarrativeCard({ activity, connectionReadiness, unresolvedIncidentCount }) {
   const activitySummary = activity?.summary || {};
   const noTrade = activity?.why_no_trade || {};
   const overnightSummary = cioOvernightActivity({
@@ -148,14 +192,23 @@ function OvernightNarrativeCard({ activity, connectionReadiness }) {
     recommendationsCreated: activitySummary.research?.recommendations_created,
     ordersSubmitted: activitySummary.execution?.orders_submitted,
   });
-  const riskLine = connectionReadiness
-    ? (connectionReadiness.trade_ready ? 'Our risk checks all came back clean.' : 'A couple of things need a closer look, though nothing urgent.')
+  // AT-ED-017 Part 5: "what has AI Trader actually done today" as a real funnel of structured
+  // counts (reviewed -> approved -> rejected -> submitted) - never the raw internal reason codes
+  // AT-ED-016.3 already removed from Founder-facing text elsewhere on this screen.
+  const funnelLine = cioActivityFunnel(noTrade.counts);
+  // Replaces the old generic "risk checks came back clean" line with an explicit autonomy
+  // statement (Part 5: the Founder must immediately know whether AI Trader is operating
+  // autonomously) - still gated on connectionReadiness actually being present, so absence of
+  // evidence is never presented as a caution signal.
+  const autonomyLine = connectionReadiness
+    ? cioAutonomyStatement({ tradeReady: Boolean(connectionReadiness.trade_ready), unresolvedIncidentCount: unresolvedIncidentCount || 0 })
     : null;
   return (
     <Section title="What Happened Overnight">
       <Text style={styles.bodyText}>{overnightSummary}</Text>
       {noTrade.conclusion ? <Text style={styles.bodyText}>{noTrade.conclusion}</Text> : null}
-      {riskLine ? <Text style={styles.bodyText}>{riskLine}</Text> : null}
+      {funnelLine ? <Text style={styles.bodyText}>{funnelLine}</Text> : null}
+      {autonomyLine ? <Text style={styles.bodyText}>{autonomyLine}</Text> : null}
     </Section>
   );
 }
@@ -214,6 +267,14 @@ function ForecastHorizonCard({ horizon }) {
     );
   }
   const range = `I expect the portfolio to be around ${moneyOrText(horizon.expectedValue)}, though realistically it could land anywhere between ${moneyOrText(horizon.bearCase.expectedValue)} and ${moneyOrText(horizon.bullCase.expectedValue)}.`;
+  // AT-ED-017 Part 2/4: "when do we expect positions to close, and what would that realise?" -
+  // the same closed-trade pace behind `range` also implies an exit count and realised-profit
+  // estimate (lib/forecastEngine.js's new expectedExitCount/nextExpectedExitInDays/
+  // expectedRealisedProfit) - said as its own sentence so the Founder gets the journey of the
+  // capital (per directive Part 4's own worked example), not just an end-state number.
+  const exitTiming = horizon.expectedExitCount > 0
+    ? `Based on the recent pace, I expect roughly ${horizon.expectedExitCount} position${horizon.expectedExitCount === 1 ? '' : 's'} to close in this window${horizon.nextExpectedExitInDays !== null ? `, with the next exit likely in about ${horizon.nextExpectedExitInDays} day${horizon.nextExpectedExitInDays === 1 ? '' : 's'}` : ''}. If that happens as expected, I estimate realised profit of around ${moneyOrText(horizon.expectedRealisedProfit)}.`
+    : null;
   const why = `That's based on ${horizon.evidence[0]}, with ${horizon.evidence[1]}.`;
   const whatCouldChange = horizon.principalRisks[0];
   return (
@@ -221,6 +282,7 @@ function ForecastHorizonCard({ horizon }) {
       <Text style={styles.cardTitle}>{horizon.horizon}</Text>
       <Text style={styles.metricLabel}>What I expect</Text>
       <Text style={styles.bodyText}>{range}</Text>
+      {exitTiming ? <Text style={styles.bodyText}>{exitTiming}</Text> : null}
       <Text style={styles.metricLabel}>Why</Text>
       <Text style={styles.bodyText}>{why}</Text>
       <Text style={styles.metricLabel}>What could change it</Text>
@@ -489,8 +551,8 @@ function ExecutiveBriefing({
   return (
     <View>
       <ExecutiveSummaryCard status={status} activity={activity} marketCentre={marketCentre} />
-      <CurrentPositionCard portfolio={portfolio} status={status} />
-      <OvernightNarrativeCard activity={activity} connectionReadiness={connectionReadiness} />
+      <CurrentPositionCard portfolio={portfolio} status={status} performanceAttribution={performanceAttribution} />
+      <OvernightNarrativeCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
       <MarketAssessmentCard marketCentre={marketCentre} />
       <InvestmentThesisSection themes={themes} recommendations={recommendations} factors={factors} conviction={conviction} />
       <ForecastCentreCard portfolio={portfolio} performanceAttribution={performanceAttribution} />

@@ -72,6 +72,64 @@ function cioOvernightActivity({ researchRuns, recommendationsCreated, ordersSubm
   return `Since your last visit, I ${joined}.`;
 }
 
+// AT-ED-017 Part 3: "are we making money, and is it realised or unrealised?" - composes the two
+// real, already-computed halves (lib/portfolioPosition.js's realizedPnlToday/totalUnrealizedPnl)
+// into one plain paragraph instead of leaving the Founder to infer the split from two unlabelled
+// numbers next to each other. Money is pre-formatted by the caller (screens/ExecutiveBriefing.js
+// already owns all currency formatting via lib/money.js) - the raw realised/unrealised numbers
+// are only used here to pick the right words ("profit" vs "loss"), keeping this function
+// dependency-free like every other one in this file.
+function cioTodaysMoneyBreakdown({ realizedToday, realizedTodayText, unrealizedTotal, unrealizedTotalText, exitsToday, openPositionsCount }) {
+  const hasRealized = realizedToday !== null && realizedToday !== undefined;
+  const hasUnrealized = unrealizedTotal !== null && unrealizedTotal !== undefined;
+  if (!hasRealized && !hasUnrealized) {
+    return null;
+  }
+  const sentences = [];
+  if (hasRealized) {
+    const word = realizedToday >= 0 ? 'realised profit' : 'a realised loss';
+    sentences.push(`${realizedTodayText} of today's movement is ${word}, from ${exitsToday} closed position${exitsToday === 1 ? '' : 's'}.`);
+  } else {
+    sentences.push('No positions have closed today, so none of today\'s movement is realised yet.');
+  }
+  if (hasUnrealized) {
+    const word = unrealizedTotal >= 0 ? 'an unrealised gain' : 'an unrealised loss';
+    sentences.push(`The rest is ${word} of ${unrealizedTotalText}, still sitting in ${openPositionsCount} open position${openPositionsCount === 1 ? '' : 's'}.`);
+  }
+  return sentences.join('\n\n');
+}
+
+// AT-ED-017 Part 5: the Founder must immediately know whether AI Trader is operating
+// autonomously today, without having to infer it from the absence of a warning elsewhere. Built
+// from the same connection_readiness/incidents evidence FounderActionsSection already reads -
+// this states the same real facts as a direct autonomy claim, rather than only ever describing
+// autonomy by omission.
+function cioAutonomyStatement({ tradeReady, unresolvedIncidentCount }) {
+  if (unresolvedIncidentCount) {
+    return `AI Trader is not fully autonomous today - ${unresolvedIncidentCount} operational item${unresolvedIncidentCount === 1 ? '' : 's'} need${unresolvedIncidentCount === 1 ? 's' : ''} attention before every gate is clear.`;
+  }
+  if (tradeReady) {
+    return 'AI Trader is operating fully autonomously today - no Founder action has been required to reach this point.';
+  }
+  return 'AI Trader is operating with some caution today - a readiness check needs a closer look before I would call this fully autonomous.';
+}
+
+// AT-ED-017 Part 5: "what has AI Trader actually done today" as a real funnel, using only
+// structured counts (evidence.why_no_trade.counts) - never the raw internal reason codes
+// (top_reasons) AT-ED-016.3 already removed from Founder-facing text elsewhere on this screen.
+function cioActivityFunnel(counts) {
+  if (!counts) {
+    return null;
+  }
+  const eligible = Number(counts.eligible_for_paper_execution) || 0;
+  const rejected = Number(counts.rejected) || 0;
+  const submitted = Number(counts.orders_submitted) || 0;
+  if (!eligible && !rejected && !submitted) {
+    return null;
+  }
+  return `Of what I reviewed, ${eligible} opportunit${eligible === 1 ? 'y' : 'ies'} cleared every gate, ${rejected} ${rejected === 1 ? 'was' : 'were'} rejected by governance, and ${submitted} order${submitted === 1 ? '' : 's'} ${submitted === 1 ? 'was' : 'were'} actually submitted.`;
+}
+
 // AT-ED-013 Section 7: turns the Market Intelligence Centre's already-computed fields into one
 // paragraph. Deliberately does not invent sector-level claims the backend hasn't made - where
 // a field is genuinely a placeholder ("no sector-rotation provider is configured yet" and
@@ -261,6 +319,9 @@ module.exports = {
   cioGreeting,
   cioExecutiveSummary,
   cioOvernightActivity,
+  cioTodaysMoneyBreakdown,
+  cioAutonomyStatement,
+  cioActivityFunnel,
   cioMarketOutlook,
   cioAverageConfidence,
   portfolioProjection,

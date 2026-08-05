@@ -3,7 +3,17 @@
 'use strict';
 
 const assert = require('assert');
-const { weekToDatePnl, monthToDatePnl, largestPosition } = require('./portfolioPosition');
+const {
+  weekToDatePnl,
+  monthToDatePnl,
+  largestPosition,
+  unrealizedPnlByBroker,
+  totalUnrealizedPnl,
+  closedTradesToday,
+  realizedPnlToday,
+  realizedPnlByBrokerToday,
+  exitsTodayCount,
+} = require('./portfolioPosition');
 
 let passed = 0;
 function test(name, fn) {
@@ -46,6 +56,73 @@ test('largestPosition: picks the real largest losing position by unrealized_pl',
 test('largestPosition: no qualifying position returns null, never fabricated', () => {
   assert.strictEqual(largestPosition([{ symbol: 'AAA', unrealized_pl: 10 }], 'losing'), null);
   assert.strictEqual(largestPosition([], 'winning'), null);
+});
+
+// --- AT-ED-017 Part 3: realised vs unrealised, by broker ---
+
+test('unrealizedPnlByBroker: sums real unrealized_pl grouped by the broker tag production_evidence.py attaches', () => {
+  const positions = [
+    { symbol: 'AAA', broker: 'alpaca', unrealized_pl: 10 },
+    { symbol: 'BBB', broker: 'alpaca', unrealized_pl: 5 },
+    { symbol: 'XBT', broker: 'kraken', unrealized_pl: -3 },
+  ];
+  assert.deepStrictEqual(unrealizedPnlByBroker(positions), { alpaca: 15, kraken: -3 });
+});
+
+test('unrealizedPnlByBroker: positions missing a broker or a finite unrealized_pl are excluded, never counted as zero', () => {
+  const positions = [{ symbol: 'AAA', unrealized_pl: 10 }, { symbol: 'BBB', broker: 'alpaca', unrealized_pl: null }];
+  assert.deepStrictEqual(unrealizedPnlByBroker(positions), {});
+});
+
+test('totalUnrealizedPnl: sums across all brokers; no evidence returns null, never a fabricated zero', () => {
+  assert.strictEqual(totalUnrealizedPnl([{ broker: 'alpaca', unrealized_pl: 10 }, { broker: 'kraken', unrealized_pl: -4 }]), 6);
+  assert.strictEqual(totalUnrealizedPnl([]), null);
+});
+
+const TODAY_ISO = new Date().toISOString();
+const NOT_TODAY_ISO = '2020-01-01T00:00:00Z';
+
+test('closedTradesToday: only counts terminal-status trades with a closed_at/created_at falling on today (UTC)', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'stop_exit', closed_at: NOT_TODAY_ISO, profit_loss: 5, broker: 'alpaca' },
+    { status: 'open', closed_at: TODAY_ISO, profit_loss: 1, broker: 'alpaca' },
+  ];
+  const result = closedTradesToday(trades);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].profit_loss, 12);
+});
+
+test('realizedPnlToday: sums real profit_loss from trades that closed today only', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'target_exit', closed_at: TODAY_ISO, profit_loss: -4, broker: 'kraken' },
+    { status: 'closed', closed_at: NOT_TODAY_ISO, profit_loss: 999, broker: 'alpaca' },
+  ];
+  assert.strictEqual(realizedPnlToday(trades), 8);
+});
+
+test('realizedPnlToday: nothing closed today returns null, never a fabricated zero', () => {
+  assert.strictEqual(realizedPnlToday([{ status: 'closed', closed_at: NOT_TODAY_ISO, profit_loss: 12, broker: 'alpaca' }]), null);
+  assert.strictEqual(realizedPnlToday([]), null);
+});
+
+test('realizedPnlToday: a closed trade with a genuinely missing profit_loss is never counted as a real zero', () => {
+  assert.strictEqual(realizedPnlToday([{ status: 'closed', closed_at: TODAY_ISO, profit_loss: null, broker: 'alpaca' }]), null);
+});
+
+test('realizedPnlByBrokerToday: groups today\'s realised profit by broker', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 3, broker: 'alpaca' },
+    { status: 'manual_exit', closed_at: TODAY_ISO, profit_loss: -6, broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(realizedPnlByBrokerToday(trades), { alpaca: 15, kraken: -6 });
+});
+
+test('exitsTodayCount: counts real closed positions today, zero when genuinely none', () => {
+  assert.strictEqual(exitsTodayCount([{ status: 'closed', closed_at: TODAY_ISO, profit_loss: 1, broker: 'alpaca' }]), 1);
+  assert.strictEqual(exitsTodayCount([]), 0);
 });
 
 console.log(`\n${passed} passed`);
