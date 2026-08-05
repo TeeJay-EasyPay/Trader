@@ -824,6 +824,95 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_account_context_for_kraken_never_lets_mismatched_whole_account_daily_pnl_trip_the_daily_loss_guardrail(self):
+        # Hosted evidence (2026-08-05/06): every Kraken auto-execution candidate was rejected
+        # with "maximum_daily_loss_exceeded", every cycle, 100% of the time. Root cause:
+        # PORTFOLIO_SNAPSHOTS.day_pnl reflects the broker's WHOLE account (thousands of GBP
+        # of the Founder's pre-existing personal crypto holdings), while AccountContext.equity
+        # is deliberately scoped to only the AI's small isolated allocation
+        # (_kraken_trading_allocation_gbp). guardrails.py's maximum_daily_loss_exceeded check
+        # compared the two directly, so ordinary price movement on personal holdings the AI
+        # never touched could - and did - permanently block every live Kraken trade.
+        # orchestrator.py's weekly/monthly/drawdown checks already had a basis-matching guard
+        # (_snapshot_equity_basis_matches_context) for this exact mismatch; this test proves
+        # the same guard is now applied at the source, in _account_context_for_broker, before
+        # daily_realized_pnl ever reaches any guardrail.
+        previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
+        try:
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            with tempfile.TemporaryDirectory() as tmp:
+                settings = settings_for(tmp)
+                service = LocalApiService(settings)
+                adapter = FakeKrakenAdapter()
+                adapter.get_account = lambda: {
+                    "status": "connected",
+                    "balances": {"ZGBP": "38.23", "XXBT": "0.5"},
+                }
+                service.orchestrator.adapters["kraken"] = adapter
+                # A real snapshot representing the WHOLE Kraken account (~£3,692, mostly
+                # pre-existing personal crypto) with a real day_pnl swing that would trip the
+                # £1.15 (3% of £38.23) daily-loss threshold if ever compared against the AI's
+                # scoped equity directly.
+                with closing(sqlite3.connect(settings.db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO PORTFOLIO_SNAPSHOTS (
+                                created_at, broker, exchange, account_currency, cash,
+                                portfolio_value, buying_power, open_positions_count,
+                                day_pnl, week_pnl, month_pnl, month_start_value, notes
+                            ) VALUES (?, 'kraken', 'Kraken', 'GBP', 38.23, 3692.27, 38.23, 12,
+                                      -50.0, -130.69, 4.05, 3688.22, 'test')
+                            """,
+                            (datetime.now(timezone.utc).isoformat(),),
+                        )
+
+                account = service._account_context_for_broker("kraken")
+
+                # The mismatched whole-account day_pnl (-£50, dwarfing the £38.23 AI
+                # allocation) must never reach the guardrail - honestly zeroed instead of
+                # fabricating a same-basis figure that doesn't exist.
+                self.assertEqual(account.daily_realized_pnl, 0.0)
+        finally:
+            restore_env(previous)
+
+    def test_account_context_for_kraken_keeps_daily_pnl_when_snapshot_basis_genuinely_matches_equity(self):
+        # Companion to the mismatch test above: when the snapshot's portfolio_value is
+        # genuinely in the same ballpark as the AI's scoped equity (no large pre-existing
+        # personal holdings inflating it), the real daily_pnl must still reach the guardrail -
+        # the fix must not silently suppress a real, same-basis loss signal.
+        previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
+        try:
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+            with tempfile.TemporaryDirectory() as tmp:
+                settings = settings_for(tmp)
+                service = LocalApiService(settings)
+                adapter = FakeKrakenAdapter()
+                adapter.get_account = lambda: {
+                    "status": "connected",
+                    "balances": {"ZGBP": "38.23"},
+                }
+                service.orchestrator.adapters["kraken"] = adapter
+                with closing(sqlite3.connect(settings.db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO PORTFOLIO_SNAPSHOTS (
+                                created_at, broker, exchange, account_currency, cash,
+                                portfolio_value, buying_power, open_positions_count,
+                                day_pnl, week_pnl, month_pnl, month_start_value, notes
+                            ) VALUES (?, 'kraken', 'Kraken', 'GBP', 38.23, 45.0, 38.23, 0,
+                                      -10.0, -12.0, -5.0, 55.0, 'test')
+                            """,
+                            (datetime.now(timezone.utc).isoformat(),),
+                        )
+
+                account = service._account_context_for_broker("kraken")
+
+                self.assertEqual(account.daily_realized_pnl, -10.0)
+        finally:
+            restore_env(previous)
+
     def test_kraken_balance_summary_bridges_usd_pairs_to_gbp(self):
         previous = {"KRAKEN_TRADING_ALLOCATION_GBP": os.environ.get("KRAKEN_TRADING_ALLOCATION_GBP")}
         try:

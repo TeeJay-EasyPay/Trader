@@ -69,7 +69,7 @@ from ..multi_broker import (
     record_recommendation_set,
     set_broker_auto_trading,
 )
-from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run
+from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run, _snapshot_equity_basis_matches_context
 from ..canonical_trades import initialize_canonical_trade_schema
 from ..kraken_reconciliation import (
     founder_override_kraken_hold,
@@ -1075,6 +1075,23 @@ class LocalApiService:
                 equity = _kraken_trading_allocation_gbp(balances)
             else:
                 equity = _sum_balances(balances) or 0.0
+        # PORTFOLIO_SNAPSHOTS.day_pnl (and the whole-account portfolio_value it is derived
+        # from) reflects the broker's WHOLE account - for Kraken specifically that includes
+        # the Founder's pre-existing personal holdings alongside the AI's own isolated
+        # allocation (`equity` above, deliberately scoped via _kraken_trading_allocation_gbp),
+        # so it can be an order of magnitude larger. Comparing that whole-account day_pnl
+        # against the tiny scoped equity in guardrails.py's maximum_daily_loss_exceeded check
+        # meant ordinary price movement on capital the AI never touched could permanently
+        # block every Kraken trade - confirmed in hosted evidence (2026-08-05/06): a 100%
+        # rejection rate, every eligible candidate, every auto-execution cycle, always citing
+        # maximum_daily_loss_exceeded. orchestrator.py's weekly/monthly/drawdown checks
+        # already guard against this exact mismatch via
+        # _snapshot_equity_basis_matches_context - applying the same guard here, at the
+        # source, so every consumer of this AccountContext gets a same-basis daily P&L or an
+        # honest 0.0 (never a mismatched comparison), not only the checks that happened to
+        # already have their own guard.
+        if not _snapshot_equity_basis_matches_context(snapshot.get("portfolio_value") or 0.0, equity):
+            daily_pnl = 0.0
         positions = [
             Position(
                 symbol=str(item["symbol"]).upper(),
