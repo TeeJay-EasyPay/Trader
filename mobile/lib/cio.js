@@ -36,12 +36,17 @@ function cioGreeting(now = new Date()) {
 // founderEvidenceMapping.js's statusFromFounderEvidence) into one CIO-voiced paragraph. This
 // is the "Executive Investment Summary" - every sentence already existed as backend evidence;
 // this only removes field labels and joins them into prose instead of a label/value grid.
+// AT-ED-016.2: joined with a real paragraph break (`\n\n`, which React Native's <Text> renders
+// as an actual line break), not a single space - three distinct ideas (headline/what-to-do/
+// what-to-worry-about) previously ran together as one dense paragraph inside a single <Text>
+// block, which is what was actually causing the "sentences don't start on a new line" complaint,
+// not the wording. See Founder_Briefing.md for the full diagnosis.
 function cioExecutiveSummary({ headline, whatToDo, whatToWorryAbout }) {
   const sentences = [headline, whatToDo, whatToWorryAbout].filter(Boolean);
   if (!sentences.length) {
     return 'I do not have a clear enough picture to brief you properly yet - check back shortly.';
   }
-  return sentences.join(' ');
+  return sentences.join('\n\n');
 }
 
 // AT-ED-013 Section 2/6: "What happened overnight" - a real count-based sentence built from
@@ -92,7 +97,7 @@ function cioMarketOutlook({ marketHealth, currentRegime, cryptoHealth, upcomingR
   if (upcomingRisks && upcomingRisks.length) {
     sentences.push(`The main thing I'm watching: ${upcomingRisks.slice(0, 3).join(', ')}.`);
   }
-  return sentences.join(' ');
+  return sentences.join('\n\n');
 }
 
 // AT-ED-013 Section 1: "Confidence must be earned through evidence" - there is no backend
@@ -243,7 +248,7 @@ function cioExecutiveBriefingSummary({ greeting, headlineSummary, overnightSumma
   if (!parts.length) {
     return `${greeting || ''} I do not have a clear enough picture to brief you properly yet - check back shortly.`.trim();
   }
-  return parts.join(' ');
+  return parts.join('\n\n');
 }
 
 module.exports = {

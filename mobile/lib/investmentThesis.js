@@ -61,7 +61,9 @@ function currentInvestmentThesis({ themes, recommendations }) {
     sentences.push(`${strategy.count} of our current recommendation${strategy.count === 1 ? '' : 's'} lean on the ${strategy.name} approach.`);
     evidence.push(`${strategy.count} of our current idea${strategy.count === 1 ? '' : 's'} follow the ${strategy.name} approach.`);
   }
-  return { available: true, statement: sentences.join(' '), evidence };
+  // AT-ED-016.2: real paragraph break, not a space - the theme view and the strategy note are
+  // two distinct ideas and were previously running together in one dense paragraph.
+  return { available: true, statement: sentences.join('\n\n'), evidence };
 }
 
 // The alternative thesis is deliberately built from the SAME lead theme's own key_risks field,

@@ -56,13 +56,13 @@ test('cioGreeting: includes the Founder name and a time-appropriate greeting', (
 
 // --- cioExecutiveSummary ---
 
-test('cioExecutiveSummary: joins real backend sentences into one paragraph', () => {
+test('cioExecutiveSummary: joins real backend sentences with a real paragraph break, not a single run-on block (AT-ED-016.2)', () => {
   const text = cioExecutiveSummary({
     headline: 'Portfolio is stable.',
     whatToDo: 'Review two new recommendations.',
     whatToWorryAbout: 'Watch Kraken reconciliation.',
   });
-  assert.strictEqual(text, 'Portfolio is stable. Review two new recommendations. Watch Kraken reconciliation.');
+  assert.strictEqual(text, 'Portfolio is stable.\n\nReview two new recommendations.\n\nWatch Kraken reconciliation.');
 });
 
 test('cioExecutiveSummary: no evidence yet is honest, not fabricated', () => {
@@ -227,9 +227,9 @@ test('cioClosingRecommendation: low conviction is named as a real caveat, not hi
 
 // --- cioExecutiveBriefingSummary (AT-ED-016 Part 1 Section 1) ---
 
-test('cioExecutiveBriefingSummary: joins only the real, non-empty fragments provided', () => {
+test('cioExecutiveBriefingSummary: joins only the real, non-empty fragments provided, each on its own line (AT-ED-016.2)', () => {
   const text = cioExecutiveBriefingSummary({ greeting: 'Good morning Tarik.', headlineSummary: 'Markets are stable.', overnightSummary: null, marketSummary: 'Tech continues to lead.', comfortSentence: null });
-  assert.strictEqual(text, 'Good morning Tarik. Markets are stable. Tech continues to lead.');
+  assert.strictEqual(text, 'Good morning Tarik.\n\nMarkets are stable.\n\nTech continues to lead.');
 });
 
 test('cioExecutiveBriefingSummary: no fragments at all is honest, not fabricated', () => {

@@ -62,7 +62,7 @@ function proseOrBullets(items) {
     return null;
   }
   if (list.length <= 2) {
-    return list.join(' ');
+    return list.join('\n\n');
   }
   return formatList(list);
 }
@@ -115,12 +115,17 @@ function PositionLine({ label, value }) {
 }
 
 function CurrentPositionCard({ portfolio, status }) {
+  const executive = status?.founder_experience?.executive_dashboard || {};
   const wtd = weekToDatePnl(status?.brokers);
   const mtd = monthToDatePnl(status?.brokers);
   const winner = largestPosition(portfolio?.open_positions, 'winning');
   const loser = largestPosition(portfolio?.open_positions, 'losing');
   return (
     <Section title="Current Position">
+      {/* AT-ED-016.2: a plain-English brief leads every fact card, with the numbers below it -
+          the numbers alone were reading as "just data" with nothing to tell the Founder what
+          they mean, even though the card correctly answers a facts question. */}
+      {executive.portfolio_health ? <Text style={styles.bodyText}>In short: {executive.portfolio_health}.</Text> : null}
       <PositionLine label="Portfolio value" value={portfolio?.portfolio_value !== undefined && portfolio?.portfolio_value !== null ? moneyOrText(portfolio.portfolio_value) : null} />
       <PositionLine label="Today" value={portfolio?.todays_pnl !== undefined && portfolio?.todays_pnl !== null ? moneyOrText(portfolio.todays_pnl) : null} />
       <PositionLine label="This week" value={wtd !== null ? moneyOrText(wtd) : null} />
