@@ -208,8 +208,16 @@ function OvernightNarrativeCard({ activity, connectionReadiness, unresolvedIncid
   // statement (Part 5: the Founder must immediately know whether AI Trader is operating
   // autonomously) - still gated on connectionReadiness actually being present, so absence of
   // evidence is never presented as a caution signal.
+  // AT-ED-017 live-review fix: noTrade.state === 'approved_but_not_submitted' is the one funnel
+  // state whose own conclusion already says "This requires attention." - without checking it
+  // here, autonomyLine would claim "no Founder action required" directly under that exact
+  // sentence (a real contradiction caught visually on the emulator, not a hypothetical).
   const autonomyLine = connectionReadiness
-    ? cioAutonomyStatement({ tradeReady: Boolean(connectionReadiness.trade_ready), unresolvedIncidentCount: unresolvedIncidentCount || 0 })
+    ? cioAutonomyStatement({
+      tradeReady: Boolean(connectionReadiness.trade_ready),
+      unresolvedIncidentCount: unresolvedIncidentCount || 0,
+      executionAnomaly: noTrade.state === 'approved_but_not_submitted',
+    })
     : null;
   // AT-ED-017: joined into one Text block with real '\n\n' breaks, not separate sibling <Text>
   // elements - this card had the same no-visual-gap-between-siblings bug as CurrentPositionCard

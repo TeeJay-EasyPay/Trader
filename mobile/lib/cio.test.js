@@ -135,6 +135,18 @@ test('cioAutonomyStatement: not trade-ready without an incident count still flag
   assert.ok(text.includes('some caution'));
 });
 
+test('cioAutonomyStatement (AT-ED-017 live-review fix): an execution anomaly means it is honestly not fully autonomous, even with trade_ready true and zero incidents', () => {
+  const text = cioAutonomyStatement({ tradeReady: true, unresolvedIncidentCount: 0, executionAnomaly: true });
+  assert.ok(text.includes('not fully autonomous'));
+  assert.ok(text.includes('execution gap'));
+});
+
+test('cioAutonomyStatement: incidents and an execution anomaly are both named, not just one', () => {
+  const text = cioAutonomyStatement({ tradeReady: true, unresolvedIncidentCount: 1, executionAnomaly: true });
+  assert.ok(text.includes('1 operational item'));
+  assert.ok(text.includes('execution gap'));
+});
+
 // --- cioActivityFunnel (AT-ED-017 Part 5) ---
 
 test('cioActivityFunnel: reports real structured counts, never the raw internal reason codes', () => {

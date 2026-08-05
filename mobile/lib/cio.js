@@ -110,9 +110,22 @@ function cioTodaysMoneyBreakdown({ realizedToday, realizedTodayText, unrealizedT
 // from the same connection_readiness/incidents evidence FounderActionsSection already reads -
 // this states the same real facts as a direct autonomy claim, rather than only ever describing
 // autonomy by omission.
-function cioAutonomyStatement({ tradeReady, unresolvedIncidentCount }) {
+//
+// executionAnomaly: true when evidence.why_no_trade.state is "approved_but_not_submitted" - the
+// one funnel state whose own conclusion text already says "This requires attention." (an
+// opportunity cleared every gate but no order was ever submitted). A live emulator check caught
+// this function claiming "no Founder action has been required" directly underneath that exact
+// conclusion sentence on the same card - a real, visible contradiction, not just a missed nuance.
+function cioAutonomyStatement({ tradeReady, unresolvedIncidentCount, executionAnomaly }) {
+  const flags = [];
   if (unresolvedIncidentCount) {
-    return `AI Trader is not fully autonomous today - ${unresolvedIncidentCount} operational item${unresolvedIncidentCount === 1 ? '' : 's'} need${unresolvedIncidentCount === 1 ? 's' : ''} attention before every gate is clear.`;
+    flags.push(`${unresolvedIncidentCount} operational item${unresolvedIncidentCount === 1 ? '' : 's'}`);
+  }
+  if (executionAnomaly) {
+    flags.push('the execution gap flagged above');
+  }
+  if (flags.length) {
+    return `AI Trader is not fully autonomous today - this still requires attention: ${flags.join(' and ')}.`;
   }
   if (tradeReady) {
     return 'AI Trader is operating fully autonomously today - no Founder action has been required to reach this point.';
