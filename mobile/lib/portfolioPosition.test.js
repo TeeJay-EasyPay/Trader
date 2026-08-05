@@ -19,6 +19,10 @@ const {
   exitsTodayCount,
   exitsTodayCountByCurrency,
   openPositionsCountByCurrency,
+  closedTradesThisMonth,
+  realizedPnlThisMonth,
+  realizedPnlByBrokerThisMonth,
+  realizedPnlByCurrencyThisMonth,
 } = require('./portfolioPosition');
 
 let passed = 0;
@@ -200,6 +204,45 @@ test('openPositionsCountByCurrency: counts open positions grouped by currency', 
     { symbol: 'XBT', broker: 'kraken' },
   ];
   assert.deepStrictEqual(openPositionsCountByCurrency(positions), { USD: 2, GBP: 1 });
+});
+
+// --- AT-ED-017 (Founder request, 2026-08-05): realised gains so far this month ---
+
+test('closedTradesThisMonth: only counts terminal-status trades closed within the current UTC calendar month', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'closed', closed_at: NOT_TODAY_ISO, profit_loss: 5, broker: 'alpaca' },
+  ];
+  const result = closedTradesThisMonth(trades);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].profit_loss, 12);
+});
+
+test('realizedPnlThisMonth: sums real profit_loss from trades closed this month only, null when genuinely none', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'target_exit', closed_at: TODAY_ISO, profit_loss: 3, broker: 'kraken' },
+    { status: 'closed', closed_at: NOT_TODAY_ISO, profit_loss: 999, broker: 'alpaca' },
+  ];
+  assert.strictEqual(realizedPnlThisMonth(trades), 15);
+  assert.strictEqual(realizedPnlThisMonth([{ status: 'closed', closed_at: NOT_TODAY_ISO, profit_loss: 12, broker: 'alpaca' }]), null);
+});
+
+test('realizedPnlByBrokerThisMonth: groups this month\'s realised profit by broker', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 3, broker: 'alpaca' },
+    { status: 'manual_exit', closed_at: TODAY_ISO, profit_loss: -6, broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(realizedPnlByBrokerThisMonth(trades), { alpaca: 15, kraken: -6 });
+});
+
+test('realizedPnlByCurrencyThisMonth: the same real per-broker realised P&L this month, grouped by currency', () => {
+  const trades = [
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },
+    { status: 'closed', closed_at: TODAY_ISO, profit_loss: -6, broker: 'kraken' },
+  ];
+  assert.deepStrictEqual(realizedPnlByCurrencyThisMonth(trades), { USD: 12, GBP: -6 });
 });
 
 console.log(`\n${passed} passed`);

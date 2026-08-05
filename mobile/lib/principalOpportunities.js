@@ -79,11 +79,26 @@ function themeOpportunityCard(theme) {
   };
 }
 
-// recommendations: fresh (non-expired) recommendations only, sorted by confidence, take the top
-// `maxRecommendations`. themes: at most one, the highest-confidence tracked theme, if any exists.
+// AT-ED-017 (Founder request, 2026-08-05): "why am I being asked to review FRES if the app is
+// autotrading?" - live evidence showed FRES's own 7-member investment committee had already
+// returned committee_result "Reject" (the Risk Officer voted reject at 99% confidence, citing
+// "risk above strategy maximum"), yet it was still the #1 Principal Opportunity and the only
+// Founder Action, with no disclosure that AI Trader's own governance had already said no. A
+// single "reject" vote from any committee member is a hard veto (trading_intelligence.py: any
+// reject_vote forces committee_result = "Reject", regardless of how many members supported it) -
+// presenting a governance-rejected trade as a live "opportunity" is actively misleading, not just
+// under-explained. "Wait"/"Insufficient evidence" are deliberately NOT filtered here - those are
+// genuinely borderline, not a definitive veto, and still worth the Founder seeing.
+function wasRejectedByCommittee(item) {
+  return item?.committee?.committee_result === 'Reject';
+}
+
+// recommendations: fresh (non-expired), NOT rejected by AI Trader's own committee, sorted by
+// confidence, take the top `maxRecommendations`. themes: at most one, the highest-confidence
+// tracked theme, if any exists.
 function buildOpportunityCards({ recommendations, themes, maxRecommendations = 3 }) {
   const fresh = (recommendations || [])
-    .filter((item) => item.freshness_status !== 'Expired')
+    .filter((item) => item.freshness_status !== 'Expired' && !wasRejectedByCommittee(item))
     .slice()
     .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
     .slice(0, maxRecommendations)
@@ -101,5 +116,6 @@ module.exports = {
   recommendationOpportunityCard,
   keyDriversText,
   themeOpportunityCard,
+  wasRejectedByCommittee,
   buildOpportunityCards,
 };

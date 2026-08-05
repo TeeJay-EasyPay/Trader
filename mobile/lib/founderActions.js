@@ -12,6 +12,7 @@
 'use strict';
 
 const { formatDateTime } = require('./datetime');
+const { wasRejectedByCommittee } = require('./principalOpportunities');
 
 function recommendationAction(item) {
   const name = item.ticker || item.symbol || 'this recommendation';
@@ -32,12 +33,18 @@ function incidentAction(count) {
   };
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): a recommendation AI Trader's own investment committee
+// already rejected (see wasRejectedByCommittee() in lib/principalOpportunities.js) is not a real
+// decision awaiting the Founder - governance already made the call. Asking the Founder to
+// "review" it implies a choice that isn't actually open, which is exactly the confusion a live
+// Founder report flagged ("why am I being asked to review FRES if the app is autotrading?").
+//
 // recommendations: all current recommendations (freshness_status already computed elsewhere);
 // unresolvedIncidentCount: real count from operations_health.incidents. Returns [] when nothing
 // is genuinely outstanding - never pads the list to make the organisation look busier.
 function buildFounderActions({ recommendations, unresolvedIncidentCount = 0, maxRecommendations = 3 }) {
   const actions = (recommendations || [])
-    .filter((item) => item.freshness_status !== 'Expired')
+    .filter((item) => item.freshness_status !== 'Expired' && !wasRejectedByCommittee(item))
     .slice()
     .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
     .slice(0, maxRecommendations)

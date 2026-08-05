@@ -43,9 +43,17 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): "a line which is realised gains so far this month" -
+// UTC calendar-month prefix ("YYYY-MM"), matching todayIso()'s UTC calendar-day convention so
+// "today" and "this month" figures never disagree about which timezone boundary is in use.
+function currentMonthPrefix() {
+  return new Date().toISOString().slice(0, 7);
+}
+
 module.exports = {
   dateMs,
   formatDateTime,
   formatPercent,
   todayIso,
+  currentMonthPrefix,
 };

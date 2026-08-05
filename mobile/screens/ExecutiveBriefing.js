@@ -48,6 +48,7 @@ const {
   realizedPnlByCurrencyToday,
   exitsTodayCountByCurrency,
   openPositionsCountByCurrency,
+  realizedPnlByCurrencyThisMonth,
 } = require('../lib/portfolioPosition');
 const { useForecastHistory } = require('../hooks/useForecastHistory');
 
@@ -188,6 +189,11 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
       <PositionLine label="Portfolio value" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
       <PositionLine label="This week" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
       <PositionLine label="This month" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
+      {/* AT-ED-017 (Founder request, 2026-08-05): "This month" above is a portfolio-value delta
+          (realised + unrealised mixed, like "Today"), not specifically realised gains - a
+          distinct line so the Founder can watch realised profit accumulate through the month
+          without it being obscured by day-to-day unrealised swings. */}
+      <PositionLine label="Realised this month" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution))} />
       <PositionLine label="Open positions" value={openPositions.length || null} />
       <PositionLine label="Cash available" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
       <PositionLine label="Best performer" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />

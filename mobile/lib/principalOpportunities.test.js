@@ -6,7 +6,7 @@
 'use strict';
 
 const assert = require('assert');
-const { recommendationOpportunityCard, keyDriversText, themeOpportunityCard, buildOpportunityCards } = require('./principalOpportunities');
+const { recommendationOpportunityCard, keyDriversText, themeOpportunityCard, wasRejectedByCommittee, buildOpportunityCards } = require('./principalOpportunities');
 
 let passed = 0;
 function test(name, fn) {
@@ -113,6 +113,31 @@ test('buildOpportunityCards: excludes expired recommendations', () => {
 
 test('buildOpportunityCards: no evidence at all returns an empty array, never fabricated', () => {
   assert.deepStrictEqual(buildOpportunityCards({ recommendations: [], themes: [] }), []);
+});
+
+// --- wasRejectedByCommittee / governance filtering (AT-ED-017 Founder request) ---
+
+test('wasRejectedByCommittee: true only when AI Trader\'s own committee_result is "Reject"', () => {
+  assert.strictEqual(wasRejectedByCommittee({ committee: { committee_result: 'Reject' } }), true);
+  assert.strictEqual(wasRejectedByCommittee({ committee: { committee_result: 'Approve' } }), false);
+  assert.strictEqual(wasRejectedByCommittee({ committee: { committee_result: 'Wait' } }), false);
+  assert.strictEqual(wasRejectedByCommittee({}), false);
+  assert.strictEqual(wasRejectedByCommittee(null), false);
+});
+
+test('buildOpportunityCards (AT-ED-017 Founder request): never presents a recommendation AI Trader\'s own committee rejected as an opportunity', () => {
+  const recommendations = [
+    { ticker: 'FRES', confidence: 0.85, freshness_status: 'Fresh', committee: { committee_result: 'Reject' } },
+    { ticker: 'AAPL', confidence: 0.7, freshness_status: 'Fresh', committee: { committee_result: 'Approve' } },
+  ];
+  const cards = buildOpportunityCards({ recommendations, themes: [] });
+  assert.strictEqual(cards.length, 1);
+  assert.strictEqual(cards[0].title, 'AAPL');
+});
+
+test('buildOpportunityCards: a "Wait" or missing committee result is not treated as a rejection', () => {
+  const recommendations = [{ ticker: 'AAPL', confidence: 0.7, freshness_status: 'Fresh', committee: { committee_result: 'Wait' } }];
+  assert.strictEqual(buildOpportunityCards({ recommendations, themes: [] }).length, 1);
 });
 
 console.log(`\n${passed} passed`);

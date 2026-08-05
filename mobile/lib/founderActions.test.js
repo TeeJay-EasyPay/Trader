@@ -56,6 +56,11 @@ test('buildFounderActions: excludes expired recommendations', () => {
   assert.deepStrictEqual(buildFounderActions({ recommendations, unresolvedIncidentCount: 0 }), []);
 });
 
+test('buildFounderActions (AT-ED-017 Founder request): never asks the Founder to "review" a recommendation AI Trader\'s own committee already rejected', () => {
+  const recommendations = [{ ticker: 'FRES', confidence: 0.85, freshness_status: 'Fresh', committee: { committee_result: 'Reject' } }];
+  assert.deepStrictEqual(buildFounderActions({ recommendations, unresolvedIncidentCount: 0 }), []);
+});
+
 console.log(`\n${passed} passed`);
 if (process.exitCode) {
   console.error('Some founderActions tests failed.');

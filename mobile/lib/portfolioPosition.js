@@ -13,7 +13,7 @@
 'use strict';
 
 const { TERMINAL_STATUSES } = require('./forecastEngine');
-const { dateMs, todayIso } = require('./datetime');
+const { dateMs, todayIso, currentMonthPrefix } = require('./datetime');
 
 function sumBrokerField(brokers, field) {
   // `Number(null)` is 0, not NaN - filter out null/undefined explicitly before conversion, or a
@@ -182,6 +182,46 @@ function realizedPnlByCurrencyToday(trades) {
   return regroupByCurrency(realizedPnlByBrokerToday(trades));
 }
 
+// AT-ED-017 (Founder request, 2026-08-05): "a line which is realised gains so far this month,
+// that way through the month I can see the realised gains as they go up" - same real terminal-
+// status/dated filter as closedTradesToday() above, scoped to the UTC calendar month instead of
+// the UTC calendar day.
+function closedTradesThisMonth(trades) {
+  const month = currentMonthPrefix();
+  return (trades || []).filter((trade) => {
+    if (!TERMINAL_STATUSES.includes(String(trade?.status || '').toLowerCase())) {
+      return false;
+    }
+    const closedAt = trade?.closed_at || trade?.created_at;
+    if (!closedAt) {
+      return false;
+    }
+    const ms = dateMs(closedAt);
+    return ms && new Date(ms).toISOString().slice(0, 7) === month;
+  });
+}
+
+function realizedPnlThisMonth(trades) {
+  const closedThisMonth = withRealProfitLoss(closedTradesThisMonth(trades));
+  return closedThisMonth.length ? closedThisMonth.reduce((sum, trade) => sum + Number(trade.profit_loss), 0) : null;
+}
+
+function realizedPnlByBrokerThisMonth(trades) {
+  const totals = {};
+  withRealProfitLoss(closedTradesThisMonth(trades)).forEach((trade) => {
+    const broker = trade?.broker;
+    if (!broker) {
+      return;
+    }
+    totals[broker] = (totals[broker] || 0) + Number(trade.profit_loss);
+  });
+  return totals;
+}
+
+function realizedPnlByCurrencyThisMonth(trades) {
+  return regroupByCurrency(realizedPnlByBrokerThisMonth(trades));
+}
+
 function exitsTodayCount(trades) {
   return closedTradesToday(trades).length;
 }
@@ -226,4 +266,8 @@ module.exports = {
   realizedPnlByBrokerToday,
   realizedPnlByCurrencyToday,
   exitsTodayCount,
+  closedTradesThisMonth,
+  realizedPnlThisMonth,
+  realizedPnlByBrokerThisMonth,
+  realizedPnlByCurrencyThisMonth,
 };
