@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -147,6 +148,100 @@ PRODUCTION_EVIDENCE_RETENTION_DAYS = {
     "PRODUCTION_RESEARCH_EVIDENCE": ("completed_at", 90),
     "PRODUCTION_RECOMMENDATION_EVIDENCE": ("created_at", 90),
     "PRODUCTION_LEARNING_EVIDENCE": ("completed_at", 365),
+}
+
+# 2026-08-08 Supabase database-size emergency: /database-diagnostics showed these high-volume
+# decision/audit-log tables (one row per governance decision or scheduled job run), not the
+# Founder-evidence snapshot tables above, are the real bulk of database size (~339 MB of 428 MB
+# total measured that day), and that VACUUM cannot reclaim their space since they hold almost
+# no dead rows -- the only way to shrink them is fewer live rows. Founder-directed policy: a
+# 90-day cutoff, but never delete a row that is either a rejected/blocked/manual-review
+# governance decision (the risk controls actually firing -- worth reviewing regardless of age)
+# or linked to a proposal whose eventual trade outcome was a notably large win or loss.
+DECISION_AUDIT_RETENTION_DAYS = 90
+NOTABLE_R_MULTIPLE_THRESHOLD = 2.0
+
+# Every protect_column/protect_values pair was read directly from the real call sites that
+# write it (foundation.py's record_execution_decision/calculate_capital_allocation,
+# orchestrator.py's evaluate_recommendation, production_spine.py's portfolio-manager decision,
+# sprint6.py's strategy-entitlement/risk-sentinel decisions, always_on.py's job-run status),
+# not guessed -- see the commit message / IMPLEMENTATION_LOG entry for the verification.
+DECISION_AUDIT_TABLES: dict[str, dict[str, Any]] = {
+    "DECISION_JOURNAL": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "final_decision",
+        "protect_values": ("blocked",),
+    },
+    "EXECUTION_DECISIONS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "decision",
+        "protect_values": ("rejected", "manual_approval_required"),
+    },
+    "ORCHESTRATOR_DECISIONS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "recommendation_id",  # holds the same value as proposal_id elsewhere
+        "protect_column": "decision",
+        "protect_values": ("rejected", "manual_approval_required"),
+    },
+    "PORTFOLIO_MANAGER_DECISIONS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "decision",
+        "protect_values": ("reject", "manual_review"),
+    },
+    "STRATEGY_ENTITLEMENT_DECISIONS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "decision",
+        "protect_values": ("blocked",),
+    },
+    "PRODUCTION_RISK_SENTINEL_DECISIONS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "decision",
+        "protect_values": ("blocked",),
+    },
+    "CAPITAL_ALLOCATION_HISTORY": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "result",
+        "protect_values": ("rejected",),
+    },
+    "OPERATIONAL_EVENTS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": "severity",
+        "protect_values": ("error", "warning"),
+    },
+    "SCHEDULED_JOB_RUNS": {
+        "timestamp_column": "scheduled_for",
+        "proposal_id_column": None,
+        "protect_column": "status",
+        "protect_values": ("failed", "timed_out"),
+    },
+    # No decision/status field of their own -- protected only via the notable-outcome
+    # proposal_id set (TRADE_SIGNALS) or, for the two with no proposal_id at all, a
+    # straightforward age cutoff (BROKER_TRADE_HISTORY, PORTFOLIO_EXPOSURE_SNAPSHOTS).
+    "TRADE_SIGNALS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": "proposal_id",
+        "protect_column": None,
+        "protect_values": (),
+    },
+    "BROKER_TRADE_HISTORY": {
+        "timestamp_column": "updated_at",
+        "proposal_id_column": None,
+        "protect_column": None,
+        "protect_values": (),
+    },
+    "PORTFOLIO_EXPOSURE_SNAPSHOTS": {
+        "timestamp_column": "created_at",
+        "proposal_id_column": None,
+        "protect_column": None,
+        "protect_values": (),
+    },
 }
 
 
@@ -723,6 +818,10 @@ def refresh_founder_evidence_snapshots(
         retention = prune_production_evidence(db_path)
     except Exception as exc:  # retention must never prevent a current Founder snapshot
         retention = {"status": "failed", "reason": str(exc)}
+    try:
+        decision_audit_retention = prune_decision_and_audit_history(db_path)
+    except Exception as exc:  # retention must never prevent a current Founder snapshot
+        decision_audit_retention = {"status": "failed", "reason": str(exc)}
     oldest_since = min((_period_start(period) for period in periods), default=_period_start("24h"))
     try:
         shared_rows = _load_founder_evidence_rows(
@@ -736,6 +835,7 @@ def refresh_founder_evidence_snapshots(
             "refreshed_periods": [],
             "failed_periods": {period: str(exc) for period in periods},
             "retention": retention,
+            "decision_audit_retention": decision_audit_retention,
             "generated_at": utc_now_iso(),
         }
     for period in periods:
@@ -751,6 +851,7 @@ def refresh_founder_evidence_snapshots(
         "refreshed_periods": refreshed,
         "failed_periods": failures,
         "retention": retention,
+        "decision_audit_retention": decision_audit_retention,
         "generated_at": utc_now_iso(),
     }
 
@@ -792,6 +893,120 @@ def prune_production_evidence(
                 (task_name, now.isoformat()),
             )
     return {"status": "completed", "last_run_at": now.isoformat(), "cutoffs": cutoffs}
+
+
+def _notable_proposal_ids(conn: Any, *, threshold: float) -> list[str]:
+    rows = conn.execute(
+        "SELECT DISTINCT proposal_id FROM TRADE_LIFECYCLE "
+        "WHERE r_multiple IS NOT NULL AND ABS(r_multiple) >= ? AND proposal_id IS NOT NULL",
+        (threshold,),
+    ).fetchall()
+    return [row["proposal_id"] for row in rows]
+
+
+def decision_audit_retention_enabled() -> bool:
+    return os.getenv("DECISION_AUDIT_RETENTION_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def prune_decision_and_audit_history(
+    db_path: Path,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+    retention_days: int = DECISION_AUDIT_RETENTION_DAYS,
+    notable_r_multiple_threshold: float = NOTABLE_R_MULTIPLE_THRESHOLD,
+    explicitly_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Bound the high-volume decision/audit-log tables in DECISION_AUDIT_TABLES -- see that
+    dict's module-level comment for the 2026-08-08 diagnosis and Founder-directed policy this
+    implements (90-day cutoff, but never delete a rejected/blocked/manual-review governance
+    decision or a row linked to a notably large trade outcome).
+
+    Same once-per-24h durable-marker pattern as prune_production_evidence, sharing the same
+    PRODUCTION_EVIDENCE_MAINTENANCE table under a distinct task_name so the two retention
+    passes run and are individually skippable/forceable independently of each other. Every
+    table's DELETE is isolated in its own try/except so one not-yet-migrated table (e.g. a
+    fresh database that hasn't run every schema's init yet) never blocks the rest.
+
+    The *automatic* 5-minute snapshot cycle (refresh_founder_evidence_snapshots) only calls
+    this when decision_audit_retention_enabled() is True -- this is a much larger, more
+    consequential DELETE (governance/decision history, not just replaceable evidence
+    snapshots) than prune_production_evidence's unconditional wiring, running for the first
+    time against real production data far larger and messier than any test fixture.
+    explicitly_confirmed=True is the deliberate escape hatch for a single, human-confirmed
+    manual run (via the admin API's confirmed_by_founder gate) to inspect real
+    deleted_row_counts before ever enabling the automatic cycle -- it bypasses the *enablement*
+    flag but never the per-row protection logic below, which applies identically either way.
+    """
+    if not explicitly_confirmed and not decision_audit_retention_enabled():
+        return {"status": "disabled", "message": "DECISION_AUDIT_RETENTION_ENABLED is not set; no rows were touched."}
+    _ensure_local_production_evidence_schema(db_path)
+    now = now or datetime.now(timezone.utc)
+    task_name = "decision-audit-retention"
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        with conn:
+            row = conn.execute(
+                "SELECT last_run_at FROM PRODUCTION_EVIDENCE_MAINTENANCE WHERE task_name = ?",
+                (task_name,),
+            ).fetchone()
+            last_run_at = _as_utc_datetime(row["last_run_at"]) if row else None
+            if not force and last_run_at and now - last_run_at < PRODUCTION_EVIDENCE_RETENTION_INTERVAL:
+                return {"status": "skipped_recent", "last_run_at": last_run_at.isoformat()}
+            cutoff = (now - timedelta(days=retention_days)).isoformat()
+            deleted: dict[str, int] = {}
+
+            try:
+                notable_ids = _notable_proposal_ids(conn, threshold=notable_r_multiple_threshold)
+            except sqlite3.OperationalError:
+                notable_ids = []
+            notable_placeholders = ",".join("?" for _ in notable_ids)
+
+            # TRADE_LIFECYCLE is the source of the notable set itself -- protect its own
+            # big-outcome rows the same way every other table protects rows linked to one.
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM TRADE_LIFECYCLE WHERE created_at < ? "
+                    "AND NOT (r_multiple IS NOT NULL AND ABS(r_multiple) >= ?)",
+                    (cutoff, notable_r_multiple_threshold),
+                )
+                deleted["TRADE_LIFECYCLE"] = cursor.rowcount
+            except sqlite3.OperationalError:
+                deleted["TRADE_LIFECYCLE"] = 0
+
+            for table, config in DECISION_AUDIT_TABLES.items():
+                timestamp_column = config["timestamp_column"]
+                proposal_id_column = config["proposal_id_column"]
+                protect_column = config["protect_column"]
+                protect_values = config["protect_values"]
+                clauses = [f"{timestamp_column} < ?"]
+                params: list[Any] = [cutoff]
+                if protect_column and protect_values:
+                    placeholders = ",".join("?" for _ in protect_values)
+                    clauses.append(f"{protect_column} NOT IN ({placeholders})")
+                    params.extend(protect_values)
+                if proposal_id_column and notable_ids:
+                    clauses.append(f"({proposal_id_column} IS NULL OR {proposal_id_column} NOT IN ({notable_placeholders}))")
+                    params.extend(notable_ids)
+                sql = f"DELETE FROM {table} WHERE " + " AND ".join(clauses)
+                try:
+                    cursor = conn.execute(sql, tuple(params))
+                    deleted[table] = cursor.rowcount
+                except sqlite3.OperationalError:
+                    deleted[table] = 0
+
+            conn.execute(
+                """INSERT INTO PRODUCTION_EVIDENCE_MAINTENANCE (task_name, last_run_at)
+                VALUES (?, ?) ON CONFLICT(task_name) DO UPDATE SET last_run_at=excluded.last_run_at""",
+                (task_name, now.isoformat()),
+            )
+    return {
+        "status": "completed",
+        "last_run_at": now.isoformat(),
+        "cutoff": cutoff,
+        "notable_proposal_count": len(notable_ids),
+        "deleted_row_counts": deleted,
+    }
 
 
 def _filter_founder_evidence_rows(

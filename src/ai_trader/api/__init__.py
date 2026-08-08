@@ -88,6 +88,7 @@ from ..production_evidence import (
     founder_evidence_payload,
     initialize_production_evidence_schema,
     list_production_trade_evidence,
+    prune_decision_and_audit_history,
     record_research_evidence,
 )
 from ..sprint6 import (
@@ -568,6 +569,17 @@ class LocalApiService:
                     "VACUUM on this specific table, since VACUUM (FULL) locks it for the duration of the operation.",
                 }
             return 200, vacuum_table(self.settings.db_path, table_name, full=bool(body.get("full")))
+        if path == "/database-diagnostics/prune-decision-audit-history":
+            if not bool(body.get("confirmed_by_founder")):
+                return 200, {
+                    "status": "refused",
+                    "message": "Set confirmed_by_founder=true only after the Founder has explicitly approved running "
+                    "this DELETE against real governance/decision history. See DECISION_AUDIT_TABLES in "
+                    "production_evidence.py for exactly which tables and protections apply.",
+                }
+            return 200, prune_decision_and_audit_history(
+                self.settings.db_path, force=bool(body.get("force")), explicitly_confirmed=True
+            )
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/generate-operational-report":
