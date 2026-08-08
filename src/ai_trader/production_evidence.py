@@ -943,6 +943,18 @@ def prune_decision_and_audit_history(
     _ensure_local_production_evidence_schema(db_path)
     now = now or datetime.now(timezone.utc)
     task_name = "decision-audit-retention"
+    cutoff = (now - timedelta(days=retention_days)).isoformat()
+    deleted: dict[str, int] = {}
+    errors: dict[str, str] = {}
+
+    # Each table gets its own connection and its own committed transaction -- deliberately NOT
+    # one shared transaction across all 13 DELETEs. A single long-running transaction holds
+    # locks on every table for its entire duration, and this app's own worker/API traffic
+    # writes to several of these tables (OPERATIONAL_EVENTS especially) continuously in the
+    # background; a real production run of an earlier, single-transaction version of this
+    # function deadlocked against that live traffic and rolled back with zero rows deleted.
+    # Per-table transactions keep each lock's hold time to one DELETE, and mean one table
+    # failing (deadlock, lock timeout) never rolls back another table's already-committed work.
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         with conn:
@@ -953,60 +965,65 @@ def prune_decision_and_audit_history(
             last_run_at = _as_utc_datetime(row["last_run_at"]) if row else None
             if not force and last_run_at and now - last_run_at < PRODUCTION_EVIDENCE_RETENTION_INTERVAL:
                 return {"status": "skipped_recent", "last_run_at": last_run_at.isoformat()}
-            cutoff = (now - timedelta(days=retention_days)).isoformat()
-            deleted: dict[str, int] = {}
+        try:
+            notable_ids = _notable_proposal_ids(conn, threshold=notable_r_multiple_threshold)
+        except Exception:  # noqa: BLE001 - a read failure here must not block every table's retention
+            notable_ids = []
+        notable_placeholders = ",".join("?" for _ in notable_ids)
 
-            try:
-                notable_ids = _notable_proposal_ids(conn, threshold=notable_r_multiple_threshold)
-            except sqlite3.OperationalError:
-                notable_ids = []
-            notable_placeholders = ",".join("?" for _ in notable_ids)
-
-            # TRADE_LIFECYCLE is the source of the notable set itself -- protect its own
-            # big-outcome rows the same way every other table protects rows linked to one.
-            try:
+        # TRADE_LIFECYCLE is the source of the notable set itself -- protect its own
+        # big-outcome rows the same way every other table protects rows linked to one.
+        try:
+            with conn:
                 cursor = conn.execute(
                     "DELETE FROM TRADE_LIFECYCLE WHERE created_at < ? "
                     "AND NOT (r_multiple IS NOT NULL AND ABS(r_multiple) >= ?)",
                     (cutoff, notable_r_multiple_threshold),
                 )
                 deleted["TRADE_LIFECYCLE"] = cursor.rowcount
-            except sqlite3.OperationalError:
-                deleted["TRADE_LIFECYCLE"] = 0
+        except Exception as exc:  # noqa: BLE001 - isolate one table's failure (e.g. deadlock) from the rest
+            deleted["TRADE_LIFECYCLE"] = 0
+            errors["TRADE_LIFECYCLE"] = str(exc)
 
-            for table, config in DECISION_AUDIT_TABLES.items():
-                timestamp_column = config["timestamp_column"]
-                proposal_id_column = config["proposal_id_column"]
-                protect_column = config["protect_column"]
-                protect_values = config["protect_values"]
-                clauses = [f"{timestamp_column} < ?"]
-                params: list[Any] = [cutoff]
-                if protect_column and protect_values:
-                    placeholders = ",".join("?" for _ in protect_values)
-                    clauses.append(f"{protect_column} NOT IN ({placeholders})")
-                    params.extend(protect_values)
-                if proposal_id_column and notable_ids:
-                    clauses.append(f"({proposal_id_column} IS NULL OR {proposal_id_column} NOT IN ({notable_placeholders}))")
-                    params.extend(notable_ids)
-                sql = f"DELETE FROM {table} WHERE " + " AND ".join(clauses)
-                try:
+        for table, config in DECISION_AUDIT_TABLES.items():
+            timestamp_column = config["timestamp_column"]
+            proposal_id_column = config["proposal_id_column"]
+            protect_column = config["protect_column"]
+            protect_values = config["protect_values"]
+            clauses = [f"{timestamp_column} < ?"]
+            params: list[Any] = [cutoff]
+            if protect_column and protect_values:
+                placeholders = ",".join("?" for _ in protect_values)
+                clauses.append(f"{protect_column} NOT IN ({placeholders})")
+                params.extend(protect_values)
+            if proposal_id_column and notable_ids:
+                clauses.append(f"({proposal_id_column} IS NULL OR {proposal_id_column} NOT IN ({notable_placeholders}))")
+                params.extend(notable_ids)
+            sql = f"DELETE FROM {table} WHERE " + " AND ".join(clauses)
+            try:
+                with conn:
                     cursor = conn.execute(sql, tuple(params))
                     deleted[table] = cursor.rowcount
-                except sqlite3.OperationalError:
-                    deleted[table] = 0
+            except Exception as exc:  # noqa: BLE001 - isolate one table's failure (e.g. deadlock) from the rest
+                deleted[table] = 0
+                errors[table] = str(exc)
 
+        with conn:
             conn.execute(
                 """INSERT INTO PRODUCTION_EVIDENCE_MAINTENANCE (task_name, last_run_at)
                 VALUES (?, ?) ON CONFLICT(task_name) DO UPDATE SET last_run_at=excluded.last_run_at""",
                 (task_name, now.isoformat()),
             )
-    return {
-        "status": "completed",
+    result = {
+        "status": "completed" if not errors else "partially_completed",
         "last_run_at": now.isoformat(),
         "cutoff": cutoff,
         "notable_proposal_count": len(notable_ids),
         "deleted_row_counts": deleted,
     }
+    if errors:
+        result["table_errors"] = errors
+    return result
 
 
 def _filter_founder_evidence_rows(

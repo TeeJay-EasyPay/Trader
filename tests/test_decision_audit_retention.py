@@ -327,6 +327,57 @@ class DecisionAuditRetentionTests(unittest.TestCase):
         finally:
             self._env_patch.start()
 
+    def test_one_tables_failure_does_not_roll_back_or_block_the_others(self):
+        # Regression test: an earlier version wrapped every table's DELETE in one shared
+        # transaction, so a real production deadlock on one table rolled the whole run back
+        # with zero net effect. Each table must now commit independently.
+        self._seed_all_tables(timestamp=self.old)
+
+        class _FlakyConnWrapper:
+            def __init__(self, real_conn):
+                object.__setattr__(self, "_real", real_conn)
+
+            def execute(self, sql, *args, **kwargs):
+                if "OPERATIONAL_EVENTS" in sql and sql.strip().startswith("DELETE"):
+                    raise sqlite3.OperationalError("simulated deadlock")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def __setattr__(self, name, value):
+                setattr(self._real, name, value)
+
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self._real.__exit__(*args)
+
+            def close(self):
+                # connect() is patched to always return this same wrapper across multiple
+                # calls within one prune_decision_and_audit_history invocation (schema init,
+                # then the main body) -- a real close() here would kill the shared connection
+                # after the first closing() block, before the function's own work runs.
+                pass
+
+        real_conn = sqlite3.connect(self.db_path)
+        wrapped = _FlakyConnWrapper(real_conn)
+        with patch("ai_trader.production_evidence.connect", return_value=wrapped):
+            result = prune_decision_and_audit_history(self.db_path, now=self.now, force=True)
+        real_conn.close()
+
+        self.assertEqual(result["status"], "partially_completed")
+        self.assertIn("OPERATIONAL_EVENTS", result["table_errors"])
+        # The failing table's own row was never deleted (transaction rolled back for just it)...
+        self.assertEqual(self._count("OPERATIONAL_EVENTS"), 1)
+        # ...but every other table still committed its own deletion despite that failure.
+        for table in DECISION_AUDIT_TABLES:
+            if table == "OPERATIONAL_EVENTS":
+                continue
+            self.assertEqual(self._count(table), 0, f"{table} should still have been pruned despite OPERATIONAL_EVENTS failing")
+
     def test_skips_a_second_run_within_24_hours_unless_forced(self):
         self._seed_all_tables(timestamp=self.old)
         prune_decision_and_audit_history(self.db_path, now=self.now, force=True)
