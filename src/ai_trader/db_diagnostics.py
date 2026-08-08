@@ -36,7 +36,7 @@ def database_size_report(db_path: Path, *, top_n: int = 15) -> dict[str, Any]:
         table_rows = conn.execute(
             """
             SELECT
-                relname AS table_name,
+                c.relname AS table_name,
                 pg_total_relation_size(c.oid) AS total_bytes,
                 pg_relation_size(c.oid) AS table_bytes,
                 pg_indexes_size(c.oid) AS index_bytes,
