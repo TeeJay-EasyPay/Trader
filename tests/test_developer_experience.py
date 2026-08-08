@@ -840,7 +840,7 @@ class DeveloperExperienceTests(unittest.TestCase):
 
     def test_propose_trades_isolates_one_symbols_failure_from_the_rest_of_the_batch(self):
         class FlakyAnalyzer:
-            def propose(self, symbol, market, news, account):
+            def propose(self, symbol, market, news, account, *, context=None):
                 if symbol == "BAD":
                     raise RuntimeError("simulated analyzer failure")
                 return None

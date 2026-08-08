@@ -13,6 +13,7 @@ from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal
+from .proposal_context import build_proposal_context
 from .trading_intelligence import evaluate_trade_intelligence
 
 
@@ -22,7 +23,9 @@ class MarketDataClient(Protocol):
 
 
 class ProposalAnalyzer(Protocol):
-    def propose(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal | None: ...
+    def propose(
+        self, symbol: str, market: dict, news: dict, account: AccountContext, *, context: dict[str, str] | None = None
+    ) -> TradeProposal | None: ...
 
 
 class AITradingAgent:
@@ -33,11 +36,18 @@ class AITradingAgent:
         audit: AuditDatabase,
         guardrails: GuardrailConfig,
         analyzer: ProposalAnalyzer | None = None,
+        db_path: Path | None = None,
     ):
         self.market_data = market_data
         self.audit = audit
         self.guardrails = guardrails
         self.analyzer = analyzer
+        # Phase C: real historical-analogue/backtest/external-intelligence/
+        # knowledge-base context for the proposal LLM call. Optional and
+        # defaults to the audit database (this agent already has a db_path
+        # via audit.path) so existing callers that only pass market_data/
+        # audit/guardrails/analyzer keep working unchanged.
+        self.db_path = db_path or audit.path
 
     def propose_trades(
         self,
@@ -87,7 +97,11 @@ class AITradingAgent:
                 if demo:
                     proposal = self._demo_proposal(symbol, market, news, account)
                 elif self.analyzer is not None:
-                    proposal = self.analyzer.propose(symbol, market, news, account)
+                    try:
+                        context = build_proposal_context(self.db_path, symbol=symbol, asset_type="stock")
+                    except Exception:  # noqa: BLE001 - richer context is additive; its failure must never block a proposal
+                        context = None
+                    proposal = self.analyzer.propose(symbol, market, news, account, context=context)
                     if proposal is None:
                         self._no_trade_probe(symbol, market, news)
                 else:

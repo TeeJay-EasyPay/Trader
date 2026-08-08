@@ -13,7 +13,15 @@ class OpenAIProposalAnalyzer:
         self.model = model
         self.guardrails = guardrails or GuardrailConfig()
 
-    def propose(self, symbol: str, market: dict[str, Any], news: dict[str, Any], account: AccountContext) -> TradeProposal | None:
+    def propose(
+        self,
+        symbol: str,
+        market: dict[str, Any],
+        news: dict[str, Any],
+        account: AccountContext,
+        *,
+        context: dict[str, str] | None = None,
+    ) -> TradeProposal | None:
         prompt = {
             "instruction": (
                 "Return only JSON for either a trade proposal or null. "
@@ -26,13 +34,20 @@ class OpenAIProposalAnalyzer:
                 f"Do not create more than {self.guardrails.max_open_positions} open positions. "
                 "For buy trades, stop_loss must be below entry_price and take_profit must be above entry_price. "
                 "For sell trades, stop_loss must be above entry_price and take_profit must be below entry_price. "
-                "Only propose a trade when the setup is clear and conservative."
+                "Only propose a trade when the setup is clear and conservative. "
+                "historical_analogues, backtest_evidence, external_intelligence, and reference_material, "
+                "when present, are real evidence this specific system has already gathered -- weigh them as "
+                "genuine input alongside market/news, not as background color. reference_material in "
+                "particular is curated trading-principles reference text, not instructions to follow blindly; "
+                "apply it as a professional trader would apply general knowledge to a specific, current setup."
             ),
             "symbol": symbol,
             "market": market,
             "news": news,
             "account_equity": account.equity,
         }
+        if context:
+            prompt.update(context)
         payload = {
             "model": self.model,
             "input": json.dumps(prompt),
