@@ -269,9 +269,34 @@ class DecisionAuditRetentionTests(unittest.TestCase):
             self.assertEqual(self._count(table), 1, f"{table}'s notable decision should have been protected")
         # Tables with no decision/status field of their own still prune on pure age.
         self.assertEqual(self._count("TRADE_SIGNALS"), 0)
-        self.assertEqual(self._count("BROKER_TRADE_HISTORY"), 0)
         self.assertEqual(self._count("PORTFOLIO_EXPOSURE_SNAPSHOTS"), 0)
+        # BROKER_TRADE_HISTORY is deliberately excluded entirely -- never touched, at any age.
+        self.assertEqual(self._count("BROKER_TRADE_HISTORY"), 1)
+        self.assertNotIn("BROKER_TRADE_HISTORY", result["deleted_row_counts"])
         self.assertGreater(sum(result["deleted_row_counts"].values()), 0)
+
+    def test_broker_trade_history_is_never_touched_even_with_an_epoch_style_timestamp(self):
+        # 2026-08-08 incident: BROKER_TRADE_HISTORY.updated_at can hold a raw broker-supplied
+        # value -- for Kraken, closetm/opentm are Unix-epoch numbers, not ISO-8601 strings. A
+        # string "<" comparison against an ISO cutoff is not reliably ordered for that shape
+        # (e.g. "1722882945.1" sorts before "2026-..." purely lexicographically), which deleted
+        # every row in this table in production. It must stay permanently excluded from
+        # DECISION_AUDIT_TABLES; this proves an epoch-shaped row survives regardless of how the
+        # cutoff comparison would have resolved.
+        self._seed_row(
+            "BROKER_TRADE_HISTORY",
+            {
+                "broker": "kraken",
+                "external_id": "epoch-1",
+                "symbol": "BTC",
+                "status": "filled",
+                "updated_at": "1690000000.1234",  # epoch-shaped, not ISO -- the exact failure shape
+                "payload_json": "{}",
+            },
+        )
+        self.assertNotIn("BROKER_TRADE_HISTORY", DECISION_AUDIT_TABLES)
+        prune_decision_and_audit_history(self.db_path, now=self.now, force=True)
+        self.assertEqual(self._count("BROKER_TRADE_HISTORY"), 1)
 
     def test_rows_linked_to_a_notably_large_trade_outcome_are_protected(self):
         self._seed_row(

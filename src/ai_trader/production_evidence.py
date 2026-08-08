@@ -222,17 +222,11 @@ DECISION_AUDIT_TABLES: dict[str, dict[str, Any]] = {
         "protect_values": ("failed", "timed_out"),
     },
     # No decision/status field of their own -- protected only via the notable-outcome
-    # proposal_id set (TRADE_SIGNALS) or, for the two with no proposal_id at all, a
-    # straightforward age cutoff (BROKER_TRADE_HISTORY, PORTFOLIO_EXPOSURE_SNAPSHOTS).
+    # proposal_id set (TRADE_SIGNALS) or, for PORTFOLIO_EXPOSURE_SNAPSHOTS (no proposal_id at
+    # all), a straightforward age cutoff.
     "TRADE_SIGNALS": {
         "timestamp_column": "created_at",
         "proposal_id_column": "proposal_id",
-        "protect_column": None,
-        "protect_values": (),
-    },
-    "BROKER_TRADE_HISTORY": {
-        "timestamp_column": "updated_at",
-        "proposal_id_column": None,
         "protect_column": None,
         "protect_values": (),
     },
@@ -242,6 +236,16 @@ DECISION_AUDIT_TABLES: dict[str, dict[str, Any]] = {
         "protect_column": None,
         "protect_values": (),
     },
+    # BROKER_TRADE_HISTORY is deliberately NOT in this dict. 2026-08-08 incident: its
+    # updated_at is populated from whichever of several broker-supplied fields is present
+    # first (multi_broker.py's record_broker_trade_history) -- for Kraken specifically this
+    # can be closetm/opentm, raw Unix-epoch numbers, not ISO-8601 strings. A string cutoff
+    # comparison against an epoch-formatted value is not reliably ordered (e.g. "162..." can
+    # sort before "2026-..." purely lexicographically), and a real production run deleted all
+    # rows in this table as a result -- confirmed recoverable (this table is a local cache
+    # repopulated every ~10 minutes from Alpaca/Kraken's own APIs via the broker-poll jobs,
+    # not the canonical trade record), but never add this table back without first normalizing
+    # updated_at to a real, consistently-ISO timestamp at write time.
 }
 
 
