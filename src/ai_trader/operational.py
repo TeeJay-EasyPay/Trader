@@ -399,12 +399,39 @@ def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any
             db_path,
             symbol=asset["symbol"],
             category=asset["category"],
-            metrics=_crypto_metrics_from_market_row(raw_row),
+            metrics=_crypto_metrics_from_market_row(raw_row, db_path=db_path, symbol=asset["symbol"]),
             source=asset["source"],
         )
 
 
-def _crypto_metrics_from_market_row(row: dict[str, Any]) -> dict[str, Any]:
+def _recent_crypto_news_coverage_score(db_path: Path, symbol: str, *, window_hours: int = 48, cap: int = 5) -> float | None:
+    """Phase D: a real, honestly-labeled coverage-volume proxy computed from
+    Phase A's CRYPTO_NEWS table -- how many real articles this symbol has had
+    in the last `window_hours`, normalized to 0..1 and capped at `cap`
+    articles. Deliberately NOT a sentiment score: this codebase's existing
+    convention (see _crypto_metrics_from_market_row's docstring/comment
+    below) is to leave a metric unset rather than fabricate it, and no real
+    sentiment analysis exists anywhere in this codebase -- article *volume*
+    is real and honestly computable from data this system actually has;
+    article *sentiment* is not, and populating this field must never be
+    read as a substitute for that. Returns None (not 0.0) when the table
+    does not exist yet or the query fails, so a fresh/pre-Phase-A database
+    behaves exactly as it did before this function existed.
+    """
+    try:
+        with closing(connect(db_path)) as conn:
+            cutoff = (datetime.now(timezone.utc).timestamp()) - (window_hours * 3600)
+            cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM CRYPTO_NEWS WHERE symbol = ? AND published_at >= ?",
+                (symbol.upper(), cutoff_iso),
+            ).fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+    return round(min(1.0, count / cap), 4)
+
+
+def _crypto_metrics_from_market_row(row: dict[str, Any], *, db_path: Path | None = None, symbol: str | None = None) -> dict[str, Any]:
     change_24h = safe_float(row.get("price_change_percentage_24h_in_currency") or row.get("price_change_percentage_24h"))
     change_7d = safe_float(row.get("price_change_percentage_7d_in_currency"))
     change_30d = safe_float(row.get("price_change_percentage_30d_in_currency"))
@@ -413,22 +440,30 @@ def _crypto_metrics_from_market_row(row: dict[str, Any]) -> dict[str, Any]:
     liquidity = min(1.0, volume / market_cap) if market_cap and volume and market_cap > 0 else None
     volatility = min(1.0, abs(change_30d) / 100) if change_30d is not None else None
     risk_score = round(1.0 - volatility, 4) if volatility is not None else None
+    news_score = _recent_crypto_news_coverage_score(db_path, symbol) if db_path is not None and symbol else None
     return {
         "technical_trend_score": _pct_to_unit_score(change_7d),
         "momentum_score": _pct_to_unit_score(change_24h),
         "volatility": volatility,
         "liquidity": liquidity,
         "risk_score": risk_score,
-        # No free reliable on-chain/sentiment/news feed is wired up yet - these are left
-        # unset (None) rather than fabricated, so due diligence correctly treats them as
-        # insufficient_data instead of silently passing.
+        # news_score, when db_path/symbol are supplied, is a real coverage-volume proxy
+        # from Phase A's CRYPTO_NEWS table (see _recent_crypto_news_coverage_score) -- not
+        # sentiment. No real sentiment analysis exists anywhere in this codebase, and
+        # on-chain activity has no wired data source yet either; both stay unset (None)
+        # rather than fabricated, so due diligence correctly treats them as
+        # insufficient_data instead of silently passing. news_score is also NOT included
+        # in overall_due_diligence_score's average (multi_broker.py's
+        # record_crypto_research_score only averages technical/momentum/risk/sentiment/
+        # liquidity) -- it is informational, not a factor in the accept/reject threshold.
         "sentiment": None,
-        "news_score": None,
+        "news_score": news_score,
         "onchain_activity": None,
         "reasoning": {
             "source": "CoinGecko public markets API",
             "note": "technical/momentum/volatility/liquidity are computed from live price, volume, and market-cap data. "
-            "on-chain activity, sentiment, and news are not available without a paid data provider and are left blank.",
+            "news_score (when available) is real article-volume coverage from CryptoPanic, not sentiment. "
+            "on-chain activity and sentiment are not available without a paid data provider and are left blank.",
             "price_change_pct_24h": change_24h,
             "price_change_pct_7d": change_7d,
             "price_change_pct_30d": change_30d,

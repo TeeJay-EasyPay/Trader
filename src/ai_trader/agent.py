@@ -336,6 +336,25 @@ def propose_crypto_trades(
                 intelligence=intelligence.to_dict(),
                 strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
             )
+            if validation.passed:
+                # Phase D: the same historical-analogue/backtest/external-intelligence/
+                # knowledge-base context Phase C gives the Alpaca LLM proposal call, folded
+                # into this already-deterministic-and-approved crypto proposal's reasoning
+                # text for transparency and audit -- not a gate. This governed path has no
+                # LLM call at all (propose_crypto_trades never had one, and adding a live,
+                # synchronous OpenAI call into this job's per-symbol loop is a separate,
+                # larger decision involving real timeout and real-money-veto tradeoffs not
+                # made here) and this enrichment never changes whether validation.passed or
+                # the proposal's price/size/stop/target -- only what its reasoning text says.
+                try:
+                    context = build_proposal_context(db_path, symbol=symbol, asset_type="crypto")
+                    context_note = (
+                        f"\n\nAdditional context: {context['historical_analogues']} "
+                        f"{context['backtest_evidence']} {context['external_intelligence']}"
+                    ).strip()
+                    proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note)
+                except Exception:  # noqa: BLE001 - enrichment is additive; its failure must never block a proposal
+                    pass
             audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
                 proposals.append(proposal)

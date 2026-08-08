@@ -142,5 +142,70 @@ class Sprint5OperationalTests(unittest.TestCase):
         self.assertEqual(adapter.place_order(request)["status"], "not_configured")
 
 
+class PhaseDCryptoNewsCoverageTests(unittest.TestCase):
+    """Phase D: real (not fabricated) news-coverage-volume scoring for crypto
+    research, sourced from Phase A's CRYPTO_NEWS table."""
+
+    def test_crypto_metrics_leaves_news_score_none_without_db_path_or_symbol(self):
+        from ai_trader.operational import _crypto_metrics_from_market_row
+
+        metrics = _crypto_metrics_from_market_row({"current_price": 100})
+        self.assertIsNone(metrics["news_score"])
+        self.assertIsNone(metrics["sentiment"])
+
+    def test_crypto_metrics_computes_real_news_score_from_recent_articles(self):
+        from ai_trader.external_intelligence import record_crypto_news
+        from ai_trader.models import utc_now_iso
+        from ai_trader.operational import _crypto_metrics_from_market_row
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_crypto_news(
+                db_path,
+                posts=[
+                    {"title": "ETH news 1", "url": "https://x/1", "published_at": utc_now_iso(), "currencies": [{"code": "eth"}]},
+                    {"title": "ETH news 2", "url": "https://x/2", "published_at": utc_now_iso(), "currencies": [{"code": "eth"}]},
+                ],
+            )
+            metrics = _crypto_metrics_from_market_row({"current_price": 100}, db_path=db_path, symbol="ETH")
+        self.assertEqual(metrics["news_score"], round(2 / 5, 4))
+        # Never fabricated: sentiment stays unset even when real news volume is known.
+        self.assertIsNone(metrics["sentiment"])
+
+    def test_crypto_metrics_ignores_articles_outside_the_recency_window(self):
+        from ai_trader.external_intelligence import record_crypto_news
+        from ai_trader.operational import _crypto_metrics_from_market_row
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_crypto_news(
+                db_path,
+                posts=[{"title": "Old news", "url": "https://x/old", "published_at": "2020-01-01T00:00:00Z", "currencies": [{"code": "eth"}]}],
+            )
+            metrics = _crypto_metrics_from_market_row({"current_price": 100}, db_path=db_path, symbol="ETH")
+        self.assertEqual(metrics["news_score"], 0.0)
+
+    def test_news_score_does_not_affect_overall_due_diligence_score(self):
+        # record_crypto_research_score's overall average is technical/momentum/risk/
+        # sentiment/liquidity only -- news_score must never move the accept/reject
+        # threshold, only enrich the stored record.
+        from ai_trader.multi_broker import record_crypto_research_score
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            base_metrics = {
+                "technical_trend_score": 0.5,
+                "momentum_score": 0.5,
+                "risk_score": 0.5,
+                "sentiment": None,
+                "liquidity": 0.5,
+            }
+            without_news = record_crypto_research_score(db_path, symbol="AAA", category=None, metrics=base_metrics, source="test")
+            with_news = record_crypto_research_score(
+                db_path, symbol="BBB", category=None, metrics={**base_metrics, "news_score": 1.0}, source="test"
+            )
+        self.assertEqual(without_news["overall_due_diligence_score"], with_news["overall_due_diligence_score"])
+
+
 if __name__ == "__main__":
     unittest.main()

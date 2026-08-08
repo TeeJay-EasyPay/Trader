@@ -255,6 +255,67 @@ class FoundationSprintTests(unittest.TestCase):
             self.assertTrue(proposals[0].ai_guardrails_passed, proposals[0].ai_guardrail_failures)
             self.assertLessEqual(proposals[0].risk_percentage, GuardrailConfig().max_risk_per_trade_pct)
 
+    def test_propose_crypto_trades_enriches_reasoning_with_real_context_without_changing_the_trade(self):
+        # Phase D: a passing crypto proposal's reasoning text gains real historical-
+        # analogue/backtest/external-intelligence context -- informational only, never a
+        # gate. The proposal's actual trade terms (entry/stop/target/size) must be
+        # byte-for-byte identical to what the deterministic score alone would have produced.
+        from ai_trader.agent import propose_crypto_trades
+        from ai_trader.audit import AuditDatabase
+        from ai_trader.experience_engine import record_experience
+        from ai_trader.multi_broker import record_crypto_research_score
+
+        class FakeKrakenPriceAdapter:
+            def current_prices(self, pairs):
+                return {pairs[0]: {"c": ["50000.0", "1.0"]}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            audit = AuditDatabase(db_path, None)
+            record_crypto_research_score(
+                db_path,
+                symbol="BTC",
+                category="Top 20 by market cap",
+                metrics={
+                    "technical_trend_score": 0.75,
+                    "momentum_score": 0.6,
+                    "volatility": 0.2,
+                    "liquidity": 0.8,
+                    "risk_score": 0.8,
+                    "overall_due_diligence_score": 0.9,
+                    "confidence_score": 0.9,
+                },
+                source="test",
+            )
+            record_experience(
+                db_path,
+                symbol="BTC",
+                decision_context={"note": "prior BTC trade"},
+                result_context={"outcome": "win", "pnl": 42.0},
+            )
+            account = AccountContext(equity=1000, daily_realized_pnl=0, open_positions=[], is_paper=False)
+
+            proposals = propose_crypto_trades(
+                db_path,
+                FakeKrakenPriceAdapter(),
+                ["BTC"],
+                account,
+                GuardrailConfig(),
+                audit,
+                min_confidence=0.85,
+                requested_notional=5.0,
+                default_stop_loss_pct=0.02,
+            )
+
+            self.assertEqual(len(proposals), 1)
+            proposal = proposals[0]
+            self.assertIn("Additional context:", proposal.plain_english_reasoning)
+            self.assertIn("outcome=win", proposal.plain_english_reasoning)
+            self.assertEqual(proposal.entry_price, 50000.0)
+            self.assertEqual(proposal.stop_loss, round(50000.0 * 0.98, 8))
+            self.assertEqual(proposal.position_size, 5.0 / 50000.0)
+
     def test_unavailable_kraken_pair_does_not_abort_crypto_research(self):
         from ai_trader.agent import propose_crypto_trades
         from ai_trader.audit import AuditDatabase
