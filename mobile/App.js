@@ -22,6 +22,7 @@ import { LearningStrategyLab } from './screens/Learning';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
 import { useFounderBrief } from './hooks/useFounderBrief';
+import { useRecommendationDossiers } from './hooks/useRecommendationDossiers';
 const {
   DISPLAY_STATE,
   classifyDisplayState,
@@ -85,21 +86,26 @@ export default function App() {
   // App.js, constructed once) rather than inside their screen components.
   const marketData = useMarketData();
   const founderBrief = useFounderBrief();
+  const recommendationDossiers = useRecommendationDossiers(screen === 'Recommendations');
 
   // AT-ED-011.5 requirement 5 (see mobile/lib/screenRefresh.js and the ownership table in
   // architecture/ARCHITECTURE_DELTA.md / Data_Freshness_Findings.md): every screen's own
   // refresh/loading/last-refreshed/error is composed here, once, from only the source(s)
-  // SCREEN_DATA_SOURCES actually lists for it - Activity/Portfolio/Recommendations/Learning
-  // genuinely share the one founder-evidence payload (no narrower backend endpoint would
-  // reduce a real network/DB cost - see the ownership table), so they compose to that shared
-  // source only; Market and ExecutiveBriefing/Operations' founder-brief are screen-exclusive and never appear in
-  // another screen's composition.
+  // SCREEN_DATA_SOURCES actually lists for it. Activity/Portfolio/Learning use the compact
+  // shared Founder projection; Recommendations adds its on-demand full-dossier source. Market
+  // and ExecutiveBriefing/Operations' founder-brief remain screen-exclusive.
   const screenRefresh = useMemo(
     () =>
       buildScreenRefreshRegistry({
         shared: { refresh, loading, lastRefreshedAt, lastRefreshError },
         market: { refresh: marketData.refresh, loading: marketData.loading, lastRefreshedAt: marketData.lastRefreshedAt, lastRefreshError: marketData.lastRefreshError },
         founderBrief: { refresh: founderBrief.refresh, loading: founderBrief.loading, lastRefreshedAt: founderBrief.lastRefreshedAt, lastRefreshError: founderBrief.lastRefreshError },
+        recommendationDossiers: {
+          refresh: recommendationDossiers.refresh,
+          loading: recommendationDossiers.loading,
+          lastRefreshedAt: recommendationDossiers.lastRefreshedAt,
+          lastRefreshError: recommendationDossiers.lastRefreshError,
+        },
       }),
     [
       refresh,
@@ -114,6 +120,10 @@ export default function App() {
       founderBrief.loading,
       founderBrief.lastRefreshedAt,
       founderBrief.lastRefreshError,
+      recommendationDossiers.refresh,
+      recommendationDossiers.loading,
+      recommendationDossiers.lastRefreshedAt,
+      recommendationDossiers.lastRefreshError,
     ]
   );
   const activeScreenRefresh = screenRefresh[screen] || screenRefresh.ExecutiveBriefing;
@@ -151,6 +161,7 @@ export default function App() {
       symbol,
       amount: amounts[proposalId] || null,
     });
+    await recommendationDossiers.refresh();
   };
 
   const content = useMemo(() => {
@@ -216,9 +227,14 @@ export default function App() {
       );
     }
     if (screen === 'Recommendations') {
+      const recommendationItems = recommendationDossiers.recommendations.length
+        ? recommendationDossiers.recommendations
+        : recommendations;
       return (
         <Recommendations
-          recommendations={recommendations}
+          recommendations={recommendationItems}
+          dossierLoading={recommendationDossiers.loading}
+          dossierError={recommendationDossiers.lastRefreshError}
           trades={performanceAttribution}
           dailyLearning={dailyLearning}
           amounts={amounts}
@@ -227,11 +243,13 @@ export default function App() {
           onRefresh={screenRefresh.Recommendations.refresh}
           onRunAnalysis={(broker = 'kraken') => {
             if (String(broker).toLowerCase() === 'kraken') {
-              return command('/run-crypto-analysis', { broker: 'kraken', limit: 10 });
+              return command('/run-crypto-analysis', { broker: 'kraken', limit: 10 })
+                .then(() => recommendationDossiers.refresh());
             }
-            return command('/run-analysis', { broker: 'alpaca', limit: 10 });
+            return command('/run-analysis', { broker: 'alpaca', limit: 10 })
+              .then(() => recommendationDossiers.refresh());
           }}
-          onAutoExecute={() => command('/auto-execute-recommendations')}
+          onAutoExecute={() => command('/auto-execute-recommendations').then(() => recommendationDossiers.refresh())}
           targetRecommendationId={targetRecommendationId}
           clearTargetRecommendation={() => setTargetRecommendationId(null)}
         />
@@ -294,6 +312,8 @@ export default function App() {
     performanceAttribution,
     portfolio,
     recommendations,
+    recommendationDossiers.recommendations,
+    recommendationDossiers.refresh,
     screenRefresh,
     screen,
     status,

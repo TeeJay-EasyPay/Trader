@@ -129,6 +129,11 @@ CREATE TABLE IF NOT EXISTS PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS (
     generated_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS PRODUCTION_EVIDENCE_MAINTENANCE (
+    task_name TEXT PRIMARY KEY,
+    last_run_at TEXT NOT NULL
+);
 """
 
 POSTGRES_SCHEMA = SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY").replace(" REAL", " DOUBLE PRECISION")
@@ -136,6 +141,13 @@ POSTGRES_SCHEMA = SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BI
 _SCHEMA_LOCK = threading.Lock()
 _INITIALIZED_SCHEMA_KEYS: set[str] = set()
 FOUNDER_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
+PRODUCTION_EVIDENCE_RETENTION_INTERVAL = timedelta(hours=24)
+PRODUCTION_EVIDENCE_RETENTION_DAYS = {
+    "PRODUCTION_BROKER_SNAPSHOTS": ("captured_at", 30),
+    "PRODUCTION_RESEARCH_EVIDENCE": ("completed_at", 90),
+    "PRODUCTION_RECOMMENDATION_EVIDENCE": ("created_at", 90),
+    "PRODUCTION_LEARNING_EVIDENCE": ("completed_at", 365),
+}
 
 
 def initialize_production_evidence_schema(db_path: Path) -> None:
@@ -559,10 +571,14 @@ def _assemble_founder_evidence_payload(
     fees = sum(_number(row.get("fee")) or 0.0 for row in trades)
     latest_activity = _latest_activity(research, trades, learning, jobs)
     no_trade = _why_no_trade(funnels, jobs, trades)
-    broker_payload = [
-        _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
-        for row in snapshots
-    ]
+    broker_payload = []
+    for row in snapshots:
+        broker_row = _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
+        # The decoded objects are authoritative in the API contract. Keeping their original
+        # JSON strings beside them doubled each broker row on every snapshot/read.
+        broker_row.pop("positions_json", None)
+        broker_row.pop("payload_json", None)
+        broker_payload.append(broker_row)
     if db_path is not None:
         # Open, AI-tracked positions (MANAGED_TRADE_EXITS) are a distinct, explicitly-owned
         # subset of a broker's raw position list -- the raw list also includes personal/manual
@@ -623,7 +639,11 @@ def _assemble_founder_evidence_payload(
         "trades": [_decode_row(row, {"payload_json"}) for row in trades],
         "performance": {"realized_pnl": realized_pnl, "fees": fees, "net_realized_pnl": realized_pnl - fees},
         "research": [_decode_row(row, {"symbols_json", "payload_json"}) for row in research],
-        "recommendations": [_recommendation_payload(row) for row in recommendations],
+        # The frequently-read Founder projection carries bounded summaries only. Full immutable
+        # dossiers remain available from the dedicated /recommendations endpoint when the
+        # Founder opens that screen. This prevents four persisted period snapshots from each
+        # duplicating ~4 MB of nested intelligence every five minutes.
+        "recommendations": [_recommendation_summary_payload(row) for row in recommendations],
         "learning": [_decode_row(row, {"payload_json"}) for row in learning],
         "jobs": jobs[:100],
         "timeline": {"items": _timeline(research, trades, learning, jobs), "total": len(research) + len(trades) + len(learning) + len(jobs)},
@@ -699,6 +719,10 @@ def refresh_founder_evidence_snapshots(
     _ensure_local_production_evidence_schema(db_path)
     refreshed: list[str] = []
     failures: dict[str, str] = {}
+    try:
+        retention = prune_production_evidence(db_path)
+    except Exception as exc:  # retention must never prevent a current Founder snapshot
+        retention = {"status": "failed", "reason": str(exc)}
     oldest_since = min((_period_start(period) for period in periods), default=_period_start("24h"))
     try:
         shared_rows = _load_founder_evidence_rows(
@@ -711,6 +735,7 @@ def refresh_founder_evidence_snapshots(
             "status": "failed",
             "refreshed_periods": [],
             "failed_periods": {period: str(exc) for period in periods},
+            "retention": retention,
             "generated_at": utc_now_iso(),
         }
     for period in periods:
@@ -725,8 +750,48 @@ def refresh_founder_evidence_snapshots(
         "status": "completed" if not failures else "partially_completed",
         "refreshed_periods": refreshed,
         "failed_periods": failures,
+        "retention": retention,
         "generated_at": utc_now_iso(),
     }
+
+
+def prune_production_evidence(
+    db_path: Path,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Bound redundant operational evidence without deleting canonical trade history.
+
+    The five-minute snapshot job calls this function, but the durable maintenance marker
+    makes the delete pass run at most once per 24 hours across worker restarts. Trade evidence
+    is intentionally excluded: broker/canonical trade history remains the permanent audit
+    trail, while replaceable broker snapshots and recommendation projections are bounded.
+    """
+    _ensure_local_production_evidence_schema(db_path)
+    now = now or datetime.now(timezone.utc)
+    task_name = "production-evidence-retention"
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        with conn:
+            row = conn.execute(
+                "SELECT last_run_at FROM PRODUCTION_EVIDENCE_MAINTENANCE WHERE task_name = ?",
+                (task_name,),
+            ).fetchone()
+            last_run_at = _as_utc_datetime(row["last_run_at"]) if row else None
+            if not force and last_run_at and now - last_run_at < PRODUCTION_EVIDENCE_RETENTION_INTERVAL:
+                return {"status": "skipped_recent", "last_run_at": last_run_at.isoformat()}
+            cutoffs: dict[str, str] = {}
+            for table, (timestamp_column, days) in PRODUCTION_EVIDENCE_RETENTION_DAYS.items():
+                cutoff = (now - timedelta(days=days)).isoformat()
+                conn.execute(f"DELETE FROM {table} WHERE {timestamp_column} < ?", (cutoff,))
+                cutoffs[table] = cutoff
+            conn.execute(
+                """INSERT INTO PRODUCTION_EVIDENCE_MAINTENANCE (task_name, last_run_at)
+                VALUES (?, ?) ON CONFLICT(task_name) DO UPDATE SET last_run_at=excluded.last_run_at""",
+                (task_name, now.isoformat()),
+            )
+    return {"status": "completed", "last_run_at": now.isoformat(), "cutoffs": cutoffs}
 
 
 def _filter_founder_evidence_rows(
@@ -1098,7 +1163,9 @@ def _portfolio_payload(brokers: list[dict[str, Any]]) -> dict[str, Any]:
     for row in brokers:
         for position in row.get("positions") or []:
             positions.append({**position, "broker": row.get("broker")})
-    return {"portfolio_value": total if brokers else None, "cash_available": cash if brokers else None, "deployed_capital": total - cash if brokers else None, "todays_pnl": sum(day_pnl_known) if day_pnl_known else None, "open_positions": positions, "brokers": brokers, "source": "Shared production broker snapshots"}
+    # Broker detail already has its own top-level `brokers` field. Repeating that full array
+    # inside portfolio was another verbatim copy in every persisted/read projection.
+    return {"portfolio_value": total if brokers else None, "cash_available": cash if brokers else None, "deployed_capital": total - cash if brokers else None, "todays_pnl": sum(day_pnl_known) if day_pnl_known else None, "open_positions": positions, "source": "Shared production broker snapshots"}
 
 
 def _recommendation_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -1163,6 +1230,50 @@ def _recommendation_payload(row: dict[str, Any]) -> dict[str, Any]:
     result.setdefault("guardrails_passed", result.get("ai_guardrails_passed"))
     result.setdefault("guardrail_failures", result.get("ai_guardrail_failures") or [])
     return result
+
+
+_RECOMMENDATION_SUMMARY_FIELDS = (
+    "proposal_id",
+    "recommendation_id",
+    "created_at",
+    "expires_at",
+    "broker",
+    "suggested_broker",
+    "symbol",
+    "ticker",
+    "company",
+    "asset_type",
+    "side",
+    "status",
+    "confidence",
+    "confidence_score",
+    "freshness_status",
+    "exchange",
+    "strategy_id",
+    "strategy_name",
+    "probability_of_success",
+    "expected_return_r",
+    "committee_result",
+    "strongest_argument_for",
+    "strongest_argument_against",
+    "reason_for_recommendation",
+    "plain_english_reasoning",
+    "key_risks",
+    "suggested_stop_loss",
+    "suggested_take_profit",
+    "suggested_position_size",
+    "position_size",
+    "guardrails_passed",
+    "ai_guardrails_passed",
+    "auto_trade_eligible",
+    "investment_philosophy_fit",
+)
+
+
+def _recommendation_summary_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Project the small cross-screen fields; omit nested dossier/intelligence packets."""
+    full = _recommendation_payload(row)
+    return {key: full[key] for key in _RECOMMENDATION_SUMMARY_FIELDS if full.get(key) is not None}
 
 
 def _timeline(research: list[dict[str, Any]], trades: list[dict[str, Any]], learning: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:

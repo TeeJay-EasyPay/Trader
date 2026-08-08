@@ -36,20 +36,17 @@ const MAX_CACHED_TIMELINE_ITEMS = 20;
 const MAX_CACHED_RESEARCH_ROWS = 10;
 const MAX_CACHED_LEARNING_ROWS = 10;
 
-// The dedicated recommendations cache (mobile/hooks/useFounderEvidence.js's
-// RECOMMENDATION_CACHE_KEY, read by the Recommendations screen for its own offline view) keeps
-// full per-item fidelity - rather than the tiny stub fields below - so an offline Founder can
-// still open a recommendation's full dossier. Capped to item count only: 15 items x ~43KB is
-// ~645KB, comfortably under AsyncStorage's Android ceiling with wide margin, versus the ~4.3MB
-// the uncapped 100-item array measured at.
+// The shared recommendations cache (mobile/hooks/useFounderEvidence.js) now receives compact
+// backend summaries and remains capped as defence in depth. Full dossiers use the separate
+// screen-owned cache in hooks/useRecommendationDossiers.js and are fetched only on demand.
 const MAX_CACHED_RECOMMENDATION_LIST_ITEMS = 15;
 
 // Fields kept per recommendation in the small founder-evidence-snapshot stub list. Confirmed
 // by reading every recommendation-field access in founderEvidenceMapping.js's
 // statusFromFounderEvidence(): only .length, .symbol, .freshness_status, .broker, and
 // .suggested_broker are ever read from the shared founder-evidence recommendations array (the
-// Recommendations screen's own rich detail comes from the separate, full-fidelity
-// RECOMMENDATION_CACHE_KEY cache above, not from this one).
+// Recommendations screen's rich detail comes from useRecommendationDossiers, not from this
+// high-frequency Founder snapshot).
 const RECOMMENDATION_STUB_FIELDS = [
   'proposal_id',
   'recommendation_id',

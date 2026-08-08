@@ -90,7 +90,9 @@ function themeOpportunityCard(theme) {
 // under-explained. "Wait"/"Insufficient evidence" are deliberately NOT filtered here - those are
 // genuinely borderline, not a definitive veto, and still worth the Founder seeing.
 function wasRejectedByCommittee(item) {
-  return item?.committee?.committee_result === 'Reject';
+  // Compact Founder snapshots expose the scalar directly; on-demand dossiers retain the
+  // nested committee packet. Both represent the same governance decision.
+  return (item?.committee?.committee_result || item?.committee_result) === 'Reject';
 }
 
 // recommendations: fresh (non-expired), NOT rejected by AI Trader's own committee, sorted by

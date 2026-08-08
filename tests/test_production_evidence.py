@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ import ai_trader.production_evidence as production_evidence
 from ai_trader.production_evidence import (
     founder_evidence_payload,
     persist_founder_evidence_snapshot,
+    prune_production_evidence,
     refresh_founder_evidence_snapshots,
     record_broker_snapshot,
     record_learning_evidence,
@@ -41,7 +43,7 @@ def settings_for(tmp: str) -> Settings:
 
 
 class ProductionEvidenceTests(unittest.TestCase):
-    def test_nested_trading_intelligence_survives_shared_evidence_projection(self):
+    def test_shared_projection_keeps_decision_summary_but_omits_nested_dossier(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
             record_recommendation_evidence(
@@ -86,11 +88,69 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(recommendation["strategy_id"], "evidence-trend")
             self.assertEqual(recommendation["probability_of_success"], 0.64)
             self.assertEqual(recommendation["expected_return_r"], 0.92)
-            self.assertEqual(recommendation["expected_r_multiple"], 2.0)
             self.assertEqual(recommendation["committee_result"], "approved")
             self.assertIn("earnings event", recommendation["strongest_argument_against"])
-            self.assertEqual(recommendation["invalidation"], ["Price closes below support."])
-            self.assertEqual(recommendation["intelligence"]["strategy"]["name"], "Evidence Trend")
+            self.assertNotIn("intelligence", recommendation)
+            self.assertNotIn("committee", recommendation)
+            self.assertNotIn("signals", recommendation)
+
+    def test_shared_projection_size_is_not_driven_by_large_recommendation_dossier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_recommendation_evidence(
+                db_path,
+                {
+                    "proposal_id": "proposal-large",
+                    "symbol": "AAPL",
+                    "confidence_score": 0.91,
+                    "plain_english_reasoning": "A bounded thesis.",
+                    "intelligence": {"committee": {"raw_evidence": "x" * 250_000}},
+                },
+                broker="alpaca",
+            )
+
+            payload = founder_evidence_payload(db_path)
+
+            self.assertLess(len(production_evidence._json(payload["recommendations"])), 10_000)
+            self.assertNotIn("intelligence", payload["recommendations"][0])
+
+    def test_retention_prunes_replaceable_evidence_but_preserves_trade_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            now = datetime(2026, 8, 6, tzinfo=timezone.utc)
+            old = (now - timedelta(days=120)).isoformat()
+            record_recommendation_evidence(
+                db_path,
+                {"proposal_id": "old-proposal", "symbol": "AAPL", "created_at": old},
+                broker="alpaca",
+            )
+            record_broker_snapshot(
+                db_path,
+                {"broker": "alpaca", "connection_status": "connected"},
+                captured_at=old,
+            )
+            record_trade_evidence(
+                db_path,
+                broker="alpaca",
+                event={"id": "old-trade", "status": "filled", "updated_at": old},
+            )
+
+            result = prune_production_evidence(db_path, now=now, force=True)
+            recommendations = production_evidence._query(
+                db_path, "SELECT recommendation_id FROM PRODUCTION_RECOMMENDATION_EVIDENCE", limit=10
+            )
+            snapshots = production_evidence._query(
+                db_path, "SELECT snapshot_id FROM PRODUCTION_BROKER_SNAPSHOTS", limit=10
+            )
+            trades = production_evidence._query(
+                db_path, "SELECT trade_evidence_id FROM PRODUCTION_TRADE_EVIDENCE", limit=10
+            )
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(recommendations, [])
+            self.assertEqual(snapshots, [])
+            self.assertEqual(len(trades), 1)
+            self.assertEqual(prune_production_evidence(db_path, now=now)["status"], "skipped_recent")
 
     def test_production_research_merges_rich_recommendation_dossier(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -357,6 +417,9 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(payload["portfolio"]["portfolio_value"], 101_250)
             self.assertEqual(payload["portfolio"]["todays_pnl"], 250)
             self.assertEqual(payload["brokers"][0]["broker"], "alpaca")
+            self.assertNotIn("brokers", payload["portfolio"])
+            self.assertNotIn("payload_json", payload["brokers"][0])
+            self.assertNotIn("positions_json", payload["brokers"][0])
             self.assertEqual(payload["recommendations"][0]["symbol"], "AAPL")
             self.assertEqual(len(payload["learning"]), 1)
             self.assertTrue(any(item["category"] == "Execution" for item in payload["timeline"]["items"]))

@@ -1,5 +1,37 @@
 # Implementation Log
 
+## 2026-08-06 — Supabase Egress and Database Growth Remediation
+
+Production diagnosis measured one normal `/founder-evidence` response at **4,785,850 bytes
+(4.56 MiB)**. Its 100-item `recommendations` array accounted for **4,327,249 bytes (90.4%)**.
+The mobile app requested that payload every two minutes, while the five-minute worker persisted
+the same full recommendation dossiers into each of four period snapshots. The schema also had no
+retention policy for recommendation, research, broker-snapshot, or learning projections.
+
+Implemented a split read model. `PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS` now stores compact
+recommendation summaries containing only cross-screen decision fields; nested committee,
+strategy, signal, probability, lifecycle, and explainability packets are excluded. Full dossiers
+remain available through the existing authenticated `/recommendations` route, now bounded to 15
+items by default and 50 maximum. The mobile app loads those dossiers only when the Recommendations
+screen is opened, maintains a separate bounded dossier cache, and composes that screen's manual
+refresh from the compact shared source plus the on-demand dossier source. Other screens continue
+to receive the summary fields they actually use, including the committee veto scalar. The shared
+projection also stops repeating raw `payload_json`/`positions_json` beside decoded broker objects
+and stops nesting a second copy of the top-level broker list inside `portfolio`.
+
+Added durable, once-per-24-hour retention for replaceable production evidence: broker snapshots
+30 days, research evidence 90 days, recommendation evidence 90 days, and learning evidence 365
+days. `PRODUCTION_TRADE_EVIDENCE` and all canonical trade/audit history are explicitly excluded.
+Retention failure is isolated from snapshot publication, so maintenance can never suppress current
+Founder evidence. This bounds future growth; reclaiming already-allocated PostgreSQL/TOAST bloat
+still requires a separately approved production maintenance operation after deployment.
+
+Validation completed against the final shape: **343 backend tests plus 21 subtests passed**; every
+plain-Node mobile library test passed; and Babel parsed every changed mobile source file cleanly.
+A large synthetic 250 KB recommendation dossier now produces a shared recommendation projection
+below 10 KB and proves nested intelligence is absent. No production deployment or database vacuum
+was performed in this implementation session.
+
 ## 2026-08-05 AT-ED-017 — Forecast Engine & Executive Briefing Refinement
 
 Evolution, not revolution, per the directive's explicit framing: no new cards, no new engines, no

@@ -11,7 +11,8 @@
 // authoritative shared payload should show one honest shared state - see the ownership table in
 // ARCHITECTURE_DELTA.md / Data_Freshness_Findings.md for why no narrower backend endpoint
 // changes that), but it needs to be an explicit, testable composition, not an implicit side
-// effect of every screen happening to destructure the same hook.
+// effect of every screen happening to destructure the same hook. Recommendation summaries
+// remain shared, while the heavy full dossiers are a Recommendations-screen-only source.
 //
 // SCREEN_DATA_SOURCES is the single source of truth for which named data source(s) each screen
 // depends on. "Command" (the Founder's own name for the Dashboard/Command-Centre screen) and
@@ -27,7 +28,7 @@ const SCREEN_DATA_SOURCES = Object.freeze({
   ExecutiveBriefing: ['shared', 'founderBrief'],
   Operations: ['shared', 'founderBrief'],
   Activity: ['shared'],
-  Recommendations: ['shared'],
+  Recommendations: ['shared', 'recommendationDossiers'],
   Portfolio: ['shared'],
   Market: ['market'],
   Learning: ['shared'],
@@ -82,11 +83,11 @@ function composeScreenRefresh(sources) {
   };
 }
 
-// Builds every screen's composed refresh object from the three underlying source objects, in
+// Builds every screen's composed refresh object from the underlying source objects, in
 // one place, so App.js cannot accidentally wire a screen to a source SCREEN_DATA_SOURCES does
 // not list for it.
-function buildScreenRefreshRegistry({ shared, market, founderBrief }) {
-  const sourcesByName = { shared, market, founderBrief };
+function buildScreenRefreshRegistry({ shared, market, founderBrief, recommendationDossiers }) {
+  const sourcesByName = { shared, market, founderBrief, recommendationDossiers };
   const registry = {};
   Object.entries(SCREEN_DATA_SOURCES).forEach(([screen, sourceNames]) => {
     registry[screen] = composeScreenRefresh(sourceNames.map((name) => sourcesByName[name]));

@@ -7,7 +7,9 @@
 //
 // AT-ED-011.5: this hook owns the ONE `/founder-evidence` payload that Dashboard, Activity,
 // Portfolio, Recommendations, and Learning all genuinely share (status/portfolio/activity/
-// recommendations/performanceAttribution/dailyLearning are all fields of that single response)
+// recommendation summaries/performanceAttribution/dailyLearning are fields of that response).
+// Full recommendation dossiers are screen-owned by useRecommendationDossiers so the periodic
+// shared refresh remains small.
 // - per the directive's own rule that shared data should use a shared hook only where multiple
 // screens genuinely consume the same authoritative payload. Data that has its OWN endpoint and
 // is only consumed by ONE screen (Market's themes/companies/benchmark, Dashboard's founder
@@ -320,9 +322,8 @@ function useFounderEvidence() {
     )
       .catch(() => {
         // Same reasoning as persistFounderEvidenceCache: never Founder-facing, never affects
-        // refresh success. The Recommendations screen still has the live in-memory list this
-        // session; only a future offline launch would be affected, and that is an honest
-        // "no previous snapshot" state, not a hidden failure.
+        // refresh success. Shared recommendation summaries remain live in memory this session;
+        // only their lightweight offline fallback would be affected.
       })
       .finally(() => {
         recommendationsCacheWriteInFlightRef.current = false;

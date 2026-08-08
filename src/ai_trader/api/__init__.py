@@ -402,7 +402,10 @@ class LocalApiService:
         if path == "/founder-brief":
             return 200, self.founder_brief()
         if path == "/recommendations":
-            return 200, {"recommendations": self.recommendations()}
+            # Full dossiers are intentionally on-demand. The two-minute Founder snapshot uses
+            # compact summaries; only the Recommendations screen pays for this richer payload.
+            limit = max(1, min(_int_or_default(_first(query, "limit"), 15), 50))
+            return 200, {"recommendations": self.recommendations(limit=limit)}
         if path == "/intelligence/companies":
             return 200, {"companies": self.companies()}
         if path == "/intelligence/themes":

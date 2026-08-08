@@ -103,7 +103,7 @@ function RecommendationCard({ item, lifecycle, amount, setAmount, onApprove }) {
   );
 }
 
-function Recommendations({ recommendations, trades, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation }) {
+function Recommendations({ recommendations, trades, amounts, setAmounts, onApprove, onRefresh, onRunAnalysis, onAutoExecute, targetRecommendationId, clearTargetRecommendation, dossierLoading = false, dossierError = null }) {
   const [expanded, setExpanded] = useState({});
   const [brokerFilter, setBrokerFilter] = useState('All');
   const [confidenceFilter, setConfidenceFilter] = useState('All');
@@ -138,6 +138,12 @@ function Recommendations({ recommendations, trades, amounts, setAmounts, onAppro
     <View>
       <View style={styles.summaryCard}>
         <Text style={styles.summaryReason}>{recommendationsSummaryText(recommendations)}</Text>
+        {dossierLoading && <Text style={styles.smallText}>Loading full recommendation evidence...</Text>}
+        {dossierError && (
+          <Text style={styles.smallText}>
+            Recommendation summaries are available, but full evidence could not be refreshed. Pull to refresh to try again.
+          </Text>
+        )}
         <Text style={styles.smallText}>
           Ordered from highest confidence to lowest. Expired ideas stay visible for reference, but execution is blocked until fresh
           analysis creates a new trade idea.

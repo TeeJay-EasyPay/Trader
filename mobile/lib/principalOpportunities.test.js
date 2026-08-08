@@ -125,6 +125,11 @@ test('wasRejectedByCommittee: true only when AI Trader\'s own committee_result i
   assert.strictEqual(wasRejectedByCommittee(null), false);
 });
 
+test('wasRejectedByCommittee: compact snapshot scalar preserves the same veto', () => {
+  assert.strictEqual(wasRejectedByCommittee({ committee_result: 'Reject' }), true);
+  assert.strictEqual(wasRejectedByCommittee({ committee_result: 'Wait' }), false);
+});
+
 test('buildOpportunityCards (AT-ED-017 Founder request): never presents a recommendation AI Trader\'s own committee rejected as an opportunity', () => {
   const recommendations = [
     { ticker: 'FRES', confidence: 0.85, freshness_status: 'Fresh', committee: { committee_result: 'Reject' } },

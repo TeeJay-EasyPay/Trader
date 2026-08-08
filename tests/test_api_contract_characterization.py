@@ -40,9 +40,10 @@ Confirmed NOT called by mobile (so not characterised here): /status, /brokers, /
 /operations-health, /activity/*, /phase5-status, /sprint6-status, /kraken-reconciliation
 (bare GET), /developer-status, /scheduler-status, /job-runs, /shadow-trades,
 /research-funnel, /decision-journal, /operational-events, /world-class-evidence,
-/performance-attribution, /founder/trades, /recommendations, /benchmark-traders,
+/performance-attribution, /founder/trades, /benchmark-traders,
 /register-push-token, /notifications/ack. Everything the founder-facing screens need
-from these is served pre-nested inside the /founder-evidence payload instead.
+from these is served pre-nested inside the /founder-evidence payload instead. `/recommendations`
+became mobile-consumed in the 2026-08-06 egress remediation, but only while that screen is open.
 """
 
 import sys
@@ -83,6 +84,7 @@ class _Headers:
 
 NAMED_MOBILE_ENDPOINTS = [
     "/founder-evidence",
+    "/recommendations",
     "/founder-brief",
     "/intelligence/companies",
     "/intelligence/themes",
@@ -128,6 +130,16 @@ class ApiContractCharacterizationTests(unittest.TestCase):
             self.assertIsInstance(payload["brokers"], list)
             self.assertIsInstance(payload["status"], dict)
             self.assertIn("state", payload["status"])
+
+    def test_recommendations_route_bounds_and_forwards_requested_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            with unittest.mock.patch.object(service, "recommendations", return_value=[]) as recommendations:
+                status, payload = service.get("/recommendations", {"limit": ["500"]})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload, {"recommendations": []})
+            recommendations.assert_called_once_with(limit=50)
 
     def test_founder_brief_top_level_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
