@@ -173,6 +173,22 @@ class WorldClassTransformationTests(unittest.TestCase):
             corr = correlation_warning(["A", "B"], {"A": [0.01] * 30, "B": [0.01] * 30})
             self.assertEqual(corr["status"], "complete")
 
+    def test_single_asset_class_portfolio_is_never_flagged_as_concentrated_in_itself(self) -> None:
+        # 2026-08-08 fix: a crypto-only book (e.g. Kraken's AI-managed sleeve, which never
+        # holds anything but crypto) proposing another crypto trade must not be treated as
+        # "concentrated" -- there is no other asset class it could be crowding out. This is the
+        # same root cause as the already-fixed total<=0 case just above, one trade later: once
+        # a first position exists, total is no longer 0, but if every existing position is
+        # already the same asset class as the proposal, concentration is still not a meaningful
+        # comparison. Deliberately uses only ONE existing asset class (unlike the mixed-book
+        # test above, which must keep rejecting).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            exposure = calculate_portfolio_exposure(db_path, [{"symbol": "BCHGBP", "asset_type": "crypto", "market_value": 2}])
+            impact = proposed_trade_portfolio_impact(exposure, symbol="XRPGBP", proposed_notional=2, proposed_asset_class="crypto")
+            self.assertEqual(impact["decision"], "Acceptable portfolio impact")
+            self.assertIsNone(impact["new_asset_class_weight"])
+
     def test_portfolio_intelligence_schema_still_initializes_per_db_path_after_schema_once_fix(self) -> None:
         # Stage 0.2 (2026-08-02) moved initialize_portfolio_intelligence_schema onto the
         # shared ensure_schema_once cache, since it used to re-run its full CREATE

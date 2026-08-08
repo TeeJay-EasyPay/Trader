@@ -244,6 +244,10 @@ def proposed_trade_portfolio_impact(
     max_asset_class_weight: float = 0.40,
 ) -> dict[str, Any]:
     total = _float(current_exposure.get("total_value")) or 0.0
+    current_bucket = current_exposure.get("exposure", {}).get("asset_class", {})
+    existing_asset_classes = {
+        str(label).lower() for label, details in current_bucket.items() if (_float((details or {}).get("value")) or 0.0) > 0
+    }
     if total <= 0:
         # No existing measured positions means the concentration formula below (new
         # asset's notional / new total, where new total is built entirely from this
@@ -263,8 +267,27 @@ def proposed_trade_portfolio_impact(
                 "cannot be over-concentrated relative to an empty portfolio."
             ),
         }
+    if existing_asset_classes and existing_asset_classes <= {proposed_asset_class.lower()}:
+        # Same root cause as the total<=0 case above, one trade later: once the first-ever
+        # trade succeeds, the portfolio is no longer empty, but if every measured position
+        # (all of them, so far) is already the SAME asset class as this new proposal, there is
+        # still no other asset class this trade could be crowding out. This is exactly Kraken's
+        # AI-managed sleeve, which only ever holds crypto by design -- hosted evidence
+        # (2026-08-05/08): the very first Kraken trade succeeding made the sleeve "100% crypto"
+        # (true, and unavoidable for a crypto-only broker), and this ceiling then rejected
+        # every subsequent trade for "concentration" against a comparison that could never be
+        # anything else. The max_asset_class_weight ceiling stays fully active for any broker/
+        # book that genuinely spans more than one asset class (see the mixed-portfolio test).
+        return {
+            "symbol": symbol.upper(),
+            "decision": "Acceptable portfolio impact",
+            "new_asset_class_weight": None,
+            "plain_english": (
+                f"Existing measured positions are already entirely {proposed_asset_class}, so {symbol.upper()} "
+                "cannot be over-concentrated relative to an asset class that was never held."
+            ),
+        }
     new_total = total + max(0.0, proposed_notional)
-    current_bucket = current_exposure.get("exposure", {}).get("asset_class", {})
     current_value = 0.0
     for label, details in current_bucket.items():
         if label.lower() == proposed_asset_class.lower():
@@ -314,11 +337,26 @@ def _bucket_percentages(values: dict[str, float], total: float) -> dict[str, dic
 
 def _exposure_warnings(exposure: dict[str, Any], largest: list[dict[str, Any]], missing: list[str]) -> list[str]:
     warnings: list[str] = []
-    for label, details in exposure.get("asset_class", {}).items():
-        weight = details.get("weight")
-        if weight is not None and weight > 0.40:
-            warnings.append(f"{label} represents {_pct(weight)} of measured portfolio value, creating concentration risk.")
-    if largest and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
+    asset_class_bucket = exposure.get("asset_class", {})
+    # A book scoped to a single asset class (e.g. Kraken's AI-managed sleeve, which only ever
+    # holds crypto) will always show that one class at 100% the moment it holds anything at
+    # all -- that's not a concentration signal, it's just what a single-asset-class account
+    # looks like. This warning is only meaningful when more than one asset class is actually
+    # present to be unbalanced across (hosted evidence, 2026-08-08: this fired unconditionally
+    # off the existing portfolio alone, before even considering a proposed trade, and combined
+    # with the concentration-ceiling bugs fixed alongside this one to block every Kraken trade
+    # after the first).
+    if len(asset_class_bucket) > 1:
+        for label, details in asset_class_bucket.items():
+            weight = details.get("weight")
+            if weight is not None and weight > 0.40:
+                warnings.append(f"{label} represents {_pct(weight)} of measured portfolio value, creating concentration risk.")
+    # Same reasoning as the asset-class check above: with only one position held, that position
+    # is trivially 100% of the book -- that says nothing about a founder's willingness to
+    # diversify, it's just what a first (or currently-only) position looks like. "Concentrated
+    # in the largest holding" is only a meaningful signal once there was a real choice not to
+    # diversify, i.e. at least one other position existed to compare against.
+    if len(largest) > 1 and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
         warnings.append(f"{largest[0]['symbol']} is a large position at {_pct(largest[0]['weight'])} of measured portfolio value.")
     if missing:
         warnings.append(f"Metadata is missing for {', '.join(sorted(set(missing))[:5])}; exposure analysis is incomplete.")

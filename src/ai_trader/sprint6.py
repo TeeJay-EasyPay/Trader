@@ -1254,7 +1254,18 @@ def _positions_from_account(account: AccountContext, broker: str) -> list[dict[s
             "symbol": item.symbol,
             "broker": broker.lower(),
             "market_value": item.market_value,
-            "asset_class": "crypto" if broker.lower() == "kraken" else "stock",
+            # 2026-08-08: calculate_portfolio_exposure (portfolio_intelligence.py) buckets by
+            # `meta.get("asset_class") or item.get("asset_type")` -- ASSET_METADATA is never
+            # populated anywhere in this codebase (upsert_asset_metadata has no real call
+            # site), so `meta` is always empty and the bucketing always falls through to
+            # `asset_type`. This dict used the key "asset_class" instead, which
+            # calculate_portfolio_exposure never reads, so every real managed position was
+            # silently bucketed as "Unknown" rather than "crypto"/"stock" -- masking the true
+            # asset-class weight from the concentration check entirely (hosted evidence,
+            # 2026-08-08: this is why the single-asset-class concentration fix in
+            # portfolio_intelligence.py alone did not stop live rejections -- existing
+            # positions never matched the proposed asset class's bucket in the first place).
+            "asset_type": "crypto" if broker.lower() == "kraken" else "stock",
             "risk_amount": abs(item.unrealized_pl) if item.unrealized_pl else 0,
         }
         for item in account.open_positions

@@ -683,9 +683,18 @@ def portfolio_manager_decision(
     decision = "approve"
     reason = impact["plain_english"]
     approved_notional = proposed_notional
-    if exposure["warnings"]:
+    # "Metadata is missing for X; exposure analysis is incomplete" is a data-quality note, not
+    # a risk finding -- ASSET_METADATA has no real writer anywhere in this codebase
+    # (upsert_asset_metadata is defined but never called outside tests), so this warning is
+    # unconditionally present for every symbol, on every proposal, always. Treating it the same
+    # as a genuine concentration/risk warning meant decision could never reach "approve" at
+    # all -- every single trade was demoted to manual_review by this alone, regardless of any
+    # other check (hosted evidence, 2026-08-08). Real risk warnings (concentration, large
+    # position) still demote to manual_review as before; a missing-metadata note alone does not.
+    risk_warnings = [item for item in exposure["warnings"] if not item.startswith("Metadata is missing for")]
+    if risk_warnings:
         decision = "manual_review"
-        reason = exposure["warnings"][0]
+        reason = risk_warnings[0]
     if impact["decision"] == "Reject due to concentration":
         decision = "reject"
         approved_notional = None
@@ -694,8 +703,17 @@ def portfolio_manager_decision(
         decision = "approve_smaller"
         approved_notional = proposed_notional * 0.5
         reason = "Portfolio concentration is elevated; smaller size required."
-    if risk_ratio is not None and risk_ratio > 0.08:
-        decision = "wait" if decision == "approve" else decision
+    if risk_ratio is not None and risk_ratio > 0.08 and decision == "approve":
+        # Only takes effect (and only overwrites `reason`) when this is actually the check
+        # turning an approval into a wait -- previously this unconditionally overwrote `reason`
+        # even when a stronger, already-binding check (concentration reject/manual_review/
+        # buy-smaller) had set the real decision and reason above, so the Founder-facing
+        # message could name a completely different cause than the one that actually produced
+        # the decision. Hosted evidence (2026-08-08): every Kraken rejection was labelled
+        # "existing and proposed open risk are high" when the real, binding cause was the
+        # single-asset-class concentration bug fixed above -- this risk_ratio check was true at
+        # the same time but was never what actually blocked the trade.
+        decision = "wait"
         reason = "Existing and proposed open risk are high relative to measured portfolio value."
     evidence = {
         "exposure": exposure,

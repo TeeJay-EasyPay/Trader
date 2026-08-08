@@ -207,11 +207,17 @@ class Phase5ProductionSpineTests(unittest.TestCase):
             self.assertIn("production unchanged", result["learning_proposal"]["current_value"])
 
     def test_portfolio_manager_can_reject_concentration(self):
+        # Positions deliberately span two asset classes (crypto + stock) so the proposed
+        # crypto trade is a genuine cross-asset-class concentration case -- see
+        # test_asset_class_concentration_never_fires_for_a_single_asset_class_book below for
+        # the 2026-08-08 fix proving a crypto-only (or any single-asset-class-only) book must
+        # NOT be flagged this way, since it can never be anything else.
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
             positions = [
-                {"symbol": "BTC", "broker": "kraken", "asset_class": "crypto", "market_value": 800},
-                {"symbol": "ETH", "broker": "kraken", "asset_class": "crypto", "market_value": 200},
+                {"symbol": "BTC", "broker": "kraken", "asset_type": "crypto", "market_value": 800},
+                {"symbol": "ETH", "broker": "kraken", "asset_type": "crypto", "market_value": 200},
+                {"symbol": "AAPL", "broker": "alpaca", "asset_type": "stock", "market_value": 100},
             ]
             proposal = {
                 "proposal_id": "crypto-1",
@@ -228,6 +234,83 @@ class Phase5ProductionSpineTests(unittest.TestCase):
 
             self.assertIn(decision["decision"], {"reject", "approve_smaller", "manual_review"})
             self.assertIn("Portfolio Manager decision", decision["plain_english"])
+
+    def test_asset_class_concentration_never_fires_for_a_single_asset_class_book(self):
+        # 2026-08-08 hosted incident: Kraken's AI-managed sleeve only ever holds crypto. The
+        # first-ever trade succeeding made the book "100% crypto" (unavoidable for a
+        # crypto-only broker, not a real concentration signal), and the asset-class ceiling
+        # then rejected every subsequent Kraken trade for "concentration" against a comparison
+        # that could never be anything else. Positions and proposal are BOTH crypto-only here,
+        # unlike the mixed-asset-class test above.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            positions = [{"symbol": "BCH", "broker": "kraken", "asset_type": "crypto", "market_value": 2}]
+            proposal = {
+                "proposal_id": "crypto-2",
+                "broker": "kraken",
+                "symbol": "XRP",
+                "asset_type": "crypto",
+                "position_size": 2,
+                "entry_price": 0.5,
+                "stop_loss": 0.49,
+                "quantity": 4,
+            }
+
+            decision = portfolio_manager_decision(db_path, proposal=proposal, positions=positions)
+
+            self.assertEqual(decision["decision"], "approve")
+
+    def test_missing_asset_metadata_alone_never_forces_manual_review(self):
+        # 2026-08-08 hosted incident, the most fundamental of the four compounding bugs found
+        # that day: ASSET_METADATA has no real writer anywhere in this codebase
+        # (upsert_asset_metadata is defined but never called outside tests), so
+        # calculate_portfolio_exposure's "Metadata is missing for X" warning was
+        # unconditionally present for every symbol, on every single proposal, always -- which
+        # meant portfolio_manager_decision's `if exposure["warnings"]: decision =
+        # "manual_review"` fired every single time regardless of any other check, so "approve"
+        # was structurally unreachable. A genuinely clean, unconcentrated, single crypto
+        # position with metadata missing (the real, permanent state of this database) must
+        # still be able to reach "approve".
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            positions = [{"symbol": "BCH", "broker": "kraken", "asset_type": "crypto", "market_value": 2}]
+            proposal = {
+                "proposal_id": "crypto-3",
+                "broker": "kraken",
+                "symbol": "XLM",
+                "asset_type": "crypto",
+                "position_size": 2,
+                "entry_price": 0.1,
+                "stop_loss": 0.098,
+                "quantity": 20,
+            }
+            decision = portfolio_manager_decision(db_path, proposal=proposal, positions=positions)
+            self.assertEqual(decision["decision"], "approve")
+            self.assertTrue(any("Metadata is missing" in warning for warning in decision["evidence"]["exposure"]["warnings"]))
+
+    def test_positions_from_account_bucket_correctly_instead_of_falling_into_unknown(self):
+        # 2026-08-08 hosted incident: _positions_from_account (sprint6.py) built each position
+        # dict with key "asset_class", but calculate_portfolio_exposure (portfolio_intelligence.py)
+        # only ever reads "asset_type" as its fallback when ASSET_METADATA has no row for the
+        # symbol -- which is always, in production, since nothing calls upsert_asset_metadata.
+        # Every real managed position was therefore silently bucketed as "Unknown" rather than
+        # "crypto"/"stock", masking the true asset-class weight from the concentration check
+        # (and from the single-asset-class fix above, which can only recognise the bucket it
+        # is actually given).
+        from ai_trader.models import AccountContext, Position
+        from ai_trader.portfolio_intelligence import calculate_portfolio_exposure
+        from ai_trader.sprint6 import _positions_from_account
+
+        account = AccountContext(equity=100.0, daily_realized_pnl=0.0, open_positions=[Position(symbol="BCH", qty=1, market_value=2.0)])
+        positions = _positions_from_account(account, "kraken")
+        self.assertEqual(positions[0]["asset_type"], "crypto")
+        self.assertNotIn("asset_class", positions[0])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            exposure = calculate_portfolio_exposure(db_path, positions)
+            self.assertIn("crypto", {label.lower() for label in exposure["exposure"]["asset_class"]})
+            self.assertNotIn("unknown", {label.lower() for label in exposure["exposure"]["asset_class"]})
 
     def test_market_data_gateway_blocks_bad_candles(self):
         with tempfile.TemporaryDirectory() as tmp:
