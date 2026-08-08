@@ -12,6 +12,7 @@ from ..application.operations_service import OperationsService
 from ..application.reporting_service import ReportingService
 from ..application.research_service import ResearchService
 from ..database import connect
+from ..db_diagnostics import database_size_report, vacuum_table
 from ..persistence.query_executor import QueryExecutor
 from .http_server import ApiHandler
 import time
@@ -502,6 +503,8 @@ class LocalApiService:
             return self.report_page(path)
         if path == "/notifications":
             return 200, {"notifications": self.notifications(unread_only=_first(query, "unread_only") == "true")}
+        if path == "/database-diagnostics":
+            return 200, database_size_report(self.settings.db_path)
         return 404, {"error": "not_found", "path": path}
 
     def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -556,6 +559,15 @@ class LocalApiService:
                 client_order_id=str(body.get("client_order_id") or ""),
                 confirmed_no_order_placed=bool(body.get("confirmed_no_order_placed")),
             )
+        if path == "/database-diagnostics/vacuum":
+            table_name = str(body.get("table_name") or "")
+            if not bool(body.get("confirmed_by_founder")):
+                return 200, {
+                    "status": "refused",
+                    "message": "Set confirmed_by_founder=true only after the Founder has explicitly approved running "
+                    "VACUUM on this specific table, since VACUUM (FULL) locks it for the duration of the operation.",
+                }
+            return 200, vacuum_table(self.settings.db_path, table_name, full=bool(body.get("full")))
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/generate-operational-report":

@@ -211,6 +211,14 @@ class PostgresConnection:
     def rollback(self) -> None:
         self._conn.rollback()
 
+    def set_autocommit(self, value: bool) -> None:
+        # Narrow escape hatch for statements Postgres refuses to run inside a transaction
+        # block (VACUUM being the motivating case -- see db_diagnostics.py). Every other call
+        # site in this codebase relies on the default (autocommit off, explicit commit/rollback)
+        # and should keep doing so; only flip this on a connection dedicated to one such
+        # statement, and set it back to False before returning the connection to normal use.
+        self._conn.autocommit = value
+
     def close(self) -> None:
         self._conn.close()
 
