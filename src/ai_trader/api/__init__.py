@@ -577,9 +577,10 @@ class LocalApiService:
                     "this DELETE against real governance/decision history. See DECISION_AUDIT_TABLES in "
                     "production_evidence.py for exactly which tables and protections apply.",
                 }
-            return 200, prune_decision_and_audit_history(
-                self.settings.db_path, force=bool(body.get("force")), explicitly_confirmed=True
-            )
+            kwargs: dict[str, Any] = {"force": bool(body.get("force")), "explicitly_confirmed": True}
+            if body.get("retention_days") is not None:
+                kwargs["retention_days"] = int(body["retention_days"])
+            return 200, prune_decision_and_audit_history(self.settings.db_path, **kwargs)
         if path == "/generate-report":
             return 200, self.generate_report(body)
         if path == "/generate-operational-report":

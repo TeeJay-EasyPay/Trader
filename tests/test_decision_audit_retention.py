@@ -390,6 +390,50 @@ class ConfirmedAdminTriggerRoutingTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "completed")
 
+    def test_explicit_confirmation_honors_a_custom_retention_days_override(self):
+        from ai_trader.api import LocalApiService
+        from ai_trader.config import Settings
+        from ai_trader.models import AutoTradeConfig, GuardrailConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "audit.sqlite3"
+            _init_all_schemas(db_path)
+            now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+            recent_but_older_than_14_days = (now - timedelta(days=20)).isoformat()
+            with closing(connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO OPERATIONAL_EVENTS (created_at, component, event_type, severity, summary, "
+                        "details_json, success, correlation_id) VALUES (?, 'test', 'test_event', 'info', 'x', '{}', 1, 'c1')",
+                        (recent_but_older_than_14_days,),
+                    )
+            settings = Settings(
+                alpaca_api_key=None,
+                alpaca_secret_key=None,
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=db_path,
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(),
+            )
+            service = LocalApiService(settings)
+            status, payload = service.post(
+                "/database-diagnostics/prune-decision-audit-history",
+                {"confirmed_by_founder": True, "force": True, "retention_days": 14},
+            )
+            with closing(connect(db_path)) as conn:
+                remaining = conn.execute("SELECT COUNT(*) FROM OPERATIONAL_EVENTS").fetchone()[0]
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "completed")
+        # 20 days old is inside the default 90-day window but outside a 14-day override --
+        # proves the override actually reached the underlying cutoff, not just accepted.
+        self.assertEqual(remaining, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
