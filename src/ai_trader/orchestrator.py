@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .broker_adapters import BrokerAdapter, _float_env
+from .broker_adapters import BrokerAdapter, _float_env, _kraken_pair
 from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
     calculate_capital_allocation,
@@ -289,6 +289,31 @@ class InvestmentOrchestrator:
                 )
                 allocation["approved_notional"] = floored_notional
                 allocation["approved_quantity"] = floored_notional / p.entry_price if p.entry_price > 0 else 0.0
+            # 2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP above is one flat guess applied to
+            # every pair; Kraken's real minimum order size is set per-pair by the exchange and can
+            # be higher. Confirmed live: a proposal correctly floored to GBP 2.00 by the check
+            # above still passed every governance check, was submitted, and was rejected by
+            # Kraken itself with "EGeneral:Invalid arguments:volume minimum not met". Ask the
+            # exchange for the real, authoritative minimum for this specific pair and raise to
+            # that if it's higher than what the check above already produced -- same non-lowering,
+            # never-exceed-what's-affordable discipline as _kraken_min_order_floor_notional. If
+            # even the real minimum can't be afforded or exceeds this deployment's configured
+            # ceiling, fail cleanly with an honest reason instead of submitting an order already
+            # known to fail at the exchange.
+            pair = _kraken_pair(p.symbol)
+            exchange_minimum = selected.pair_minimum_notional(pair, p.entry_price) if hasattr(selected, "pair_minimum_notional") else None
+            if exchange_minimum is not None and exchange_minimum > allocation.get("approved_notional", 0.0):
+                max_notional = _float_env("KRAKEN_MAX_ORDER_GBP", 5.0)
+                if exchange_minimum <= context.account.equity and exchange_minimum <= max_notional:
+                    print(
+                        f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=kraken_exchange_min_order_floor_applied "
+                        f"pair={pair} original_notional={allocation.get('approved_notional')} floored_to={exchange_minimum} elapsed={time.monotonic() - _eval_t0:.1f}s",
+                        flush=True,
+                    )
+                    allocation["approved_notional"] = exchange_minimum
+                    allocation["approved_quantity"] = exchange_minimum / p.entry_price if p.entry_price > 0 else 0.0
+                else:
+                    failures.append("kraken_exchange_minimum_not_tradeable_at_current_limits")
         failures = list(dict.fromkeys(failures))
         record_broker_decision(
             self.db_path,

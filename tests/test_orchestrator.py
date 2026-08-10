@@ -1,10 +1,11 @@
+import io
 import os
 import sqlite3
 import sys
 import tempfile
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -628,6 +629,136 @@ class KrakenMinOrderFloorTests(unittest.TestCase):
             _kraken_min_order_floor_notional(approved_notional=0.5, account_equity=1.5, min_notional=2.0),
             0.5,
         )
+
+
+class KrakenExchangeMinimumOrderTests(unittest.TestCase):
+    """2026-08-10 hosted incident: a proposal correctly floored to KRAKEN_MIN_ORDER_GBP by
+    the check above still failed at the exchange itself with "EGeneral:Invalid arguments:
+    volume minimum not met" -- the flat GBP guess cleared, but Kraken's real per-pair
+    minimum (queried live via pair_minimum_notional) was higher. Proves the exchange's
+    real minimum is consulted and, when it is the binding constraint, either raises the
+    order to it (when affordable) or fails cleanly before ever reaching the broker."""
+
+    class FakeKrakenAdapter(FakeAdapter):
+        name = "kraken"
+        requires_production_governance = False
+
+        def __init__(self, *, exchange_minimum):
+            super().__init__()
+            self._exchange_minimum = exchange_minimum
+            self.submitted_requests = []
+
+        def get_supported_assets(self):
+            return ["crypto"]
+
+        def get_supported_markets(self):
+            return ["KRAKEN"]
+
+        def pair_minimum_notional(self, pair, price):
+            return self._exchange_minimum
+
+        def place_bracket_order(self, order_request):
+            self.submitted_requests.append(order_request)
+            return super().place_bracket_order(order_request)
+
+    def _small_equity_context(self):
+        return OrchestratorContext(
+            account=AccountContext(equity=38.23, daily_realized_pnl=0, open_positions=[]),
+            auto_trade=AutoTradeConfig(enabled=True),
+            guardrails=GuardrailConfig(min_confidence_score=0.65),
+            now=MARKET_TIME,
+        )
+
+    def _small_crypto_proposal(self):
+        return proposal(symbol="XLM", asset_type="crypto", exchange="KRAKEN", entry_price=0.12, stop_loss=0.11, position_size=16)
+
+    def test_allocation_is_raised_to_the_real_exchange_minimum_when_affordable(self):
+        # A from-scratch test database fails several unrelated, legitimate gates regardless
+        # (due diligence, investment score, crypto universe/policy, reconciliation hold -- see
+        # the founder-authorization end-to-end test above for the same caveat). What this
+        # isolates: the new exchange-minimum failure reason must NOT be one of them, proving
+        # the real exchange minimum was successfully applied as a raise rather than a rejection.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter(exchange_minimum=3.5)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                decision = orchestrator.evaluate_recommendation(self._small_crypto_proposal(), self._small_equity_context(), auto_execute=True)
+
+            self.assertNotIn("kraken_exchange_minimum_not_tradeable_at_current_limits", decision.rejection_reason or "")
+            self.assertIn("stage=kraken_exchange_min_order_floor_applied pair=XLMGBP", captured.getvalue())
+            self.assertIn("floored_to=3.5", captured.getvalue())
+
+    def test_a_real_exchange_minimum_beyond_the_configured_ceiling_fails_cleanly_instead_of_being_submitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            # KRAKEN_MAX_ORDER_GBP defaults to 5.0 -- a "minimum" this large could never be
+            # traded within this deployment's configured ceiling regardless of equity.
+            adapter = self.FakeKrakenAdapter(exchange_minimum=999.0)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+            decision = orchestrator.evaluate_recommendation(self._small_crypto_proposal(), self._small_equity_context(), auto_execute=True)
+
+            self.assertEqual(decision.decision, "rejected")
+            self.assertIn("kraken_exchange_minimum_not_tradeable_at_current_limits", decision.rejection_reason)
+            self.assertEqual(len(adapter.submitted_requests), 0)
+
+    def test_a_real_exchange_minimum_at_or_below_what_was_already_approved_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter(exchange_minimum=0.01)
+            orchestrator = InvestmentOrchestrator(db_path=db_path, adapters=[adapter])
+
+            decision = orchestrator.evaluate_recommendation(self._small_crypto_proposal(), self._small_equity_context(), auto_execute=True)
+
+            # A negligible exchange minimum must never be the reason for a rejection --
+            # unaffected, this new check simply never fires.
+            self.assertNotIn("kraken_exchange_minimum_not_tradeable_at_current_limits", decision.rejection_reason or "")
+
+
+class KrakenPairMinimumNotionalTests(unittest.TestCase):
+    """2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP is one flat guess applied to every
+    pair; Kraken's real minimum order size is published per-pair via the public
+    AssetPairs endpoint and can be higher. pair_minimum_notional asks the exchange
+    directly instead of guessing, and never re-asks for a pair it has already learned."""
+
+    def test_uses_costmin_directly_when_the_exchange_publishes_one(self):
+        adapter = KrakenAdapter()
+        adapter._public_request = lambda path: {"result": {"XLMGBP": {"costmin": "3.50", "ordermin": "30"}}}
+
+        self.assertEqual(adapter.pair_minimum_notional("XLMGBP", price=0.12), 3.5)
+
+    def test_falls_back_to_ordermin_times_price_when_no_costmin_is_published(self):
+        adapter = KrakenAdapter()
+        adapter._public_request = lambda path: {"result": {"XLMGBP": {"ordermin": "30"}}}
+
+        self.assertAlmostEqual(adapter.pair_minimum_notional("XLMGBP", price=0.12), 3.6)
+
+    def test_caches_so_the_exchange_is_only_asked_once_per_pair(self):
+        calls = []
+
+        def fake_public_request(path):
+            calls.append(path)
+            return {"result": {"XLMGBP": {"costmin": "3.5"}}}
+
+        adapter = KrakenAdapter()
+        adapter._public_request = fake_public_request
+
+        adapter.pair_minimum_notional("XLMGBP", price=0.12)
+        adapter.pair_minimum_notional("XLMGBP", price=0.12)
+
+        self.assertEqual(len(calls), 1)
+
+    def test_a_network_or_parsing_failure_returns_none_instead_of_raising(self):
+        def raise_error(path):
+            raise RuntimeError("EQuery:Unknown asset pair")
+
+        adapter = KrakenAdapter()
+        adapter._public_request = raise_error
+
+        self.assertIsNone(adapter.pair_minimum_notional("NOTAPAIR", price=1.0))
 
 
 if __name__ == "__main__":

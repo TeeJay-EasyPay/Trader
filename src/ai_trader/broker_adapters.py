@@ -189,6 +189,37 @@ class SaxoAdapter(PlaceholderBrokerAdapter):
 class KrakenAdapter(PlaceholderBrokerAdapter):
     def __init__(self) -> None:
         super().__init__("kraken", ("KRAKEN_API_KEY",))
+        self._pair_minimum_cache: dict[str, float | None] = {}
+
+    def pair_minimum_notional(self, pair: str, price: float) -> float | None:
+        # 2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP is a single flat guess applied to
+        # every pair, but Kraken's real minimum order size (published per-pair via the public
+        # AssetPairs endpoint as "ordermin", a base-currency volume, and sometimes "costmin", a
+        # quote-currency minimum cost) varies by pair. A flat GBP floor that happens to clear
+        # this guess can still be genuinely below the exchange's own minimum for a specific pair
+        # -- confirmed live: a proposal floored to GBP 2.00 was accepted through every governance
+        # check, submitted to Kraken, and rejected by the exchange itself with "EGeneral:Invalid
+        # arguments:volume minimum not met". Cached per pair for the life of this adapter
+        # instance (each worker/request process constructs its own; pair minimums do not change
+        # within a process lifetime) so this network call only happens once per pair, not once
+        # per candidate evaluation.
+        if pair in self._pair_minimum_cache:
+            return self._pair_minimum_cache[pair]
+        minimum: float | None = None
+        try:
+            data = self._public_request(f"/0/public/AssetPairs?pair={pair}")
+            info = (data.get("result") or {}).get(pair) or next(iter((data.get("result") or {}).values()), None)
+            if isinstance(info, dict):
+                costmin = info.get("costmin")
+                ordermin = info.get("ordermin")
+                if costmin is not None:
+                    minimum = float(costmin)
+                elif ordermin is not None and price > 0:
+                    minimum = float(ordermin) * price
+        except Exception:
+            minimum = None
+        self._pair_minimum_cache[pair] = minimum
+        return minimum
 
     @property
     def configured(self) -> bool:

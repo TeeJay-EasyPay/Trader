@@ -1147,6 +1147,12 @@ class FakeKrakenAdapter(KrakenAdapter):
     def current_prices(self, symbols):
         return {symbol: self.prices[symbol] for symbol in symbols if symbol in self.prices}
 
+    def _public_request(self, path):
+        # Never make a real network call from a unit test -- pair_minimum_notional (real
+        # KrakenAdapter method, inherited here) falls back to this if a test exercises it
+        # without a more specific override.
+        return {"result": {}}
+
 
 def restore_env(previous):
     for key, value in previous.items():
