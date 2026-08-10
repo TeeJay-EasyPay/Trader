@@ -380,7 +380,13 @@ def pre_execution_decision_packet(
     resolved_positions = positions or _positions_from_account(account, broker)
     correlation_symbols = [item.get("symbol") for item in resolved_positions if item.get("symbol")] + [proposal.symbol]
     return_series = load_return_series(db_path, correlation_symbols)
-    portfolio = portfolio_manager_decision(db_path, proposal=proposal_payload, positions=resolved_positions, return_series=return_series)
+    portfolio = portfolio_manager_decision(
+        db_path,
+        proposal=proposal_payload,
+        positions=resolved_positions,
+        return_series=return_series,
+        account_equity=account.equity,
+    )
     risk_validation = (
         validate_trade_proposal(proposal, account, guardrails, now=now)
         if guardrails is not None

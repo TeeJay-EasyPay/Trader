@@ -664,6 +664,7 @@ def portfolio_manager_decision(
     proposal: dict[str, Any],
     positions: list[dict[str, Any]],
     return_series: dict[str, list[float]] | None = None,
+    account_equity: float | None = None,
 ) -> dict[str, Any]:
     initialize_production_spine_schema(db_path)
     symbol = str(proposal.get("symbol") or "").upper()
@@ -679,7 +680,22 @@ def portfolio_manager_decision(
     corr = correlation_warning([item.get("symbol") for item in positions if item.get("symbol")] + [symbol], return_series or {})
     existing_open_risk = sum(_float(item.get("stop_based_risk") or item.get("risk_amount")) or 0.0 for item in positions)
     proposed_risk = abs((_float(proposal.get("entry_price")) or 0.0) - (_float(proposal.get("stop_loss")) or 0.0)) * (_float(proposal.get("quantity") or proposal.get("position_size")) or 0.0)
-    risk_ratio = (existing_open_risk + proposed_risk) / exposure["total_value"] if exposure["total_value"] else None
+    # 2026-08-10 hosted incident: exposure["total_value"] is the sum of currently-OPEN
+    # positions' market value (calculate_portfolio_exposure above) -- correct as the
+    # denominator for the asset-class/largest-position concentration checks (impact,
+    # _exposure_warnings), which are genuinely about how invested capital is split. It is
+    # wrong as the denominator for a risk-of-loss ratio, which must be measured against
+    # total capital, not just capital already deployed: a book holding one modest open
+    # position and mostly cash would see existing_open_risk sit at a large fraction of that
+    # tiny total_value before a new trade is even considered, since a position's own
+    # stop-based risk is inherently a substantial share of its own market value. Confirmed
+    # in hosted evidence: every Kraken candidate was rejected here, including the $2
+    # exchange-minimum floor trade, for exactly this reason. account_equity (the broker's
+    # real total risk capital, e.g. AccountContext.equity) is the correct denominator here;
+    # falls back to exposure["total_value"] only when equity truly isn't available (e.g.
+    # some existing unit tests that construct this call directly) rather than raising.
+    risk_denominator = account_equity if account_equity else exposure["total_value"]
+    risk_ratio = (existing_open_risk + proposed_risk) / risk_denominator if risk_denominator else None
     decision = "approve"
     reason = impact["plain_english"]
     approved_notional = proposed_notional

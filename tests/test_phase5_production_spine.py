@@ -312,6 +312,36 @@ class Phase5ProductionSpineTests(unittest.TestCase):
             self.assertIn("crypto", {label.lower() for label in exposure["exposure"]["asset_class"]})
             self.assertNotIn("unknown", {label.lower() for label in exposure["exposure"]["asset_class"]})
 
+    def test_risk_ratio_is_measured_against_account_equity_not_deployed_positions_value(self):
+        # 2026-08-10 hosted incident: exposure["total_value"] (the risk_ratio denominator
+        # before this fix) is the sum of currently-OPEN positions' market value, not real
+        # account equity. For a cautious book holding only a small amount already deployed,
+        # that denominator is tiny -- so an existing position's own unrealized P&L (the
+        # "risk_amount" _positions_from_account records) alone made risk_ratio blow past the
+        # 8% threshold on every single Kraken candidate, including the $2 exchange-minimum
+        # floor trade, confirmed live: 100% rejection, always "portfolio_manager_wait:
+        # existing and proposed open risk are high relative to measured portfolio value."
+        # account_equity (real total risk capital) is the correct denominator.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            positions = [{"symbol": "BCH", "broker": "kraken", "asset_type": "crypto", "market_value": 5, "risk_amount": 3}]
+            proposal = {
+                "proposal_id": "crypto-equity-1",
+                "broker": "kraken",
+                "symbol": "XLM",
+                "asset_type": "crypto",
+                "position_size": 2,
+                "entry_price": 0.1,
+                "stop_loss": 0.099,
+                "quantity": 2,
+            }
+
+            without_equity = portfolio_manager_decision(db_path, proposal=proposal, positions=positions)
+            self.assertEqual(without_equity["decision"], "wait")
+
+            with_equity = portfolio_manager_decision(db_path, proposal=proposal, positions=positions, account_equity=500.0)
+            self.assertEqual(with_equity["decision"], "approve")
+
     def test_market_data_gateway_blocks_bad_candles(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

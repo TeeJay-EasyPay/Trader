@@ -121,7 +121,7 @@ class ResearchService:
         query_executor: QueryExecutor,
         account_context_lookup: Callable[[str], AccountContext],
         recommendations_lookup: Callable[[int], list[dict[str, Any]]],
-        auto_execute_recommendations_lookup: Callable[[], dict[str, Any]],
+        auto_execute_recommendations_lookup: Callable[[str], dict[str, Any]],
         broker_factory: Callable[[], AlpacaPaperClient],
     ) -> None:
         self.settings = settings
@@ -572,7 +572,18 @@ class ResearchService:
         # with no realistic chance of finishing inside the shared job timeout before generating
         # a single proposal. propose_trades still isolates one symbol's failure from the rest.
         proposals = agent.propose_trades(symbols, account, skipped_symbols=skipped_symbols)
-        auto_execution = self._auto_execute_recommendations_lookup() if proposals else {"status": "skipped", "message": "No proposals generated."}
+        # 2026-08-10 hosted incident: this used to call the unfiltered auto_execute_
+        # recommendations() -- evaluating the entire shared candidate backlog (both
+        # brokers, dominated by Kraken) synchronously inside this one job, at ~30-40s per
+        # candidate (each evaluate_recommendation call makes several sequential DB round
+        # trips). That reliably burned through the whole 450s job timeout before finishing,
+        # so the job was killed -- silently discarding this cycle's own fresh Alpaca
+        # proposals along with everything else. broker_name is always "alpaca" here
+        # (the "kraken" branch above returns earlier via run_crypto_analysis), and
+        # trade_audit now has a real broker column (audit.py) that auto_execute_
+        # recommendations can filter on directly in SQL, so this can be scoped to just
+        # this job's own broker instead of the entire shared pool.
+        auto_execution = self._auto_execute_recommendations_lookup(broker_name) if proposals else {"status": "skipped", "message": "No proposals generated."}
         for proposal in proposals:
             self._record_shadow_from_proposal(
                 proposal,

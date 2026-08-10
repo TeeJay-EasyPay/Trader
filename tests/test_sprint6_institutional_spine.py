@@ -388,6 +388,38 @@ class Sprint6InstitutionalSpineTests(unittest.TestCase):
             self.assertEqual(correlation["status"], "complete")
             self.assertEqual(correlation["pairs"][0]["sample_size"], 24)
 
+    def test_pre_execution_packet_measures_risk_against_real_account_equity(self):
+        # 2026-08-10 hosted incident, reproduced end-to-end through the real wiring: with a
+        # small existing position and a low-equity AccountContext, the old total_value-only
+        # risk_ratio denominator rejected every candidate. account.equity must now flow
+        # through pre_execution_decision_packet -> portfolio_manager_decision as the risk
+        # denominator, so a real (larger) equity figure clears the same trade.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_default_strategy_registry(db_path)
+            positions = [{"symbol": "BCH", "broker": "kraken", "asset_type": "crypto", "market_value": 5, "risk_amount": 3}]
+            trade = proposal(symbol="XLM", asset_type="crypto", entry_price=0.1, stop_loss=0.099, position_size=2, exchange="KRAKEN")
+
+            starved = pre_execution_decision_packet(
+                db_path,
+                proposal=trade,
+                broker="kraken",
+                mode="paper",
+                account=AccountContext(equity=5.0, daily_realized_pnl=0),
+                positions=positions,
+            )
+            self.assertIn("portfolio_manager_wait", " ".join(starved["reasons"]))
+
+            funded = pre_execution_decision_packet(
+                db_path,
+                proposal=trade,
+                broker="kraken",
+                mode="paper",
+                account=AccountContext(equity=500.0, daily_realized_pnl=0),
+                positions=positions,
+            )
+            self.assertTrue(funded["approved"])
+
     def test_broker_event_normalization_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

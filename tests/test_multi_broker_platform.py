@@ -28,7 +28,7 @@ from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
 from ai_trader.foundation import load_trading_policy
-from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
+from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
 from ai_trader.multi_broker import (
     acquire_order_intent_lock,
     broker_auto_trading_enabled,
@@ -270,6 +270,66 @@ class MultiBrokerPlatformTests(unittest.TestCase):
                 self.assertEqual(adapter.submitted_orders, [])
         finally:
             restore_env(previous)
+
+    def test_run_analysis_scopes_its_inline_auto_execution_to_alpaca_only(self):
+        # 2026-08-10 hosted incident: unlike run_crypto_analysis (see test above), Alpaca's
+        # run_analysis DOES call auto-execution inline, once real proposals exist -- and it
+        # called the unfiltered auto_execute_recommendations(), which evaluated the entire
+        # shared candidate backlog (both brokers, dominated by Kraken) synchronously inside
+        # this one job. At ~30-40s per candidate that reliably burned through the job's 450s
+        # timeout, silently discarding the cycle's own fresh Alpaca proposals along with
+        # everything else. Confirmed live: most market-open-equity runs timed out. Now that
+        # trade_audit has a real broker column to filter on, this call must be scoped to
+        # "alpaca" specifically -- broker_name is always "alpaca" here (run_analysis's
+        # "kraken" branch returns earlier via run_crypto_analysis).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                alpaca_api_key="paper-key",
+                alpaca_secret_key="paper-secret",
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=root / "audit.sqlite3",
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(),
+            )
+            service = LocalApiService(settings)
+            found_proposal = TradeProposal(
+                symbol="AAPL", side="buy", entry_price=100, stop_loss=98, take_profit=106,
+                position_size=1, risk_percentage=0.01, confidence_score=0.9,
+                news_summary="No material news.", market_sentiment_summary="Neutral.",
+                technical_summary="Setup available.",
+                plain_english_reasoning=(
+                    "Strongest argument for: the trend is constructive. "
+                    "Strongest argument against: volatility could invalidate the setup."
+                ),
+                ai_guardrails_passed=True, asset_type="stock", exchange="NASDAQ",
+            ).normalized()
+
+            class FakeAgent:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def propose_trades(self, symbols, account, skipped_symbols=None):
+                    return [found_proposal]
+
+            class FakeBroker:
+                def account_context(self, daily_realized_pnl=0):
+                    return AccountContext(equity=100000, daily_realized_pnl=daily_realized_pnl, open_positions=[])
+
+            with (
+                patch("ai_trader.application.research_service.AITradingAgent", FakeAgent),
+                patch.object(LocalApiService, "_broker", return_value=FakeBroker()),
+                patch.object(LocalApiService, "auto_execute_recommendations", return_value={"status": "ok"}) as mock_auto_execute,
+            ):
+                result = service.run_analysis({"symbols": "AAPL"})
+
+            mock_auto_execute.assert_called_once_with(broker_filter="alpaca")
+            self.assertEqual(len(result["proposals"]), 1)
 
     def test_auto_execute_recommendations_broker_filter_isolates_candidates(self):
         # AT-ED-003 Section 1 item 4: auto-execution-alpaca/auto-execution-kraken must
