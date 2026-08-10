@@ -546,11 +546,22 @@ def _load_founder_evidence_rows(
                 FROM PRODUCTION_RESEARCH_EVIDENCE
                 WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 100""", (since,)),
             ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 100", ()),
+            # 2026-08-10 Supabase egress finding: this result feeds straight into
+            # _latest_per(snapshots_all, "broker") a few lines below the call site, which keeps
+            # only the single newest row per broker (2 brokers today) and discards the rest --
+            # LIMIT 100 was fetching full payload_json/positions_json (real TOAST-backed JSON
+            # blobs, confirmed via /database-diagnostics) for ~98 rows that were thrown away
+            # immediately after leaving Postgres, every single call. This query runs from the
+            # 5-minute worker refresh, not from the mobile app's poll (founder_evidence_payload
+            # serves that from the cheap precomputed snapshot -- confirmed via
+            # prefer_snapshot=True), but still adds up over hundreds of refreshes per day.
+            # LIMIT 20 keeps a wide safety margin (10x today's 2 brokers) while cutting the
+            # fetched volume by ~80%.
             ("""SELECT snapshot_id, captured_at, broker, connection_status, account_mode, currency,
                        portfolio_value, cash, buying_power, deployed_capital, day_pnl, week_pnl,
                        month_pnl, open_positions, positions_json, reconciliation_status, source, error,
                        payload_json
-                FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 100""", ()),
+                FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 20""", ()),
             ("""SELECT trade_evidence_id, observed_at, broker, broker_order_id, broker_trade_id,
                        symbol, side, status, quantity, price, average_fill_price, fee, realized_pnl,
                        opened_at, closed_at, entry_reason, exit_reason
