@@ -10,6 +10,20 @@ from typing import Any
 from .models import TradeProposal, ValidationResult, utc_now_iso
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _broker_for_proposal(proposal: TradeProposal) -> str:
+    # Matches orchestrator.py's real _select_adapter resolution (proposal.asset_type in
+    # adapter.get_supported_assets()) for the only two configured adapters: Kraken handles
+    # crypto, Alpaca handles everything else. If a third broker/asset type is ever added, this
+    # must be revisited alongside _select_adapter itself.
+    return "kraken" if proposal.asset_type == "crypto" else "alpaca"
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trade_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +31,7 @@ CREATE TABLE IF NOT EXISTS trade_audit (
     proposal_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
     symbol TEXT,
+    broker TEXT,
     side TEXT,
     entry REAL,
     exit REAL,
@@ -79,6 +94,32 @@ class AuditDatabase:
         with closing(self.connect()) as conn:
             with conn:
                 conn.executescript(SCHEMA)
+                _ensure_column(conn, "trade_audit", "broker", "TEXT")
+        self._backfill_missing_broker()
+
+    def _backfill_missing_broker(self) -> None:
+        # 2026-08-10 hosted incident: auto_execute_recommendations_alpaca/_kraken share one
+        # candidate query with no way to filter by broker in SQL (this column did not exist),
+        # and Kraken's much higher candidate-generation frequency completely crowded Alpaca
+        # out of the shared LIMIT-50 window -- confirmed via live evidence (the 50 most recent
+        # trade_audit proposals were 100% Kraken), meaning Alpaca's auto-execution job silently
+        # evaluated nothing at all, every cycle, for as long as this had been true. One-time,
+        # cheap backfill (trade_audit is a few thousand rows) for rows written before this
+        # column existed; every new row gets broker set directly by record_trade_event going
+        # forward. Derived from the proposal's own asset_type, matching orchestrator.py's real
+        # _select_adapter resolution (the only two configured adapters are Kraken for crypto
+        # and Alpaca for everything else).
+        with closing(self.connect()) as conn:
+            with conn:
+                rows = conn.execute("SELECT id, payload_json FROM trade_audit WHERE broker IS NULL").fetchall()
+                for row in rows:
+                    try:
+                        payload = json.loads(row["payload_json"])
+                        asset_type = str((payload.get("proposal") or {}).get("asset_type") or "").lower()
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        asset_type = ""
+                    broker = "kraken" if asset_type == "crypto" else "alpaca"
+                    conn.execute("UPDATE trade_audit SET broker = ? WHERE id = ?", (broker, row["id"]))
 
     def record_trade_event(
         self,
@@ -103,19 +144,20 @@ class AuditDatabase:
                 cur = conn.execute(
                     """
                     INSERT INTO trade_audit (
-                        created_at, proposal_id, event_type, symbol, side, entry, exit,
+                        created_at, proposal_id, event_type, symbol, broker, side, entry, exit,
                         profit_loss, ai_reasoning, news_summary, sentiment_summary,
                         technical_summary, ai_confidence, ai_guardrails_passed,
                         execution_guardrails_passed, position_size, stop_loss, take_profit,
                         validation_result, execution_result, trade_outcome, lessons_learned,
                         payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         created_at,
                         proposal.proposal_id,
                         event_type,
                         proposal.symbol,
+                        _broker_for_proposal(proposal),
                         proposal.side,
                         proposal.entry_price,
                         None,

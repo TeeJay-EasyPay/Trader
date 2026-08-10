@@ -295,25 +295,38 @@ class ExecutionService:
         # proposal_ids recurred unchanged across 40+ minutes and several research
         # cycles because they never aged out of the candidate pool.
         freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        # 2026-08-10 Supabase egress finding: this used to select payload_json (the full
-        # proposal dossier, ~11KB average per row, confirmed via /database-diagnostics) for
-        # all 50 candidates up front. Every check below through "already_executed" only ever
-        # needed the lightweight columns already in this SELECT -- payload_json is never
-        # touched until a candidate survives all of them and its broker needs resolving (no
-        # broker/asset_type column exists on trade_audit to filter on in SQL). Running every
-        # 60s per broker, at up to 50 rows, this was a likely-dominant real contributor to
-        # reported ~800MB/day egress. Now a lightweight-only first pass; payload_json is
-        # fetched in a second, targeted query for just the candidates that survive it.
+        # 2026-08-10 hosted incident: trade_audit had no broker column, so this shared
+        # LIMIT-50 candidate query (used identically by both auto_execute_recommendations_
+        # alpaca and _kraken) could not filter by broker in SQL at all. Kraken generates
+        # candidates far more frequently than Alpaca (hourly research vs. market-hours-only),
+        # and confirmed live evidence showed the 50 most recent trade_audit proposals were
+        # 100% Kraken -- Alpaca's auto-execution job was fetching an all-Kraken candidate set,
+        # discarding every row as a broker mismatch, and silently evaluating nothing at all,
+        # every cycle, for as long as this had been true. broker is now a real column
+        # (audit.py backfills existing rows and populates it going forward), so each broker's
+        # job gets its own genuinely-scoped top-50 window.
+        #
+        # 2026-08-10 Supabase egress finding (separate, smaller issue, still fixed here): this
+        # used to select payload_json (the full proposal dossier, ~11KB average per row,
+        # confirmed via /database-diagnostics) for all 50 candidates up front. Every check
+        # below through "already_executed" only ever needed the lightweight columns already in
+        # this SELECT -- payload_json is never touched until a candidate survives all of them.
+        # Now a lightweight-only first pass; payload_json is fetched in a second, targeted
+        # query for just the candidates that survive it.
+        broker_clause = "AND ta.broker = ?" if broker_filter else ""
+        params: list[Any] = [freshness_cutoff]
+        if broker_filter:
+            params.append(broker_filter)
         rows = self._query_executor.rows(
-            """
+            f"""
             SELECT ta.proposal_id, ta.created_at, ta.ai_confidence,
                    execution_guardrails_passed, validation_result, symbol
             FROM trade_audit ta
-            WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ?
+            WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ? {broker_clause}
             ORDER BY ta.created_at DESC, ta.ai_confidence DESC, ta.id DESC
             LIMIT 50
             """,
-            (freshness_cutoff,),
+            tuple(params),
         )
         print(
             f"[auto-execution] broker={broker_filter} stage=candidates_loaded count={len(rows)} "
@@ -404,10 +417,12 @@ class ExecutionService:
             proposal = TradeProposal.from_dict(payload["proposal"])
             selected_broker = self.orchestrator._select_adapter(proposal)
             broker_name = selected_broker.name if selected_broker else "unknown"
-            # trade_audit has no broker/asset_type column to filter on in SQL, so
-            # broker-specific candidate pre-filtering happens here, in Python,
-            # right after the candidate's broker is resolved and before any
-            # governance-chain work is done for it (AT-ED-003 Section 1 item 4).
+            # Defensive safety net only as of 2026-08-10 -- the candidate query above now
+            # filters by trade_audit.broker directly in SQL, so this should never actually
+            # trigger for a normally-written row. Kept in case a legacy/edge-case row's stored
+            # broker ever disagrees with what _select_adapter resolves from the full proposal
+            # (AT-ED-003 Section 1 item 4's original guarantee: no ungoverned cross-broker work
+            # happens for a candidate, regardless of why the mismatch occurred).
             if broker_filter and broker_name != broker_filter:
                 continue
             print(
