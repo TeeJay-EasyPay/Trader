@@ -295,9 +295,18 @@ class ExecutionService:
         # proposal_ids recurred unchanged across 40+ minutes and several research
         # cycles because they never aged out of the candidate pool.
         freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        # 2026-08-10 Supabase egress finding: this used to select payload_json (the full
+        # proposal dossier, ~11KB average per row, confirmed via /database-diagnostics) for
+        # all 50 candidates up front. Every check below through "already_executed" only ever
+        # needed the lightweight columns already in this SELECT -- payload_json is never
+        # touched until a candidate survives all of them and its broker needs resolving (no
+        # broker/asset_type column exists on trade_audit to filter on in SQL). Running every
+        # 60s per broker, at up to 50 rows, this was a likely-dominant real contributor to
+        # reported ~800MB/day egress. Now a lightweight-only first pass; payload_json is
+        # fetched in a second, targeted query for just the candidates that survive it.
         rows = self._query_executor.rows(
             """
-            SELECT ta.proposal_id, ta.payload_json, ta.created_at, ta.ai_confidence,
+            SELECT ta.proposal_id, ta.created_at, ta.ai_confidence,
                    execution_guardrails_passed, validation_result, symbol
             FROM trade_audit ta
             WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ?
@@ -314,7 +323,8 @@ class ExecutionService:
         decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
         skipped: list[dict[str, Any]] = []
-        for _candidate_index, row in enumerate(rows):
+        surviving_rows: list[Any] = []
+        for row in rows:
             proposal_id = row["proposal_id"]
             if proposal_id in seen:
                 continue
@@ -358,7 +368,39 @@ class ExecutionService:
                     "message": "Already executed.",
                 })
                 continue
-            payload = json.loads(row["payload_json"])
+            surviving_rows.append(row)
+
+        payloads_by_proposal_id: dict[str, str] = {}
+        if surviving_rows:
+            placeholders = ",".join("?" for _ in surviving_rows)
+            payload_rows = self._query_executor.rows(
+                f"SELECT proposal_id, payload_json FROM trade_audit WHERE event_type = 'agent_proposal' AND proposal_id IN ({placeholders})",
+                tuple(row["proposal_id"] for row in surviving_rows),
+            )
+            payloads_by_proposal_id = {row["proposal_id"]: row["payload_json"] for row in payload_rows}
+        print(
+            f"[auto-execution] broker={broker_filter} stage=payloads_fetched count={len(payloads_by_proposal_id)} "
+            f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
+            flush=True,
+        )
+
+        for _candidate_index, row in enumerate(surviving_rows):
+            proposal_id = row["proposal_id"]
+            confidence = safe_score(row["ai_confidence"]) or 0.0
+            raw_payload_json = payloads_by_proposal_id.get(proposal_id)
+            if raw_payload_json is None:
+                # Between the first and second pass, extremely unlikely but not impossible
+                # (e.g. a concurrent process touched this exact row) -- skip honestly rather
+                # than crash the whole batch over one candidate.
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "payload_unavailable",
+                    "message": "Proposal payload could not be re-fetched for evaluation.",
+                })
+                continue
+            payload = json.loads(raw_payload_json)
             proposal = TradeProposal.from_dict(payload["proposal"])
             selected_broker = self.orchestrator._select_adapter(proposal)
             broker_name = selected_broker.name if selected_broker else "unknown"

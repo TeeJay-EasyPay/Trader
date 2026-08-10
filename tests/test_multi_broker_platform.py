@@ -401,6 +401,69 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertNotIn("OLDCO", seen_symbols)
             self.assertIn("NEWCO", seen_symbols)
 
+    def test_auto_execute_never_fetches_payload_json_for_a_candidate_that_fails_a_cheap_filter(self):
+        # 2026-08-10 Supabase egress finding: this query used to select payload_json (the
+        # full proposal dossier, confirmed ~11KB average per row via /database-diagnostics)
+        # for all up-to-50 candidates up front, even though confidence/freshness/guardrails/
+        # already-executed are all checked from lightweight columns already in the first
+        # SELECT -- running every ~60s per broker, this was a likely-dominant real
+        # contributor to reported ~800MB/day egress. Now a low-confidence candidate must
+        # never appear in the second, targeted payload_json fetch at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            settings = replace(settings, auto_trade=AutoTradeConfig(enabled=True, min_confidence=0.85))
+            set_broker_auto_trading(settings.db_path, "alpaca", True)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+
+            def make_proposal(symbol: str, confidence: float) -> TradeProposal:
+                return TradeProposal(
+                    symbol=symbol, side="buy", entry_price=100, stop_loss=98, take_profit=106,
+                    position_size=1, risk_percentage=0.01, confidence_score=confidence,
+                    news_summary="No material news.", market_sentiment_summary="Neutral.",
+                    technical_summary="Setup available.",
+                    plain_english_reasoning=(
+                        "Strongest argument for: the trend is constructive. "
+                        "Strongest argument against: volatility could invalidate the setup."
+                    ),
+                    ai_guardrails_passed=True, asset_type="stock", exchange="NASDAQ",
+                ).normalized()
+
+            low_confidence = make_proposal("LOWCO", 0.50)
+            high_confidence = make_proposal("HIGHCO", 0.95)
+            audit.record_trade_event("agent_proposal", low_confidence, validation=ValidationResult(passed=True))
+            audit.record_trade_event("agent_proposal", high_confidence, validation=ValidationResult(passed=True))
+
+            service = LocalApiService(settings)
+            real_rows = service._query_executor.rows
+            payload_queries: list[tuple[str, tuple]] = []
+
+            def spy_rows(sql, params=()):
+                if "payload_json" in sql:
+                    payload_queries.append((sql, tuple(params)))
+                return real_rows(sql, params)
+
+            with (
+                patch.object(service._query_executor, "rows", side_effect=spy_rows),
+                patch.object(LocalApiService, "_account_context_for_broker", return_value=SimpleNamespace()),
+                patch.object(service.orchestrator, "_select_adapter", return_value=SimpleNamespace(name="alpaca")),
+                patch.object(
+                    service.orchestrator,
+                    "evaluate_recommendation",
+                    side_effect=lambda proposal, context, auto_execute=True: SimpleNamespace(
+                        decision="rejected", rejection_reason="test_short_circuit", notes=None,
+                        symbol=proposal.symbol, to_dict=lambda: {},
+                    ),
+                ),
+            ):
+                result = service.auto_execute_recommendations(broker_filter="alpaca")
+
+            self.assertEqual(len(payload_queries), 1, "expected exactly one targeted payload fetch")
+            fetched_ids = payload_queries[0][1]
+            self.assertIn(high_confidence.proposal_id, fetched_ids)
+            self.assertNotIn(low_confidence.proposal_id, fetched_ids)
+            skipped_symbols = {row["symbol"] for row in result.get("skipped", [])}
+            self.assertIn("LOWCO", skipped_symbols)
+
     def test_kraken_live_switches_enable_crypto_policy(self):
         previous = {key: os.environ.get(key) for key in [
             "KRAKEN_TRADING_ENABLED",
