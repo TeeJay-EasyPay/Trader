@@ -61,7 +61,7 @@ class Settings:
     research_scheduler_limit: int = 30
     auto_execution_interval_seconds: int = 60
     worker_research_enabled: bool = True
-    production_snapshot_interval_seconds: int = 300
+    production_snapshot_interval_seconds: int = 1200
     worker_heartbeat_interval_seconds: int = 30
     worker_job_timeout_seconds: int = 180
     evidence_snapshot_job_timeout_seconds: int = 300
@@ -153,7 +153,7 @@ def load_settings() -> Settings:
         research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
         worker_research_enabled=_bool_env("AI_TRADER_WORKER_RESEARCH_ENABLED", True),
-        production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 300),
+        production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 1200),
         worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),

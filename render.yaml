@@ -97,7 +97,7 @@ services:
       - key: AI_TRADER_WORKER_RESEARCH_ENABLED
         value: "true"
       - key: AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS
-        value: "300"
+        value: "1200"
       - key: AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS
         value: "30"
       - key: AI_TRADER_BROKER_POLL_INTERVAL_SECONDS

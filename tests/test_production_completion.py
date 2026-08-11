@@ -23,6 +23,7 @@ from ai_trader.canonical_trades import (
     register_execution_intent,
 )
 from ai_trader.cli import _run_claimed_job_process, _run_worker_cycle_job
+from ai_trader.config import load_settings
 from ai_trader.database import connect, selected_backend
 from ai_trader.models import TradeProposal
 from ai_trader.multi_broker import set_broker_auto_trading
@@ -412,6 +413,28 @@ class ProductionCompletionTests(unittest.TestCase):
             result = _run_named_job(service, "external-intelligence-refresh", limit=0)
         self.assertEqual(result, expected)
         refresh.assert_called_once_with(service.settings.db_path, service.settings)
+
+    def test_production_snapshot_interval_defaults_to_twenty_minutes_not_five(self):
+        # 2026-08-12 Supabase egress finding: the evidence-snapshot job's own
+        # _load_founder_evidence_rows fetches up to 100 full PRODUCTION_RECOMMENDATION_EVIDENCE
+        # rows (real, uncapped-by-time SELECT *) every time it runs. Real production evidence:
+        # only ~105 new recommendations are created per 24h, so on a 5-minute cadence,
+        # consecutive refreshes re-transfer the same ~99 of 100 rows essentially unchanged --
+        # confirmed live via a direct sample (recent recommendation rows run tens of KB each,
+        # inflated by the historical-analogue/backtest/knowledge-base context Phase C/D added
+        # to proposals). _JOB_HEALTH_SPECS already expected this job on a 1200s (20-minute)
+        # cadence (production_evidence.py's own job-health table), so the 300s scheduling
+        # default was already inconsistent with the rest of the codebase's own expectations,
+        # not just expensive. Raising the default to 1200s cuts this redundant re-fetch volume
+        # by roughly 4x with no reduction in how much history is shown (unlike a LIMIT cut,
+        # this changes cadence, not content).
+        previous = os.environ.pop("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", None)
+        try:
+            settings = load_settings()
+            self.assertEqual(settings.production_snapshot_interval_seconds, 1200)
+        finally:
+            if previous is not None:
+                os.environ["AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS"] = previous
 
     def test_due_worker_jobs_omits_external_intelligence_refresh_when_disabled(self):
         from datetime import datetime, timezone
