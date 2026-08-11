@@ -153,7 +153,18 @@ class AlpacaPaperClient:
             "qty": str(qty),
             "side": side,
             "type": "market",
-            "time_in_force": "day",
+            # 2026-08-12 hosted incident: "day" applies to every leg of a bracket order,
+            # including the take_profit/stop_loss exit legs -- not just the market entry. A
+            # real position (CSL, opened 2026-07-03) sat with a growing unrealized gain for
+            # over a month with zero exit protection: confirmed live via /founder/trades that
+            # both its stop-loss and take-profit legs expired at market close the same day
+            # they were placed (2026-07-06) because neither had been hit yet, and nothing ever
+            # resubmitted replacement legs. The entry itself is still meant to be a same-day
+            # market order (unaffected), but the protective exit legs must survive until they
+            # actually trigger -- gtc (good-til-canceled) matches how every other broker
+            # integration in this codebase treats a stop-loss/take-profit as a standing
+            # instruction, not a one-day request.
+            "time_in_force": "gtc",
             "order_class": "bracket",
             "take_profit": {"limit_price": str(round(take_profit, 2))},
             "stop_loss": {"stop_price": str(round(stop_loss, 2))},

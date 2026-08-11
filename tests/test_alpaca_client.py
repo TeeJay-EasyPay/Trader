@@ -93,5 +93,40 @@ class AlpacaDailyBarsTests(unittest.TestCase):
         self.assertEqual(result["unavailable_symbols"], ["NOVO-B"])
 
 
+class AlpacaBracketOrderTimeInForceTests(unittest.TestCase):
+    """2026-08-12 hosted incident: a real position (CSL, opened 2026-07-03) sat with a
+    growing unrealized gain for over a month with zero exit protection. Confirmed live via
+    /founder/trades: both the take_profit and stop_loss legs of its original bracket order
+    expired at market close the same day they were placed (2026-07-06), because
+    place_bracket_order sent "time_in_force": "day" -- which Alpaca applies to every leg of
+    a bracket order, not just the entry. Nothing ever resubmitted replacement legs, so the
+    position has been completely unmanaged ever since."""
+
+    def _client(self) -> AlpacaPaperClient:
+        return AlpacaPaperClient(
+            AlpacaCredentials(
+                api_key="key",
+                secret_key="secret",
+                base_url="https://paper-api.alpaca.markets",
+                data_base_url="https://data.alpaca.markets",
+            )
+        )
+
+    def test_bracket_order_exit_legs_are_good_til_canceled_not_day(self):
+        client = self._client()
+        sent_payloads: list[dict] = []
+
+        def fake_urlopen(request, timeout=20):
+            sent_payloads.append(json.loads(request.data.decode("utf-8")))
+            return _fake_response({"id": "order-1", "status": "accepted"})
+
+        with patch("ai_trader.alpaca.urlopen", side_effect=fake_urlopen):
+            client.place_bracket_order(symbol="CSL", side="buy", qty=31, stop_loss=360.0, take_profit=425.0)
+
+        self.assertEqual(len(sent_payloads), 1)
+        self.assertEqual(sent_payloads[0]["time_in_force"], "gtc")
+        self.assertEqual(sent_payloads[0]["order_class"], "bracket")
+
+
 if __name__ == "__main__":
     unittest.main()
