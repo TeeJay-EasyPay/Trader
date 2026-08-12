@@ -750,6 +750,43 @@ class ExecutionService:
         )
         return {"status": "submitted", "message": f"Exit submitted for {item['symbol']} at approximately {price}.", "order": result}
 
+    def close_broker_position(self, body: dict[str, Any]) -> dict[str, Any]:
+        # 2026-08-12 Founder-requested capability: force_managed_exit only covers Kraken
+        # trades registered in the local managed_exits table. Alpaca positions never get a
+        # managed_exit row (they rely on Alpaca's own native bracket-order legs -- see
+        # alpaca.py's time_in_force fix, same incident) and had no "close this now" path at
+        # all, for the AI or for the Founder. This is broker-agnostic where the adapter
+        # supports it, but is deliberately manual-trigger-only: nothing in the autonomous
+        # decision loop calls this.
+        broker = str(body.get("broker") or "").lower()
+        symbol = str(body.get("symbol") or "").upper()
+        if not broker or not symbol:
+            return {"status": "rejected", "message": "broker and symbol are required."}
+        adapter = self.orchestrator.adapters.get(broker)
+        if adapter is None or not hasattr(adapter, "close_position"):
+            return {"status": "rejected", "message": f"{broker} does not support closing a position through AI Trader."}
+        try:
+            positions = adapter.get_positions()
+        except Exception as exc:  # noqa: BLE001 - a broker-side failure must not crash the request
+            return {"status": "rejected", "message": f"Could not confirm the current {broker} position: {exc}"}
+        match = next((item for item in positions if str(item.get("symbol") or "").upper() == symbol), None)
+        if match is None:
+            return {"status": "rejected", "message": f"No open {symbol} position was found at {broker}."}
+        try:
+            result = adapter.close_position(symbol)
+        except Exception as exc:  # noqa: BLE001 - report the real broker error, don't crash
+            return {"status": "rejected", "message": f"{broker} rejected the close request: {exc}"}
+        record_notification(
+            self.settings.db_path,
+            event_type="founder_forced_position_close",
+            broker=broker,
+            symbol=symbol,
+            title="Founder Closed Position",
+            message=f"{symbol} position close requested at {broker}.",
+            payload={"position": json_safe(match), "result": json_safe(result)},
+        )
+        return {"status": "submitted", "message": f"Close requested for {symbol} at {broker}.", "position": match, "result": result}
+
     def _proposal_already_executed(self, proposal_id: str) -> bool:
         return bool(
             self._query_executor.scalar(

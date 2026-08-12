@@ -1620,5 +1620,63 @@ class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
             restore_env(previous)
 
 
+class ClosePositionTests(unittest.TestCase):
+    """2026-08-12 Founder-requested capability: force_managed_exit only ever covered Kraken
+    trades registered in the local managed_exits table -- Alpaca positions (which rely on
+    Alpaca's own native bracket-order legs, not a local managed_exit row) had no "close this
+    now" path at all. These exercise LocalApiService.close_position end-to-end."""
+
+    class FakeAlpacaAdapter:
+        name = "alpaca"
+
+        def __init__(self, *, positions):
+            self._positions = positions
+            self.closed_symbols: list[str] = []
+
+        def get_positions(self):
+            return self._positions
+
+        def close_position(self, symbol):
+            self.closed_symbols.append(symbol)
+            return {"symbol": symbol, "status": "accepted", "id": "close-1"}
+
+    def test_closes_a_real_open_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = self.FakeAlpacaAdapter(positions=[{"symbol": "CSL", "qty": 31, "market_value": 12088.76}])
+            service.orchestrator.adapters["alpaca"] = adapter
+
+            result = service.close_position({"broker": "alpaca", "symbol": "CSL"})
+
+            self.assertEqual(result["status"], "submitted")
+            self.assertEqual(adapter.closed_symbols, ["CSL"])
+
+    def test_refuses_when_no_matching_open_position_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            adapter = self.FakeAlpacaAdapter(positions=[{"symbol": "AAPL", "qty": 5}])
+            service.orchestrator.adapters["alpaca"] = adapter
+
+            result = service.close_position({"broker": "alpaca", "symbol": "CSL"})
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(adapter.closed_symbols, [])
+
+    def test_refuses_for_a_broker_with_no_close_position_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            result = service.close_position({"broker": "not_a_real_broker", "symbol": "CSL"})
+
+            self.assertEqual(result["status"], "rejected")
+
+    def test_requires_broker_and_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            self.assertEqual(service.close_position({"symbol": "CSL"})["status"], "rejected")
+            self.assertEqual(service.close_position({"broker": "alpaca"})["status"], "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()

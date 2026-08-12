@@ -534,6 +534,8 @@ class LocalApiService:
             return 200, self.monitor_managed_exits()
         if path == "/force-managed-exit":
             return 200, self.force_managed_exit(body)
+        if path == "/close-position":
+            return 200, self.close_position(body)
         if path == "/kraken-reconciliation/replay":
             return 200, replay_persisted_kraken_evidence(
                 self.settings.db_path,
@@ -1088,6 +1090,15 @@ class LocalApiService:
         # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- "delegation before
         # deletion" -- so the GET/POST route dispatch table and tests needed no changes.
         return self._execution_service.approve_and_execute(body)
+
+    def close_position(self, body: dict[str, Any]) -> dict[str, Any]:
+        # 2026-08-12: Founder-requested capability. Unlike force_managed_exit (Kraken-only,
+        # keyed off the local managed_exits table), Alpaca positions never get a local
+        # managed_exit row -- they rely on Alpaca's own native bracket-order legs for
+        # protection (see alpaca.py's time_in_force fix, same incident) and have no existing
+        # "force exit" path at all. Delegates to ExecutionService, matching every other
+        # broker-action route.
+        return self._execution_service.close_broker_position(body)
 
     def _account_context_for_broker(self, broker_name: str) -> AccountContext:
         snapshot = latest_pnl_snapshot(self.settings.db_path, broker_name)
