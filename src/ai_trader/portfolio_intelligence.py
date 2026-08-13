@@ -389,6 +389,8 @@ def _exposure_warnings(
     # diluting the concentration required a new trade and every new trade was blocked by it.
     # Skipped only when the broker's own cap is too small to ever allow real diversification;
     # unaffected for brokers/books with room for more than one or two concurrent positions.
+    _diag_weight = largest[0].get("weight") if largest else None
+    print(f"[_exposure_warnings] diagnostic max_managed_positions={max_managed_positions!r} largest_len={len(largest)} largest_weight={_diag_weight!r}", flush=True)
     if (
         max_managed_positions is None or max_managed_positions > 1
     ) and len(largest) > 1 and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
