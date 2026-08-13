@@ -104,6 +104,10 @@ class AITradingAgent:
                     proposal = self.analyzer.propose(symbol, market, news, account, context=context)
                     if proposal is None:
                         self._no_trade_probe(symbol, market, news)
+                    elif proposal.asset_type != "crypto":
+                        real_exchange = self._known_exchange_for_symbol(symbol)
+                        if real_exchange:
+                            proposal = replace(proposal, exchange=real_exchange)
                 else:
                     proposal = self._no_trade_probe(symbol, market, news)
                 if proposal is None:
@@ -147,6 +151,37 @@ class AITradingAgent:
                     {"symbol": symbol, "reason": reason},
                 )
         return proposals
+
+    def _known_exchange_for_symbol(self, symbol: str) -> str | None:
+        """The symbol's real listing exchange from COMPANY_MASTER, if this system has one on file.
+
+        2026-08-13 hosted incident: OpenAIProposalAnalyzer.propose's prompt never asks the model
+        for `exchange` (see ai.py's field list) or `asset_type`, and TradeProposal.exchange
+        defaults to "NYSE" when unset -- so every equity proposal this system has ever generated,
+        for every symbol, silently inherited that default regardless of where the symbol is
+        actually listed. Confirmed live: FRES (Fresnillo plc, correctly tagged "LSE" in this
+        system's own COMPANY_MASTER seed data) kept being proposed with exchange="NYSE", routed
+        to Alpaca (a US-only broker) via _proposal_broker's "not crypto -> alpaca" rule, and then
+        failed asset_unavailable against Alpaca's real API on every single evaluation for over 4
+        hours straight -- a permanent, self-inflicted dead end for any non-US symbol in the
+        research watchlist, not a FRES-specific glitch.
+
+        The LLM is never trusted for this: it's an operationally load-bearing routing field, and
+        was never even asked for it. When COMPANY_MASTER has no row for this symbol, this
+        returns None and the caller keeps TradeProposal's existing default -- unchanged behaviour
+        for symbols this system has no exchange metadata for at all.
+        """
+        if self.db_path is None:
+            return None
+        try:
+            with closing(connect(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT exchange FROM COMPANY_MASTER WHERE ticker = ? ORDER BY updated_at DESC LIMIT 1",
+                    (symbol.upper(),),
+                ).fetchone()
+        except Exception:  # noqa: BLE001 - a lookup failure must fall back to the existing default, never block a proposal
+            return None
+        return str(row[0]).strip().upper() if row and row[0] else None
 
     def _demo_proposal(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal:
         price = _latest_close(symbol, market) or 100.0

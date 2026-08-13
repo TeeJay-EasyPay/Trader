@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import tempfile
@@ -76,6 +77,41 @@ class AssetMetadataRefreshTests(unittest.TestCase):
 
             self.assertIn("Technology", after["exposure"]["sector"])
             self.assertNotIn("Unknown - sector metadata missing", after["exposure"]["sector"])
+
+    def test_kraken_single_slot_sleeve_does_not_trip_the_concentration_warning(self):
+        # 2026-08-13 hosted incident: KRAKEN_MAX_OPEN_TRADES=1 caps Kraken's AI-managed sleeve to
+        # one concurrent position by design -- so whichever position is open being >25% of the
+        # book isn't a diversification failure, it's the guaranteed state of a single-slot sleeve.
+        # Confirmed live: this warning demoted every single new Kraken candidate to
+        # portfolio_manager_manual_review regardless of symbol, a closed loop with no exit (new
+        # trades were the only way to dilute concentration, and every new trade was blocked by it).
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            positions = [
+                {"symbol": "BCH", "market_value": 100},
+                {"symbol": "XRP", "market_value": 20},
+            ]
+            old_value = os.environ.pop("KRAKEN_MAX_OPEN_TRADES", None)
+            try:
+                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "1"
+                kraken_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
+                self.assertFalse(any("is a large position" in warning for warning in kraken_exposure["warnings"]))
+
+                # Unaffected brokers (no small-cap env var) keep the original concentration signal.
+                other_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="alpaca")
+                self.assertTrue(any("is a large position" in warning for warning in other_broker_exposure["warnings"]))
+                no_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker=None)
+                self.assertTrue(any("is a large position" in warning for warning in no_broker_exposure["warnings"]))
+
+                # A Kraken sleeve with real room to diversify (cap > 1) keeps the signal too.
+                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "3"
+                roomier_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
+                self.assertTrue(any("is a large position" in warning for warning in roomier_exposure["warnings"]))
+            finally:
+                if old_value is None:
+                    os.environ.pop("KRAKEN_MAX_OPEN_TRADES", None)
+                else:
+                    os.environ["KRAKEN_MAX_OPEN_TRADES"] = old_value
 
 
 if __name__ == "__main__":

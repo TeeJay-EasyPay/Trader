@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.canonical_trades import canonical_trade, register_execution_intent
 from ai_trader.kraken_reconciliation import (
+    backfill_missing_managed_exits,
     initialize_kraken_reconciliation_schema,
     kraken_capital_ledger_summary,
     reconciliation_control,
@@ -19,7 +20,7 @@ from ai_trader.kraken_reconciliation import (
     verify_kraken_reconciliation,
 )
 from ai_trader.models import TradeProposal
-from ai_trader.multi_broker import initialize_multi_broker_schema
+from ai_trader.multi_broker import initialize_multi_broker_schema, open_managed_exits
 from ai_trader.sprint6 import process_learning_outbox
 
 
@@ -188,6 +189,72 @@ class KrakenReconciliationTests(unittest.TestCase):
             duplicate_learning = process_learning_outbox(db_path, worker_id="test-worker")
             self.assertEqual(learning["processed"], 1)
             self.assertEqual(duplicate_learning["processed"], 0)
+
+    def test_holding_position_missing_a_managed_exit_gets_backfilled(self):
+        # 2026-08-13 hosted incident: BCH and XRP were both confirmed open on Kraken (real
+        # stop/target recorded, status='holding') but neither had a MANAGED_TRADE_EXITS row --
+        # monitor_managed_exits only ever reads open_managed_exits(), so neither position's
+        # stop-loss/take-profit was actually being watched, and the capacity gate that reads the
+        # same table under-counted real open exposure as 0. Reproduces that exact shape: an
+        # entry-only fill (no exit) reconciled through the live ownership/replay path, exactly
+        # as if the process crashed after Kraken confirmed the order but before
+        # record_managed_trade_exit ran -- then asserts replay_kraken_evidence's own reconciliation
+        # cycle recovers it without any extra caller action.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            p = proposal(proposal_id="kraken-holding-1")
+            register_execution_intent(
+                db_path,
+                proposal=p,
+                broker="kraken",
+                decision_context={
+                    "proposal_id": p.proposal_id,
+                    "asset_type": "crypto",
+                    "strategy_id": "crypto_trend",
+                    "regime_id": "trend",
+                    "side": "buy",
+                    "entry_price": p.entry_price,
+                    "intended_entry_price": p.entry_price,
+                    "stop_loss": p.stop_loss,
+                    "original_stop": p.stop_loss,
+                    "take_profit": p.take_profit,
+                    "expected_r": 2.0,
+                    "strongest_argument_for": "Trend evidence supported entry.",
+                    "strongest_argument_against": "Crypto volatility can reverse quickly.",
+                },
+            )
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id="holding-entry-1",
+                logical_trade_id=p.proposal_id,
+                proposal_id=p.proposal_id,
+                order_role="entry",
+                symbol=p.symbol,
+                side="buy",
+            )
+
+            # No MANAGED_TRADE_EXITS row exists yet -- the live order path that would normally
+            # create one (orchestrator.py, right after order submission) never ran here.
+            self.assertEqual(open_managed_exits(db_path, "kraken"), [])
+
+            result = replay_kraken_evidence(
+                db_path,
+                events=[trade_fill("holding-entry-1", "fill-holding-1", "buy", 1.0, "2026-07-10T10:00:00+00:00")],
+            )
+
+            self.assertEqual(result["managed_exits_backfilled"], 1)
+            managed = open_managed_exits(db_path, "kraken")
+            self.assertEqual(len(managed), 1)
+            self.assertEqual(managed[0]["symbol"], "XRPGBP")
+            self.assertAlmostEqual(managed[0]["stop_loss"], 0.9)
+            self.assertAlmostEqual(managed[0]["take_profit"], 1.2)
+            self.assertAlmostEqual(managed[0]["entry_price"], 1.0)
+
+            # Idempotent: a second replay (e.g. the next broker-poll cycle) must not duplicate it.
+            second = backfill_missing_managed_exits(db_path)
+            self.assertEqual(second["backfilled"], 0)
+            self.assertEqual(len(open_managed_exits(db_path, "kraken")), 1)
 
     def test_open_ai_owned_trade_reports_unrealized_separately(self):
         with tempfile.TemporaryDirectory() as tmp:

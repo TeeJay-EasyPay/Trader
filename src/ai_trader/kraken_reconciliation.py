@@ -17,7 +17,7 @@ from .canonical_trades import (
 )
 from .database import connect, selected_backend
 from .models import utc_now_iso
-from .multi_broker import initialize_multi_broker_schema
+from .multi_broker import initialize_multi_broker_schema, record_managed_trade_exit
 from .sprint6 import enqueue_learning_workflow, initialize_sprint6_schema
 
 
@@ -386,6 +386,108 @@ def bootstrap_kraken_order_ownership(db_path: Path, *, conn: Any = None) -> dict
     return {"records_seen": len(intents) + len(exits), "registrations": inserted}
 
 
+def backfill_missing_managed_exits(db_path: Path, *, conn: Any = None) -> dict[str, int]:
+    """Create MANAGED_TRADE_EXITS rows for Kraken positions reconciliation knows are open
+    but that were never registered for active exit monitoring.
+
+    2026-08-13 hosted incident: two real Kraken positions (BCH, XRP) were confirmed open --
+    KRAKEN_RECONCILED_RESULTS had status='holding' with real original_stop/target_price for
+    both -- but neither had a MANAGED_TRADE_EXITS row. Two consequences, both silent: (1)
+    monitor_managed_exits only ever reads open_managed_exits(), so neither position's
+    stop-loss/take-profit was being watched at all -- the recorded stop/target were inert
+    metadata, not an active order, the same failure class as the CSL incident on Alpaca; (2)
+    _ai_managed_open_trade_count (also sourced from MANAGED_TRADE_EXITS) under-counted Kraken's
+    real open exposure as 0, so the KRAKEN_MAX_OPEN_TRADES capacity gate let every new candidate
+    through to evaluation instead of cleanly blocking -- and with BCH at 50% of measured
+    portfolio value, every candidate then dead-ended at the portfolio-manager concentration
+    check with no way out, since diluting that concentration required a new trade and every new
+    trade was blocked by the same check (confirmed live: 28 consecutive Kraken rejections, one
+    identical reason, spanning BTC/ETH/SOL/XLM proposals).
+
+    Root cause: both entries went through the live order path (a KRAKEN_AI_ORDER_OWNERSHIP
+    entry-role row with a real broker_order_id exists for each, recovered by
+    bootstrap_kraken_order_ownership from ORDER_INTENT_LOCKS), but the process evidently did not
+    reach the record_managed_trade_exit call that normally follows a submitted order in the same
+    breath (orchestrator.py) -- almost certainly a crash/timeout mid-flow, the same failure class
+    already documented in architecture/PRODUCTION_TIMEOUT_ROOT_CAUSE_ANALYSIS.md. Reconciliation
+    already recovers ownership of the raw fills after the fact; nothing recreated the
+    managed-exit record itself until now.
+
+    Additive and idempotent: only acts on a 'holding' position that has zero linked managed-exit
+    ownership row, so it never re-registers (or duplicates) a position that already has one.
+    Never guesses a stop/target or an order ID -- skips anything without a real recorded value
+    for either, matching this codebase's standing rule of failing honestly rather than inventing
+    a number a live order would be placed against.
+    """
+    _ensure_schema(db_path)
+    checked = 0
+    backfilled = 0
+    with _connection(db_path, conn) as active:
+        active.row_factory = sqlite3.Row
+        holding = active.execute(
+            "SELECT * FROM KRAKEN_RECONCILED_RESULTS WHERE status = 'holding'"
+        ).fetchall()
+        for row in holding:
+            checked += 1
+            logical_trade_id = row["logical_trade_id"]
+            stop = row["original_stop"]
+            target = row["target_price"]
+            entry_price = row["actual_entry"]
+            quantity = row["quantity"]
+            if not (logical_trade_id and stop and target and entry_price and quantity):
+                continue
+            already_linked = active.execute(
+                """
+                SELECT 1 FROM KRAKEN_AI_ORDER_OWNERSHIP
+                WHERE logical_trade_id = ? AND order_role = 'entry' AND managed_exit_id IS NOT NULL
+                """,
+                (logical_trade_id,),
+            ).fetchone()
+            if already_linked:
+                continue
+            entry_order = active.execute(
+                """
+                SELECT broker_order_id FROM KRAKEN_AI_ORDER_OWNERSHIP
+                WHERE logical_trade_id = ? AND order_role = 'entry'
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (logical_trade_id,),
+            ).fetchone()
+            if entry_order is None:
+                continue
+            managed = record_managed_trade_exit(
+                db_path,
+                broker="kraken",
+                symbol=row["symbol"],
+                side=row["side"] or "buy",
+                quantity=float(quantity),
+                entry_order_id=str(entry_order["broker_order_id"]),
+                entry_price=float(entry_price),
+                stop_loss=float(stop),
+                take_profit=float(target),
+                payload={
+                    "proposal_id": row["proposal_id"],
+                    "logical_trade_id": logical_trade_id,
+                    "backfilled_from": "kraken_reconciliation",
+                    "backfilled_at": utc_now_iso(),
+                },
+            )
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id=str(entry_order["broker_order_id"]),
+                logical_trade_id=logical_trade_id,
+                proposal_id=row["proposal_id"],
+                managed_exit_id=int(managed["managed_exit_id"]),
+                order_role="entry",
+                symbol=row["symbol"],
+                side=row["side"],
+                source="reconciliation_backfill",
+                conn=active,
+            )
+            backfilled += 1
+    return {"positions_checked": checked, "backfilled": backfilled}
+
+
 def replay_kraken_evidence(
     db_path: Path,
     *,
@@ -490,6 +592,8 @@ def replay_kraken_evidence(
             )
             counts["terminal_trades"] += 1
             counts["learning_queued"] += int(learning["status"] == "queued")
+        managed_exit_backfill = backfill_missing_managed_exits(db_path, conn=conn)
+        counts["managed_exits_backfilled"] = managed_exit_backfill["backfilled"]
         now = utc_now_iso()
         with conn:
             conn.execute(

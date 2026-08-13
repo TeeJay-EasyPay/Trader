@@ -333,6 +333,37 @@ class ExecutionService:
             f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
             flush=True,
         )
+        # 2026-08-13 hosted incident: a proposal whose symbol the broker's own live asset
+        # registry has already confirmed it cannot trade (e.g. FRES, an LSE-listed stock,
+        # against Alpaca -- a US-only broker) was re-run through this entire ~30-90s
+        # evaluate_recommendation pipeline every single cycle, all night, because nothing
+        # here early-skipped a candidate once that specific broker/symbol combination was
+        # already known dead. Confirmed live: the same symbol occupied all 100 of the most
+        # recent Alpaca auto-execution attempts across 4+ hours. BROKER_DECISIONS already
+        # persists asset_available per (proposal_id, selected_broker) from every past
+        # evaluate_recommendation run (foundation.record_broker_decision) -- reusing that
+        # instead of re-querying the broker's live API is what makes this cheap. Scoped to
+        # this broker only and to proposal_ids already in this cycle's candidate window, so
+        # it never suppresses a fresh proposal_id for the same symbol on a later research
+        # cycle -- only wastes-a-full-pipeline-run repeats of an already-confirmed-dead one.
+        known_asset_unavailable: set[str] = set()
+        if broker_filter:
+            candidate_ids = [row["proposal_id"] for row in rows]
+            if candidate_ids:
+                try:
+                    placeholders = ",".join("?" for _ in candidate_ids)
+                    dead_rows = self._query_executor.rows(
+                        f"""
+                        SELECT DISTINCT proposal_id FROM BROKER_DECISIONS
+                        WHERE selected_broker = ? AND asset_available = 0
+                          AND proposal_id IN ({placeholders})
+                        """,
+                        tuple([broker_filter, *candidate_ids]),
+                    )
+                    known_asset_unavailable = {row["proposal_id"] for row in dead_rows}
+                except Exception:  # noqa: BLE001 - this early-skip is a pure optimization; its failure must never block evaluation
+                    known_asset_unavailable = set()
+
         decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
         skipped: list[dict[str, Any]] = []
@@ -379,6 +410,15 @@ class ExecutionService:
                     "confidence": confidence,
                     "reason": "already_executed",
                     "message": "Already executed.",
+                })
+                continue
+            if proposal_id in known_asset_unavailable:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "asset_confirmed_unavailable_on_broker",
+                    "message": f"{row['symbol']} already failed the live {broker_filter} asset-availability check this cycle window; skipping without re-evaluating.",
                 })
                 continue
             surviving_rows.append(row)

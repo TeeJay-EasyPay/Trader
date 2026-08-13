@@ -874,6 +874,36 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(skipped[0]["symbol"], "BAD")
             self.assertIn("simulated analyzer failure", skipped[0]["reason"])
 
+    def test_known_exchange_for_symbol_uses_company_master_not_the_llm_default(self):
+        # 2026-08-13 hosted incident: OpenAIProposalAnalyzer.propose's prompt never asks the
+        # model for `exchange` (see ai.py's field list), and TradeProposal.exchange defaults to
+        # "NYSE" when unset -- so every equity proposal silently inherited that default
+        # regardless of where the symbol is actually listed. Confirmed live: FRES (Fresnillo
+        # plc, correctly tagged "LSE" in this system's own COMPANY_MASTER seed data) kept being
+        # proposed with exchange="NYSE", routed to Alpaca (a US-only broker), and failed
+        # asset_unavailable on every single evaluation for 4+ hours straight -- a permanent dead
+        # end for any non-US symbol in the research watchlist, not a FRES-specific glitch.
+        # Pulled out as its own pure, directly-testable method (mirrors this codebase's existing
+        # pattern for gating logic, e.g. orchestrator._kraken_min_order_floor_notional) rather
+        # than asserting through the full propose_trades -> intelligence -> validation chain,
+        # which needs real market-signal richness unrelated to this specific fix.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            agent = AITradingAgent(
+                market_data=None,
+                audit=audit,
+                guardrails=settings.guardrails,
+                db_path=settings.db_path,
+            )
+
+            self.assertEqual(agent._known_exchange_for_symbol("FRES"), "LSE")
+            self.assertEqual(agent._known_exchange_for_symbol("fres"), "LSE")
+            # No COMPANY_MASTER row at all -- caller keeps TradeProposal's existing default,
+            # unchanged behaviour for symbols this system has no exchange metadata for.
+            self.assertIsNone(agent._known_exchange_for_symbol("ZZZNOTREAL"))
+
     def test_alpaca_missing_asset_returns_empty_market_data(self):
         class MissingAssetClient(AlpacaPaperClient):
             def _request(self, method, path, *, payload=None, data_api=False):

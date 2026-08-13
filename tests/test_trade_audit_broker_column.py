@@ -11,6 +11,7 @@ from ai_trader.api import LocalApiService
 from ai_trader.audit import AuditDatabase
 from ai_trader.config import Settings
 from ai_trader.database import connect
+from ai_trader.foundation import initialize_foundation_schema, record_broker_decision
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.multi_broker import set_broker_auto_trading
 
@@ -112,6 +113,55 @@ class TradeAuditBrokerColumnTests(unittest.TestCase):
 
         self.assertIn("AAPL", evaluated_symbols)
         self.assertNotIn("CRYPTO0", evaluated_symbols)
+
+    def test_candidate_confirmed_asset_unavailable_is_skipped_without_re_evaluating(self):
+        # 2026-08-13 hosted incident: a proposal whose symbol the broker's own live asset
+        # registry had already confirmed it cannot trade (FRES, an LSE-listed stock, against
+        # Alpaca -- a US-only broker) was re-run through the entire evaluate_recommendation
+        # pipeline every single cycle, all night, because nothing early-skipped a candidate once
+        # that exact broker/symbol combination was already known dead. Confirmed live: the same
+        # symbol occupied all 100 of the most recent Alpaca auto-execution attempts across 4+
+        # hours. A fresh, different candidate must still reach evaluate_recommendation.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            dead_proposal = _proposal("FRES", "stock")
+            audit.record_trade_event("agent_proposal", dead_proposal, validation=ValidationResult(passed=True))
+            audit.record_trade_event("agent_proposal", _proposal("AAPL", "stock"), validation=ValidationResult(passed=True))
+            initialize_foundation_schema(settings.db_path)
+            record_broker_decision(
+                settings.db_path,
+                dead_proposal,
+                selected_broker="alpaca",
+                broker_healthy=True,
+                asset_available=False,
+                market_open=True,
+                result="rejected",
+                reason="asset_unavailable",
+            )
+            set_broker_auto_trading(settings.db_path, "alpaca", True)
+
+            evaluated_symbols: list[str] = []
+
+            def fake_evaluate(proposal, context, auto_execute=True):
+                evaluated_symbols.append(proposal.symbol)
+                from types import SimpleNamespace
+                return SimpleNamespace(
+                    decision="rejected", rejection_reason="test_short_circuit", notes=None,
+                    symbol=proposal.symbol, to_dict=lambda: {},
+                )
+
+            service = LocalApiService(settings)
+            with (
+                patch.object(service.orchestrator, "evaluate_recommendation", side_effect=fake_evaluate),
+                patch.object(LocalApiService, "_account_context_for_broker", return_value=None),
+            ):
+                result = service.auto_execute_recommendations(broker_filter="alpaca")
+
+        self.assertIn("AAPL", evaluated_symbols)
+        self.assertNotIn("FRES", evaluated_symbols)
+        skipped_reasons = {row["reason"] for row in result["skipped"]}
+        self.assertIn("asset_confirmed_unavailable_on_broker", skipped_reasons)
 
 
 if __name__ == "__main__":

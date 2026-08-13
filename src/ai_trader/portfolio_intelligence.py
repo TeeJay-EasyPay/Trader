@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 from .database import connect
 from collections import defaultdict
@@ -195,7 +196,7 @@ def calculate_portfolio_exposure(db_path: Path, positions: list[dict[str, Any]],
         largest.append({"symbol": symbol, "value": value, "weight": value / total if total else None})
     largest = sorted(largest, key=lambda row: row["value"], reverse=True)
     exposure = {name: _bucket_percentages(values, total) for name, values in buckets.items()}
-    warnings = _exposure_warnings(exposure, largest, missing_metadata)
+    warnings = _exposure_warnings(exposure, largest, missing_metadata, max_managed_positions=_broker_managed_position_cap(broker))
     plain = _plain_exposure_summary(total, exposure, warnings)
     with closing(connect(db_path)) as conn:
         with conn:
@@ -335,7 +336,28 @@ def _bucket_percentages(values: dict[str, float], total: float) -> dict[str, dic
     }
 
 
-def _exposure_warnings(exposure: dict[str, Any], largest: list[dict[str, Any]], missing: list[str]) -> list[str]:
+def _broker_managed_position_cap(broker: str | None) -> int | None:
+    """The broker's own configured concurrent-managed-position limit, if it has one this small.
+
+    Only Kraken's AI-managed sleeve is deliberately capped this tight today
+    (KRAKEN_MAX_OPEN_TRADES, default 1); other brokers have no equivalent env var and are
+    unaffected (returns None, preserving the prior always-on concentration check for them).
+    """
+    if (broker or "").strip().lower() != "kraken":
+        return None
+    try:
+        return int(os.getenv("KRAKEN_MAX_OPEN_TRADES", "1"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _exposure_warnings(
+    exposure: dict[str, Any],
+    largest: list[dict[str, Any]],
+    missing: list[str],
+    *,
+    max_managed_positions: int | None = None,
+) -> list[str]:
     warnings: list[str] = []
     asset_class_bucket = exposure.get("asset_class", {})
     # A book scoped to a single asset class (e.g. Kraken's AI-managed sleeve, which only ever
@@ -356,7 +378,20 @@ def _exposure_warnings(exposure: dict[str, Any], largest: list[dict[str, Any]], 
     # diversify, it's just what a first (or currently-only) position looks like. "Concentrated
     # in the largest holding" is only a meaningful signal once there was a real choice not to
     # diversify, i.e. at least one other position existed to compare against.
-    if len(largest) > 1 and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
+    #
+    # 2026-08-13 hosted incident: this alone isn't enough for a broker sleeve whose own
+    # configured capacity never allows more than one (or two) concurrent positions in the first
+    # place -- e.g. Kraken with KRAKEN_MAX_OPEN_TRADES=1. There, >25% concentration in the
+    # single position that's allowed to exist is not a diversification failure, it's the
+    # mathematically guaranteed state of that sleeve. Confirmed live: with KRAKEN_MAX_OPEN_TRADES
+    # =1 and one legacy position at 50% of the book, this warning demoted every single new
+    # candidate to portfolio_manager_manual_review regardless of symbol -- a closed loop, since
+    # diluting the concentration required a new trade and every new trade was blocked by it.
+    # Skipped only when the broker's own cap is too small to ever allow real diversification;
+    # unaffected for brokers/books with room for more than one or two concurrent positions.
+    if (
+        max_managed_positions is None or max_managed_positions > 1
+    ) and len(largest) > 1 and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
         warnings.append(f"{largest[0]['symbol']} is a large position at {_pct(largest[0]['weight'])} of measured portfolio value.")
     if missing:
         warnings.append(f"Metadata is missing for {', '.join(sorted(set(missing))[:5])}; exposure analysis is incomplete.")
