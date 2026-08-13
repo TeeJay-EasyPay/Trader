@@ -333,36 +333,16 @@ class ExecutionService:
             f"elapsed={time.monotonic() - _auto_exec_t0:.1f}s",
             flush=True,
         )
-        # 2026-08-13 hosted incident: a proposal whose symbol the broker's own live asset
-        # registry has already confirmed it cannot trade (e.g. FRES, an LSE-listed stock,
-        # against Alpaca -- a US-only broker) was re-run through this entire ~30-90s
-        # evaluate_recommendation pipeline every single cycle, all night, because nothing
-        # here early-skipped a candidate once that specific broker/symbol combination was
-        # already known dead. Confirmed live: the same symbol occupied all 100 of the most
-        # recent Alpaca auto-execution attempts across 4+ hours. BROKER_DECISIONS already
-        # persists asset_available per (proposal_id, selected_broker) from every past
-        # evaluate_recommendation run (foundation.record_broker_decision) -- reusing that
-        # instead of re-querying the broker's live API is what makes this cheap. Scoped to
-        # this broker only and to proposal_ids already in this cycle's candidate window, so
-        # it never suppresses a fresh proposal_id for the same symbol on a later research
-        # cycle -- only wastes-a-full-pipeline-run repeats of an already-confirmed-dead one.
+        # 2026-08-13: an earlier version of this early-skip (querying BROKER_DECISIONS for a
+        # prior asset_available=0 result before re-evaluating) caused both auto-execution-alpaca
+        # and auto-execution-kraken to hang indefinitely in production immediately after
+        # candidates_loaded -- confirmed live via Render logs (candidates_loaded printed
+        # reliably; nothing after it for either broker for ~1 hour, matching a lock/contention
+        # issue against a concurrently-written table rather than a real exception). Reverted
+        # to restore trading; do not re-add a query against BROKER_DECISIONS here without
+        # confirming it can't block behind a concurrent writer under this deployment's Postgres
+        # backend. recommendation_expired already ages out a stuck proposal_id within 24h.
         known_asset_unavailable: set[str] = set()
-        if broker_filter:
-            candidate_ids = [row["proposal_id"] for row in rows]
-            if candidate_ids:
-                try:
-                    placeholders = ",".join("?" for _ in candidate_ids)
-                    dead_rows = self._query_executor.rows(
-                        f"""
-                        SELECT DISTINCT proposal_id FROM BROKER_DECISIONS
-                        WHERE selected_broker = ? AND asset_available = 0
-                          AND proposal_id IN ({placeholders})
-                        """,
-                        tuple([broker_filter, *candidate_ids]),
-                    )
-                    known_asset_unavailable = {row["proposal_id"] for row in dead_rows}
-                except Exception:  # noqa: BLE001 - this early-skip is a pure optimization; its failure must never block evaluation
-                    known_asset_unavailable = set()
 
         decisions: list[dict[str, Any]] = []
         seen: set[str] = set()
