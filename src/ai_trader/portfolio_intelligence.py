@@ -337,11 +337,11 @@ def _bucket_percentages(values: dict[str, float], total: float) -> dict[str, dic
 
 
 def _broker_managed_position_cap(broker: str | None) -> int | None:
-    """The broker's own configured concurrent-managed-position limit, if it has one this small.
+    """The broker's own configured concurrent-managed-position limit, if it has one.
 
-    Only Kraken's AI-managed sleeve is deliberately capped this tight today
-    (KRAKEN_MAX_OPEN_TRADES, default 1); other brokers have no equivalent env var and are
-    unaffected (returns None, preserving the prior always-on concentration check for them).
+    Only Kraken's AI-managed sleeve has an explicit cap today (KRAKEN_MAX_OPEN_TRADES); other
+    brokers have no equivalent env var and are unaffected (returns None, preserving the prior
+    always-on concentration check for them).
     """
     if (broker or "").strip().lower() != "kraken":
         return None
@@ -379,20 +379,24 @@ def _exposure_warnings(
     # in the largest holding" is only a meaningful signal once there was a real choice not to
     # diversify, i.e. at least one other position existed to compare against.
     #
-    # 2026-08-13 hosted incident: this alone isn't enough for a broker sleeve whose own
-    # configured capacity never allows more than one (or two) concurrent positions in the first
-    # place -- e.g. Kraken with KRAKEN_MAX_OPEN_TRADES=1. There, >25% concentration in the
-    # single position that's allowed to exist is not a diversification failure, it's the
-    # mathematically guaranteed state of that sleeve. Confirmed live: with KRAKEN_MAX_OPEN_TRADES
-    # =1 and one legacy position at 50% of the book, this warning demoted every single new
-    # candidate to portfolio_manager_manual_review regardless of symbol -- a closed loop, since
-    # diluting the concentration required a new trade and every new trade was blocked by it.
-    # Skipped only when the broker's own cap is too small to ever allow real diversification;
-    # unaffected for brokers/books with room for more than one or two concurrent positions.
-    _diag_weight = largest[0].get("weight") if largest else None
-    print(f"[_exposure_warnings] diagnostic max_managed_positions={max_managed_positions!r} largest_len={len(largest)} largest_weight={_diag_weight!r}", flush=True)
+    # 2026-08-13 hosted incident: this alone isn't enough for a broker sleeve that hasn't yet
+    # filled its own configured number of concurrent-position slots -- e.g. Kraken with
+    # KRAKEN_MAX_OPEN_TRADES=5 (the deployment's real value, confirmed live -- render.yaml's
+    # stated default of 1 does not match what's actually configured in Render's dashboard) but
+    # only 2 positions genuinely held right now. With room to add up to 3 more, >25%
+    # concentration in the current largest position is not a diversification failure -- it's
+    # just what a partially-filled sleeve with few positions looks like, and the fix is for the
+    # sleeve to keep filling, not to block every candidate that could do that filling. Confirmed
+    # live: with a legacy position at 50% of a 2-position book, this warning demoted every
+    # single new candidate to portfolio_manager_manual_review regardless of symbol -- a closed
+    # loop, since the 3 remaining slots that would have diluted the concentration were exactly
+    # what every candidate was blocked from filling. First attempted a flat "cap <= 1" skip,
+    # which does not fire for a real cap of 5 -- this compares position count to the sleeve's
+    # own actual capacity instead, so it generalizes to whatever that capacity really is.
+    # Only meaningful once the sleeve has actually reached (or exceeded) its own designed
+    # position-count capacity -- i.e. diversification was genuinely possible and didn't happen.
     if (
-        max_managed_positions is None or max_managed_positions > 1
+        max_managed_positions is None or len(largest) >= max_managed_positions
     ) and len(largest) > 1 and largest[0].get("weight") is not None and largest[0]["weight"] > 0.25:
         warnings.append(f"{largest[0]['symbol']} is a large position at {_pct(largest[0]['weight'])} of measured portfolio value.")
     if missing:

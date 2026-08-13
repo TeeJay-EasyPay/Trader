@@ -78,13 +78,21 @@ class AssetMetadataRefreshTests(unittest.TestCase):
             self.assertIn("Technology", after["exposure"]["sector"])
             self.assertNotIn("Unknown - sector metadata missing", after["exposure"]["sector"])
 
-    def test_kraken_single_slot_sleeve_does_not_trip_the_concentration_warning(self):
-        # 2026-08-13 hosted incident: KRAKEN_MAX_OPEN_TRADES=1 caps Kraken's AI-managed sleeve to
-        # one concurrent position by design -- so whichever position is open being >25% of the
-        # book isn't a diversification failure, it's the guaranteed state of a single-slot sleeve.
-        # Confirmed live: this warning demoted every single new Kraken candidate to
-        # portfolio_manager_manual_review regardless of symbol, a closed loop with no exit (new
-        # trades were the only way to dilute concentration, and every new trade was blocked by it).
+    def test_kraken_sleeve_with_room_to_diversify_does_not_trip_the_concentration_warning(self):
+        # 2026-08-13 hosted incident: confirmed live that this deployment's real
+        # KRAKEN_MAX_OPEN_TRADES is 5 (render.yaml states 1, but Render's dashboard overrides
+        # it -- the same class of drift already found for KRAKEN_MIN_ORDER_GBP). With only 2 of
+        # 5 designed slots genuinely filled, >25% concentration in the current largest position
+        # is not a diversification failure -- there's real room (3 more slots) to dilute it, and
+        # the fix is for the sleeve to keep filling, not to block every candidate that could do
+        # that filling. Confirmed live: with a legacy position at 50% of a 2-position book, this
+        # warning demoted every single new candidate to portfolio_manager_manual_review
+        # regardless of symbol -- a closed loop, since the 3 remaining slots that would have
+        # diluted the concentration were exactly what every candidate was blocked from filling.
+        # An earlier fix attempt used a flat "cap <= 1" skip (based on render.yaml's stated
+        # default, not the real deployed value) -- confirmed live that it does not fire for a
+        # real cap of 5, so the check instead compares position count to the sleeve's own actual
+        # capacity, whatever that capacity really is.
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
             positions = [
@@ -93,20 +101,23 @@ class AssetMetadataRefreshTests(unittest.TestCase):
             ]
             old_value = os.environ.pop("KRAKEN_MAX_OPEN_TRADES", None)
             try:
-                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "1"
+                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "5"
                 kraken_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
                 self.assertFalse(any("is a large position" in warning for warning in kraken_exposure["warnings"]))
 
-                # Unaffected brokers (no small-cap env var) keep the original concentration signal.
+                # Unaffected brokers (no cap env var) keep the original concentration signal.
                 other_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="alpaca")
                 self.assertTrue(any("is a large position" in warning for warning in other_broker_exposure["warnings"]))
                 no_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker=None)
                 self.assertTrue(any("is a large position" in warning for warning in no_broker_exposure["warnings"]))
 
-                # A Kraken sleeve with real room to diversify (cap > 1) keeps the signal too.
-                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "3"
-                roomier_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
-                self.assertTrue(any("is a large position" in warning for warning in roomier_exposure["warnings"]))
+                # Once the sleeve has actually filled its own designed capacity (2 positions
+                # held, cap of 2), concentration among those positions is a meaningful signal
+                # again -- diversification was genuinely possible within the sleeve's own limit
+                # and didn't happen.
+                os.environ["KRAKEN_MAX_OPEN_TRADES"] = "2"
+                full_sleeve_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
+                self.assertTrue(any("is a large position" in warning for warning in full_sleeve_exposure["warnings"]))
             finally:
                 if old_value is None:
                     os.environ.pop("KRAKEN_MAX_OPEN_TRADES", None)
