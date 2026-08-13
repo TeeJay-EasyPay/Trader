@@ -194,7 +194,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
     def pair_minimum_notional(self, pair: str, price: float) -> float | None:
         # 2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP is a single flat guess applied to
         # every pair, but Kraken's real minimum order size (published per-pair via the public
-        # AssetPairs endpoint as "ordermin", a base-currency volume, and sometimes "costmin", a
+        # AssetPairs endpoint as "ordermin", a base-currency volume, and "costmin", a
         # quote-currency minimum cost) varies by pair. A flat GBP floor that happens to clear
         # this guess can still be genuinely below the exchange's own minimum for a specific pair
         # -- confirmed live: a proposal floored to GBP 2.00 was accepted through every governance
@@ -203,6 +203,16 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # instance (each worker/request process constructs its own; pair minimums do not change
         # within a process lifetime) so this network call only happens once per pair, not once
         # per candidate evaluation.
+        #
+        # 2026-08-13 hosted incident: the first version of this fix preferred costmin over
+        # ordermin*price whenever costmin was present, treating them as alternatives -- but
+        # Kraken enforces both simultaneously; an order must clear whichever is larger, not just
+        # whichever the API happened to publish first. Confirmed live: XLMGBP publishes
+        # costmin=0.43 (GBP) *and* ordermin=30 (XLM units, ~GBP 3.56 at the price then in
+        # effect) -- this code used 0.43, the resulting order cleared every governance check,
+        # and Kraken itself rejected it with the same "volume minimum not met" error the 2026-
+        # 08-10 fix was meant to prevent. Now takes the real binding constraint: the larger of
+        # the two, when both are available.
         if pair in self._pair_minimum_cache:
             return self._pair_minimum_cache[pair]
         minimum: float | None = None
@@ -212,10 +222,13 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             if isinstance(info, dict):
                 costmin = info.get("costmin")
                 ordermin = info.get("ordermin")
+                candidates = []
                 if costmin is not None:
-                    minimum = float(costmin)
-                elif ordermin is not None and price > 0:
-                    minimum = float(ordermin) * price
+                    candidates.append(float(costmin))
+                if ordermin is not None and price > 0:
+                    candidates.append(float(ordermin) * price)
+                if candidates:
+                    minimum = max(candidates)
         except Exception:
             minimum = None
         self._pair_minimum_cache[pair] = minimum

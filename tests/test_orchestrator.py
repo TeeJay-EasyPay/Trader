@@ -724,17 +724,31 @@ class KrakenPairMinimumNotionalTests(unittest.TestCase):
     AssetPairs endpoint and can be higher. pair_minimum_notional asks the exchange
     directly instead of guessing, and never re-asks for a pair it has already learned."""
 
-    def test_uses_costmin_directly_when_the_exchange_publishes_one(self):
+    def test_uses_costmin_when_it_is_the_larger_of_the_two_published_minimums(self):
         adapter = KrakenAdapter()
+        # ordermin * price = 30 * 0.01 = 0.30, smaller than costmin here.
         adapter._public_request = lambda path: {"result": {"XLMGBP": {"costmin": "3.50", "ordermin": "30"}}}
 
-        self.assertEqual(adapter.pair_minimum_notional("XLMGBP", price=0.12), 3.5)
+        self.assertEqual(adapter.pair_minimum_notional("XLMGBP", price=0.01), 3.5)
 
     def test_falls_back_to_ordermin_times_price_when_no_costmin_is_published(self):
         adapter = KrakenAdapter()
         adapter._public_request = lambda path: {"result": {"XLMGBP": {"ordermin": "30"}}}
 
         self.assertAlmostEqual(adapter.pair_minimum_notional("XLMGBP", price=0.12), 3.6)
+
+    def test_uses_ordermin_times_price_when_it_is_larger_than_costmin(self):
+        # 2026-08-13 hosted incident, reproduced directly: Kraken enforces costmin and
+        # ordermin simultaneously, not as alternatives. XLMGBP really publishes
+        # costmin=0.43 alongside ordermin=30 -- at a real market price, 30 XLM units is
+        # worth far more than GBP 0.43, so ordermin*price is the actual binding
+        # constraint. Using costmin alone (the pre-fix behaviour) floored an order below
+        # what Kraken would accept, and the exchange rejected it with "volume minimum
+        # not met" despite passing every governance check.
+        adapter = KrakenAdapter()
+        adapter._public_request = lambda path: {"result": {"XLMGBP": {"costmin": "0.43", "ordermin": "30"}}}
+
+        self.assertAlmostEqual(adapter.pair_minimum_notional("XLMGBP", price=0.1187), 30 * 0.1187)
 
     def test_caches_so_the_exchange_is_only_asked_once_per_pair(self):
         calls = []
