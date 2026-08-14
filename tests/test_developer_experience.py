@@ -52,7 +52,10 @@ class DeveloperExperienceTests(unittest.TestCase):
             status = LocalApiService(settings).developer_status()
 
             self.assertEqual(status["components"]["python"]["state"], "Healthy")
-            self.assertEqual(status["counts"]["watchlist"], 31)
+            # 2026-08-14: 31 non-US watchlist companies + 19 real US-listed (Alpaca-eligible,
+            # Shariah business-activity screened) companies added so Alpaca has genuinely
+            # tradable candidates -- see intelligence_data.py's COMPANIES list.
+            self.assertEqual(status["counts"]["watchlist"], 50)
             self.assertEqual(status["counts"]["market_themes"], 10)
             self.assertEqual(status["counts"]["benchmark_traders"], 4)
 
@@ -923,6 +926,10 @@ class DeveloperExperienceTests(unittest.TestCase):
         self.assertIsNone(_proposal_from_response_text("null"))
 
     def test_run_analysis_uses_watchlist_limit_before_credentials_check(self):
+        # 2026-08-14: run_analysis now restricts equity candidates to exchanges Alpaca can
+        # actually fill (NYSE/NASDAQ/AMEX/ARCA/OTC) -- the seed watchlist has 19 such
+        # companies (COMPANY_MASTER also carries 31 non-US ones for a later broker), so a
+        # limit of 30 is capped down to the 19 that actually match, not the full 30.
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
             InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
@@ -930,7 +937,7 @@ class DeveloperExperienceTests(unittest.TestCase):
             result = LocalApiService(settings).run_analysis({"limit": 30})
 
             self.assertEqual(result["status"], "not_available")
-            self.assertEqual(len(result["symbols"]), 30)
+            self.assertEqual(len(result["symbols"]), 19)
 
     def test_run_analysis_limit_zero_uses_the_real_default_not_one_symbol(self):
         """2026-08-14 incident: the scheduled equity research jobs (cli.py's
@@ -938,8 +945,9 @@ class DeveloperExperienceTests(unittest.TestCase):
         _int_or_default(0, 30) legitimately returns 0 (0 parses fine, it's not a
         default-triggering failure), and the old `max(1, min(0, 30))` clamp collapsed
         that to exactly 1 -- every scheduled equity cycle silently researched only
-        COMPANY_MASTER's single first row forever, never the intended 30-symbol
-        watchlist. limit=0 must behave like "use the real default of 30", not "use 1"."""
+        COMPANY_MASTER's single first row forever, never the intended full watchlist.
+        limit=0 must behave like "use the real default of 30", not "use 1" -- capped here
+        to the 19 seeded companies Alpaca can actually trade (see the sibling test above)."""
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
             InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
@@ -947,7 +955,7 @@ class DeveloperExperienceTests(unittest.TestCase):
             result = LocalApiService(settings).run_analysis({"limit": 0})
 
             self.assertEqual(result["status"], "not_available")
-            self.assertEqual(len(result["symbols"]), 30)
+            self.assertEqual(len(result["symbols"]), 19)
 
     def test_portfolio_never_leaks_a_raw_exception_to_the_founder(self):
         # AT-ED-011.7: portfolio() previously interpolated the raw exception straight into

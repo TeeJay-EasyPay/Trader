@@ -516,7 +516,26 @@ class ResearchService:
             if limit <= 0:
                 limit = 30
             limit = min(limit, 30)
-            symbols = [row["ticker"] for row in self._query_executor.rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT ?", (limit,))]
+            # 2026-08-14: equity research is presently Alpaca-only (broker_name defaults to
+            # "alpaca" above and no other equity broker is wired up), and Alpaca only ever
+            # lists/trades US-listed securities in paper or live mode alike -- so restrict
+            # candidate selection to exchanges Alpaca can actually fill, matching
+            # AlpacaBrokerAdapter.get_supported_markets() in broker_adapters.py exactly.
+            # COMPANY_MASTER keeps its non-US entries (curated for the Founder's eventual
+            # multi-exchange roadmap) -- this only changes which ones get proposed to a
+            # broker that can never execute them. Revisit with a broker-aware lookup if a
+            # second equity broker is ever added.
+            symbols = [
+                row["ticker"]
+                for row in self._query_executor.rows(
+                    """
+                    SELECT ticker FROM COMPANY_MASTER
+                    WHERE exchange IN ('NYSE', 'NASDAQ', 'AMEX', 'ARCA', 'OTC')
+                    ORDER BY id ASC LIMIT ?
+                    """,
+                    (limit,),
+                )
+            ]
         if not symbols:
             result = {"status": "not_available", "message": "No symbols are available in the watchlist database."}
             self._record_research_from_result(started_at, result, [], trigger_type)
