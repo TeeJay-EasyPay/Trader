@@ -375,17 +375,39 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         if not _bool_env("KRAKEN_LIVE_TRADING_APPROVED", False):
             return {"status": "disabled", "broker": self.name, "reason": "KRAKEN_LIVE_TRADING_APPROVED is false"}
         pair = order_request.broker_pair or _kraken_pair(order_request.symbol, order_request.quote_currency)
+        volume = order_request.quantity
+        if order_request.side.lower() == "sell":
+            # A managed exit's recorded quantity is computed once at entry time
+            # (notional / entry_price, full float precision) and can end up a hair
+            # above Kraken's own rounded wallet balance for that asset -- Kraken
+            # rejects a sell that exceeds the real balance even by a tiny epsilon
+            # ("EOrder:Insufficient funds"). Capping to the live balance avoids that
+            # without ever selling more than actually recorded quantity.
+            available = self._available_balance(order_request.symbol)
+            if available is not None and 0 < available < volume:
+                volume = available
         payload = {
             "pair": pair,
             "type": order_request.side.lower(),
             "ordertype": "market",
-            "volume": _format_decimal(order_request.quantity),
+            "volume": _format_decimal(volume),
             "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
         }
         userref = _userref(order_request.client_order_id)
         if userref is not None:
             payload["userref"] = str(userref)
-        result = self._private_request("/0/private/AddOrder", payload)
+        try:
+            result = self._private_request("/0/private/AddOrder", payload)
+        except RuntimeError as exc:
+            # _private_request only raises RuntimeError when Kraken itself returned
+            # a populated "error" array -- i.e. the request definitely reached Kraken
+            # and Kraken definitively declined it (e.g. "EOrder:Insufficient funds").
+            # That is a synchronous, unambiguous rejection, not the "we genuinely
+            # don't know what happened" case (a network timeout would raise a
+            # different exception type from inside urlopen/json.loads, before ever
+            # reaching that check) -- so it is safe to report it as "rejected" and
+            # let the caller release the order-intent lock for a legitimate retry.
+            return {"status": "rejected", "broker": self.name, "reason": str(exc), "pair": pair}
         txids = result.get("result", {}).get("txid", [])
         order_id = txids[0] if txids else None
         return {
@@ -395,10 +417,24 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "order_id": order_id,
             "pair": pair,
             "side": order_request.side.lower(),
-            "quantity": order_request.quantity,
+            "quantity": volume,
             "notional": order_request.notional_amount,
             "kraken_result": result.get("result", {}),
         }
+
+    def _available_balance(self, symbol: str) -> float | None:
+        account = self.get_account()
+        balances = account.get("balances") if isinstance(account, dict) else None
+        if not isinstance(balances, dict):
+            return None
+        target = symbol.upper()
+        for key, value in balances.items():
+            if _kraken_asset_symbol(key) == target:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return None
 
     def _validate_live_order(self, order_request: OrderRequest) -> dict[str, Any]:
         failures: list[str] = []
@@ -549,6 +585,27 @@ def _int_env(name: str, default: int) -> int:
 def _csv_env(name: str, default: str) -> set[str]:
     value = os.getenv(name, default)
     return {item.strip().upper() for item in value.split(",") if item.strip()}
+
+
+def _kraken_asset_symbol(asset: str) -> str:
+    # Mirrors api/__init__.py's _kraken_asset_symbol (duplicated rather than imported
+    # to avoid a circular import: api/__init__.py imports this module to build adapters).
+    normalized = str(asset or "").upper()
+    aliases = {
+        "XXBT": "BTC",
+        "XBT": "BTC",
+        "XETH": "ETH",
+        "ZGBP": "GBP",
+        "ZUSD": "USD",
+        "ZEUR": "EUR",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized.startswith("X") and len(normalized) > 3:
+        return normalized[1:]
+    if normalized.startswith("Z") and len(normalized) > 3:
+        return normalized[1:]
+    return normalized
 
 
 def _kraken_pair(symbol: str, quote_currency: str = "GBP") -> str:

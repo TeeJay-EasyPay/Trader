@@ -1578,6 +1578,76 @@ class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_definite_api_error_response_is_rejected_not_ambiguous(self):
+        """2026-08-14 incident: Kraken's own synchronous "EOrder:Insufficient funds"
+        error response was being treated identically to a genuinely ambiguous outcome
+        (network timeout) -- place_exit_order let the RuntimeError from _private_request
+        propagate uncaught, crashing the whole managed-exits job and orphaning the
+        order-intent lock forever (no release_order_intent_lock call was ever reached).
+        A definite Kraken-returned error is not ambiguous: Kraken received the request
+        and definitively declined it, so this must behave like any other synchronous
+        rejection and release the lock for the next cycle to retry."""
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+
+                def raise_definite_kraken_error(path, payload=None):
+                    if path == "/0/private/AddOrder":
+                        raise RuntimeError("EOrder:Insufficient funds")
+                    return {"result": {}}
+
+                adapter._private_request = raise_definite_kraken_error
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+
+                result = service.monitor_managed_exits()
+                self.assertEqual(result["managed_exits"][0]["status"], "exit_failed")
+                self.assertEqual(result["managed_exits"][0]["reason"], "EOrder:Insufficient funds")
+
+                # The lock must have been released -- a same-key re-acquire must succeed.
+                relocked = acquire_order_intent_lock(
+                    service.settings.db_path,
+                    broker="kraken",
+                    client_order_id=f"exit-{managed_exit_id}",
+                    symbol="BTC",
+                    side="sell",
+                    notional=4800.0,
+                )
+                self.assertTrue(relocked, "A definite Kraken API rejection must release the lock for a legitimate retry.")
+        finally:
+            restore_env(previous)
+
+    def test_kraken_exit_order_caps_volume_to_available_balance(self):
+        """2026-08-14 incident: a managed exit's recorded quantity is computed once at
+        entry time (notional / entry_price, full float precision) and can end up a hair
+        above Kraken's own rounded wallet balance -- Kraken rejects a sell that exceeds
+        the real balance even by a tiny epsilon ("EOrder:Insufficient funds"), which
+        without this cap would repeat forever every retry. The submitted order volume
+        must never exceed the real live balance."""
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}
+                # Real wallet balance is a hair below the managed exit's recorded quantity.
+                adapter.get_account = lambda: {"status": "connected", "balances": {"XXBT": "0.0999999"}}
+                service.orchestrator.adapters["kraken"] = adapter
+                self._open_position(service, entry_price=50_000.0, stop_loss=49_000.0, take_profit=52_000.0)
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(result["managed_exits"][0]["status"], "exit_submitted")
+                self.assertEqual(len(adapter.submitted_orders), 1)
+                self.assertEqual(adapter.submitted_orders[0]["volume"], "0.0999999")
+        finally:
+            restore_env(previous)
+
     def test_ambiguous_broker_outcome_does_not_release_the_lock(self):
         # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md
         # section 3): "An uncertain broker outcome must not cause an order-intent lock
