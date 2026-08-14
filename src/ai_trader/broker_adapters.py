@@ -346,7 +346,17 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         userref = _userref(order_request.client_order_id)
         if userref is not None:
             payload["userref"] = str(userref)
-        result = self._private_request("/0/private/AddOrder", payload)
+        try:
+            result = self._private_request("/0/private/AddOrder", payload)
+        except RuntimeError as exc:
+            # Same reasoning as place_exit_order: _private_request only raises RuntimeError
+            # for Kraken's own populated "error" response -- a definite, synchronous
+            # rejection, not the "we genuinely don't know what happened" case a network
+            # failure would raise a different exception type for. evaluate_recommendation's
+            # existing handling of a "rejected" order status already records this candidate
+            # as one rejected proposal and completes its order-intent lock normally, instead
+            # of letting the exception crash the whole auto-execution batch.
+            return {"status": "rejected", "broker": self.name, "reason": str(exc), "pair": pair}
         txids = result.get("result", {}).get("txid", [])
         order_id = txids[0] if txids else None
         return {

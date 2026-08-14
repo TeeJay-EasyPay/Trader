@@ -1648,6 +1648,45 @@ class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
+    def test_kraken_place_order_definite_api_error_is_rejected_not_raised(self):
+        """2026-08-14: the same bug fixed for place_exit_order also existed on the entry
+        side -- a definite Kraken API rejection (e.g. "EOrder:Insufficient funds") during
+        a live order submission propagated uncaught out of place_order, which
+        evaluate_recommendation's broker_order_submitting stage explicitly re-raises
+        (orchestrator.py), crashing the entire auto-execution batch instead of recording
+        one rejected candidate and evaluating the rest. place_order must return a
+        structured rejected result for Kraken's own definite error responses, exactly
+        like place_exit_order already does."""
+        previous = dict(os.environ)
+        try:
+            os.environ["KRAKEN_API_KEY"] = "key"
+            os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+            os.environ["KRAKEN_AUTO_TRADING"] = "true"
+            os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+            os.environ["KRAKEN_ALLOWED_PAIRS"] = "XBTGBP"
+            os.environ["KRAKEN_TRADING_ALLOCATION_GBP"] = "100"
+
+            adapter = KrakenAdapter()
+            adapter.get_account = lambda: {"status": "connected", "balances": {"ZGBP": "100"}}
+
+            def raise_definite_kraken_error(path, payload=None):
+                if path == "/0/private/AddOrder":
+                    raise RuntimeError("EOrder:Insufficient funds")
+                return {"result": {}}
+
+            adapter._private_request = raise_definite_kraken_error
+
+            order_request = OrderRequest(
+                "BTC", "buy", 0.0001, "crypto", "KRAKEN",
+                stop_loss=47000, take_profit=49000, notional_amount=4.8,
+            )
+            result = adapter.place_order(order_request)
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(result["reason"], "EOrder:Insufficient funds")
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+
     def test_ambiguous_broker_outcome_does_not_release_the_lock(self):
         # Stage 0.4 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md
         # section 3): "An uncertain broker outcome must not cause an order-intent lock
