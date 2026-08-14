@@ -503,8 +503,19 @@ class ResearchService:
         if isinstance(symbols, str):
             symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
         if not symbols:
+            # 2026-08-14 incident: the scheduled equity jobs (premarket-equity/market-open-equity/
+            # market-close-equity, cli.py's _run_named_job) call this with limit=0 as their "no
+            # explicit override" sentinel -- but _int_or_default(0, 30) returns 0 (0 is a valid
+            # int, not a parse failure), and the old `max(1, min(limit, 30))` then clamped that
+            # to exactly 1. Every scheduled equity research cycle was silently evaluating only
+            # COMPANY_MASTER's single first row (id ASC) forever, not the intended 30-symbol
+            # watchlist -- confirmed live via months of "Due diligence completed for 1 asset(s)"
+            # notifications, always the same symbol (FRES). A non-positive limit now falls back
+            # to the real default instead of collapsing the watchlist to one fixed symbol.
             limit = _int_or_default(body.get("limit"), 30)
-            limit = max(1, min(limit, 30))
+            if limit <= 0:
+                limit = 30
+            limit = min(limit, 30)
             symbols = [row["ticker"] for row in self._query_executor.rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT ?", (limit,))]
         if not symbols:
             result = {"status": "not_available", "message": "No symbols are available in the watchlist database."}

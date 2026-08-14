@@ -932,6 +932,23 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertEqual(result["status"], "not_available")
             self.assertEqual(len(result["symbols"]), 30)
 
+    def test_run_analysis_limit_zero_uses_the_real_default_not_one_symbol(self):
+        """2026-08-14 incident: the scheduled equity research jobs (cli.py's
+        _run_named_job) call run_analysis with limit=0 as their "no override" sentinel.
+        _int_or_default(0, 30) legitimately returns 0 (0 parses fine, it's not a
+        default-triggering failure), and the old `max(1, min(0, 30))` clamp collapsed
+        that to exactly 1 -- every scheduled equity cycle silently researched only
+        COMPANY_MASTER's single first row forever, never the intended 30-symbol
+        watchlist. limit=0 must behave like "use the real default of 30", not "use 1"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
+
+            result = LocalApiService(settings).run_analysis({"limit": 0})
+
+            self.assertEqual(result["status"], "not_available")
+            self.assertEqual(len(result["symbols"]), 30)
+
     def test_portfolio_never_leaks_a_raw_exception_to_the_founder(self):
         # AT-ED-011.7: portfolio() previously interpolated the raw exception straight into
         # Founder-facing fields (f"Not available - {exc}"). A failure at the database layer
