@@ -12,6 +12,7 @@ from ..ai import OpenAIProposalAnalyzer
 from ..alpaca import AlpacaPaperClient
 from ..audit import AuditDatabase
 from ..config import Settings
+from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -640,6 +641,17 @@ class ResearchService:
             "auto_execution": auto_execution,
         }
 
+        if trigger_type == "premarket-equity":
+            # 2026-08-14: the Founder's stated ask -- "like real traders the app should
+            # have a trading strategy for each day early in the morning" -- decided once,
+            # here, from this exact morning scan's real outcome (never a second guess made
+            # up separately). premarket-equity is the one job that runs once daily, before
+            # the market opens (cli.py's _due_worker_jobs, 08:00 ET) -- record_daily_trading_
+            # plan is idempotent per (broker, trading day), so a retried/duplicate job run
+            # never overwrites the morning's real decision with a second, possibly different
+            # one.
+            self._record_daily_trading_plan(symbols, proposals, skipped_symbols)
+
         self._record_research_from_result(started_at, result, symbols, trigger_type)
         self._record_research_funnel_from_result(
             broker="alpaca",
@@ -819,6 +831,39 @@ class ResearchService:
             payload={"symbols": symbols, "allowed_pairs": allowed_pairs},
         )
         return symbols
+
+    def _record_daily_trading_plan(self, symbols: list[str], proposals: list[TradeProposal], skipped_symbols: list[dict[str, str]]) -> None:
+        market_assessment = f"Morning scan of {len(symbols)} candidate(s) from the watchlist."
+        if proposals:
+            named = "; ".join(f"{p.symbol}: {p.plain_english_reasoning}" for p in proposals[:5])
+            record_daily_trading_plan(
+                self.settings.db_path,
+                broker="alpaca",
+                decision="seek_trades",
+                market_assessment=market_assessment,
+                reasoning=f"{len(proposals)} candidate(s) passed due diligence and guardrails -- {named}",
+                symbols_scanned=len(symbols),
+                candidates_found=len(proposals),
+                payload={"symbols": [p.symbol for p in proposals]},
+            )
+        else:
+            errors = [item.get("reason", "") for item in skipped_symbols if item.get("reason")]
+            reasoning = (
+                f"None of the {len(symbols)} candidate(s) scanned this morning produced a trade idea "
+                "that passed due diligence and guardrails."
+            )
+            if errors:
+                reasoning += f" {len(errors)} could not be fully evaluated due to a data error."
+            record_daily_trading_plan(
+                self.settings.db_path,
+                broker="alpaca",
+                decision="stand_aside",
+                market_assessment=market_assessment,
+                reasoning=reasoning,
+                symbols_scanned=len(symbols),
+                candidates_found=0,
+                payload={"skipped_symbols": skipped_symbols},
+            )
 
     def _record_research_from_result(self, started_at: str, result: dict[str, Any], symbols: list[str], trigger_type: str) -> None:
         errors = [item.get("reason", "") for item in result.get("skipped_symbols", []) if item.get("reason")]

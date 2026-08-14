@@ -72,6 +72,7 @@ from ..multi_broker import (
 )
 from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe, next_research_run, _snapshot_equity_basis_matches_context
 from ..canonical_trades import initialize_canonical_trade_schema
+from ..daily_plan import daily_trading_plan_status
 from ..kraken_reconciliation import (
     founder_override_kraken_hold,
     initialize_kraken_reconciliation_schema,
@@ -478,6 +479,8 @@ class LocalApiService:
             return 200, self._filtered_production_timeline(query)
         if path == "/activity/why-no-trade":
             return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["why_no_trade"]
+        if path == "/daily-plan":
+            return 200, daily_trading_plan_status(self.settings.db_path, broker=_first(query, "broker") or "alpaca")
         if path == "/activity/brokers":
             return 200, {"brokers": founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["brokers"]}
         if path == "/activity/founder-attention":

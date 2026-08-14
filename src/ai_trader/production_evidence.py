@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .always_on import classify_worker_presence, initialize_always_on_schema, postgres_connection, uses_postgres
+from .daily_plan import daily_trading_plan_status
 from .database import connect
 from .models import utc_now_iso
 from .multi_broker import open_managed_exits
@@ -704,6 +705,16 @@ def _assemble_founder_evidence_payload(
             except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
                 broker_row["managed_exits"] = []
     job_health = _job_health_summary(jobs, broker_payload)
+    daily_plan = {}
+    if db_path is not None:
+        # 2026-08-14: the Founder's stated ask -- a real trader's morning strategy decision,
+        # executed (or explicitly declined) for the day, visible on Executive Briefing.
+        # Alpaca-only so far (daily_plan.py: crypto research already runs continuously, with
+        # no single "morning" to decide against).
+        try:
+            daily_plan = daily_trading_plan_status(db_path, broker="alpaca")
+        except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
+            daily_plan = {}
     return {
         "generated_at": utc_now_iso(),
         "period": period,
@@ -744,6 +755,7 @@ def _assemble_founder_evidence_payload(
             },
         },
         "why_no_trade": no_trade,
+        "daily_plan": daily_plan,
         "portfolio": _portfolio_payload(broker_payload),
         "brokers": broker_payload,
         "trades": [_decode_row(row, {"payload_json"}) for row in trades],

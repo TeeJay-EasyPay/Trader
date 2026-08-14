@@ -33,6 +33,7 @@ const {
   cioExecutiveBriefingSummary,
 } = require('../lib/cio');
 const { currentInvestmentThesis, alternativeThesis } = require('../lib/investmentThesis');
+const { describeDailyPlan } = require('../lib/todaysStrategy');
 const { deriveConviction } = require('../lib/forecasting');
 const { normalizeClosedTradesFromAttribution, projectPortfolioHorizons, tradeStatistics } = require('../lib/forecastEngine');
 const { evaluateFactors } = require('../lib/forecastFactors');
@@ -106,6 +107,33 @@ function ExecutiveSummaryCard({ status, activity, marketCentre }) {
         <Text style={styles.summaryReason}>{cioExecutiveBriefingSummary({})}</Text>
       )}
     </View>
+  );
+}
+
+// --- Section: Today's Strategy ("What is the plan for today, and how is it going?") ------------
+// The Founder's stated ask, 2026-08-14: like a real trader, decide a strategy each morning and
+// either execute it or explicitly stand aside -- visible here, not buried in a log. Sourced from
+// production_evidence.py's daily_plan key (src/ai_trader/daily_plan.py), generated once each
+// morning by the premarket-equity job and reconciled live against the day's actual trades on
+// every read (never a stale second write). Alpaca-only for now -- crypto research already runs
+// continuously, with no single "morning" to decide against.
+
+function TodaysStrategyCard({ activity }) {
+  const described = describeDailyPlan(activity?.daily_plan);
+  if (described.status === 'not_yet_generated') {
+    return (
+      <Section title="Today's Strategy">
+        <Text style={styles.bodyText}>{described.plainEnglish}</Text>
+      </Section>
+    );
+  }
+  return (
+    <Section title="Today's Strategy">
+      <StatusPill label={described.decisionLabel} tone={described.decisionTone} />
+      <Text style={styles.bodyText}>{described.reasoning}</Text>
+      <Text style={styles.metricLabel}>How today is going</Text>
+      <Text style={styles.bodyText}>{described.outcomeText}</Text>
+    </Section>
   );
 }
 
@@ -583,6 +611,7 @@ function ExecutiveBriefing({
   return (
     <View>
       <ExecutiveSummaryCard status={status} activity={activity} marketCentre={marketCentre} />
+      <TodaysStrategyCard activity={activity} />
       <CurrentPositionCard portfolio={portfolio} status={status} performanceAttribution={performanceAttribution} />
       <OvernightNarrativeCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
       <MarketAssessmentCard marketCentre={marketCentre} />
@@ -612,6 +641,7 @@ function ExecutiveBriefing({
 module.exports = {
   ExecutiveBriefing,
   ExecutiveSummaryCard,
+  TodaysStrategyCard,
   CurrentPositionCard,
   OvernightNarrativeCard,
   MarketAssessmentCard,
