@@ -223,6 +223,16 @@ def main(argv: list[str] | None = None) -> int:
 
         _raise_if_invalid_hosted_runtime(settings)
         service = LocalApiService(settings)
+        # 2026-08-14 incident: nothing in the production run-worker startup path ever called
+        # seed_initial_data() -- it only ran once, manually, via the standalone
+        # `intelligence-init` CLI command when this deployment was first set up. Editing
+        # intelligence_data.py's COMPANIES list (e.g. adding real Alpaca-tradable candidates)
+        # had zero effect in production: COMPANY_MASTER stayed frozen at whatever it held from
+        # that one-time seed, forever, across every subsequent deploy and restart. seed_initial_
+        # data() is an idempotent upsert (ON CONFLICT DO UPDATE per ticker+exchange, matches
+        # research-once's own pattern below) -- safe and cheap to run on every worker startup,
+        # so watchlist edits actually take effect on the next deploy without a manual step.
+        service.intelligence.seed_initial_data()
         worker_id = default_worker_id("background-worker")
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
         with WorkerHeartbeatPulse(
