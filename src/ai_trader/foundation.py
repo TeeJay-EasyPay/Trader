@@ -797,6 +797,14 @@ def latest_investment_score(db_path: Path, proposal_id: str) -> dict[str, Any] |
     return _latest(db_path, "INVESTMENT_SCORES", "score_id", proposal_id)
 
 
+def latest_due_diligence_batch(db_path: Path, proposal_ids: list[str]) -> dict[str, dict[str, Any]]:
+    return _latest_batch(db_path, "DUE_DILIGENCE_ASSESSMENTS", "assessment_id", proposal_ids)
+
+
+def latest_investment_score_batch(db_path: Path, proposal_ids: list[str]) -> dict[str, dict[str, Any]]:
+    return _latest_batch(db_path, "INVESTMENT_SCORES", "score_id", proposal_ids)
+
+
 def _latest(db_path: Path, table: str, order_column: str, proposal_id: str) -> dict[str, Any] | None:
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -806,7 +814,35 @@ def _latest(db_path: Path, table: str, order_column: str, proposal_id: str) -> d
         ).fetchone()
     if not row:
         return None
-    payload = dict(row)
+    return _decode_latest_payload(dict(row))
+
+
+def _latest_batch(db_path: Path, table: str, order_column: str, proposal_ids: list[str]) -> dict[str, dict[str, Any]]:
+    # 2026-08-15: batched form of _latest() -- recommendations() in api/__init__.py was
+    # calling latest_due_diligence/latest_investment_score once per row, each opening its
+    # own fresh Postgres connection (database.py's connect() does a real psycopg.connect()
+    # every call, no pooling). For the mobile app's real limit=15 request that's 30 fresh
+    # connections just for these two lookups. One IN-clause query replaces all of them.
+    ids = [pid for pid in dict.fromkeys(proposal_ids) if pid]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, {order_column} DESC",
+            ids,
+        ).fetchall()
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        pid = row["proposal_id"]
+        if pid in result:
+            continue
+        result[pid] = _decode_latest_payload(dict(row))
+    return result
+
+
+def _decode_latest_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for key in ["reasoning_json", "policy_snapshot_json", "payload_json"]:
         if key in payload and payload[key]:
             try:

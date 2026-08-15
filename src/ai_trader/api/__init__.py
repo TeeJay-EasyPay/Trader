@@ -52,7 +52,11 @@ from ..benchmark import BenchmarkIntelligenceDatabase
 from ..briefing import generate_daily_briefing
 from ..broker_adapters import AlpacaBrokerAdapter, CoinbaseAdapter, InteractiveBrokersAdapter, KrakenAdapter, SaxoAdapter, _kraken_last_price, _kraken_pair
 from ..config import Settings, load_settings
-from ..foundation import initialize_foundation_schema, latest_due_diligence, latest_investment_score
+from ..foundation import (
+    initialize_foundation_schema,
+    latest_due_diligence_batch,
+    latest_investment_score_batch,
+)
 from ..experience_engine import initialize_experience_engine_schema
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..intelligence import InvestmentIntelligenceDatabase
@@ -105,7 +109,7 @@ from ..trading_intelligence import (
     STRATEGIES,
     calculate_calibration_metrics,
     initialize_trading_intelligence_schema,
-    latest_intelligence_packet,
+    latest_intelligence_packets_batch,
     record_historical_candle,
     run_strategy_backtest,
     run_walk_forward_validation,
@@ -858,34 +862,54 @@ class LocalApiService:
             """,
             (limit,),
         )
+        # 2026-08-15: batch every per-row lookup up front instead of inside the loop below.
+        # Each of these used to run once per row (already_executed, orchestrator decision,
+        # due diligence, investment score, intelligence packet) and every one of them opens
+        # its own fresh Postgres connection (database.py's connect() has no pooling) -- for
+        # the mobile app's real limit=15 request that was ~75 fresh connections for one API
+        # call, which is exactly the kind of thing that times out or trips Supabase
+        # connection limits. Five batched IN-clause lookups replace all of it.
+        proposal_ids = [row["proposal_id"] for row in rows]
+        already_executed_ids = self._already_executed_batch(proposal_ids)
+        decisions_by_id = self._latest_orchestrator_decisions_batch(proposal_ids)
+        due_diligence_by_id = latest_due_diligence_batch(self.settings.db_path, proposal_ids)
+        investment_score_by_id = latest_investment_score_batch(self.settings.db_path, proposal_ids)
+        intelligence_packets_by_id = latest_intelligence_packets_batch(self.settings.db_path, proposal_ids)
+
         recommendations: list[dict[str, Any]] = []
         seen: set[str] = set()
+        # proposal_broker is almost always just "alpaca"/"kraken" across the whole result
+        # set, but broker_auto_trading_enabled() also opens its own fresh connection (plus a
+        # schema-init) per call -- memoize per distinct broker string rather than per row.
+        broker_auto_enabled_cache: dict[str, bool] = {}
         for row in rows:
             if row["proposal_id"] in seen:
                 continue
             seen.add(row["proposal_id"])
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
-            already_executed = self._proposal_already_executed(row["proposal_id"])
+            already_executed = row["proposal_id"] in already_executed_ids
             guardrails_passed = bool(row["execution_guardrails_passed"])
             guardrail_failures = _validation_failures(row["validation_result"])
             guardrail_checks = _guardrail_checks(row["validation_result"], row["payload_json"])
             confidence = safe_score(row["ai_confidence"]) or 0.0
             philosophy_fit = safe_score(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
-            decision = self._latest_orchestrator_decision(row["proposal_id"])
+            decision = decisions_by_id.get(row["proposal_id"])
             proposal_broker = self._proposal_broker(row["payload_json"])
-            broker_auto_enabled = (
-                broker_auto_trading_enabled(
+            if proposal_broker is None:
+                broker_auto_enabled = self.settings.auto_trade.enabled
+            elif proposal_broker in broker_auto_enabled_cache:
+                broker_auto_enabled = broker_auto_enabled_cache[proposal_broker]
+            else:
+                broker_auto_enabled = broker_auto_trading_enabled(
                     self.settings.db_path,
                     proposal_broker,
                     self.settings.auto_trade.broker_enabled.get(proposal_broker, False),
                 )
-                if proposal_broker
-                else self.settings.auto_trade.enabled
-            )
-            due_diligence = latest_due_diligence(self.settings.db_path, row["proposal_id"])
-            investment_score = latest_investment_score(self.settings.db_path, row["proposal_id"])
+                broker_auto_enabled_cache[proposal_broker] = broker_auto_enabled
+            due_diligence = due_diligence_by_id.get(row["proposal_id"])
+            investment_score = investment_score_by_id.get(row["proposal_id"])
             payload_intelligence = _payload_intelligence(row["payload_json"]) or {}
-            stored_intelligence = latest_intelligence_packet(self.settings.db_path, row["proposal_id"]) or {}
+            stored_intelligence = intelligence_packets_by_id.get(row["proposal_id"]) or {}
             intelligence = {**payload_intelligence, **stored_intelligence} if (payload_intelligence or stored_intelligence) else None
             committee = (intelligence or {}).get("committee") or {}
             probability = (intelligence or {}).get("probability") or {}
@@ -1401,6 +1425,39 @@ class LocalApiService:
             (recommendation_id,),
         )
         return dict(row) if row else None
+
+    def _latest_orchestrator_decisions_batch(self, recommendation_ids: list[str]) -> dict[str, dict[str, Any]]:
+        # Batched form of _latest_orchestrator_decision(), used by recommendations() -- see
+        # the comment above that call site for why batching these lookups matters.
+        ids = [rid for rid in dict.fromkeys(recommendation_ids) if rid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(
+            f"SELECT * FROM ORCHESTRATOR_DECISIONS WHERE recommendation_id IN ({placeholders}) ORDER BY recommendation_id, decision_id DESC",
+            tuple(ids),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            rid = row["recommendation_id"]
+            if rid not in result:
+                result[rid] = dict(row)
+        return result
+
+    def _already_executed_batch(self, proposal_ids: list[str]) -> set[str]:
+        # Batched form of _proposal_already_executed(), used by recommendations().
+        ids = [pid for pid in dict.fromkeys(proposal_ids) if pid]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._rows(
+            f"""
+            SELECT DISTINCT proposal_id FROM trade_audit
+            WHERE proposal_id IN ({placeholders}) AND event_type = 'execution_approved'
+            """,
+            tuple(ids),
+        )
+        return {row["proposal_id"] for row in rows}
 
     def _latest_daily_brief(self, brief_type: str) -> dict[str, Any] | None:
         row = self._row(

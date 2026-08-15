@@ -1194,6 +1194,70 @@ def latest_intelligence_packet(db_path: Path, proposal_id: str) -> dict[str, Any
     }
 
 
+def latest_intelligence_packets_batch(db_path: Path, proposal_ids: list[str]) -> dict[str, dict[str, Any]]:
+    # 2026-08-15: batched form of latest_intelligence_packet() -- recommendations() in
+    # api/__init__.py called this once per row, and each call opens its own fresh Postgres
+    # connection (database.py's connect() does a real psycopg.connect() every time, no
+    # pooling) plus re-runs initialize_trading_intelligence_schema(). For the mobile app's
+    # real limit=15 request that's 15 connections and 15 schema-init round trips just for
+    # this one lookup. One connection, four IN-clause queries, replaces all of it.
+    ids = [pid for pid in dict.fromkeys(proposal_ids) if pid]
+    if not ids:
+        return {}
+    initialize_trading_intelligence_schema(db_path)
+    placeholders = ",".join("?" for _ in ids)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        committee_rows = conn.execute(
+            f"SELECT * FROM TRADING_COMMITTEE_REVIEWS WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, created_at DESC",
+            ids,
+        ).fetchall()
+        probability_rows = conn.execute(
+            f"SELECT * FROM PROBABILITY_ESTIMATES WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, created_at DESC",
+            ids,
+        ).fetchall()
+        signal_rows = conn.execute(
+            f"SELECT * FROM TRADE_SIGNALS WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, signal_name ASC",
+            ids,
+        ).fetchall()
+        lifecycle_rows = conn.execute(
+            f"SELECT * FROM TRADE_LIFECYCLE WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, lifecycle_id ASC",
+            ids,
+        ).fetchall()
+    committee_by_id = _first_row_per_proposal(committee_rows)
+    probability_by_id = _first_row_per_proposal(probability_rows)
+    signals_by_id: dict[str, list[Any]] = {}
+    for row in signal_rows:
+        signals_by_id.setdefault(row["proposal_id"], []).append(row)
+    lifecycle_by_id: dict[str, list[Any]] = {}
+    for row in lifecycle_rows:
+        lifecycle_by_id.setdefault(row["proposal_id"], []).append(row)
+
+    packets: dict[str, dict[str, Any]] = {}
+    for pid in ids:
+        committee = committee_by_id.get(pid)
+        probability = probability_by_id.get(pid)
+        signals = signals_by_id.get(pid, [])
+        if committee is None and probability is None and not signals:
+            continue
+        packets[pid] = {
+            "committee": _decode_json_fields(_row_dict(committee)),
+            "probability": _decode_json_fields(_row_dict(probability)),
+            "signals": [_decode_json_fields(_row_dict(row)) for row in signals],
+            "lifecycle": [_decode_json_fields(_row_dict(row)) for row in lifecycle_by_id.get(pid, [])],
+        }
+    return packets
+
+
+def _first_row_per_proposal(rows: list[Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for row in rows:
+        pid = row["proposal_id"]
+        if pid not in result:
+            result[pid] = row
+    return result
+
+
 def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
     with closing(connect(db_path)) as conn:
