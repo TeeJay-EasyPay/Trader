@@ -16,12 +16,22 @@ for why that is a deliberate, revisitable choice, not an oversight.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from .sprint6 import record_operational_event
 
-KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent.parent / "knowledge"
+# 2026-08-15 incident: computing this as "three directories above this file" only
+# resolves correctly for an editable/source-tree install (this repo's own .venv).
+# A real `pip install .` (Dockerfile's actual production install) copies this file
+# into site-packages, at which point the same relative computation lands somewhere
+# under the Python installation itself, nowhere near the repo's knowledge/ folder --
+# confirmed by simulating a real non-editable install. AI_TRADER_KNOWLEDGE_DIR
+# matches this codebase's existing pattern for AI_TRADER_DB_PATH/AI_TRADER_OUTPUT_DIR
+# (explicit Dockerfile ENV, not fragile path inference) and is authoritative in
+# production; the relative computation remains only as the local-dev fallback.
+KNOWLEDGE_DIR = Path(os.getenv("AI_TRADER_KNOWLEDGE_DIR") or (Path(__file__).resolve().parent.parent.parent / "knowledge"))
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:

@@ -1,8 +1,11 @@
+import importlib
+import os
 import sys
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -14,6 +17,7 @@ from ai_trader.knowledge_base import (
     relevant_excerpts,
 )
 from ai_trader.sprint6 import initialize_sprint6_schema
+import ai_trader.knowledge_base as knowledge_base_module
 
 
 def _write(tmp: Path, name: str, *, title: str, topics: list[str], applies_to: list[str], sectors: list[str], body: str) -> None:
@@ -169,6 +173,36 @@ class KnowledgeGapLoggingTests(unittest.TestCase):
             index = load_knowledge_index(tmp)
         results = relevant_excerpts(asset_type="stock", index=index)
         self.assertTrue(len(results) > 0)
+
+
+class KnowledgeDirEnvOverrideTests(unittest.TestCase):
+    """2026-08-15 incident: KNOWLEDGE_DIR used to be computed purely as "three
+    directories above this file", which only resolves correctly for an editable/
+    source-tree install. A real `pip install .` (this project's actual Dockerfile
+    build) copies this module into site-packages, where that same relative
+    computation lands nowhere near the repo's knowledge/ folder -- confirmed by
+    simulating a real non-editable install. AI_TRADER_KNOWLEDGE_DIR must take
+    priority when set, matching AI_TRADER_DB_PATH/AI_TRADER_OUTPUT_DIR's existing
+    explicit-env-var pattern in the Dockerfile."""
+
+    def test_env_var_overrides_the_relative_path_computation(self):
+        with tempfile.TemporaryDirectory() as tmp_str:
+            with patch.dict(os.environ, {"AI_TRADER_KNOWLEDGE_DIR": tmp_str}):
+                importlib.reload(knowledge_base_module)
+                try:
+                    self.assertEqual(knowledge_base_module.KNOWLEDGE_DIR, Path(tmp_str))
+                finally:
+                    importlib.reload(knowledge_base_module)
+
+    def test_without_env_var_falls_back_to_relative_computation(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AI_TRADER_KNOWLEDGE_DIR", None)
+            importlib.reload(knowledge_base_module)
+            try:
+                self.assertTrue(str(knowledge_base_module.KNOWLEDGE_DIR).endswith("knowledge"))
+                self.assertTrue(knowledge_base_module.KNOWLEDGE_DIR.exists())
+            finally:
+                importlib.reload(knowledge_base_module)
 
 
 class RealKnowledgeDirectorySanityCheckTests(unittest.TestCase):

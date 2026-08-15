@@ -4,7 +4,7 @@ import sqlite3
 from .database import connect
 from contextlib import closing
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -12,9 +12,20 @@ from .audit import AuditDatabase
 from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
-from .models import AccountContext, GuardrailConfig, TradeProposal
+from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .proposal_context import build_proposal_context
 from .trading_intelligence import evaluate_trade_intelligence
+
+# 2026-08-15 (Founder-requested, following observed buy-high/sell-low entries): four
+# deterministic gates layered onto the crypto entry heuristic below, each translating a
+# specific passage already sitting inert in knowledge/*.md into an enforced check instead
+# of decorative reasoning text (see agent.py's own Phase D comment on why this heuristic
+# has no live LLM call to reason over that text directly). Kept as plain module constants,
+# not full settings-plumbed config, matching the scope of a real-but-shallow first pass --
+# revisit as config if they need per-environment tuning later.
+CRYPTO_MAX_ENTRY_RANGE_POSITION = 0.75  # knowledge/momentum_vs_mean_reversion.md: don't buy into the top of a 24h range.
+CRYPTO_BTC_WEAK_REGIME_THRESHOLD_PCT = -0.03  # knowledge/sector_crypto_l1_defi_tokens.md: BTC-correlation risk factor.
+CRYPTO_RE_ENTRY_COOLDOWN_HOURS = 4.0  # Don't walk straight back into a symbol that just stopped this out.
 
 
 class MarketDataClient(Protocol):
@@ -239,6 +250,69 @@ def _news_summary(news: dict) -> str:
     return " | ".join(headlines)
 
 
+def _kraken_range_position(prices: dict[str, Any], pair: str) -> float | None:
+    """Where the current price sits within Kraken's own reported 24h high/low range:
+    0.0 = at the 24h low, 1.0 = at the 24h high. None if range data is unavailable or
+    degenerate (high == low). Kraken's Ticker response already carries `h`/`l` as
+    [today, last24h] pairs alongside the `c` (last trade) field this module already
+    reads for the current price -- this is the same payload already being fetched for
+    every symbol, not an extra API call."""
+    payload = prices.get(pair)
+    if not isinstance(payload, dict):
+        return None
+    high, low, last = payload.get("h"), payload.get("l"), payload.get("c")
+    if not (isinstance(high, list) and len(high) > 1 and isinstance(low, list) and len(low) > 1):
+        return None
+    try:
+        high_24h, low_24h = float(high[1]), float(low[1])
+        current = float(last[0]) if isinstance(last, list) and last else None
+    except (TypeError, ValueError, IndexError):
+        return None
+    if current is None or high_24h <= low_24h:
+        return None
+    return max(0.0, min(1.0, (current - low_24h) / (high_24h - low_24h)))
+
+
+def _kraken_btc_daily_change_pct(adapter: Any) -> float | None:
+    """BTC's own same-session change (current price vs. today's Kraken-reported open),
+    used as a simple crypto-market-regime proxy: a weak/volatile BTC session is a real
+    portfolio-level risk factor for every altcoin regardless of that altcoin's own
+    trend score (knowledge/sector_crypto_l1_defi_tokens.md). One extra ticker call per
+    research batch, not per symbol -- callers should compute this once and reuse it."""
+    try:
+        prices = adapter.current_prices(["XBTGBP"]) if hasattr(adapter, "current_prices") else {}
+    except Exception:  # noqa: BLE001 - a regime read that fails must never abort research
+        return None
+    payload = prices.get("XBTGBP") if isinstance(prices, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        current = float(payload["c"][0])
+        open_price = float(payload["o"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    if open_price <= 0:
+        return None
+    return (current - open_price) / open_price
+
+
+def _recently_stopped_out(db_path: Path, *, broker: str, symbol: str, since_iso: str) -> bool:
+    """True if this symbol has a managed position closed by its own stop-loss more
+    recently than since_iso -- stops a fresh proposal from walking straight back into
+    a level that just failed on the exact same symbol."""
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM MANAGED_TRADE_EXITS
+            WHERE broker = ? AND symbol = ? AND status = 'closed'
+              AND exit_reason = 'stop_loss_triggered' AND updated_at >= ?
+            LIMIT 1
+            """,
+            (broker.lower(), symbol.upper(), since_iso),
+        ).fetchone()
+    return row is not None
+
+
 def propose_crypto_trades(
     db_path: Path,
     adapter: Any,
@@ -264,6 +338,13 @@ def propose_crypto_trades(
     per symbol instead of only after the whole batch returns -- a single shared connection
     for the batch is still opened below, so this adds no per-symbol connection overhead."""
     proposals: list[TradeProposal] = []
+    # Computed once per batch, not per symbol: a stop-loss lookback cutoff (no-immediate-
+    # re-entry gate) and a single BTC regime read (BTC-regime gate) reused for every
+    # altcoin evaluated this cycle.
+    cooldown_cutoff_iso = (
+        (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(hours=CRYPTO_RE_ENTRY_COOLDOWN_HOURS)
+    ).isoformat()
+    btc_change_pct = _kraken_btc_daily_change_pct(adapter)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         for symbol in symbols:
@@ -292,6 +373,26 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
+            if _recently_stopped_out(db_path, broker="kraken", symbol=symbol, since_iso=cooldown_cutoff_iso):
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "recently_stopped_out", "cooldown_hours": CRYPTO_RE_ENTRY_COOLDOWN_HOURS},
+                )
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=recent_stop_loss_cooldown", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
+            if symbol.upper() != "BTC" and btc_change_pct is not None and btc_change_pct <= CRYPTO_BTC_WEAK_REGIME_THRESHOLD_PCT:
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "btc_weak_regime", "btc_change_pct": btc_change_pct},
+                )
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=btc_weak_regime btc_change_pct={btc_change_pct:.4f}", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
             pair = _kraken_pair(symbol)
             try:
                 prices = adapter.current_prices([pair]) if hasattr(adapter, "current_prices") else {}
@@ -316,8 +417,29 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
-            stop_loss = round(price * (1 - default_stop_loss_pct), 8)
-            take_profit = round(price * (1 + default_stop_loss_pct * 2), 8)
+            range_position = _kraken_range_position(prices, pair)
+            if range_position is not None and range_position > CRYPTO_MAX_ENTRY_RANGE_POSITION:
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "entry_too_extended_in_24h_range", "range_position": range_position},
+                )
+                print(f"[crypto-research] symbol={symbol} stage=completed outcome=entry_too_extended range_position={range_position:.2f}", flush=True)
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
+            # Volatility-scaled stop distance (knowledge/stop_loss_and_take_profit_mechanics.md
+            # + sector_crypto_l1_defi_tokens.md's note that crypto stops are more readily
+            # triggered by ordinary liquidity gaps than in equities): a calmer coin keeps the
+            # base stop; a more volatile one gets proportionally more room, rather than every
+            # coin being held to one flat percentage regardless of its own behaviour.
+            # take_profit keeps the same 2:1 reward:risk ratio against whatever the effective
+            # stop distance ends up being.
+            volatility_score = row["volatility"]
+            volatility_multiplier = 1.0 + max(0.0, min(1.0, float(volatility_score))) if volatility_score is not None else 1.0
+            effective_stop_pct = default_stop_loss_pct * volatility_multiplier
+            stop_loss = round(price * (1 - effective_stop_pct), 8)
+            take_profit = round(price * (1 + effective_stop_pct * 2), 8)
             quantity = requested_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0
@@ -383,9 +505,15 @@ def propose_crypto_trades(
                 # the proposal's price/size/stop/target -- only what its reasoning text says.
                 try:
                     context = build_proposal_context(db_path, symbol=symbol, asset_type="crypto")
+                    # 2026-08-15 incident: reference_material (the actual curated knowledge-base
+                    # excerpts) was fetched here and then silently dropped -- never included below,
+                    # so it never even reached this proposal's own reasoning text, let alone
+                    # influenced anything. Every other piece build_proposal_context returns was
+                    # included; this one was missing outright, not just non-gating like the rest.
                     context_note = (
                         f"\n\nAdditional context: {context['historical_analogues']} "
-                        f"{context['backtest_evidence']} {context['external_intelligence']}"
+                        f"{context['backtest_evidence']} {context['external_intelligence']}\n\n"
+                        f"Reference material: {context['reference_material']}"
                     ).strip()
                     proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note)
                 except Exception:  # noqa: BLE001 - enrichment is additive; its failure must never block a proposal

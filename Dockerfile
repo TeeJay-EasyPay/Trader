@@ -6,12 +6,14 @@ ENV AI_TRADER_API_HOST=0.0.0.0
 ENV AI_TRADER_DB_PATH=/data/audit.sqlite3
 ENV AI_TRADER_OUTPUT_DIR=/data
 ENV AI_TRADER_TRADING_LOG_PATH=/data/TRADING_LOG.md
+ENV AI_TRADER_KNOWLEDGE_DIR=/app/knowledge
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY governance ./governance
+COPY knowledge ./knowledge
 
 RUN pip install --no-cache-dir .
 

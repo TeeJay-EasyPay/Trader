@@ -257,9 +257,12 @@ class FoundationSprintTests(unittest.TestCase):
 
     def test_propose_crypto_trades_enriches_reasoning_with_real_context_without_changing_the_trade(self):
         # Phase D: a passing crypto proposal's reasoning text gains real historical-
-        # analogue/backtest/external-intelligence context -- informational only, never a
-        # gate. The proposal's actual trade terms (entry/stop/target/size) must be
-        # byte-for-byte identical to what the deterministic score alone would have produced.
+        # analogue/backtest/external-intelligence/knowledge-base context -- informational
+        # only, never a gate; that part of the pipeline must never change entry/stop/
+        # target/size on its own. Volatility-scaled stops (2026-08-15, a real and
+        # deliberate trade-terms change, separate from Phase D context) DO change stop_loss/
+        # take_profit here on purpose -- this fixture's volatility=0.2 is asserted against
+        # explicitly below rather than the old flat-2% value.
         from ai_trader.agent import propose_crypto_trades
         from ai_trader.audit import AuditDatabase
         from ai_trader.experience_engine import record_experience
@@ -312,8 +315,17 @@ class FoundationSprintTests(unittest.TestCase):
             proposal = proposals[0]
             self.assertIn("Additional context:", proposal.plain_english_reasoning)
             self.assertIn("outcome=win", proposal.plain_english_reasoning)
+            # 2026-08-15 incident: reference_material (the curated knowledge-base excerpts)
+            # was fetched by build_proposal_context but never included in the text below --
+            # silently dropped before it ever reached this proposal's own reasoning, unlike
+            # every other piece of context. "Reference material:" and a real excerpt title
+            # from the committed knowledge/ library must now both appear.
+            self.assertIn("Reference material:", proposal.plain_english_reasoning)
+            self.assertIn("Momentum vs. Mean-Reversion", proposal.plain_english_reasoning)
             self.assertEqual(proposal.entry_price, 50000.0)
-            self.assertEqual(proposal.stop_loss, round(50000.0 * 0.98, 8))
+            # volatility=0.2 -> multiplier 1.2 -> effective stop pct 0.024 (base 0.02 * 1.2).
+            self.assertEqual(proposal.stop_loss, round(50000.0 * (1 - 0.024), 8))
+            self.assertEqual(proposal.take_profit, round(50000.0 * (1 + 0.024 * 2), 8))
             self.assertEqual(proposal.position_size, 5.0 / 50000.0)
 
     def test_unavailable_kraken_pair_does_not_abort_crypto_research(self):
