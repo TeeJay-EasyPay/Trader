@@ -17,6 +17,7 @@ from ai_trader.foundation import (
     create_due_diligence_assessment,
     initialize_foundation_schema,
     load_trading_policy,
+    set_risk_policy_value,
 )
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal
 from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext
@@ -165,6 +166,35 @@ class FoundationSprintTests(unittest.TestCase):
 
             self.assertLessEqual(allocation["approved_notional"], 500)
             self.assertEqual(allocation["result"], "approved")
+
+    def test_set_risk_policy_value_updates_an_already_seeded_row_and_takes_effect(self):
+        # 2026-08-16: _seed_policies' INSERT OR IGNORE means a code-level default
+        # change never reaches an already-seeded row -- this is the only real writer,
+        # found while reconciling Kraken's disagreeing "max open positions" settings.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)  # seeds maximum_concurrent_positions=3
+            before = load_trading_policy(db_path, auto_trade=AutoTradeConfig(enabled=True), guardrails=GuardrailConfig())
+            self.assertEqual(before.max_concurrent_positions, 3)
+
+            result = set_risk_policy_value(db_path, "maximum_concurrent_positions", 5)
+
+            self.assertEqual(result["status"], "updated")
+            self.assertEqual(result["previous_value"], "3")
+            after = load_trading_policy(db_path, auto_trade=AutoTradeConfig(enabled=True), guardrails=GuardrailConfig())
+            self.assertEqual(after.max_concurrent_positions, 5)
+
+    def test_set_risk_policy_value_does_not_create_an_unknown_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+
+            result = set_risk_policy_value(db_path, "not_a_real_policy_key", 5)
+
+            self.assertEqual(result["status"], "not_found")
+            with closing(sqlite3.connect(db_path)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM RISK_POLICIES WHERE policy_key = 'not_a_real_policy_key'").fetchone()[0]
+            self.assertEqual(count, 0)
 
     def test_orchestrator_records_foundation_decisions(self):
         with tempfile.TemporaryDirectory() as tmp:

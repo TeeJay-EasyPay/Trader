@@ -457,6 +457,41 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
     )
 
 
+def set_risk_policy_value(db_path: Path, key: str, value: Any, *, updated_by: str = "founder") -> dict[str, Any]:
+    """Directly update an already-seeded RISK_POLICIES row.
+
+    2026-08-16: no writer for RISK_POLICIES existed anywhere in the codebase before
+    this. _seed_policies' INSERT OR IGNORE means a code-level change to
+    DEFAULT_RISK_POLICIES never reaches a row that's already been seeded -- found the
+    hard way while reconciling Kraken's "max open positions" settings: MAX_OPEN_
+    POSITIONS and KRAKEN_MAX_OPEN_TRADES (both env vars) were raised from 1/3 to 5,
+    but orchestrator.py's auto-execution guardrail reads max_concurrent_positions
+    from *this* table via load_trading_policy -- a row seeded at 3 long before
+    tonight, untouched by any env var, that kept blocking every Kraken order anyway.
+    Only updates a row that already exists; does not silently create a new policy
+    key (a typo'd key should fail loudly, not seed a stray row).
+    """
+    initialize_foundation_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute("SELECT * FROM RISK_POLICIES WHERE policy_key = ?", (key,)).fetchone()
+        if existing is None:
+            return {"status": "not_found", "policy_key": key}
+        previous_value = existing["policy_value"]
+        with conn:
+            conn.execute(
+                "UPDATE RISK_POLICIES SET policy_value = ?, updated_at = ? WHERE policy_key = ?",
+                (_stringify(value), utc_now_iso(), key),
+            )
+    return {
+        "status": "updated",
+        "policy_key": key,
+        "previous_value": previous_value,
+        "new_value": _stringify(value),
+        "updated_by": updated_by,
+    }
+
+
 def _macro_context_available(conn: sqlite3.Connection, proposal: TradeProposal) -> bool:
     try:
         if proposal.asset_type == "crypto":

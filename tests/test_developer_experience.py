@@ -19,6 +19,7 @@ from ai_trader.audit import AuditDatabase
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.config import Settings
 from ai_trader.db_browser import ReadOnlyDatabaseBrowser
+from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
@@ -327,6 +328,28 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertTrue(payload["read_only"])
             self.assertIn("simulated timeout", payload["note"])
             self.assertIn("summary", payload["digest"])
+
+    def test_admin_set_risk_policy_updates_an_existing_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            initialize_foundation_schema(settings.db_path)
+
+            status, payload = service.post("/admin/set-risk-policy", {"key": "maximum_concurrent_positions", "value": 5})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["status"], "updated")
+            self.assertEqual(payload["new_value"], "5")
+
+    def test_admin_set_risk_policy_rejects_a_missing_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+
+            status, payload = service.post("/admin/set-risk-policy", {"value": 5})
+
+            self.assertEqual(status, 400)
+            self.assertEqual(payload["error"], "missing_key")
 
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -56,6 +56,7 @@ from ..foundation import (
     initialize_foundation_schema,
     latest_due_diligence_batch,
     latest_investment_score_batch,
+    set_risk_policy_value,
 )
 from ..experience_engine import initialize_experience_engine_schema
 from ..market_intelligence_platform import initialize_market_intelligence_schema
@@ -615,6 +616,11 @@ class LocalApiService:
             )
         if path == "/ask-ai-trader":
             return 200, self.ask_ai_trader(body)
+        if path == "/admin/set-risk-policy":
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return 400, {"error": "missing_key", "message": "Body must include a 'key' naming an existing RISK_POLICIES row."}
+            return 200, set_risk_policy_value(self.settings.db_path, key, body.get("value"), updated_by=str(body.get("updated_by") or "founder"))
         if path == "/notifications/ack":
             return 200, self.ack_notifications(body)
         if path == "/register-push-token":
