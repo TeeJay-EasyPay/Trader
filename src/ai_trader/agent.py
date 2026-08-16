@@ -525,7 +525,17 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [proposal])
             else:
-                print(f"[crypto-research] symbol={symbol} stage=completed outcome=guardrails_failed", flush=True)
+                # 2026-08-16: Founder asked whether the consistent zero-recommendations
+                # streak means the gates are too strict or something is broken -- the prior
+                # log line just said "guardrails_failed" with no detail, and /recommendations
+                # doesn't surface crypto rows in the confidence-sorted top 50 (equity
+                # proposals dominate), so there was no cheap way to see which check actually
+                # failed. Logging the real failure list closes that gap.
+                print(
+                    f"[crypto-research] symbol={symbol} stage=completed outcome=guardrails_failed "
+                    f"failures={validation.failures}",
+                    flush=True,
+                )
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
     return proposals
