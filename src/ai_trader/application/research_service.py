@@ -26,6 +26,7 @@ from ..orchestrator import InvestmentOrchestrator, next_research_run
 from ..persistence.query_executor import QueryExecutor
 from ..portfolio_intelligence import upsert_asset_metadata
 from ..production_evidence import record_research_evidence
+from ..rejection_review import run_crypto_rejection_review, run_crypto_rejection_rollup
 from ..sprint6 import record_operational_event, refresh_strategy_maturity, seed_default_strategy_registry
 from ..trading_intelligence import (
     STRATEGIES,
@@ -441,6 +442,21 @@ class ResearchService:
             flush=True,
         )
         return result
+
+    def review_crypto_rejections(self) -> dict[str, Any]:
+        """Nightly job (AT-ED-020, 2026-08-16): answers "was rejecting this coin the
+        right call?" by checking what price did in the 24-48h after a guardrail
+        rejection. See rejection_review.py's own docstring for the full scope
+        rationale and why it's limited to guardrail-check rejections specifically."""
+        adapter = self.orchestrator.adapters.get("kraken")
+        if adapter is None or not getattr(adapter, "configured", False):
+            return {"status": "not_available", "message": "Kraken credentials are required for rejection review."}
+        return run_crypto_rejection_review(self.settings.db_path, adapter)
+
+    def rollup_crypto_rejections(self) -> dict[str, Any]:
+        """Monthly job: summarizes and prunes the daily rows review_crypto_rejections
+        writes, keeping CRYPTO_REJECTION_REVIEWS bounded regardless of runtime."""
+        return run_crypto_rejection_rollup(self.settings.db_path)
 
     def _refresh_asset_metadata_from_company_master(self, symbols: list[str]) -> int:
         """Copies sector/country/industry already sitting in COMPANY_MASTER into ASSET_METADATA

@@ -385,6 +385,16 @@ class LocalApiService:
         # (POST /run-crypto-analysis, refresh_crypto_universe, run_analysis) needed no changes.
         return self._research_service.run_crypto_analysis(symbols, limit=limit)
 
+    def review_crypto_rejections(self) -> dict[str, Any]:
+        # Delegates to ResearchService. Kept as a thin wrapper since cli.py calls this
+        # externally (`service.review_crypto_rejections()`).
+        return self._research_service.review_crypto_rejections()
+
+    def rollup_crypto_rejections(self) -> dict[str, Any]:
+        # Delegates to ResearchService. Kept as a thin wrapper since cli.py calls this
+        # externally (`service.rollup_crypto_rejections()`).
+        return self._research_service.rollup_crypto_rejections()
+
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}

@@ -487,6 +487,10 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.run_analysis({"limit": limit, "trigger_type": job_name, "broker": "alpaca"})
     if job_name == "crypto-research":
         return service.run_crypto_analysis(limit=limit)
+    if job_name == "rejection-outcome-review":
+        return service.review_crypto_rejections()
+    if job_name == "rejection-outcome-rollup":
+        return service.rollup_crypto_rejections()
     if job_name == "daily-learning":
         return service.daily_learning_update(date.today().isoformat())
     if job_name in {"daily-report", "weekly-report", "monthly-report"}:
@@ -849,6 +853,16 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         # run_external_intelligence_refresh), but there is no reason to even claim
         # a scheduled-job slot for it every cycle while a human has it switched off.
         due.append(("external-intelligence-refresh", _time_bucket(now, 3600)))
+    # Crypto-only, so scheduled on a plain UTC clock rather than the NYSE calendar the
+    # equity jobs below use -- crypto research (and therefore its rejections) runs
+    # every day, weekends included. Bounded 1-hour windows (not "rest of day" the way
+    # daily-report/strategy-lab-refresh below are) to avoid claiming a job slot on
+    # nearly every one of the day's worker cycles for something that only needs to
+    # run once; a missed window just means it runs the following day/month instead.
+    if 3 <= now.hour < 4:
+        due.append(("rejection-outcome-review", f"{now.date().isoformat()}T03:00:00+00:00"))
+    if now.day == 1 and 4 <= now.hour < 5:
+        due.append(("rejection-outcome-rollup", f"{now.strftime('%Y-%m')}-01T04:00:00+00:00"))
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     if market_now.weekday() >= 5:
         return due

@@ -465,6 +465,64 @@ class ProductionCompletionTests(unittest.TestCase):
         names = [name for name, _ in due]
         self.assertIn("external-intelligence-refresh", names)
 
+    def test_due_worker_jobs_includes_rejection_outcome_review_at_3am_utc(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        # 2026-08-16 is a Sunday -- confirms this fires on weekends too, unlike the
+        # equity jobs below it which are gated on market_now.weekday() < 5.
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 3, 30, tzinfo=timezone.utc))
+        self.assertIn("rejection-outcome-review", [name for name, _ in due])
+
+    def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc))
+        self.assertNotIn("rejection-outcome-review", [name for name, _ in due])
+
+    def test_due_worker_jobs_includes_rejection_outcome_rollup_only_on_the_first(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        due_first = _due_worker_jobs(settings, datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc))
+        self.assertIn("rejection-outcome-rollup", [name for name, _ in due_first])
+        due_second = _due_worker_jobs(settings, datetime(2026, 9, 2, 4, 30, tzinfo=timezone.utc))
+        self.assertNotIn("rejection-outcome-rollup", [name for name, _ in due_second])
+
+    def test_due_worker_jobs_omits_rejection_review_when_research_disabled(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 3, 30, tzinfo=timezone.utc))
+        self.assertNotIn("rejection-outcome-review", [name for name, _ in due])
+
     def test_push_dispatch_is_a_named_job_reachable_from_the_worker_loop(self):
         """CRITICAL_REMEDIATION_PLAN.md P0-5: push notifications were previously
         wired only into the API service's background-worker set, which
