@@ -73,7 +73,14 @@ services:
       - key: KRAKEN_MIN_ORDER_GBP
         value: "1"
       - key: KRAKEN_MAX_OPEN_TRADES
-        value: "1"
+        # 2026-08-16: was "1", contradicting the July-marathon fix's stated intent of
+        # 5 (commit b9199f32, "Fix the Kraken concentration check for the deployment's
+        # real cap of 5, not 1") and MAX_OPEN_POSITIONS below -- three different values
+        # (1 here, 3 in MAX_OPEN_POSITIONS, 5 intended) for "how many Kraken positions
+        # can be open" is exactly the kind of drift the Founder asked to be checked
+        # for. Aligned to 5 here so this and MAX_OPEN_POSITIONS agree with each other
+        # and with the documented intent.
+        value: "5"
       - key: KRAKEN_ALLOWED_PAIRS
         value: XBTGBP,ETHGBP,SOLGBP
       - key: KRAKEN_API_KEY
@@ -117,7 +124,17 @@ services:
       - key: MAX_DAILY_LOSS_PCT
         value: "0.03"
       - key: MAX_OPEN_POSITIONS
-        value: "3"
+        # 2026-08-16: was "3" -- with exactly 3 Kraken positions already open
+        # (XRP/ETH/BCH), this generic (broker-agnostic) guardrail check
+        # (guardrails.py: len(account.open_positions) >= config.max_open_positions)
+        # was hard-blocking every single new Kraken proposal regardless of coin or
+        # quality, real-data-confirmed via the new /crypto-rejections-explained
+        # digest. Raised to 5 to match KRAKEN_MAX_OPEN_TRADES above. Also applies to
+        # Alpaca (this check is shared across brokers, not Kraken-specific) --
+        # raising Alpaca's concurrent-position room too, which is a welcome side
+        # effect, not an unwanted one, per this session's standing direction to
+        # give Alpaca more room to actually trade.
+        value: "5"
 
   - type: worker
     name: ai-trader-worker
