@@ -308,3 +308,144 @@ def run_crypto_rejection_rollup(db_path: Path, *, now: datetime | None = None) -
             conn.execute("DELETE FROM CRYPTO_REJECTION_REVIEWS WHERE review_date < ?", (cutoff_date,))
 
     return {"status": "completed", "rows_summarized": len(rows), "symbol_periods_summarized": len(groups)}
+
+
+def recent_crypto_rejection_digest(db_path: Path, *, hours: int = 48) -> dict[str, Any]:
+    """Deterministic (no LLM, no network call) summary of Kraken guardrail-check
+    rejections in the last `hours`: which symbols, how many times, the dominant
+    reason, and -- for anything already old enough to have been reviewed by
+    run_crypto_rejection_review -- the recorded verdict.
+
+    2026-08-16: powers the instant "what and why" half of the Founder's
+    Ask-AI-Trader pre-built crypto-rejections question. The "has it learned" half
+    (ask_about_crypto_rejections in api/__init__.py) is worth spending a real
+    OpenAI call on since it benefits from synthesis; this half doesn't -- the
+    structured data already answers it directly and for free.
+    """
+    initialize_rejection_review_schema(db_path)
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(hours=hours)).isoformat()
+
+    # Two separate connections deliberately, not one shared connection for both
+    # queries: trade_audit is created by AuditDatabase's own schema init, not this
+    # module's, so a database that has never recorded a single proposal (e.g. a
+    # brand-new deployment) genuinely has no such table yet -- missing structure
+    # means no data yet, not a hard failure, matching daily_plan.py's
+    # _count_trades_since. Under Postgres specifically, catching that failure and
+    # continuing to query on the *same* connection would still fail every
+    # subsequent statement (a failed statement aborts the whole transaction until
+    # rollback) -- a fresh connection for the second query sidesteps that entirely.
+    try:
+        with closing(connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rejection_rows = conn.execute(
+                """
+                SELECT symbol, entry, created_at, validation_result
+                FROM trade_audit
+                WHERE event_type = 'agent_proposal' AND broker = 'kraken'
+                  AND execution_guardrails_passed = 0 AND created_at >= ?
+                ORDER BY symbol, created_at ASC
+                """,
+                (since,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        rejection_rows = []
+
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        review_rows = conn.execute(
+            """
+            SELECT symbol, verdict, pct_change, review_date
+            FROM CRYPTO_REJECTION_REVIEWS
+            WHERE broker = 'kraken' AND review_date >= ?
+            ORDER BY symbol, review_date DESC
+            """,
+            (since[:10],),
+        ).fetchall()
+
+    by_symbol: dict[str, list[sqlite3.Row]] = {}
+    for row in rejection_rows:
+        by_symbol.setdefault(str(row["symbol"]).upper(), []).append(row)
+
+    latest_review_by_symbol: dict[str, sqlite3.Row] = {}
+    for row in review_rows:
+        symbol = str(row["symbol"]).upper()
+        latest_review_by_symbol.setdefault(symbol, row)  # already ordered DESC by review_date
+
+    rejections: list[dict[str, Any]] = []
+    for symbol in sorted(by_symbol):
+        group = by_symbol[symbol]
+        reason_counts: dict[str, int] = {}
+        for record in group:
+            try:
+                failures = json.loads(record["validation_result"] or "{}").get("failures") or []
+            except (TypeError, ValueError):
+                failures = []
+            for failure in failures:
+                reason_counts[failure] = reason_counts.get(failure, 0) + 1
+        dominant_reason = max(reason_counts, key=reason_counts.get) if reason_counts else None
+        review = latest_review_by_symbol.get(symbol)
+        rejections.append(
+            {
+                "symbol": symbol,
+                "rejection_count": len(group),
+                "dominant_reason": dominant_reason,
+                "last_rejected_at": group[-1]["created_at"],
+                "reviewed": review is not None,
+                "verdict": review["verdict"] if review else None,
+                "pct_change": review["pct_change"] if review else None,
+            }
+        )
+
+    reviewed = [item for item in rejections if item["reviewed"]]
+    favourable = sum(1 for item in reviewed if item["verdict"] == "favourable")
+    unfavourable = sum(1 for item in reviewed if item["verdict"] == "unfavourable")
+    neutral = sum(1 for item in reviewed if item["verdict"] == "neutral")
+    if rejections:
+        summary = (
+            f"{len(rejections)} symbol(s) had at least one rejected Kraken proposal in the last {hours}h. "
+            f"{len(reviewed)} already reviewed against price: {favourable} favourable, {unfavourable} unfavourable, "
+            f"{neutral} neutral. {len(rejections) - len(reviewed)} too recent to judge yet (reviews only run 24-48h "
+            "after a rejection)."
+        )
+    else:
+        summary = f"No rejected Kraken proposals in the last {hours}h."
+
+    return {
+        "window_hours": hours,
+        "generated_at": utc_now_iso(),
+        "rejections": rejections,
+        "summary": summary,
+    }
+
+
+def deterministic_learned_synthesis(digest: dict[str, Any]) -> str:
+    """No-OpenAI fallback for the "has it learned" question -- used when
+    OPENAI_API_KEY isn't configured or the live call fails, mirroring
+    api/__init__.py's _deterministic_ai_trader_answer fallback pattern for the
+    existing Ask-AI-Trader endpoint."""
+    rejections = digest.get("rejections") or []
+    reviewed = [item for item in rejections if item.get("reviewed")]
+    if not reviewed:
+        return (
+            "No rejections from this window have been reviewed against price yet -- reviews only run 24-48h "
+            "after a rejection -- so there isn't enough evidence yet to say whether judgment is improving."
+        )
+    favourable = sum(1 for item in reviewed if item.get("verdict") == "favourable")
+    unfavourable = sum(1 for item in reviewed if item.get("verdict") == "unfavourable")
+    total = len(reviewed)
+    lines = [
+        f"{favourable} of {total} reviewed rejection(s) in this window were favourable (price fell after the "
+        f"rejected buy); {unfavourable} were unfavourable (price rose)."
+    ]
+    if unfavourable > favourable:
+        lines.append(
+            "More rejections missed a gain than avoided a loss in this window -- worth a closer look at whether "
+            "the guardrail(s) involved are too strict, not a verdict that they are."
+        )
+    elif favourable > unfavourable:
+        lines.append("More rejections avoided a loss than missed a gain in this window -- consistent with the guardrails doing their job.")
+    else:
+        lines.append("Favourable and unfavourable rejections are evenly split in this window -- too close to call from this sample alone.")
+    lines.append("This is a small, short-window sample -- a data point, not a verdict on the guardrails themselves.")
+    return " ".join(lines)

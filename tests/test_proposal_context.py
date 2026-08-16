@@ -41,6 +41,38 @@ class BuildProposalContextTests(unittest.TestCase):
         self.assertIn("1 historical analogue(s)", context["historical_analogues"])
         self.assertIn("outcome=win", context["historical_analogues"])
 
+    def test_rejection_review_analogue_surfaces_its_reason(self):
+        # 2026-08-16: rejection_review.py's records are the one decision_context
+        # shape with a reliable "why" -- a future proposal for the same symbol
+        # should see it, not just the outcome.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_experience(
+                db_path,
+                symbol="BTC",
+                strategy_id="crypto_rejection_review",
+                decision_context={"record_type": "rejection_review", "dominant_reason": "duplicate_open_position"},
+                result_context={"outcome": "reject_favourable(-4.0%)", "pnl": None},
+            )
+            context = build_proposal_context(db_path, symbol="BTC", asset_type="crypto")
+        self.assertIn("outcome=reject_favourable(-4.0%)", context["historical_analogues"])
+        self.assertIn("reason=duplicate_open_position", context["historical_analogues"])
+
+    def test_real_trade_analogue_does_not_gain_a_spurious_reason_field(self):
+        # A real executed trade's decision_context has no record_type marker and no
+        # reliable "reason" key -- must not have one invented for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_experience(
+                db_path,
+                symbol="AAPL",
+                strategy_id="trend-following",
+                decision_context={"note": "test", "dominant_reason": "should not leak"},
+                result_context={"outcome": "win", "pnl": 120.5},
+            )
+            context = build_proposal_context(db_path, symbol="AAPL", asset_type="stock", strategy_id="trend-following")
+        self.assertNotIn("reason=", context["historical_analogues"])
+
     def test_includes_real_external_intelligence_once_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

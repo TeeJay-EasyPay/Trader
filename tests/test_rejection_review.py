@@ -23,7 +23,9 @@ from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.models import TradeProposal, ValidationResult
 from ai_trader.rejection_review import (
     _price_for_pair,
+    deterministic_learned_synthesis,
     initialize_rejection_review_schema,
+    recent_crypto_rejection_digest,
     run_crypto_rejection_review,
     run_crypto_rejection_rollup,
 )
@@ -253,6 +255,64 @@ class RejectionReviewRollupTests(unittest.TestCase):
                 conn.row_factory = sqlite3.Row
                 remaining = conn.execute("SELECT COUNT(*) AS n FROM CRYPTO_REJECTION_REVIEWS").fetchone()["n"]
             self.assertEqual(remaining, 1)
+
+
+class RejectionDigestTests(unittest.TestCase):
+    def test_digest_includes_reviewed_and_unreviewed_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            # Old enough to have been reviewed already.
+            _record_rejected_proposal(db_path, symbol="BTC", entry_price=50000.0, hours_ago=30)
+            run_crypto_rejection_review(db_path, _FakeAdapter({"XBTGBP": {"c": ["48000.0", "1.0"]}}))
+            # Too recent to have been reviewed yet.
+            _record_rejected_proposal(db_path, symbol="ETH", entry_price=2000.0, hours_ago=6)
+
+            digest = recent_crypto_rejection_digest(db_path, hours=48)
+
+            by_symbol = {item["symbol"]: item for item in digest["rejections"]}
+            self.assertTrue(by_symbol["BTC"]["reviewed"])
+            self.assertEqual(by_symbol["BTC"]["verdict"], "favourable")
+            self.assertFalse(by_symbol["ETH"]["reviewed"])
+            self.assertIsNone(by_symbol["ETH"]["verdict"])
+            self.assertIn("1 already reviewed", digest["summary"])
+
+    def test_digest_is_empty_summary_when_nothing_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            digest = recent_crypto_rejection_digest(db_path, hours=48)
+            self.assertEqual(digest["rejections"], [])
+            self.assertIn("No rejected", digest["summary"])
+
+
+class DeterministicLearnedSynthesisTests(unittest.TestCase):
+    def test_no_reviews_yet_says_so_honestly(self):
+        text = deterministic_learned_synthesis({"rejections": [{"symbol": "BTC", "reviewed": False, "verdict": None}]})
+        self.assertIn("enough evidence yet", text)
+
+    def test_more_unfavourable_than_favourable_flags_it(self):
+        digest = {
+            "rejections": [
+                {"symbol": "BTC", "reviewed": True, "verdict": "unfavourable"},
+                {"symbol": "ETH", "reviewed": True, "verdict": "unfavourable"},
+                {"symbol": "SOL", "reviewed": True, "verdict": "favourable"},
+            ]
+        }
+        text = deterministic_learned_synthesis(digest)
+        self.assertIn("2 were unfavourable", text)
+        self.assertIn("worth a closer look", text)
+
+    def test_more_favourable_than_unfavourable_is_reassuring(self):
+        digest = {
+            "rejections": [
+                {"symbol": "BTC", "reviewed": True, "verdict": "favourable"},
+                {"symbol": "ETH", "reviewed": True, "verdict": "favourable"},
+                {"symbol": "SOL", "reviewed": True, "verdict": "unfavourable"},
+            ]
+        }
+        text = deterministic_learned_synthesis(digest)
+        self.assertIn("doing their job", text)
 
 
 if __name__ == "__main__":

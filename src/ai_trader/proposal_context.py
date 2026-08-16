@@ -82,6 +82,16 @@ def _serialize_historical_analogues(analogues: dict[str, Any]) -> str:
             summary_bits.append(f"outcome={outcome}")
         if pnl is not None:
             summary_bits.append(f"pnl={pnl}")
+        # rejection_review.py's records (2026-08-16) are the one decision_context
+        # shape with a reliable "why" -- real executed-trade decision_context is a
+        # large free-form dict with no consistent reason field, so this is
+        # deliberately gated on the record_type marker rather than guessing at a
+        # key that might mean something different for a real trade.
+        decision_context = _safe_json_loads(case.get("decision_context_json"))
+        if isinstance(decision_context, dict) and decision_context.get("record_type") == "rejection_review":
+            reason = decision_context.get("dominant_reason")
+            if reason:
+                summary_bits.append(f"reason={reason}")
         lines.append("  - " + ", ".join(summary_bits))
     return "\n".join(lines)
 

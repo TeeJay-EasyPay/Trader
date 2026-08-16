@@ -264,6 +264,70 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertNotIn("configure OPENAI_API_KEY", payload["answer"])
             self.assertIn("simulated timeout", payload["note"])
 
+    def test_crypto_rejections_explained_uses_local_digest_without_openai(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            proposal = TradeProposal(
+                symbol="BTC",
+                side="buy",
+                entry_price=50000.0,
+                stop_loss=49000.0,
+                take_profit=52000.0,
+                position_size=1,
+                risk_percentage=0.01,
+                confidence_score=0.9,
+                asset_type="crypto",
+                exchange="KRAKEN",
+                news_summary="",
+                market_sentiment_summary="",
+                technical_summary="",
+                plain_english_reasoning="Test.",
+                ai_guardrails_passed=False,
+            )
+            AuditDatabase(settings.db_path, None).record_trade_event(
+                "agent_proposal", proposal, validation=ValidationResult(passed=False, failures=["duplicate_open_position"])
+            )
+
+            status, payload = service.get("/crypto-rejections-explained", {})
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["read_only"])
+            self.assertEqual(payload["status"], "openai_not_configured")
+            self.assertEqual(payload["digest"]["rejections"][0]["symbol"], "BTC")
+            self.assertEqual(payload["digest"]["rejections"][0]["dominant_reason"], "duplicate_open_position")
+            self.assertIn("enough evidence yet", payload["learned_synthesis"])
+
+    def test_crypto_rejections_explained_falls_back_when_openai_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            settings = Settings(
+                alpaca_api_key=settings.alpaca_api_key,
+                alpaca_secret_key=settings.alpaca_secret_key,
+                alpaca_paper_base_url=settings.alpaca_paper_base_url,
+                alpaca_data_base_url=settings.alpaca_data_base_url,
+                openai_api_key="test-key",
+                openai_model=settings.openai_model,
+                db_path=settings.db_path,
+                output_dir=settings.output_dir,
+                trading_log_path=settings.trading_log_path,
+                guardrails=settings.guardrails,
+                auto_trade=settings.auto_trade,
+                research_scheduler_enabled=settings.research_scheduler_enabled,
+                research_scheduler_interval_minutes=settings.research_scheduler_interval_minutes,
+                research_scheduler_limit=settings.research_scheduler_limit,
+            )
+            service = LocalApiService(settings)
+
+            with patch("ai_trader.api.OpenAIReadOnlyExplainer.answer", side_effect=RuntimeError("simulated timeout")):
+                status, payload = service.get("/crypto-rejections-explained", {})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["status"], "openai_failed")
+            self.assertTrue(payload["read_only"])
+            self.assertIn("simulated timeout", payload["note"])
+            self.assertIn("summary", payload["digest"])
+
     def test_database_browser_lists_and_searches_tables_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

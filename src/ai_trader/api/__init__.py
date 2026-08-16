@@ -87,6 +87,7 @@ from ..kraken_reconciliation import (
 )
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
+from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
 from ..portfolio_intelligence import initialize_portfolio_intelligence_schema, upsert_asset_metadata
 from ..production_spine import initialize_production_spine_schema
 from ..production_evidence import (
@@ -495,6 +496,8 @@ class LocalApiService:
             return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["why_no_trade"]
         if path == "/daily-plan":
             return 200, daily_trading_plan_status(self.settings.db_path, broker=_first(query, "broker") or "alpaca")
+        if path == "/crypto-rejections-explained":
+            return 200, self.ask_about_crypto_rejections(hours=_int_or_default(_first(query, "hours"), 48))
         if path == "/activity/brokers":
             return 200, {"brokers": founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["brokers"]}
         if path == "/activity/founder-attention":
@@ -783,6 +786,55 @@ class LocalApiService:
             "model": self.settings.openai_model,
             "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
             "evidence": context,
+        }
+
+    def crypto_rejection_digest(self, *, hours: int = 48) -> dict[str, Any]:
+        # Deterministic, no OpenAI call -- see recent_crypto_rejection_digest's own
+        # docstring for why the "what and why" half doesn't need one.
+        return recent_crypto_rejection_digest(self.settings.db_path, hours=hours)
+
+    def ask_about_crypto_rejections(self, *, hours: int = 48) -> dict[str, Any]:
+        """The Founder's pre-built Ask-AI-Trader question (2026-08-16): what crypto
+        was rejected recently, why, and has the system learned from it. Mirrors
+        ask_ai_trader's structure/fallback behavior exactly, but only the "has it
+        learned" synthesis is worth a real OpenAI call -- the "what and why" half
+        (the digest) is answered directly from stored data, for free, instantly."""
+        digest = self.crypto_rejection_digest(hours=hours)
+        question = (
+            "Based only on the crypto rejection digest supplied as context (which Kraken coins were rejected "
+            "recently, why, and -- for anything already reviewed -- what price did afterward), has the trading "
+            "system's judgment on these rejections been vindicated or found wanting, and is there any sign it "
+            "should adjust course? Be honest about a small sample size."
+        )
+        if not self.settings.openai_api_key:
+            return {
+                "status": "openai_not_configured",
+                "digest": digest,
+                "learned_synthesis": deterministic_learned_synthesis(digest),
+                "read_only": True,
+                "model": None,
+                "note": "OPENAI_API_KEY is not configured for this AI Trader deployment, so this used the local digest summary only.",
+            }
+        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_model)
+        try:
+            synthesis = explainer.answer(question, {"crypto_rejection_digest": digest})
+        except Exception as exc:
+            logger.exception("Crypto rejection 'has it learned' synthesis failed; returning deterministic fallback.")
+            return {
+                "status": "openai_failed",
+                "digest": digest,
+                "learned_synthesis": deterministic_learned_synthesis(digest),
+                "read_only": True,
+                "model": self.settings.openai_model,
+                "note": f"OpenAI synthesis failed, so this used the local digest summary only. Reason: {exc}",
+            }
+        return {
+            "status": "answered",
+            "digest": digest,
+            "learned_synthesis": synthesis or deterministic_learned_synthesis(digest),
+            "read_only": True,
+            "model": self.settings.openai_model,
+            "note": "Read-only. Cannot place trades, approve trades, change guardrails, or change broker settings.",
         }
 
     def _ask_ai_context(self) -> dict[str, Any]:
