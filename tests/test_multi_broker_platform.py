@@ -271,17 +271,19 @@ class MultiBrokerPlatformTests(unittest.TestCase):
         finally:
             restore_env(previous)
 
-    def test_run_analysis_scopes_its_inline_auto_execution_to_alpaca_only(self):
-        # 2026-08-10 hosted incident: unlike run_crypto_analysis (see test above), Alpaca's
-        # run_analysis DOES call auto-execution inline, once real proposals exist -- and it
-        # called the unfiltered auto_execute_recommendations(), which evaluated the entire
-        # shared candidate backlog (both brokers, dominated by Kraken) synchronously inside
-        # this one job. At ~30-40s per candidate that reliably burned through the job's 450s
-        # timeout, silently discarding the cycle's own fresh Alpaca proposals along with
-        # everything else. Confirmed live: most market-open-equity runs timed out. Now that
-        # trade_audit has a real broker column to filter on, this call must be scoped to
-        # "alpaca" specifically -- broker_name is always "alpaca" here (run_analysis's
-        # "kraken" branch returns earlier via run_crypto_analysis).
+    def test_run_analysis_defers_auto_execution_instead_of_calling_it_inline(self):
+        # 2026-08-10 hosted incident: run_analysis used to call auto-execution inline, once
+        # real proposals existed -- originally the unfiltered auto_execute_recommendations(),
+        # which evaluated the entire shared candidate backlog (both brokers, dominated by
+        # Kraken) synchronously inside this one job. At ~30-40s per candidate that reliably
+        # burned through the job's 450s timeout. Scoping the call to "alpaca" only
+        # (broker_name is always "alpaca" here -- run_analysis's "kraken" branch returns
+        # earlier via run_crypto_analysis) did not fix it: confirmed live 2026-08-17,
+        # market-open-equity run_id=22297 still timed out at 900s after evaluating only 8 of
+        # 50 loaded Alpaca candidates. The inline call was also fully redundant -- the
+        # independently-scheduled auto-execution-alpaca job already evaluates this exact same
+        # broker-filtered backlog on its own ~180s cadence. run_analysis must not call
+        # auto_execute_recommendations at all; it should defer and let that job do it.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = Settings(
@@ -328,7 +330,8 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             ):
                 result = service.run_analysis({"symbols": "AAPL"})
 
-            mock_auto_execute.assert_called_once_with(broker_filter="alpaca")
+            mock_auto_execute.assert_not_called()
+            self.assertEqual(result["auto_execution"]["status"], "deferred")
             self.assertEqual(len(result["proposals"]), 1)
 
     def test_auto_execute_recommendations_broker_filter_isolates_candidates(self):

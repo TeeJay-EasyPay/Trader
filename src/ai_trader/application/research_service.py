@@ -92,10 +92,9 @@ class ResearchService:
     (run_crypto_analysis) entry points -- they are not merged, per the plan's explicit
     instruction, even though they share several lifecycle-recording helpers.
 
-    `account_context_lookup`, `recommendations_lookup`, `auto_execute_recommendations_lookup`,
-    and `broker_factory` are narrow, explicit injected dependencies for LocalApiService
-    methods that have not been extracted yet (`_account_context_for_broker` and
-    `auto_execute_recommendations` are broker/execution territory -- Phase 6/8;
+    `account_context_lookup`, `recommendations_lookup`, and `broker_factory` are narrow,
+    explicit injected dependencies for LocalApiService methods that have not been extracted
+    yet (`_account_context_for_broker` is broker/execution territory -- Phase 6/8;
     `recommendations` is founder-presentation-adjacent and used by several not-yet-extracted
     callers; `_broker` constructs an AlpacaPaperClient and is still needed elsewhere in
     api/__init__.py too). `_account_context_for_broker` specifically carries the Kraken AI
@@ -103,7 +102,13 @@ class ResearchService:
     injected, not duplicated, so that safety-critical isolation logic has exactly one
     implementation anywhere in the codebase, per the plan's Section 5 dependency rule 6.
 
-    All four lookups are wired in LocalApiService.__init__ as lambdas that read the
+    (A fourth lookup, `auto_execute_recommendations_lookup`, was removed 2026-08-17: the
+    equity research jobs it served used to call it inline after generating proposals, which
+    duplicated -- at the cost of a guaranteed 900s timeout -- work the independently-scheduled
+    `auto-execution-alpaca` job already does on its own ~180s cadence. See `run_analysis`'s
+    2026-08-17 incident comment.)
+
+    All lookups are wired in LocalApiService.__init__ as lambdas that read the
     LocalApiService instance's own method *at call time* (`lambda: self.recommendations(...)`,
     not `self.recommendations` captured directly) rather than snapshotting a bound method at
     construction time. This matters because `tests/test_strategy_lab.py` and
@@ -123,7 +128,6 @@ class ResearchService:
         query_executor: QueryExecutor,
         account_context_lookup: Callable[[str], AccountContext],
         recommendations_lookup: Callable[[int], list[dict[str, Any]]],
-        auto_execute_recommendations_lookup: Callable[[str], dict[str, Any]],
         broker_factory: Callable[[], AlpacaPaperClient],
     ) -> None:
         self.settings = settings
@@ -132,7 +136,6 @@ class ResearchService:
         self._query_executor = query_executor
         self._account_context_lookup = account_context_lookup
         self._recommendations_lookup = recommendations_lookup
-        self._auto_execute_recommendations_lookup = auto_execute_recommendations_lookup
         self._broker_factory = broker_factory
 
     def refresh_crypto_universe(self) -> dict[str, Any]:
@@ -619,18 +622,36 @@ class ResearchService:
         # with no realistic chance of finishing inside the shared job timeout before generating
         # a single proposal. propose_trades still isolates one symbol's failure from the rest.
         proposals = agent.propose_trades(symbols, account, skipped_symbols=skipped_symbols)
-        # 2026-08-10 hosted incident: this used to call the unfiltered auto_execute_
-        # recommendations() -- evaluating the entire shared candidate backlog (both
-        # brokers, dominated by Kraken) synchronously inside this one job, at ~30-40s per
-        # candidate (each evaluate_recommendation call makes several sequential DB round
-        # trips). That reliably burned through the whole 450s job timeout before finishing,
-        # so the job was killed -- silently discarding this cycle's own fresh Alpaca
-        # proposals along with everything else. broker_name is always "alpaca" here
-        # (the "kraken" branch above returns earlier via run_crypto_analysis), and
-        # trade_audit now has a real broker column (audit.py) that auto_execute_
-        # recommendations can filter on directly in SQL, so this can be scoped to just
-        # this job's own broker instead of the entire shared pool.
-        auto_execution = self._auto_execute_recommendations_lookup(broker_name) if proposals else {"status": "skipped", "message": "No proposals generated."}
+        # 2026-08-17 hosted incident: the 2026-08-10 fix below (scoping to just this job's
+        # broker) narrowed the candidate backlog but did not fix the underlying timeout --
+        # confirmed live, market-open-equity run_id=22297 spent 8.5 minutes generating
+        # proposals, then loaded 50 Alpaca candidates and got through only 8 of them (each
+        # production_governance_done step alone taking ~20-28s) before the 900s job timeout
+        # killed it. At that rate the full backlog needs 35+ minutes, every single run --
+        # not a flaky slow day. Worse, this inline call was fully redundant: the
+        # independently-scheduled auto-execution-alpaca job (execution_service.py,
+        # _run_named_job in cli.py) already evaluates this exact same broker-filtered
+        # candidate backlog on its own ~180s cadence via the identical
+        # auto_execute_recommendations(broker_filter=...) call this job used to invoke
+        # inline (removed along with the now-unused auto_execute_recommendations_lookup
+        # constructor dependency, see the class docstring). Running it a second time,
+        # synchronously, inside the research job bought nothing but a
+        # guaranteed timeout -- one that starved every other worker job behind it
+        # (including evidence-snapshot, which is why the mobile app was showing a stale
+        # snapshot). Deferring here removes the duplicate work; real trading capability is
+        # unchanged since auto-execution-alpaca still runs as often as before.
+        # 2026-08-10 hosted incident (original scoping fix, kept for context): this used to
+        # call the unfiltered auto_execute_recommendations() -- evaluating the entire shared
+        # candidate backlog (both brokers, dominated by Kraken) synchronously inside this one
+        # job, at ~30-40s per candidate (each evaluate_recommendation call makes several
+        # sequential DB round trips). That reliably burned through the whole 450s job timeout
+        # before finishing, so the job was killed -- silently discarding this cycle's own
+        # fresh Alpaca proposals along with everything else.
+        auto_execution = (
+            {"status": "deferred", "message": "Evaluated by the independently-scheduled auto-execution-alpaca job, not inline."}
+            if proposals
+            else {"status": "skipped", "message": "No proposals generated."}
+        )
         for proposal in proposals:
             self._record_shadow_from_proposal(
                 proposal,

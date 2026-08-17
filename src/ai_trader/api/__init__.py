@@ -232,7 +232,6 @@ class LocalApiService:
             # hosted_read_only/api_token_configured for the same reason.
             account_context_lookup=lambda broker: self._account_context_for_broker(broker),
             recommendations_lookup=lambda limit: self.recommendations(limit),
-            auto_execute_recommendations_lookup=lambda broker: self.auto_execute_recommendations(broker_filter=broker),
             broker_factory=lambda: self._broker(),
         )
         self._broker_service = BrokerService(
