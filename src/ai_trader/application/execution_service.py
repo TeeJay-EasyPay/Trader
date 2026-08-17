@@ -417,9 +417,36 @@ class ExecutionService:
             flush=True,
         )
 
+        # 2026-08-17 hosted incident: this is the actual reason raising the shared
+        # timeout to 600s (2026-08-01, see the comment on this job's registration in
+        # cli.py) never stopped the timeouts -- up to 50 surviving candidates at
+        # ~50-80s each through the full Strategy/Portfolio/Risk/Sentinel governance
+        # chain is 2500s+ of real work, which no reasonable per-job timeout can
+        # absorb. Confirmed live: auto-execution-alpaca timed out on nearly every
+        # cycle for 5+ hours after that fix, each time getting through only 4-8 of
+        # 50 candidates before being killed mid-work -- which starved the rest of
+        # the worker loop (including evidence-snapshot) exactly like the
+        # market-open-equity incident this same day. A per-job timeout can only ever
+        # bound one run's duration, not the size of a backlog that regenerates every
+        # cycle -- so bound the backlog instead: stop starting new evaluations once
+        # comfortably inside the job's own timeout, and let unevaluated candidates
+        # (still fresh, still governed) surface again next cycle via the same
+        # top-50 query. No candidate is silently dropped; ai_confidence/created_at
+        # ordering means the same highest-priority ones are simply tried first each
+        # cycle until they clear or age out via the existing 24h freshness cutoff.
+        eval_deadline = _auto_exec_t0 + self.settings.auto_execution_job_timeout_seconds - 120
         for _candidate_index, row in enumerate(surviving_rows):
             proposal_id = row["proposal_id"]
             confidence = safe_score(row["ai_confidence"]) or 0.0
+            if time.monotonic() >= eval_deadline:
+                skipped.append({
+                    "proposal_id": proposal_id,
+                    "symbol": row["symbol"],
+                    "confidence": confidence,
+                    "reason": "deferred_time_budget",
+                    "message": "Deferred to the next auto-execution cycle to keep this run inside its job timeout.",
+                })
+                continue
             raw_payload_json = payloads_by_proposal_id.get(proposal_id)
             if raw_payload_json is None:
                 # Between the first and second pass, extremely unlikely but not impossible

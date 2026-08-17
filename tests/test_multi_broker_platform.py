@@ -464,6 +464,78 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             self.assertNotIn("OLDCO", seen_symbols)
             self.assertIn("NEWCO", seen_symbols)
 
+    def test_auto_execute_recommendations_defers_candidates_past_the_time_budget(self):
+        # 2026-08-17 hosted incident: raising this job's timeout (2026-08-01, 180s->600s)
+        # never actually stopped the timeouts -- up to 50 surviving candidates at ~50-80s
+        # each through the full governance chain is 2500s+ of real work, more than any
+        # reasonable per-job timeout can absorb. Confirmed live: auto-execution-alpaca
+        # timed out on nearly every cycle for 5+ hours, each time getting killed mid-work
+        # after only 4-8 of 50 candidates, starving the rest of the worker loop (including
+        # evidence-snapshot) exactly like the market-open-equity incident the same day. The
+        # fix bounds the backlog per run instead of the run's total timeout: once wall-clock
+        # time is within 120s of the job's own timeout, remaining candidates must be
+        # deferred (skipped, not evaluated) rather than attempted and cut off mid-flight.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                alpaca_api_key="paper-key",
+                alpaca_secret_key="paper-secret",
+                alpaca_paper_base_url="https://paper-api.alpaca.markets",
+                alpaca_data_base_url="https://data.alpaca.markets",
+                openai_api_key=None,
+                openai_model="gpt-4.1-mini",
+                db_path=root / "audit.sqlite3",
+                output_dir=root,
+                trading_log_path=root / "TRADING_LOG.md",
+                guardrails=GuardrailConfig(),
+                auto_trade=AutoTradeConfig(enabled=True),
+            )
+            set_broker_auto_trading(settings.db_path, "alpaca", True)
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+
+            def make_proposal(symbol: str) -> TradeProposal:
+                return TradeProposal(
+                    symbol=symbol, side="buy", entry_price=100, stop_loss=98, take_profit=106,
+                    position_size=1, risk_percentage=0.01, confidence_score=0.95,
+                    news_summary="No material news.", market_sentiment_summary="Neutral.",
+                    technical_summary="Setup available.",
+                    plain_english_reasoning=(
+                        "Strongest argument for: the trend is constructive. "
+                        "Strongest argument against: volatility could invalidate the setup."
+                    ),
+                    ai_guardrails_passed=True, asset_type="stock", exchange="NASDAQ",
+                ).normalized()
+
+            proposals = [make_proposal(f"SYM{i}") for i in range(3)]
+            for proposal in proposals:
+                audit.record_trade_event("agent_proposal", proposal, validation=ValidationResult(passed=True))
+
+            service = LocalApiService(settings)
+            evaluated_symbols: list[str] = []
+            fake_clock = {"t": 0.0}
+
+            def fake_evaluate(proposal, context, auto_execute=True):
+                evaluated_symbols.append(proposal.symbol)
+                # Blows straight past the deadline after the first candidate, simulating
+                # the real ~50-80s-per-candidate governance chain eating the whole budget.
+                fake_clock["t"] += settings.auto_execution_job_timeout_seconds
+                return SimpleNamespace(
+                    decision="rejected", rejection_reason="test_short_circuit", notes=None,
+                    symbol=proposal.symbol, to_dict=lambda: {},
+                )
+
+            with (
+                patch("ai_trader.application.execution_service.time.monotonic", side_effect=lambda: fake_clock["t"]),
+                patch.object(service.orchestrator, "_select_adapter", return_value=SimpleNamespace(name="alpaca")),
+                patch.object(service.orchestrator, "evaluate_recommendation", side_effect=fake_evaluate),
+                patch.object(LocalApiService, "_account_context_for_broker", return_value=SimpleNamespace()),
+            ):
+                result = service.auto_execute_recommendations(broker_filter="alpaca")
+
+            self.assertEqual(len(evaluated_symbols), 1)
+            deferred = [row for row in result["skipped"] if row["reason"] == "deferred_time_budget"]
+            self.assertEqual(len(deferred), 2)
+
     def test_auto_execute_never_fetches_payload_json_for_a_candidate_that_fails_a_cheap_filter(self):
         # 2026-08-10 Supabase egress finding: this query used to select payload_json (the
         # full proposal dossier, confirmed ~11KB average per row via /database-diagnostics)
