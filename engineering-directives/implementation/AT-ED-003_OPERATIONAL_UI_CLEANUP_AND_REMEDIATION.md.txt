@@ -1,0 +1,769 @@
+Please implement the next AI Trader operational and UI remediation phase.
+
+This is an implementation task, not another analysis-only exercise.
+
+The objective is to:
+
+1. restore reliable research, execution and broker reconciliation;
+2. make the Command screen the authoritative operational-health view;
+3. fix incorrect broker auto-trading statuses;
+4. simplify the Activity screen so it is useful to the Founder;
+5. remove all inappropriate SQLite references from the live product;
+6. visibly connect research, recommendations, decisions, trades, portfolio outcomes and learning.
+
+Do not redesign AI Trader into a new product.
+
+Do not add placeholder architecture.
+
+Do not weaken any trading, risk, governance or capital-protection controls.
+
+Review all existing governance, engineering directive and implementation guideline Markdown files before making changes.
+
+# SECTION 1 — OPERATIONAL FIXES
+
+Implement the previously identified remediation steps 1–4.
+
+## 1. Remove redundant inline auto-execution from overnight crypto research
+
+In run_crypto_analysis():
+
+- remove the synchronous call to auto_execute_recommendations();
+- leave research responsible only for:
+  - market-data acquisition;
+  - strategy evaluation;
+  - proposal creation;
+  - research evidence;
+  - research-run completion;
+  - downstream notification.
+
+The independent auto-execution scheduled job must remain the sole autonomous execution path.
+
+Return an explicit result such as:
+
+{
+  "status": "delegated",
+  "message": "Handled by the independent auto-execution job."
+}
+
+Do not modify:
+
+- strategy logic;
+- strategy maturity;
+- trade eligibility;
+- risk thresholds;
+- capital limits;
+- broker permissions;
+- kill-switch logic;
+- order-intent locking;
+- Kraken reconciliation controls.
+
+## 2. Make worker subprocess logs visible in Render
+
+The child-process stdout and stderr are currently discarded through DEVNULL.
+
+Change this so child-job logs are visible in Render.
+
+Add concise structured logs for:
+
+- job name;
+- job start;
+- major processing stage;
+- stage completion;
+- symbols processed;
+- proposals generated;
+- candidates evaluated;
+- orders attempted;
+- orders submitted;
+- records persisted;
+- elapsed duration;
+- successful completion;
+- failure;
+- timeout;
+- termination.
+
+Do not expose:
+
+- API keys;
+- secrets;
+- database URLs;
+- tokens;
+- full private account numbers;
+- complete sensitive broker payloads.
+
+For overnight-crypto, log:
+
+- resolved symbols;
+- completion per symbol;
+- strategies evaluated;
+- proposal count;
+- research evidence persistence;
+- execution delegation;
+- total duration.
+
+## 3. Split broker polling by broker
+
+Replace the combined broker-poll job with:
+
+- broker-poll-alpaca;
+- broker-poll-kraken.
+
+Requirements:
+
+- each job must have its own schedule;
+- each job must have an independent idempotency key;
+- each must have its own run-history rows;
+- one broker must not consume the other's timeout budget;
+- retire the original combined broker-poll schedule;
+- do not allow the old and new jobs to run simultaneously;
+- preserve the same reconciliation and audit behaviour;
+- preserve Kraken reconciliation evidence;
+- preserve Alpaca paper-trade evidence.
+
+## 4. Split auto-execution by broker
+
+Replace the combined auto-execution job with:
+
+- auto-execution-alpaca;
+- auto-execution-kraken.
+
+Requirements:
+
+- preserve the complete governance chain;
+- preserve all broker gates;
+- preserve kill-switch behaviour;
+- preserve strategy-entitlement checks;
+- preserve trade-size and allocation controls;
+- preserve order-intent locks;
+- preserve duplicate-order prevention;
+- preserve Kraken hold_new_entries behaviour;
+- retire the original combined job safely;
+- prevent double scheduling.
+
+Add broker-specific candidate pre-filtering so each job only retrieves relevant candidates.
+
+Do not clear the Kraken reconciliation hold.
+
+Do not place a live Kraken order during implementation or testing.
+
+## 5. Improve broker-poll database efficiency
+
+Improve evidence persistence so broker events are not written through excessive independent database connections.
+
+Use the safest existing database pattern available in the codebase, such as:
+
+- one shared connection per broker poll;
+- one transaction per bounded event batch;
+- or a safe multi-row persistence operation.
+
+Requirements:
+
+- preserve every individual audit record;
+- do not collapse distinct events;
+- preserve idempotency;
+- preserve replayability;
+- preserve Kraken evidence classification;
+- prevent duplicate fills or duplicate evidence;
+- retain bounded processing;
+- log the number of events received, new, skipped and written.
+
+Do not create a broad new data-access architecture.
+
+# SECTION 2 — COMMAND SCREEN AS THE OPERATIONS HEALTH DASHBOARD
+
+Do not create a separate Operations Health dashboard.
+
+The existing Command screen should become the authoritative Founder-level operational overview.
+
+Audit the current cards and remove duplication, vague statements and misleading statuses.
+
+The Command screen should clearly answer:
+
+- Is the worker running?
+- Which version is deployed?
+- Is research functioning?
+- Are new recommendations being produced?
+- Is Alpaca paper trading operational?
+- Is Kraken live trading permitted?
+- Is Kraken currently blocked?
+- Are broker reconciliations healthy?
+- Are trades being recorded?
+- Is learning occurring?
+- What requires Founder attention?
+
+## Command Summary
+
+Retain a concise summary card showing:
+
+- overall state:
+  - Normal;
+  - Degraded;
+  - Blocked;
+  - Critical.
+- plain-language reason;
+- last updated;
+- deployed commit;
+- worker heartbeat freshness.
+
+The overall state must be computed from real current data, not static labels.
+
+Example:
+
+Operational state: Degraded
+
+Research and Alpaca are enabled, but broker reconciliation is delayed and Kraken entries remain blocked pending verification.
+
+## 24-Hour Operations
+
+Replace vague counters with meaningful Founder-level metrics:
+
+- successful research runs;
+- timed-out research runs;
+- recommendations generated;
+- governance decisions completed;
+- Alpaca orders submitted;
+- Alpaca fills confirmed;
+- Kraken orders submitted;
+- Kraken fills confirmed;
+- learning reviews completed;
+- failed or timed-out operational jobs.
+
+Show last-success time for:
+
+- overnight crypto research;
+- Alpaca broker poll;
+- Kraken broker poll;
+- Alpaca auto execution;
+- Kraken auto execution;
+- managed exits;
+- learning;
+- founder evidence snapshot.
+
+Use human-readable status indicators:
+
+- Healthy;
+- Delayed;
+- Timed Out;
+- Blocked;
+- No Eligible Action;
+- Awaiting First Run;
+- Disabled by Founder;
+- Enabled but Blocked.
+
+Do not show “Healthy” merely because a process exists.
+
+## Connection and Trading Readiness
+
+For each broker, show separately:
+
+- credentials;
+- connection;
+- broker mode;
+- database auto-trading gate;
+- environment permission;
+- strategy entitlement;
+- reconciliation state;
+- order-submission permission;
+- latest successful broker poll;
+- latest confirmed trade;
+- current final readiness.
+
+Final readiness examples:
+
+Alpaca:
+Enabled — Paper Trading Operational
+
+Alpaca:
+Enabled — Research Delayed
+
+Kraken:
+Enabled — Blocked by Reconciliation Hold
+
+Kraken:
+Enabled — No Eligible Strategy Candidate
+
+Kraken:
+Disabled by Founder
+
+The card must distinguish between:
+
+- Auto Trading Enabled;
+- Trading Permitted;
+- Trading Operational;
+- Trading Blocked;
+- No Trade Opportunity.
+
+These are not the same thing.
+
+# SECTION 3 — FIX BROKER PANEL AUTO-TRADING STATUS
+
+The broker panels currently display Auto Trading Status: Disabled even though:
+
+BROKER_AUTO_TRADING_SETTINGS shows:
+
+- alpaca = 1;
+- kraken = 1.
+
+Fix the complete backend-to-frontend data contract.
+
+The previously identified issue is that auto_trading_enabled is absent from the stored production broker snapshot payload.
+
+Implement the fix at the correct source rather than hardcoding the UI.
+
+Requirements:
+
+1. Include the true database-backed auto-trading setting in the broker operational payload.
+2. Include any separate environment-level permission.
+3. Include reconciliation and execution-block reasons.
+4. Include strategy maturity or entitlement where relevant.
+5. Persist these fields into the production broker snapshot.
+6. Update all API response types and frontend interfaces.
+7. Update both the Command screen and Broker Panels to use the same source of truth.
+8. Remove any default-to-false behaviour when the field is merely missing.
+9. Show Unknown or Data Unavailable when a value is genuinely unavailable.
+10. Do not show Disabled unless the actual control is disabled.
+
+Suggested broker panel structure:
+
+Broker: Kraken
+Connection: Connected
+Mode: Live
+Auto Trading: Enabled
+Strategy Permission: Micro Live
+New Entries: Blocked
+Block Reason: Reconciliation verification required
+Research: Delayed
+Last Broker Poll: [timestamp]
+Last Confirmed Trade: [timestamp or None]
+Capital Allocation: £100
+Overall Status: Enabled but Blocked
+
+Broker: Alpaca
+Connection: Connected
+Mode: Paper
+Auto Trading: Enabled
+Research: [Healthy/Delayed]
+Reconciliation: [Healthy/Delayed]
+Last Broker Poll: [timestamp]
+Last Confirmed Fill: [timestamp or None]
+Overall Status: [Operational/Degraded]
+
+Keep the existing enable/disable controls only if they genuinely modify the authoritative broker setting.
+
+If retained:
+
+- clearly label what the control changes;
+- require confirmation;
+- show the resulting persisted state;
+- do not imply that enabling the setting bypasses governance or reconciliation gates.
+
+# SECTION 4 — ACTIVITY SCREEN REDESIGN
+
+The current Activity screen shows far too many low-level events and is not understandable to the Founder.
+
+Do not remove the underlying audit history.
+
+Instead, redesign the screen into two levels:
+
+## Default Founder Activity View
+
+Show only meaningful, grouped operational events.
+
+Group events into these categories:
+
+- Research;
+- Recommendations;
+- Decisions;
+- Trades;
+- Portfolio;
+- Learning;
+- Broker Operations;
+- System Health;
+- Founder Actions.
+
+Each event should answer:
+
+- What happened?
+- Why does it matter?
+- What was the outcome?
+- Does the Founder need to act?
+
+Examples:
+
+Research completed
+3 crypto markets analysed. 1 eligible proposal generated.
+
+Recommendation rejected
+ETHGBP did not meet confidence and risk thresholds.
+
+Alpaca paper order filled
+A paper order was confirmed and added to the portfolio evidence.
+
+Kraken entry blocked
+Auto trading is enabled, but new entries are blocked pending reconciliation verification.
+
+Learning review completed
+The latest completed trade was reviewed. No strategy change was approved.
+
+Broker polling timed out
+Kraken trade evidence may be delayed. No Founder action is currently required.
+
+## Technical Detail View
+
+Provide an expandable “Technical Events” or “Audit Detail” section for:
+
+- raw job events;
+- database evidence events;
+- internal event names;
+- event identifiers;
+- payload details;
+- timestamps;
+- correlation IDs.
+
+This should not be the default view.
+
+## Activity grouping and noise reduction
+
+- group duplicate repeated events;
+- collapse repeated heartbeat events;
+- collapse repeated no-action events;
+- show counts, such as:
+  “Auto execution completed with no eligible action × 27”;
+- show the latest occurrence and first occurrence;
+- allow filtering by category, broker, severity and date;
+- default to the past 24 hours;
+- provide a simple “Only show items requiring attention” option.
+
+## Link activity to product outcomes
+
+Where possible, each meaningful activity item should link to:
+
+- the related recommendation;
+- governance decision;
+- trade;
+- portfolio position;
+- research evidence;
+- learning review;
+- broker status;
+- operational job.
+
+This is essential.
+
+The user must be able to move from:
+
+Research
+→ Recommendation
+→ Decision
+→ Trade
+→ Portfolio
+→ Learning.
+
+# SECTION 5 — RECOMMENDATIONS SCREEN AND SQLITE REFERENCES
+
+Audit the Recommendations screen and every API path it uses.
+
+The live product must not describe Supabase/Postgres-backed data as SQLite.
+
+Find every user-visible reference to:
+
+- SQLite;
+- local SQLite;
+- local database;
+- local recommendation store;
+- local audit database;
+- development database wording.
+
+Determine whether the problem is:
+
+- merely incorrect UI copy;
+- a stale API field;
+- a true fallback to local SQLite;
+- a compatibility abstraction exposing an internal name;
+- or an actual production data-source defect.
+
+Fix the root cause.
+
+Requirements:
+
+1. The production Recommendations screen must use the authoritative Supabase/Postgres production data.
+2. Do not silently fall back to SQLite in production.
+3. If a local SQLite database remains used for tests or local development:
+   - keep it isolated to local/test environments;
+   - do not expose it in the production UI;
+   - clearly separate it from production code paths.
+4. Replace technical storage wording with Founder-relevant wording.
+
+For example, replace:
+
+“Loaded from SQLite recommendation database”
+
+with:
+
+“Loaded from the live recommendation and governance record.”
+
+or:
+
+“Live recommendation evidence.”
+
+5. Verify that recommendation records shown in the UI correspond to actual production records.
+6. Show the recommendation lifecycle:
+
+- Generated;
+- Under Governance Review;
+- Approved;
+- Rejected;
+- Expired;
+- Executed;
+- Blocked.
+
+7. Show why a recommendation did not become a trade.
+
+Examples:
+
+- confidence below threshold;
+- strategy not entitled;
+- expired;
+- portfolio exposure limit;
+- broker disabled;
+- reconciliation hold;
+- no available capital;
+- duplicate recommendation;
+- no longer valid;
+- kill switch active.
+
+# SECTION 6 — CONNECT THE SCREENS
+
+The system currently appears busy but does not visibly demonstrate that activity is contributing to trading.
+
+Create a consistent lifecycle connection across screens.
+
+Every recommendation should have, where available:
+
+- recommendation ID;
+- research run ID;
+- strategy;
+- broker;
+- symbol;
+- created time;
+- governance decision;
+- decision reason;
+- execution state;
+- broker order ID;
+- trade evidence ID;
+- portfolio position ID;
+- learning-review ID.
+
+The UI does not need to expose every identifier by default, but the records must be connected.
+
+## Dashboard
+
+Show:
+
+- recommendations generated today;
+- approved recommendations;
+- executed trades;
+- blocked recommendations;
+- learning reviews;
+- latest meaningful trading outcome.
+
+## Recommendations
+
+Show whether each recommendation resulted in:
+
+- rejection;
+- approval;
+- blocking;
+- order submission;
+- fill;
+- expiry;
+- no action.
+
+## Portfolio
+
+For each AI-managed position show:
+
+- originating recommendation;
+- strategy;
+- broker;
+- entry date;
+- current state;
+- managed-exit status;
+- realised or unrealised result;
+- latest learning state.
+
+## Learning
+
+Show:
+
+- number of completed trades reviewed;
+- which strategies were evaluated;
+- whether any proposal for strategy change was created;
+- whether that proposal was approved or rejected;
+- what operational evidence remains missing.
+
+Do not claim learning has occurred merely because events exist.
+
+# SECTION 7 — UI QUALITY AND MOBILE USABILITY
+
+Use the current visual language.
+
+Do not perform a wholesale redesign.
+
+Improve:
+
+- card hierarchy;
+- spacing;
+- labels;
+- status wording;
+- timestamp formatting;
+- readable typography;
+- mobile scrolling;
+- section collapse/expand controls;
+- empty states;
+- error states;
+- loading states.
+
+The current Command and Activity screens are extremely long.
+
+Implement:
+
+- collapsible sections;
+- sticky or easy-to-reach section navigation where appropriate;
+- summary-first presentation;
+- technical detail hidden by default;
+- no enormous unfiltered event list on initial load.
+
+Do not make cards excessively dense.
+
+Founder-facing information should be plain English.
+
+# SECTION 8 — TESTING
+
+Add or update tests for:
+
+## Operational tests
+
+- overnight crypto no longer performs inline auto execution;
+- standalone auto-execution remains scheduled;
+- broker-poll is split by broker;
+- auto-execution is split by broker;
+- old combined jobs are retired;
+- no duplicate schedules exist;
+- order-intent locking remains active;
+- Kraken reconciliation hold remains active;
+- Alpaca remains paper-only;
+- broker events persist correctly in batches;
+- duplicate events remain idempotent.
+
+## Data contract tests
+
+- broker snapshot contains auto_trading_enabled;
+- broker snapshot contains block reason;
+- Command screen and Broker Panels consume the same broker state;
+- missing values display Unknown, not Disabled;
+- the database setting enabled = 1 displays Enabled.
+
+## Recommendations tests
+
+- no production UI reference to SQLite remains;
+- production recommendations use the Supabase/Postgres path;
+- local SQLite cannot be selected in production;
+- lifecycle statuses map correctly;
+- rejection and blocking reasons display correctly.
+
+## Activity tests
+
+- duplicate events are grouped;
+- low-value heartbeat noise is collapsed;
+- Founder view shows meaningful summaries;
+- technical events remain available;
+- linked records navigate correctly.
+
+## Screen tests
+
+- Command;
+- Activity;
+- Recommendations;
+- Portfolio;
+- Learning;
+- Broker Panels.
+
+Test on narrow Android and wide/foldable Android layouts.
+
+# SECTION 9 — DEPLOYMENT AND VERIFICATION
+
+Before commit:
+
+1. Review the full diff.
+2. Confirm no unrelated changes.
+3. Run all relevant tests.
+4. Run static checks and type checks.
+5. Confirm no secret exposure.
+6. Confirm no live Kraken order can be placed during testing.
+
+Then:
+
+7. Commit on a clearly named feature branch.
+8. Push the branch.
+9. Safely merge into master after tests pass.
+10. Push master.
+11. Allow Render to deploy.
+12. Run the mobile preview build/update as required by the existing project process.
+
+After deployment, verify read-only:
+
+- deployed commit;
+- worker heartbeat;
+- child-process logs visible in Render;
+- overnight-crypto completion time;
+- Alpaca broker-poll completion;
+- Kraken broker-poll completion;
+- Alpaca auto-execution completion;
+- Kraken auto-execution completion;
+- new research evidence;
+- new recommendations;
+- new governance decisions;
+- broker panel statuses;
+- Command screen statuses;
+- no production SQLite wording;
+- Activity grouping;
+- no duplicate schedules;
+- Kraken hold remains active.
+
+Provide screenshots or clear UI verification notes for:
+
+- Command screen;
+- Activity screen;
+- Recommendations screen;
+- Portfolio screen;
+- Learning screen;
+- both Broker Panels.
+
+# SECTION 10 — REQUIRED FINAL REPORTS
+
+Update:
+
+- implementation log;
+- relevant engineering directive implementation record;
+- test report;
+- deployment record;
+- operational verification report.
+
+Produce a concise Founder briefing covering:
+
+1. What was fixed.
+2. What now works.
+3. What remains degraded.
+4. Whether Alpaca paper trading is operational.
+5. Whether Kraken live trading remains blocked.
+6. Whether fresh research is producing recommendations.
+7. Whether recommendations are becoming decisions and trades.
+8. Whether learning is receiving completed trade evidence.
+9. Any next Founder decision required.
+
+Do not clear the Kraken reconciliation hold.
+
+Do not submit a live Kraken order.
+
+Do not weaken any safety control.
+
+Proceed with implementation.

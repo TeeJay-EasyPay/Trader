@@ -21,3 +21,7 @@ data/*.apk
 data/eas-build-*.log
 data/eas-build-*.txt
 screenshots/
+.idea/
+build/
+ZIP-Updates/
+~$*
