@@ -186,13 +186,30 @@ test('founderLearningForMobile (2026-08-17 hosted finding): reads closed_trade_h
     learning: [],
     trades: [], // period-scoped (default 24h) - deliberately empty, must be ignored here
     closed_trade_history: [
-      { status: 'filled', side: 'sell', realized_pnl: 639.12, closed_at: '2026-08-12T13:33:46Z' },
-      { status: 'filled', side: 'buy', realized_pnl: null, closed_at: '2026-07-03T13:50:55Z' },
+      { status: 'filled', side: 'sell', realized_pnl: 639.12, closed_at: '2026-08-12T13:33:46Z', ai_decided: true },
+      { status: 'filled', side: 'buy', realized_pnl: null, closed_at: '2026-07-03T13:50:55Z', ai_decided: true },
     ],
     generated_at: '2026-08-18T00:00:00Z',
   });
   assert.strictEqual(result.trade_outcomes.closed_trades, 1);
   assert.strictEqual(result.trade_outcomes.win_rate, 1);
+  assert.strictEqual(result.trade_outcomes.total_profit_loss, 639.12);
+});
+
+test('founderLearningForMobile (2026-08-18 Founder request): excludes a real closed trade the AI did not decide, even with a real realized_pnl', () => {
+  const result = founderLearningForMobile({
+    learning: [],
+    trades: [],
+    closed_trade_history: [
+      // Shaped exactly like the real CSL legacy exit this fix was built around: a genuine
+      // realized_pnl, but never proposed or governed by the AI's own execution path.
+      { symbol: 'CSL', status: 'filled', side: 'sell', realized_pnl: 639.12, closed_at: '2026-08-12T13:33:46Z', ai_decided: false },
+    ],
+    generated_at: '2026-08-18T00:00:00Z',
+  });
+  assert.strictEqual(result.trade_outcomes.closed_trades, 0);
+  assert.strictEqual(result.trade_outcomes.win_rate, null);
+  assert.strictEqual(result.trade_outcomes.total_profit_loss, null);
 });
 
 test('sortByConfidence: sorts descending by confidence, breaking ties by newest first', () => {

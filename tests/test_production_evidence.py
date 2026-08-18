@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.always_on import record_research_funnel, record_worker_heartbeat
 from ai_trader.api import LocalApiService
+from ai_trader.canonical_trades import link_broker_order
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
 import ai_trader.production_evidence as production_evidence
@@ -268,6 +269,36 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(len(payload["closed_trade_history"]), 1)
             self.assertEqual(payload["closed_trade_history"][0]["symbol"], "CSL")
             self.assertAlmostEqual(payload["performance"]["realized_pnl"], 639.12)
+
+    def test_closed_trade_history_flags_ai_decided_trades_separately_from_legacy_ones(self):
+        # 2026-08-18 Founder request: separate the AI's real trading judgment from whatever
+        # else happened to be in a broker account. orchestrator.py's evaluate_recommendation
+        # is the only production order-placement path -- it links a broker_order_id to a real
+        # proposal_id (via register_execution_intent + link_broker_order) before the order
+        # ever reaches a broker. A trade with no such link (like the 13 confirmed-live legacy
+        # Alpaca exits, entry_reason always null) was never AI-decided.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            link_broker_order(
+                db_path,
+                logical_trade_id="proposal-real-ai-decision",
+                broker_order_id="order-ai-decided",
+                payload={"status": "filled"},
+            )
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "order-ai-decided", "status": "filled", "symbol": "AAPL", "side": "sell",
+                "qty": 1, "filled_avg_price": 200, "realized_pnl": 10,
+            })
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "order-legacy", "status": "filled", "symbol": "CSL", "side": "sell",
+                "qty": 31, "filled_avg_price": 386.958064, "realized_pnl": 639.12,
+            })
+
+            payload = founder_evidence_payload(db_path)
+
+            by_symbol = {row["symbol"]: row["ai_decided"] for row in payload["closed_trade_history"]}
+            self.assertEqual(by_symbol["AAPL"], True)
+            self.assertEqual(by_symbol["CSL"], False)
 
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:

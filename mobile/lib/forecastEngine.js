@@ -67,12 +67,25 @@ function isTerminalTrade(trade) {
   return status === 'filled' && String(trade?.side || '').toLowerCase() === 'sell';
 }
 
+// 2026-08-18 Founder request: the Forecast Centre and Learning's win-rate/closed-trade
+// figures exist specifically to judge the AI's OWN trading judgment - they must never be
+// contaminated by a pre-existing or manually-placed position that the AI never decided.
+// `ai_decided` comes from the backend (production_evidence.py's
+// _ai_decided_broker_order_ids): true only when a broker_order_id was actually linked to a
+// real governed proposal before submission. Deliberately a separate function from
+// isTerminalTrade() above, not a change to it - "Realised this month" on Current Position is
+// a true whole-account accounting figure and must keep counting every real closed trade
+// regardless of who decided it; only the AI-judgment-specific views filter by this.
+function isAiDecidedClosedTrade(trade) {
+  return isTerminalTrade(trade) && trade?.ai_decided === true;
+}
+
 // performanceAttribution items (see lib/founderEvidenceMapping.js's productionTradeForMobile)
 // carry `profit_loss` (from the backend's realized_pnl) and `created_at` (from observed_at); a
 // `closed_at` field is preferred when present, matching lib/tradeHistory.js's own convention.
 function normalizeClosedTradesFromAttribution(performanceAttribution) {
   return (performanceAttribution || [])
-    .filter((item) => isTerminalTrade(item))
+    .filter((item) => isAiDecidedClosedTrade(item))
     .map((item) => ({
       profitLoss: Number(item?.profit_loss),
       closedAt: item?.closed_at || item?.created_at || null,
@@ -88,7 +101,7 @@ function tradeStatistics(closedTrades) {
     return {
       available: false,
       sampleSize: valid.length,
-      reason: `No closed trades with a dated, realised profit or loss exist yet - at least ${MIN_SAMPLE_SIZE} is needed before AI Trader will report anything.`,
+      reason: `No AI-decided closed trades with a dated, realised profit or loss exist yet - at least ${MIN_SAMPLE_SIZE} is needed before AI Trader will report anything. This deliberately excludes any pre-existing or manually-placed position the AI did not itself decide.`,
     };
   }
   const winningTrades = valid.filter((trade) => trade.profitLoss > 0);
@@ -153,7 +166,7 @@ function caseValue({ tradesPerDay, horizonDays, perTradePnl, currentPortfolioVal
 
 function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   if (!stats || !stats.available) {
-    return { horizon: horizon.label, horizonKey: horizon.key, available: false, reason: stats ? stats.reason : 'No closed-trade evidence is available yet.' };
+    return { horizon: horizon.label, horizonKey: horizon.key, available: false, reason: stats ? stats.reason : 'No AI-decided closed-trade evidence is available yet.' };
   }
   // AT-ED-017: exactly one closed trade has a real, dated result but no measurable pace (see
   // tradeStatistics() above) - reporting the real trade honestly instead of fabricating a
@@ -166,7 +179,7 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
       horizonKey: horizon.key,
       available: false,
       singleTradeOnly: true,
-      reason: `Only one closed trade exists so far, with ${outcome} of ${Math.abs(stats.averagePnl).toFixed(2)}. That's a real result, but with no second dated exit yet I can't responsibly estimate how often exits happen, so I'm not projecting a trajectory from it. As soon as a second trade closes, I'll be able to start estimating a pace.`,
+      reason: `Only one AI-decided closed trade exists so far, with ${outcome} of ${Math.abs(stats.averagePnl).toFixed(2)}. That's a real result, but with no second dated exit yet I can't responsibly estimate how often exits happen, so I'm not projecting a trajectory from it. As soon as a second AI-decided trade closes, I'll be able to start estimating a pace.`,
     };
   }
   const hasPortfolioValue = typeof currentPortfolioValue === 'number' && Number.isFinite(currentPortfolioValue);
@@ -180,7 +193,7 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
   const bullCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgWinPnl ?? stats.averagePnl, currentPortfolioValue });
   const bearCase = caseValue({ tradesPerDay: stats.tradesPerDay, horizonDays: horizon.days, perTradePnl: stats.avgLossPnl ?? stats.averagePnl, currentPortfolioValue });
   const evidence = [
-    `${stats.sampleSize} closed trade${stats.sampleSize === 1 ? '' : 's'} with a real result`,
+    `${stats.sampleSize} AI-decided closed trade${stats.sampleSize === 1 ? '' : 's'} with a real result`,
     `a ${Math.round(stats.winRate * 100)}% win rate across those trades`,
     `roughly ${stats.tradesPerDay.toFixed(2)} closed trades a day, on average`,
   ];
@@ -188,6 +201,7 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
     'Assumes the historical pace of closed trades and their average realised result persist unchanged over this horizon.',
     'Does not account for a change in capital deployed, strategy mix, or market regime.',
     'Assumes new positions open at roughly the same pace as positions close, since AI Trader has no separate entry-rate model - only the pace of trades that have already closed is real, dated evidence.',
+    'Counts only trades the AI itself proposed and had governed through its own execution path - a pre-existing or manually-placed position closing does not affect this projection.',
   ];
   const principalRisks = [
     'A shift in market conditions could invalidate the historical averages this projection is built on.',
@@ -238,7 +252,7 @@ function projectHorizon({ stats, horizon, currentPortfolioValue }) {
     evidence,
     assumptions,
     principalRisks,
-    explanation: `This comes from ${stats.sampleSize} closed trade${stats.sampleSize === 1 ? '' : 's'} with a ${Math.round(stats.winRate * 100)}% win rate - a real track record to extrapolate from. The upper and lower range simply show what happens if only the winning, or only the losing, trades keep happening at the same pace.`,
+    explanation: `This comes from ${stats.sampleSize} AI-decided closed trade${stats.sampleSize === 1 ? '' : 's'} with a ${Math.round(stats.winRate * 100)}% win rate - a real track record of the AI's own decisions to extrapolate from, excluding any pre-existing or manually-placed position. The upper and lower range simply show what happens if only the winning, or only the losing, trades keep happening at the same pace.`,
     alternativeScenario: {
       description: 'If no further trades close in this period, the portfolio remains at its current value.',
       expectedValue: hasPortfolioValue ? currentPortfolioValue : null,
@@ -256,6 +270,7 @@ module.exports = {
   MIN_SAMPLE_SIZE,
   TERMINAL_STATUSES,
   isTerminalTrade,
+  isAiDecidedClosedTrade,
   normalizeClosedTradesFromAttribution,
   tradeStatistics,
   confidenceFromSampleSize,

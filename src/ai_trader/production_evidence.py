@@ -562,7 +562,33 @@ def _load_closed_trade_history(db_path: Path, *, limit: int = 200) -> list[dict[
         """,
         limit=limit,
     )
+    ai_order_ids = _ai_decided_broker_order_ids(db_path)
+    for row in rows:
+        row["ai_decided"] = bool(row.get("broker_order_id")) and str(row["broker_order_id"]) in ai_order_ids
     return rows
+
+
+def _ai_decided_broker_order_ids(db_path: Path) -> set[str]:
+    """Every broker_order_id AI Trader's own production path actually submitted.
+
+    2026-08-18 Founder request: separate the AI's real trading judgment from whatever else
+    is sitting in a broker account. orchestrator.py's evaluate_recommendation is the only
+    production order-placement path (for both brokers) -- it creates a LOGICAL_TRADES row
+    keyed by the real proposal_id *before* submission (register_execution_intent) and links
+    the broker's resulting order id to it immediately after (link_broker_order), regardless
+    of broker. A broker_order_id with no row here was never proposed or governed by AI
+    Trader -- confirmed live: none of the 13 legacy Alpaca exits (CSL/ROG/AAL/AZN/AAPL,
+    entered before this session, entry_reason always null) have one.
+    """
+    from .canonical_trades import initialize_canonical_trade_schema
+
+    initialize_canonical_trade_schema(db_path)
+    rows = _query(
+        db_path,
+        "SELECT DISTINCT broker_order_id FROM LOGICAL_TRADE_EVENTS WHERE broker_order_id IS NOT NULL",
+        limit=500,
+    )
+    return {str(row["broker_order_id"]) for row in rows}
 
 
 def _load_founder_evidence_rows(

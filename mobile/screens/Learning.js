@@ -152,10 +152,13 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
         )}
       </View>
 
-      <CollapsibleSection title="Trade Outcomes" subtitle="Closed-trade win rate and realized P&L behind the summary above.">
-        <Metric label="Closed Trades" value={dailyLearning?.trade_outcomes?.closed_trades} />
-        <Metric label="Win Rate" value={formatPercent(dailyLearning?.trade_outcomes?.win_rate)} />
-        <Metric label="Total Realized P&L" value={moneyOrText(dailyLearning?.trade_outcomes?.total_profit_loss)} />
+      {/* 2026-08-18 Founder request: labels made explicit after the 2026-08-17 finding that
+          Alpaca legacy positions (never proposed by the AI) were being counted as "closed
+          trades" here, misrepresenting the AI's own judgment. */}
+      <CollapsibleSection title="Trade Outcomes" subtitle="Win rate and realized P&L from trades the AI itself decided and executed - excludes any pre-existing or manually-placed position.">
+        <Metric label="AI-Decided Closed Trades" value={dailyLearning?.trade_outcomes?.closed_trades} />
+        <Metric label="Win Rate (AI-decided trades)" value={formatPercent(dailyLearning?.trade_outcomes?.win_rate)} />
+        <Metric label="Total Realized P&L (AI-decided trades)" value={moneyOrText(dailyLearning?.trade_outcomes?.total_profit_loss)} />
         <TextBlock label="Lessons Learned" value={formatList(dailyLearning?.trade_lessons)} />
         <TextBlock label="Recommendations for Founder" value={formatList(dailyLearning?.recommendations_for_founder)} />
       </CollapsibleSection>

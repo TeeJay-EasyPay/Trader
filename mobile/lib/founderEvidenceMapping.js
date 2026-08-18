@@ -7,7 +7,7 @@
 const { moneyOrText, brokerMoneySentence } = require('./money');
 const { formatDateTime, dateMs } = require('./datetime');
 const { operationalRollup, learningSummary } = require('./founderPresentation');
-const { isTerminalTrade } = require('./forecastEngine');
+const { isAiDecidedClosedTrade } = require('./forecastEngine');
 
 function unavailableStatus(reason) {
   return {
@@ -415,32 +415,41 @@ function activityFromFounderEvidence(evidence) {
 
 function founderLearningForMobile(evidence) {
   const learning = evidence?.learning || [];
-  const performance = evidence?.performance || {};
   // 2026-08-17 hosted finding: `evidence.trades` is bounded by the Founder-evidence `period`
   // window (default 24h) and its Kraken-shaped status check never matched an Alpaca exit
   // (status='filled', not 'closed') - a real ~$639 CSL profit was invisible here as a direct
-  // result. closed_trade_history is the same terminal-trade data with no period bound; isTerminalTrade()
-  // is the shared Alpaca+Kraken-aware closed-trade check (see forecastEngine.js) so this figure
-  // can never silently disagree with the Forecast Centre's own sample.
+  // result. closed_trade_history is the same terminal-trade data with no period bound.
+  // 2026-08-18 Founder request: this screen exists to judge the AI's OWN trading record, so
+  // isAiDecidedClosedTrade() (not the broader isTerminalTrade()) is the filter - the same
+  // shared, Alpaca+Kraken-aware check the Forecast Centre uses (see forecastEngine.js), so
+  // this figure can never silently disagree with the Forecast Centre's own sample. Confirmed
+  // live: every one of the 13 legacy Alpaca exits (CSL/ROG/AAL/AZN/AAPL) this fix surfaced had
+  // no AI attribution at all - none of them belong in a verdict on the AI's judgment.
   const trades = evidence?.closed_trade_history || [];
-  const closed = trades.filter((trade) => isTerminalTrade(trade));
+  const closed = trades.filter((trade) => isAiDecidedClosedTrade(trade));
   const winners = closed.filter((trade) => Number(trade.realized_pnl) > 0).length;
+  const totalProfitLoss = closed.length
+    ? closed.reduce((sum, trade) => sum + (Number(trade.realized_pnl) || 0), 0)
+    : null;
   return {
     date: String(evidence?.generated_at || '').slice(0, 10),
     summary: learning.length
       ? `${learning.length} durable learning processor run(s) completed in the selected period.`
-      : 'No completed learning run is recorded in the selected period. Learning only follows terminal, reconciled trade evidence.',
+      : 'No completed learning run is recorded in the selected period. Learning only follows terminal, reconciled trade evidence the AI itself decided.',
     trade_outcomes: {
       closed_trades: closed.length,
       win_rate: closed.length ? winners / closed.length : null,
-      total_profit_loss: performance.realized_pnl,
+      // Sums only the same AI-decided trades closed_trades/win_rate above already count -
+      // deliberately not evidence.performance.realized_pnl, which is a whole-account figure
+      // that would silently include any pre-existing or manually-placed position too.
+      total_profit_loss: totalProfitLoss,
     },
     trade_lessons: learning.map((item) => item.summary).filter(Boolean),
     benchmark_learning: [],
     recommendations_for_founder: learning.length
       ? ['Review learning evidence before approving any governed strategy change.']
       : ['Allow terminal trades to reconcile before judging strategy improvement.'],
-    note: 'This view is derived from shared production evidence. Learning cannot silently change trading policy or production parameters.',
+    note: 'This view covers only trades the AI itself proposed and had governed through its own execution path - it excludes any pre-existing or manually-placed position, however it closed. Learning cannot silently change trading policy or production parameters.',
     evidence_summary: learningSummary(evidence),
   };
 }

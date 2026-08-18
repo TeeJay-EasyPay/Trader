@@ -215,17 +215,22 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
           bug class AT-ED-016.2 fixed in lib/cio.js's composers. */}
       {leadingPositionText ? <Text style={styles.bodyText}>{leadingPositionText}</Text> : null}
       <PositionLine label="Portfolio value" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
-      <PositionLine label="This week" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
-      <PositionLine label="This month" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
+      {/* 2026-08-18 Founder request: labels made explicit after real confusion between "This
+          month" and "Realised this month" - both used to just say "This week"/"This month"
+          with no indication that one blends unrealised swings with real profit and the other
+          doesn't. "(total change)" vs "(closed trades only)" makes the difference readable
+          without needing to already know the AT-ED-017 history behind the two figures. */}
+      <PositionLine label="This week (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
+      <PositionLine label="This month (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
       {/* AT-ED-017 (Founder request, 2026-08-05): "This month" above is a portfolio-value delta
           (realised + unrealised mixed, like "Today"), not specifically realised gains - a
           distinct line so the Founder can watch realised profit accumulate through the month
           without it being obscured by day-to-day unrealised swings. */}
-      <PositionLine label="Realised this month" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution, status?.brokers))} />
+      <PositionLine label="Realised this month (closed trades only)" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution, status?.brokers))} />
       <PositionLine label="Open positions" value={openPositions.length || null} />
       <PositionLine label="Cash available" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
-      <PositionLine label="Best performer" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />
-      <PositionLine label="Worst performer" value={loser ? `${loser.symbol}, down ${brokerMoney({ broker: loser.broker }, Math.abs(loser.unrealizedPl))}` : null} />
+      <PositionLine label="Best performer (unrealised)" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />
+      <PositionLine label="Worst performer (unrealised)" value={loser ? `${loser.symbol}, down ${brokerMoney({ broker: loser.broker }, Math.abs(loser.unrealizedPl))}` : null} />
     </Section>
   );
 }
@@ -354,10 +359,14 @@ function ForecastHorizonCard({ horizon }) {
 }
 
 function ForecastCentreCard({ portfolio, performanceAttribution }) {
+  // 2026-08-18 Founder request: normalizeClosedTradesFromAttribution now only counts trades
+  // the AI itself proposed and had governed through its own execution path (isAiDecidedClosedTrade
+  // in forecastEngine.js) - a pre-existing or manually-placed position closing never affects
+  // this forecast, however real its own profit or loss was.
   const closedTrades = normalizeClosedTradesFromAttribution(performanceAttribution);
   const horizons = projectPortfolioHorizons({ closedTrades, currentPortfolioValue: portfolio?.portfolio_value });
   return (
-    <CollapsibleSection title="Forecast Centre" subtitle="Where I believe we are heading, and why." defaultExpanded={true}>
+    <CollapsibleSection title="Forecast Centre" subtitle="Where I believe we are heading, and why. Based only on trades I decided and executed myself." defaultExpanded={true}>
       {horizons.map((horizon) => <ForecastHorizonCard key={horizon.horizonKey} horizon={horizon} />)}
     </CollapsibleSection>
   );

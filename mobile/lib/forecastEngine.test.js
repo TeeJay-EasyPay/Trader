@@ -7,6 +7,7 @@ const {
   HORIZONS,
   MIN_SAMPLE_SIZE,
   isTerminalTrade,
+  isAiDecidedClosedTrade,
   normalizeClosedTradesFromAttribution,
   tradeStatistics,
   confidenceFromSampleSize,
@@ -35,15 +36,15 @@ function closedTrade(profitLoss, daysAgo) {
 
 test('normalizeClosedTradesFromAttribution: only counts real terminal-status trades, matching Learning\'s own closed-trade filter', () => {
   const result = normalizeClosedTradesFromAttribution([
-    { status: 'closed', profit_loss: 10, closed_at: '2026-08-01T00:00:00Z' },
-    { status: 'open', profit_loss: null, created_at: '2026-08-01T00:00:00Z' },
-    { status: 'target_exit', profit_loss: 5, created_at: '2026-08-02T00:00:00Z' },
+    { status: 'closed', profit_loss: 10, closed_at: '2026-08-01T00:00:00Z', ai_decided: true },
+    { status: 'open', profit_loss: null, created_at: '2026-08-01T00:00:00Z', ai_decided: true },
+    { status: 'target_exit', profit_loss: 5, created_at: '2026-08-02T00:00:00Z', ai_decided: true },
   ]);
   assert.strictEqual(result.length, 2);
 });
 
 test('normalizeClosedTradesFromAttribution: falls back to created_at when closed_at is absent', () => {
-  const result = normalizeClosedTradesFromAttribution([{ status: 'closed', profit_loss: 10, created_at: '2026-08-01T00:00:00Z' }]);
+  const result = normalizeClosedTradesFromAttribution([{ status: 'closed', profit_loss: 10, created_at: '2026-08-01T00:00:00Z', ai_decided: true }]);
   assert.strictEqual(result[0].closedAt, '2026-08-01T00:00:00Z');
 });
 
@@ -74,11 +75,34 @@ test('isTerminalTrade: an open/pending status is never counted as closed', () =>
 
 test('normalizeClosedTradesFromAttribution: an Alpaca sell fill is included via isTerminalTrade, an Alpaca buy fill is not', () => {
   const result = normalizeClosedTradesFromAttribution([
-    { status: 'filled', side: 'sell', profit_loss: 639.12, closed_at: '2026-08-12T13:33:46Z' },
-    { status: 'filled', side: 'buy', profit_loss: null, closed_at: '2026-07-03T13:50:55Z' },
+    { status: 'filled', side: 'sell', profit_loss: 639.12, closed_at: '2026-08-12T13:33:46Z', ai_decided: true },
+    { status: 'filled', side: 'buy', profit_loss: null, closed_at: '2026-07-03T13:50:55Z', ai_decided: true },
   ]);
   assert.strictEqual(result.length, 1);
   assert.strictEqual(result[0].profitLoss, 639.12);
+});
+
+// --- isAiDecidedClosedTrade / AI-attribution filtering ---
+// 2026-08-18 Founder request: the Forecast Centre and Learning must judge the AI's own
+// trading record, never a pre-existing or manually-placed position the AI didn't decide.
+// Confirmed live: the real CSL/ROG/AAL/AZN/AAPL exits this fix surfaced were ALL legacy
+// positions (entry_reason always null, ai_decided always false) - none of them should ever
+// count toward "is the AI's judgment getting better".
+
+test('isAiDecidedClosedTrade: a real closed trade with no AI attribution is excluded, even though it is otherwise terminal', () => {
+  assert.strictEqual(isAiDecidedClosedTrade({ status: 'filled', side: 'sell', ai_decided: false }), false);
+  assert.strictEqual(isAiDecidedClosedTrade({ status: 'filled', side: 'sell' }), false);
+});
+
+test('isAiDecidedClosedTrade: a terminal trade the AI actually decided and governed is included', () => {
+  assert.strictEqual(isAiDecidedClosedTrade({ status: 'filled', side: 'sell', ai_decided: true }), true);
+});
+
+test('normalizeClosedTradesFromAttribution: a legacy CSL-shaped exit (no AI attribution) is excluded from the Forecast Centre\'s sample entirely', () => {
+  const result = normalizeClosedTradesFromAttribution([
+    { symbol: 'CSL', status: 'filled', side: 'sell', profit_loss: 639.12, closed_at: '2026-08-12T13:33:46Z', ai_decided: false },
+  ]);
+  assert.strictEqual(result.length, 0);
 });
 
 // --- tradeStatistics ---
@@ -194,7 +218,7 @@ test('projectHorizon: expected volatility and drawdown are always honestly unava
 test('projectHorizon: every available forecast includes a written explanation naming the real sample size and win rate', () => {
   const stats = tradeStatistics([closedTrade(10, 1), closedTrade(10, 2), closedTrade(-5, 3), closedTrade(10, 4), closedTrade(-5, 5)]);
   const result = projectHorizon({ stats, horizon: HORIZONS[0], currentPortfolioValue: 1000 });
-  assert.ok(result.explanation.includes('5 closed'));
+  assert.ok(result.explanation.includes('5 AI-decided closed'));
   assert.ok(result.explanation.includes('60%'));
 });
 
