@@ -6,6 +6,7 @@ const assert = require('assert');
 const {
   HORIZONS,
   MIN_SAMPLE_SIZE,
+  isTerminalTrade,
   normalizeClosedTradesFromAttribution,
   tradeStatistics,
   confidenceFromSampleSize,
@@ -44,6 +45,40 @@ test('normalizeClosedTradesFromAttribution: only counts real terminal-status tra
 test('normalizeClosedTradesFromAttribution: falls back to created_at when closed_at is absent', () => {
   const result = normalizeClosedTradesFromAttribution([{ status: 'closed', profit_loss: 10, created_at: '2026-08-01T00:00:00Z' }]);
   assert.strictEqual(result[0].closedAt, '2026-08-01T00:00:00Z');
+});
+
+// --- isTerminalTrade ---
+// 2026-08-17 hosted finding: Alpaca's order lifecycle only ever reaches 'filled', never the
+// 'closed'/'target_exit'/'stop_exit'/'manual_exit' words Kraken's managed exits report - a real
+// exit (a confirmed ~$639 CSL profit) was invisible everywhere in the app because the status
+// check alone could never recognise it. This confirms the fix: an Alpaca sell fill counts, an
+// Alpaca buy fill (an entry, not an exit) does not, even though both report the same status.
+
+test('isTerminalTrade: recognises an Alpaca sell fill as closed even though its status is "filled", not "closed"', () => {
+  assert.strictEqual(isTerminalTrade({ status: 'filled', side: 'sell' }), true);
+});
+
+test('isTerminalTrade: an Alpaca buy fill (an entry) is never counted as closed, despite sharing the exact same status word', () => {
+  assert.strictEqual(isTerminalTrade({ status: 'filled', side: 'buy' }), false);
+});
+
+test('isTerminalTrade: still recognises Kraken\'s own explicit terminal status words', () => {
+  assert.strictEqual(isTerminalTrade({ status: 'target_exit', side: 'sell' }), true);
+  assert.strictEqual(isTerminalTrade({ status: 'stop_exit' }), true);
+});
+
+test('isTerminalTrade: an open/pending status is never counted as closed', () => {
+  assert.strictEqual(isTerminalTrade({ status: 'new', side: 'buy' }), false);
+  assert.strictEqual(isTerminalTrade({ status: 'partially_filled', side: 'sell' }), false);
+});
+
+test('normalizeClosedTradesFromAttribution: an Alpaca sell fill is included via isTerminalTrade, an Alpaca buy fill is not', () => {
+  const result = normalizeClosedTradesFromAttribution([
+    { status: 'filled', side: 'sell', profit_loss: 639.12, closed_at: '2026-08-12T13:33:46Z' },
+    { status: 'filled', side: 'buy', profit_loss: null, closed_at: '2026-07-03T13:50:55Z' },
+  ]);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].profitLoss, 639.12);
 });
 
 // --- tradeStatistics ---

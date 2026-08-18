@@ -218,6 +218,16 @@ test('closedTradesThisMonth: only counts terminal-status trades closed within th
   assert.strictEqual(result[0].profit_loss, 12);
 });
 
+test('closedTradesThisMonth (2026-08-17 hosted finding): counts a real Alpaca exit whose status is "filled", not "closed"', () => {
+  const trades = [
+    { status: 'filled', side: 'sell', closed_at: TODAY_ISO, profit_loss: 639.12, broker: 'alpaca' },
+    { status: 'filled', side: 'buy', closed_at: TODAY_ISO, profit_loss: null, broker: 'alpaca' },
+  ];
+  const result = closedTradesThisMonth(trades);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].profit_loss, 639.12);
+});
+
 test('realizedPnlThisMonth: sums real profit_loss from trades closed this month only, null when genuinely none', () => {
   const trades = [
     { status: 'closed', closed_at: TODAY_ISO, profit_loss: 12, broker: 'alpaca' },

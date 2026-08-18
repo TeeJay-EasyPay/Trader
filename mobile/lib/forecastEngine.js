@@ -48,14 +48,31 @@ const MIN_SAMPLE_SIZE = 1;
 // The same terminal-trade statuses founderLearningForMobile() already uses to compute Learning's
 // "Closed Trades"/"Win Rate" figures - reused here so this engine's sample size and win rate can
 // never silently disagree with what the Learning screen tells the Founder about the same trades.
+// Kraken's managed exits report one of these directly; Alpaca never does (its order lifecycle
+// only ever reaches 'filled', never a distinct "closed" word) - isTerminalTrade() below is what
+// actually recognises an Alpaca exit, this list alone would silently exclude every one of them.
 const TERMINAL_STATUSES = ['closed', 'target_exit', 'stop_exit', 'manual_exit'];
+
+// 2026-08-17 hosted finding: every Alpaca exit reports status='filled', the exact same status
+// its own entry (buy) fill reports - TERMINAL_STATUSES alone can never tell an Alpaca exit from
+// an Alpaca entry, so real closed trades (a confirmed ~$639 CSL profit) were silently excluded
+// from every "closed trades" count in the app. A long-only account's sell fill is always an
+// exit (this codebase has no short-selling path anywhere), so 'filled' + side='sell' is added as
+// a second, Alpaca-shaped terminal signal alongside Kraken's own explicit status words.
+function isTerminalTrade(trade) {
+  const status = String(trade?.status || '').toLowerCase();
+  if (TERMINAL_STATUSES.includes(status)) {
+    return true;
+  }
+  return status === 'filled' && String(trade?.side || '').toLowerCase() === 'sell';
+}
 
 // performanceAttribution items (see lib/founderEvidenceMapping.js's productionTradeForMobile)
 // carry `profit_loss` (from the backend's realized_pnl) and `created_at` (from observed_at); a
 // `closed_at` field is preferred when present, matching lib/tradeHistory.js's own convention.
 function normalizeClosedTradesFromAttribution(performanceAttribution) {
   return (performanceAttribution || [])
-    .filter((item) => TERMINAL_STATUSES.includes(String(item?.status || '').toLowerCase()))
+    .filter((item) => isTerminalTrade(item))
     .map((item) => ({
       profitLoss: Number(item?.profit_loss),
       closedAt: item?.closed_at || item?.created_at || null,
@@ -238,6 +255,7 @@ module.exports = {
   HORIZONS,
   MIN_SAMPLE_SIZE,
   TERMINAL_STATUSES,
+  isTerminalTrade,
   normalizeClosedTradesFromAttribution,
   tradeStatistics,
   confidenceFromSampleSize,

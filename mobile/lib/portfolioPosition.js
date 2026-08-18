@@ -12,7 +12,7 @@
 
 'use strict';
 
-const { TERMINAL_STATUSES } = require('./forecastEngine');
+const { isTerminalTrade } = require('./forecastEngine');
 const { dateMs, todayIso, currentMonthPrefix } = require('./datetime');
 
 function sumBrokerField(brokers, field) {
@@ -134,14 +134,14 @@ function unrealizedPnlByCurrency(openPositions) {
 
 // Realised P&L is the closed-trade side of the same story - each performanceAttribution/
 // productionTradeForMobile item is one broker's PRODUCTION_TRADE_EVIDENCE row (real broker,
-// real status, real realized_pnl/profit_loss). Reuses forecastEngine's own TERMINAL_STATUSES so
+// real status, real realized_pnl/profit_loss). Reuses forecastEngine's own isTerminalTrade() so
 // "closed" never means something different in two places in the same screen. "Today" uses UTC
 // calendar-day boundaries via lib/datetime's todayIso(), matching every other "today" figure in
 // this codebase (portfolio.todays_pnl is computed the same way on the backend).
 function closedTradesToday(trades) {
   const today = todayIso();
   return (trades || []).filter((trade) => {
-    if (!TERMINAL_STATUSES.includes(String(trade?.status || '').toLowerCase())) {
+    if (!isTerminalTrade(trade)) {
       return false;
     }
     const closedAt = trade?.closed_at || trade?.created_at;
@@ -189,7 +189,7 @@ function realizedPnlByCurrencyToday(trades) {
 function closedTradesThisMonth(trades) {
   const month = currentMonthPrefix();
   return (trades || []).filter((trade) => {
-    if (!TERMINAL_STATUSES.includes(String(trade?.status || '').toLowerCase())) {
+    if (!isTerminalTrade(trade)) {
       return false;
     }
     const closedAt = trade?.closed_at || trade?.created_at;

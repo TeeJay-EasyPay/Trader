@@ -241,6 +241,34 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(result["status"]["state"], "OPERATING WITH WARNINGS")
             self.assertEqual(result["trades"][0]["symbol"], "AAPL")
 
+    def test_closed_trade_history_is_not_bounded_by_the_period_window(self):
+        # 2026-08-17 hosted finding: Current Position's "Realised this month", the Forecast
+        # Centre, and Learning's closed-trade/win-rate figures all read from `trades`, which
+        # is bounded by the Founder-evidence `period` window (default 24h). A real ~$639 CSL
+        # profit had just been correctly computed (backfill_realized_pnl) but was invisible
+        # everywhere in the app anyway, because the exit itself was 6 days old -- confirmed
+        # live, /founder-evidence?period=24h returned zero trades outright. closed_trade_history
+        # is the fix: the same terminal-trade data, no period bound.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            old = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+            record_trade_evidence(
+                db_path,
+                broker="alpaca",
+                event={
+                    "id": "sell-old", "status": "filled", "symbol": "CSL", "side": "sell",
+                    "qty": 31, "filled_avg_price": 386.958064, "realized_pnl": 639.12,
+                    "closed_at": old, "updated_at": old,
+                },
+            )
+
+            payload = founder_evidence_payload(db_path, period="24h")
+
+            self.assertEqual(payload["trades"], [])
+            self.assertEqual(len(payload["closed_trade_history"]), 1)
+            self.assertEqual(payload["closed_trade_history"][0]["symbol"], "CSL")
+            self.assertAlmostEqual(payload["performance"]["realized_pnl"], 639.12)
+
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

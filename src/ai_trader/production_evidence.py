@@ -529,7 +529,40 @@ def _build_founder_evidence_payload(db_path: Path, *, period: str, trade_limit: 
         since=_period_start(period),
         trade_limit=trade_limit,
     )
-    return _assemble_founder_evidence_payload(rows, period=period, db_path=db_path)
+    closed_trade_history = _load_closed_trade_history(db_path)
+    return _assemble_founder_evidence_payload(rows, period=period, db_path=db_path, closed_trade_history=closed_trade_history)
+
+
+def _load_closed_trade_history(db_path: Path, *, limit: int = 200) -> list[dict[str, Any]]:
+    """Every terminal ('filled') trade, any broker, not bounded by the Founder-evidence
+    `period` window -- 2026-08-17 hosted finding: Current Position's "Realised this month",
+    the Forecast Centre, and Learning's "Closed Trades"/win-rate/total P&L all read from the
+    same `trades` field this function's caller also builds from the period-scoped query
+    (`_load_founder_evidence_rows`, default period=24h). A real ~$639 CSL profit had just
+    been correctly computed (see backfill_realized_pnl) but was invisible in the app anyway,
+    because the exit itself was 6 days old and the mobile app's default 24h window can never
+    include it -- confirmed live, `/founder-evidence?period=24h` returned zero trades outright.
+    That period window is legitimately correct for the "N broker order or fill event(s) are
+    visible in this period" operational-activity sentence it also feeds; it was never correct
+    for "how much has actually been made" or "what has the AI learned from closed trades",
+    which need real history, not a rolling day. Bounded by row count (LIMIT), not time, so it
+    naturally still favours the most recent closed trades without ever needing a redeploy to
+    widen a hardcoded window as more trading accumulates.
+    """
+    rows = _query(
+        db_path,
+        """
+        SELECT trade_evidence_id, observed_at, broker, broker_order_id, broker_trade_id,
+               symbol, side, status, quantity, price, average_fill_price, fee, realized_pnl,
+               opened_at, closed_at, entry_reason, exit_reason
+        FROM PRODUCTION_TRADE_EVIDENCE
+        WHERE status = 'filled'
+        ORDER BY COALESCE(closed_at, opened_at, observed_at) DESC
+        LIMIT {n}
+        """,
+        limit=limit,
+    )
+    return rows
 
 
 def _load_founder_evidence_rows(
@@ -675,11 +708,16 @@ def _assemble_founder_evidence_payload(
     *,
     period: str,
     db_path: Path | None = None,
+    closed_trade_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = rows
+    # Defaults to the period-scoped `trades` (old behaviour) when no caller supplies the
+    # broader history -- callers that matter (_build_founder_evidence_payload,
+    # refresh_founder_evidence_snapshots) always do; see _load_closed_trade_history.
+    closed_trade_history = trades if closed_trade_history is None else closed_trade_history
     snapshots = _latest_per(snapshots_all, "broker")
-    realized_pnl = sum(_number(row.get("realized_pnl")) or 0.0 for row in trades)
-    fees = sum(_number(row.get("fee")) or 0.0 for row in trades)
+    realized_pnl = sum(_number(row.get("realized_pnl")) or 0.0 for row in closed_trade_history)
+    fees = sum(_number(row.get("fee")) or 0.0 for row in closed_trade_history)
     latest_activity = _latest_activity(research, trades, learning, jobs)
     no_trade = _why_no_trade(funnels, jobs, trades)
     broker_payload = []
@@ -759,6 +797,11 @@ def _assemble_founder_evidence_payload(
         "portfolio": _portfolio_payload(broker_payload),
         "brokers": broker_payload,
         "trades": [_decode_row(row, {"payload_json"}) for row in trades],
+        # Not bounded by `period` -- see _load_closed_trade_history's docstring. This is
+        # what Current Position's "Realised this month", the Forecast Centre, and
+        # Learning's closed-trade/win-rate figures read; `trades` above stays period-scoped
+        # for the "N event(s) visible in this period" operational-activity sentence.
+        "closed_trade_history": [_decode_row(row, {"payload_json"}) for row in closed_trade_history],
         "performance": {"realized_pnl": realized_pnl, "fees": fees, "net_realized_pnl": realized_pnl - fees},
         "research": [_decode_row(row, {"symbols_json", "payload_json"}) for row in research],
         # The frequently-read Founder projection carries bounded summaries only. Full immutable
@@ -856,6 +899,10 @@ def refresh_founder_evidence_snapshots(
             since=oldest_since,
             trade_limit=trade_limit,
         )
+        # Same list regardless of period -- not bounded by any of the four periods this
+        # loop refreshes, so it only needs fetching once per worker cycle, not once per
+        # period. See _load_closed_trade_history's docstring for why this exists.
+        closed_trade_history = _load_closed_trade_history(db_path)
     except Exception as exc:  # noqa: BLE001 - expose complete projection failure
         return {
             "status": "failed",
@@ -868,7 +915,7 @@ def refresh_founder_evidence_snapshots(
     for period in periods:
         try:
             period_rows = _filter_founder_evidence_rows(shared_rows, since=_period_start(period))
-            payload = _assemble_founder_evidence_payload(period_rows, period=period, db_path=db_path)
+            payload = _assemble_founder_evidence_payload(period_rows, period=period, db_path=db_path, closed_trade_history=closed_trade_history)
             persist_founder_evidence_snapshot(db_path, payload, period=period)
             refreshed.append(period)
         except Exception as exc:  # noqa: BLE001 - retain partial snapshots and expose failure evidence

@@ -31,6 +31,7 @@ const FOUNDER_EVIDENCE_CACHE_VERSION = 2;
 // AT-ED-011.8 failure mode as production data accumulates over time.
 const MAX_CACHED_RECOMMENDATION_STUBS = 10;
 const MAX_CACHED_TRADES = 20;
+const MAX_CACHED_CLOSED_TRADE_HISTORY = 20;
 const MAX_CACHED_JOBS = 20;
 const MAX_CACHED_TIMELINE_ITEMS = 20;
 const MAX_CACHED_RESEARCH_ROWS = 10;
@@ -112,6 +113,11 @@ function buildFounderEvidenceCacheSnapshot(founderEvidence) {
       .slice(0, MAX_CACHED_RECOMMENDATION_STUBS)
       .map(trimRecommendationStub),
     trades: (founderEvidence.trades || []).slice(0, MAX_CACHED_TRADES),
+    // Not period-bound (see production_evidence.py's _load_closed_trade_history) - this is
+    // what Current Position/Forecast Centre/Learning read, cached separately from the
+    // period-scoped `trades` above so an offline reopen still shows real closed-trade
+    // figures instead of whatever the last-viewed period happened to contain.
+    closed_trade_history: (founderEvidence.closed_trade_history || []).slice(0, MAX_CACHED_CLOSED_TRADE_HISTORY),
     research: (founderEvidence.research || []).slice(0, MAX_CACHED_RESEARCH_ROWS),
     learning: (founderEvidence.learning || []).slice(0, MAX_CACHED_LEARNING_ROWS),
     jobs: (founderEvidence.jobs || []).slice(0, MAX_CACHED_JOBS),
@@ -142,6 +148,7 @@ module.exports = {
   FOUNDER_EVIDENCE_CACHE_VERSION,
   MAX_CACHED_RECOMMENDATION_STUBS,
   MAX_CACHED_TRADES,
+  MAX_CACHED_CLOSED_TRADE_HISTORY,
   MAX_CACHED_JOBS,
   MAX_CACHED_TIMELINE_ITEMS,
   MAX_CACHED_RESEARCH_ROWS,

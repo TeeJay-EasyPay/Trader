@@ -181,6 +181,20 @@ test('founderLearningForMobile: no closed trades gives the no-evidence summary, 
   assert.strictEqual(result.trade_outcomes.win_rate, null);
 });
 
+test('founderLearningForMobile (2026-08-17 hosted finding): reads closed_trade_history, not the period-bound trades field, and recognises an Alpaca "filled" exit', () => {
+  const result = founderLearningForMobile({
+    learning: [],
+    trades: [], // period-scoped (default 24h) - deliberately empty, must be ignored here
+    closed_trade_history: [
+      { status: 'filled', side: 'sell', realized_pnl: 639.12, closed_at: '2026-08-12T13:33:46Z' },
+      { status: 'filled', side: 'buy', realized_pnl: null, closed_at: '2026-07-03T13:50:55Z' },
+    ],
+    generated_at: '2026-08-18T00:00:00Z',
+  });
+  assert.strictEqual(result.trade_outcomes.closed_trades, 1);
+  assert.strictEqual(result.trade_outcomes.win_rate, 1);
+});
+
 test('sortByConfidence: sorts descending by confidence, breaking ties by newest first', () => {
   const items = [
     { confidence: 0.5, created_at: '2026-01-01T00:00:00Z' },

@@ -256,7 +256,13 @@ function useFounderEvidence() {
     setStatus(nextStatus);
     setPortfolio(nextPortfolio);
     setActivity(activityFromFounderEvidence(founderEvidence));
-    setPerformanceAttribution((founderEvidence.trades || []).map(productionTradeForMobile));
+    // 2026-08-17 hosted finding: `founderEvidence.trades` is bounded by the Founder-evidence
+    // `period` window (default 24h) -- correct for the "N event(s) visible in this period"
+    // operational sentence it also feeds, but a real ~$639 CSL profit stayed invisible on
+    // Current Position/Forecast Centre because the exit itself was 6 days old and could
+    // never appear in a rolling 24h window. closed_trade_history is the same terminal-trade
+    // data with no period bound (see production_evidence.py's _load_closed_trade_history).
+    setPerformanceAttribution((founderEvidence.closed_trade_history || []).map(productionTradeForMobile));
     setDailyLearning(founderLearningForMobile(founderEvidence));
     if (nextRecommendationItems.length) {
       setRecommendations(nextRecommendationItems);
@@ -334,7 +340,7 @@ function useFounderEvidence() {
     setStatus(statusFromFounderEvidence(cached.data));
     setPortfolio(cached.data.portfolio || null);
     setActivity(activityFromFounderEvidence(cached.data));
-    setPerformanceAttribution((cached.data.trades || []).map(productionTradeForMobile));
+    setPerformanceAttribution((cached.data.closed_trade_history || []).map(productionTradeForMobile));
     setDailyLearning(founderLearningForMobile(cached.data));
     setSnapshotMeta(cached.data.snapshot || null);
     setCachedAt(cached.fetchedAt || null);

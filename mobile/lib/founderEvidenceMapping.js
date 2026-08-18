@@ -7,6 +7,7 @@
 const { moneyOrText, brokerMoneySentence } = require('./money');
 const { formatDateTime, dateMs } = require('./datetime');
 const { operationalRollup, learningSummary } = require('./founderPresentation');
+const { isTerminalTrade } = require('./forecastEngine');
 
 function unavailableStatus(reason) {
   return {
@@ -415,8 +416,14 @@ function activityFromFounderEvidence(evidence) {
 function founderLearningForMobile(evidence) {
   const learning = evidence?.learning || [];
   const performance = evidence?.performance || {};
-  const trades = evidence?.trades || [];
-  const closed = trades.filter((trade) => ['closed', 'target_exit', 'stop_exit', 'manual_exit'].includes(String(trade.status).toLowerCase()));
+  // 2026-08-17 hosted finding: `evidence.trades` is bounded by the Founder-evidence `period`
+  // window (default 24h) and its Kraken-shaped status check never matched an Alpaca exit
+  // (status='filled', not 'closed') - a real ~$639 CSL profit was invisible here as a direct
+  // result. closed_trade_history is the same terminal-trade data with no period bound; isTerminalTrade()
+  // is the shared Alpaca+Kraken-aware closed-trade check (see forecastEngine.js) so this figure
+  // can never silently disagree with the Forecast Centre's own sample.
+  const trades = evidence?.closed_trade_history || [];
+  const closed = trades.filter((trade) => isTerminalTrade(trade));
   const winners = closed.filter((trade) => Number(trade.realized_pnl) > 0).length;
   return {
     date: String(evidence?.generated_at || '').slice(0, 10),
