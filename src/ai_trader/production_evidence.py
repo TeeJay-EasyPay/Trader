@@ -573,19 +573,26 @@ def _ai_decided_broker_order_ids(db_path: Path) -> set[str]:
 
     2026-08-18 Founder request: separate the AI's real trading judgment from whatever else
     is sitting in a broker account. orchestrator.py's evaluate_recommendation is the only
-    production order-placement path (for both brokers) -- it creates a LOGICAL_TRADES row
-    keyed by the real proposal_id *before* submission (register_execution_intent) and links
-    the broker's resulting order id to it immediately after (link_broker_order), regardless
-    of broker. A broker_order_id with no row here was never proposed or governed by AI
-    Trader -- confirmed live: none of the 13 legacy Alpaca exits (CSL/ROG/AAL/AZN/AAPL,
-    entered before this session, entry_reason always null) have one.
+    production order-placement path (for both brokers) -- it links the broker's resulting
+    order id to a real proposal_id immediately after submission via link_broker_order(),
+    which is the ONLY call site anywhere in this codebase using event_source="broker_submission"
+    (canonical_trades.py:259) -- confirmed via a full-codebase grep. That specific event_source
+    is the actual signal, not merely "a LOGICAL_TRADE_EVENTS row exists for this order":
+    2026-08-18 hosted incident, caught before ever shipping to the Founder as correct --
+    poll_broker_activity's own broker-history reconciliation (normalize_broker_events ->
+    reconcile_canonical_broker_event, source_endpoint="poll_broker_activity") ALSO writes a
+    LOGICAL_TRADE_EVENTS row for every historical broker order it observes, AI-decided or
+    not (confirmed live: this made every one of the 13 legacy Alpaca exits read as
+    ai_decided=true, the exact opposite of correct). Filtering to event_source=
+    'broker_submission' specifically excludes that general reconciliation noise.
     """
     from .canonical_trades import initialize_canonical_trade_schema
 
     initialize_canonical_trade_schema(db_path)
     rows = _query(
         db_path,
-        "SELECT DISTINCT broker_order_id FROM LOGICAL_TRADE_EVENTS WHERE broker_order_id IS NOT NULL",
+        "SELECT DISTINCT broker_order_id FROM LOGICAL_TRADE_EVENTS WHERE broker_order_id IS NOT NULL AND event_source = {x}",
+        ("broker_submission",),
         limit=500,
     )
     return {str(row["broker_order_id"]) for row in rows}

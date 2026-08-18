@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_trader.always_on import record_research_funnel, record_worker_heartbeat
 from ai_trader.api import LocalApiService
 from ai_trader.canonical_trades import link_broker_order
+from ai_trader.sprint6 import normalize_broker_events
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
 import ai_trader.production_evidence as production_evidence
@@ -299,6 +300,38 @@ class ProductionEvidenceTests(unittest.TestCase):
             by_symbol = {row["symbol"]: row["ai_decided"] for row in payload["closed_trade_history"]}
             self.assertEqual(by_symbol["AAPL"], True)
             self.assertEqual(by_symbol["CSL"], False)
+
+    def test_general_broker_reconciliation_never_marks_a_legacy_trade_as_ai_decided(self):
+        # 2026-08-18 hosted incident, caught before this ever reached the Founder as
+        # "verified": the first live check of ai_decided showed CSL/ROG/AAL/AZN/AAPL all
+        # reading True -- the exact opposite of correct. Root cause: poll_broker_activity's
+        # own broker-history reconciliation (normalize_broker_events ->
+        # reconcile_canonical_broker_event) writes a LOGICAL_TRADE_EVENTS row for EVERY
+        # historical broker order it observes, AI-decided or not -- the original query
+        # (`broker_order_id IS NOT NULL`) could never tell that apart from a real
+        # link_broker_order() call. Regression coverage: reconciling a legacy order through
+        # the exact general path poll_broker_activity actually uses must never mark it
+        # ai_decided=true.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            normalize_broker_events(
+                db_path,
+                broker="alpaca",
+                events=[{
+                    "id": "order-legacy-csl", "status": "filled", "symbol": "CSL", "side": "sell",
+                    "quantity": 31, "average_fill_price": 386.958064,
+                }],
+                source_endpoint="poll_broker_activity",
+            )
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "order-legacy-csl", "status": "filled", "symbol": "CSL", "side": "sell",
+                "qty": 31, "filled_avg_price": 386.958064, "realized_pnl": 639.12,
+            })
+
+            payload = founder_evidence_payload(db_path)
+
+            csl_row = next(row for row in payload["closed_trade_history"] if row["symbol"] == "CSL")
+            self.assertEqual(csl_row["ai_decided"], False)
 
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
