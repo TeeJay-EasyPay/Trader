@@ -1161,6 +1161,113 @@ def list_production_trade_evidence(db_path: Path, *, broker: str | None = None, 
     return [_decode_row(row, {"payload_json"}) for row in rows]
 
 
+def _fifo_matched_realized_pnl(fills: list[dict[str, Any]]) -> dict[int, float]:
+    """fills: one symbol+broker's terminal ('filled') order rows, oldest first, each with
+    trade_evidence_id/side/quantity/price/fee. Returns {trade_evidence_id: realized_pnl} for
+    exit rows whose full quantity is matched by prior entry history in this same list.
+
+    A sell only partially covered by known buys (a position that existed before trade-
+    evidence tracking began, e.g. AZN/AAPL in the 2026-08-17 hosted finding) is left out of
+    the result entirely -- pricing the unmatched portion against an unknown cost basis would
+    be a fabricated number, not a real one, and this project does not show those.
+    """
+    buy_lots: list[list[float]] = []  # mutable [remaining_qty, price] pairs, oldest first
+    results: dict[int, float] = {}
+    for fill in fills:
+        side = str(fill.get("side") or "").lower()
+        quantity = float(fill.get("quantity") or 0)
+        price = float(fill.get("price") or 0)
+        if quantity <= 0 or price <= 0:
+            continue
+        if side == "buy":
+            buy_lots.append([quantity, price])
+            continue
+        if side != "sell":
+            continue
+        if sum(lot[0] for lot in buy_lots) + 1e-9 < quantity:
+            continue
+        remaining = quantity
+        pnl = 0.0
+        while remaining > 1e-9 and buy_lots:
+            lot_quantity, lot_price = buy_lots[0]
+            matched = min(lot_quantity, remaining)
+            pnl += (price - lot_price) * matched
+            buy_lots[0][0] -= matched
+            remaining -= matched
+            if buy_lots[0][0] <= 1e-9:
+                buy_lots.pop(0)
+        results[fill["trade_evidence_id"]] = pnl - float(fill.get("fee") or 0)
+    return results
+
+
+def _set_trade_evidence_realized_pnl(db_path: Path, trade_evidence_id: int, realized_pnl: float) -> None:
+    if uses_postgres():
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE PRODUCTION_TRADE_EVIDENCE SET realized_pnl = %s WHERE trade_evidence_id = %s",
+                    (realized_pnl, trade_evidence_id),
+                )
+            conn.commit()
+        return
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                "UPDATE PRODUCTION_TRADE_EVIDENCE SET realized_pnl = ? WHERE trade_evidence_id = ?",
+                (realized_pnl, trade_evidence_id),
+            )
+
+
+def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
+    """Fills in realized_pnl for exits Alpaca (and any other broker) never reports it for.
+
+    2026-08-17 hosted finding: every Alpaca exit ever recorded (38 for 38, confirmed live)
+    had realized_pnl = NULL -- Alpaca's order/fill API has no such field, and the existing
+    LOGICAL_TRADES reconciliation (canonical_trades.py) that DOES compute real gross_pnl/
+    net_pnl can only link an entry order to its exit order via a shared proposal_id or a
+    MANAGED_TRADE_EXITS row -- and MANAGED_TRADE_EXITS is Kraken-only (see the 2026-08-12
+    close-position commit), so every Alpaca entry/exit pair is permanently two separate,
+    unlinked logical trades and gross_pnl can never be computed for either. A real
+    ~$645 CSL profit was invisible everywhere in the app (Current Position "Realised this
+    month", Forecast Centre closed-trade count) as a direct result.
+
+    Computes realized P&L independently of that linkage -- straightforward FIFO matching
+    over each symbol's own terminal 'filled' order history already sitting in
+    PRODUCTION_TRADE_EVIDENCE. Only ever touches rows where realized_pnl IS NULL, so it is
+    safe to call on every broker-poll cycle: it backfills existing history the first time it
+    runs and keeps up with new exits going forward, with no separate one-time script needed.
+    """
+    _ensure_local_production_evidence_schema(db_path)
+    rows = _query(
+        db_path,
+        """
+        SELECT trade_evidence_id, symbol, side, quantity, average_fill_price, price, fee,
+               COALESCE(closed_at, opened_at, observed_at) AS event_time, realized_pnl
+        FROM PRODUCTION_TRADE_EVIDENCE
+        WHERE broker = {x} AND status = 'filled' AND symbol IS NOT NULL
+        ORDER BY symbol ASC, event_time ASC
+        """,
+        (broker.lower(),),
+        limit=500,
+    )
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        row = dict(row)
+        row["price"] = row.get("average_fill_price") if row.get("average_fill_price") is not None else row.get("price")
+        by_symbol.setdefault(str(row["symbol"]), []).append(row)
+    updated = 0
+    total_realized_pnl = 0.0
+    for fills in by_symbol.values():
+        already_known = {row["trade_evidence_id"] for row in fills if row.get("realized_pnl") is not None}
+        for trade_evidence_id, realized_pnl in _fifo_matched_realized_pnl(fills).items():
+            if trade_evidence_id in already_known:
+                continue
+            _set_trade_evidence_realized_pnl(db_path, trade_evidence_id, realized_pnl)
+            updated += 1
+            total_realized_pnl += realized_pnl
+    return {"broker": broker.lower(), "updated": updated, "total_realized_pnl": total_realized_pnl}
+
+
 def _upsert(db_path: Path, sql: str, values: tuple[Any, ...]) -> None:
     if uses_postgres():
         statement = sql.format(p=", ".join(["%s"] * len(values)))

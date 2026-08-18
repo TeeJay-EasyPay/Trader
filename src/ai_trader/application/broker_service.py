@@ -24,7 +24,7 @@ from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliatio
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
 from ..persistence.query_executor import QueryExecutor
-from ..production_evidence import record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
+from ..production_evidence import backfill_realized_pnl, record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
 from ..sprint6 import normalize_broker_events, upsert_incident
 from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _csv_env, _estimated_in_positions
 
@@ -262,6 +262,14 @@ class BrokerService:
             # for this broker share one connection/transaction instead of one per
             # event (AT-ED-003 Section 1 item 5).
             evidence_written = record_trade_evidence_batch(self.settings.db_path, broker=broker_name, events=new_rows)
+            # 2026-08-17 hosted finding: every Alpaca exit's realized_pnl has been silently
+            # null forever (the LOGICAL_TRADES reconciliation below can only link an entry
+            # to its exit via MANAGED_TRADE_EXITS, which is Kraken-only) -- a real ~$645 CSL
+            # profit was invisible everywhere in the app. Runs every cycle regardless of
+            # broker or whether this poll found new rows: it only ever touches existing
+            # PRODUCTION_TRADE_EVIDENCE rows where realized_pnl IS NULL, so it both backfills
+            # already-stored history and keeps up with new exits going forward.
+            backfill_realized_pnl(self.settings.db_path, broker=broker_name)
             if broker_name == "kraken":
                 reconciliation = replay_kraken_evidence(
                     self.settings.db_path,

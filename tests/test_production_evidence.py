@@ -13,7 +13,9 @@ from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
 import ai_trader.production_evidence as production_evidence
 from ai_trader.production_evidence import (
+    backfill_realized_pnl,
     founder_evidence_payload,
+    list_production_trade_evidence,
     persist_founder_evidence_snapshot,
     prune_production_evidence,
     refresh_founder_evidence_snapshots,
@@ -533,6 +535,81 @@ class ProductionEvidenceTests(unittest.TestCase):
             status, payload = service.get("/founder-evidence", {"period": ["24h"]})
             self.assertEqual(status, 200)
             self.assertIn("status", payload)
+
+    def test_backfill_realized_pnl_computes_fifo_matched_exit(self):
+        # 2026-08-17 hosted finding: Alpaca's order/fill API never reports realized_pnl, and
+        # the LOGICAL_TRADES reconciliation that does compute it can't link an Alpaca entry
+        # to its exit (MANAGED_TRADE_EXITS is Kraken-only) -- confirmed live, a real ~$645
+        # CSL profit was invisible everywhere in the app. This mirrors that shape with a
+        # simpler two-lot case: 10@100 then 5@110 bought, all 15 sold @120.
+        # Expected P&L: (120-100)*10 + (120-110)*5 = 200 + 50 = 250.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "buy-1", "status": "filled", "symbol": "AAPL", "side": "buy",
+                "qty": 10, "filled_avg_price": 100, "closed_at": "2026-08-01T00:00:00Z",
+            })
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "buy-2", "status": "filled", "symbol": "AAPL", "side": "buy",
+                "qty": 5, "filled_avg_price": 110, "closed_at": "2026-08-02T00:00:00Z",
+            })
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "sell-1", "status": "filled", "symbol": "AAPL", "side": "sell",
+                "qty": 15, "filled_avg_price": 120, "closed_at": "2026-08-03T00:00:00Z",
+            })
+
+            result = backfill_realized_pnl(db_path, broker="alpaca")
+
+            self.assertEqual(result["updated"], 1)
+            self.assertAlmostEqual(result["total_realized_pnl"], 250.0)
+            trades = list_production_trade_evidence(db_path, broker="alpaca")
+            sell_row = next(row for row in trades if row["side"] == "sell")
+            self.assertAlmostEqual(sell_row["realized_pnl"], 250.0)
+
+    def test_backfill_realized_pnl_leaves_partially_matched_exit_null(self):
+        # A sell larger than all known buy history (a legacy position that existed before
+        # trade-evidence tracking began) must never get a fabricated P&L against an unknown
+        # cost basis for the unmatched portion -- stays null, honestly.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "buy-1", "status": "filled", "symbol": "MSFT", "side": "buy",
+                "qty": 5, "filled_avg_price": 100, "closed_at": "2026-08-01T00:00:00Z",
+            })
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "sell-1", "status": "filled", "symbol": "MSFT", "side": "sell",
+                "qty": 10, "filled_avg_price": 120, "closed_at": "2026-08-02T00:00:00Z",
+            })
+
+            result = backfill_realized_pnl(db_path, broker="alpaca")
+
+            self.assertEqual(result["updated"], 0)
+            trades = list_production_trade_evidence(db_path, broker="alpaca")
+            sell_row = next(row for row in trades if row["side"] == "sell")
+            self.assertIsNone(sell_row["realized_pnl"])
+
+    def test_backfill_realized_pnl_never_overwrites_an_existing_value(self):
+        # Safe to call every broker-poll cycle: a row that already has a real realized_pnl
+        # (from Kraken, or any future broker that does report its own) must never be
+        # silently recomputed/overwritten by the FIFO fallback.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "buy-1", "status": "filled", "symbol": "GOOG", "side": "buy",
+                "qty": 10, "filled_avg_price": 100, "closed_at": "2026-08-01T00:00:00Z",
+            })
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "sell-1", "status": "filled", "symbol": "GOOG", "side": "sell",
+                "qty": 10, "filled_avg_price": 120, "closed_at": "2026-08-02T00:00:00Z",
+                "realized_pnl": 999,
+            })
+
+            result = backfill_realized_pnl(db_path, broker="alpaca")
+
+            self.assertEqual(result["updated"], 0)
+            trades = list_production_trade_evidence(db_path, broker="alpaca")
+            sell_row = next(row for row in trades if row["side"] == "sell")
+            self.assertAlmostEqual(sell_row["realized_pnl"], 999.0)
 
 
 if __name__ == "__main__":
