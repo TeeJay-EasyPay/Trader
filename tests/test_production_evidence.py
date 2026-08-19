@@ -400,6 +400,50 @@ class ProductionEvidenceTests(unittest.TestCase):
         observed_at = values[1]
         self.assertEqual(observed_at, "2026-08-19T15:51:00.049352+00:00")
 
+    def test_backfill_broker_evidence_timestamps_corrects_existing_malformed_rows(self):
+        # 2026-08-19 hosted finding: unlike backfill_realized_pnl, a raw-epoch observed_at
+        # already sitting in PRODUCTION_TRADE_EVIDENCE does NOT self-heal through ordinary
+        # polling -- multi_broker.py's record_broker_trade_history dedups on
+        # ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING, built from the
+        # SAME raw epoch value, so an already-seen trade is never treated as "new" again and
+        # the write-time fix never runs for it a second time. Confirmed live: 5 real Kraken
+        # exits still had raw epoch observed_at a full cycle after the write-time fix
+        # deployed. This backfill corrects existing rows directly instead of waiting.
+        from ai_trader.production_evidence import backfill_broker_evidence_timestamps
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_trade_evidence(db_path, broker="kraken", event={
+                "id": "order-xrp-exit", "status": "filled", "symbol": "XRPGBP", "side": "sell",
+                "qty": 2.7023, "price": 0.78735, "time": 1787154660.049352,
+            })
+            # Simulates an already-recorded row from before the write-time fix existed --
+            # write the raw epoch value directly, bypassing _trade_evidence_values' own
+            # normalization, the same way real pre-fix rows in production got theirs.
+            trade_id = list_production_trade_evidence(db_path, broker="kraken")[0]["trade_evidence_id"]
+            production_evidence._set_trade_evidence_timestamps(
+                db_path, trade_id, observed_at="1787154660.049352", opened_at=None, closed_at=None,
+            )
+
+            result = backfill_broker_evidence_timestamps(db_path)
+
+            self.assertEqual(result["updated"], 1)
+            trades = list_production_trade_evidence(db_path, broker="kraken")
+            xrp_row = next(row for row in trades if row["symbol"] == "XRPGBP")
+            self.assertEqual(xrp_row["observed_at"], "2026-08-19T15:51:00.049352+00:00")
+
+        # A row already holding a real ISO timestamp must never be rewritten/touched.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_trade_evidence(db_path, broker="alpaca", event={
+                "id": "order-csl-sell", "status": "filled", "symbol": "CSL", "side": "sell",
+                "qty": 31, "price": 386.96, "updated_at": "2026-08-12T13:33:46.716923Z",
+            })
+
+            result = backfill_broker_evidence_timestamps(db_path)
+
+            self.assertEqual(result["updated"], 0)
+
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

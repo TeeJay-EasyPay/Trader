@@ -24,7 +24,7 @@ from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliatio
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
 from ..persistence.query_executor import QueryExecutor
-from ..production_evidence import backfill_realized_pnl, record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
+from ..production_evidence import backfill_broker_evidence_timestamps, backfill_realized_pnl, record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
 from ..sprint6 import normalize_broker_events, upsert_incident
 from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _csv_env, _estimated_in_positions
 
@@ -270,6 +270,15 @@ class BrokerService:
             # PRODUCTION_TRADE_EVIDENCE rows where realized_pnl IS NULL, so it both backfills
             # already-stored history and keeps up with new exits going forward.
             backfill_realized_pnl(self.settings.db_path, broker=broker_name)
+            # 2026-08-19 hosted finding: a raw-epoch observed_at already sitting in
+            # PRODUCTION_TRADE_EVIDENCE does NOT self-heal through ordinary polling the way
+            # backfill_realized_pnl's own target field does -- record_broker_trade_history's
+            # dedup key is built from that same raw value, so an already-seen trade is never
+            # treated as "new" again and the write-time fix (_trade_evidence_values) never
+            # runs for it a second time. Runs every cycle, only ever rewrites a row where
+            # normalization actually changes something, so it is cheap and catches up the
+            # whole backlog over a few cycles rather than needing a separate one-time script.
+            backfill_broker_evidence_timestamps(self.settings.db_path)
             if broker_name == "kraken":
                 reconciliation = replay_kraken_evidence(
                     self.settings.db_path,

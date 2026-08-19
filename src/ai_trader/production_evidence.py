@@ -451,6 +451,73 @@ def _normalize_broker_timestamp(value: Any) -> str | None:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
+def _set_trade_evidence_timestamps(
+    db_path: Path, trade_evidence_id: int, *, observed_at: str | None, opened_at: str | None, closed_at: str | None
+) -> None:
+    if uses_postgres():
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE PRODUCTION_TRADE_EVIDENCE SET observed_at = %s, opened_at = %s, closed_at = %s WHERE trade_evidence_id = %s",
+                    (observed_at, opened_at, closed_at, trade_evidence_id),
+                )
+            conn.commit()
+        return
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                "UPDATE PRODUCTION_TRADE_EVIDENCE SET observed_at = ?, opened_at = ?, closed_at = ? WHERE trade_evidence_id = ?",
+                (observed_at, opened_at, closed_at, trade_evidence_id),
+            )
+
+
+def backfill_broker_evidence_timestamps(db_path: Path) -> dict[str, Any]:
+    """Corrects existing PRODUCTION_TRADE_EVIDENCE rows still holding a raw Kraken epoch
+    timestamp -- _normalize_broker_timestamp (same commit) only fixes NEW writes going
+    forward, it does not retroactively touch rows already sitting in the table.
+
+    2026-08-19 hosted finding: unlike backfill_realized_pnl, this one genuinely cannot
+    self-heal through ordinary polling. multi_broker.py's record_broker_trade_history keys
+    its own dedup on `ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING`, built
+    from the SAME raw epoch value -- Kraken's historical record for an already-seen trade
+    never changes, so that conflict fires every single poll and the trade is never treated
+    as "new" again, meaning record_trade_evidence_batch (and the write-time fix) never runs
+    for it a second time. Confirmed live: 5 real, already-recorded Kraken exits still had raw
+    epoch observed_at a full evidence-snapshot and broker-poll-kraken cycle after the
+    write-time fix deployed -- waiting for it to "catch up" was simply wrong. This corrects
+    existing rows directly. Bounded to the 500 most recent rows per call (matching
+    backfill_realized_pnl's own bound) and only ever writes a row where normalization
+    actually changes something, so it is cheap and safe to call on every broker-poll cycle
+    until the whole backlog is caught up.
+    """
+    _ensure_local_production_evidence_schema(db_path)
+    rows = _query(
+        db_path,
+        "SELECT trade_evidence_id, observed_at, opened_at, closed_at FROM PRODUCTION_TRADE_EVIDENCE ORDER BY trade_evidence_id DESC",
+        limit=500,
+    )
+    updated = 0
+    for row in rows:
+        new_observed_at = _normalize_broker_timestamp(row.get("observed_at"))
+        new_opened_at = _normalize_broker_timestamp(row.get("opened_at"))
+        new_closed_at = _normalize_broker_timestamp(row.get("closed_at"))
+        if (
+            new_observed_at == row.get("observed_at")
+            and new_opened_at == row.get("opened_at")
+            and new_closed_at == row.get("closed_at")
+        ):
+            continue
+        _set_trade_evidence_timestamps(
+            db_path,
+            row["trade_evidence_id"],
+            observed_at=new_observed_at,
+            opened_at=new_opened_at,
+            closed_at=new_closed_at,
+        )
+        updated += 1
+    return {"updated": updated}
+
+
 def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...]:
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
