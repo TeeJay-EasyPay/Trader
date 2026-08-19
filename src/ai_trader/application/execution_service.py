@@ -592,7 +592,14 @@ class ExecutionService:
             stop_loss = safe_float(item["stop_loss"]) or 0
             take_profit = safe_float(item["take_profit"]) or 0
             trailing_stop_pct = safe_float(item.get("trailing_stop_pct"))
-            if trailing_stop_pct:
+            # A native_stop_order_id means Kraken itself is holding a live trailing-stop
+            # order for this position's stop-loss leg -- it triggers and fills on Kraken's
+            # own book even if this process is down or unreachable, which is the whole
+            # point (2026-08-19). This loop must not also race a software stop-loss check
+            # against it, so water-mark tracking and the stop_loss comparison below are both
+            # skipped whenever a native order owns this leg; only take-profit is evaluated.
+            natively_protected = bool(item.get("native_stop_order_id"))
+            if trailing_stop_pct and not natively_protected:
                 high_water = max(safe_float(item.get("high_water_mark")) or price, price)
                 low_water = min(safe_float(item.get("low_water_mark")) or price, price)
                 if side == "buy":
@@ -607,13 +614,13 @@ class ExecutionService:
                 )
             should_exit = False
             reason = None
-            if side == "buy" and price <= stop_loss:
+            if not natively_protected and side == "buy" and price <= stop_loss:
                 should_exit = True
                 reason = "stop_loss_triggered"
             elif side == "buy" and price >= take_profit:
                 should_exit = True
                 reason = "take_profit_triggered"
-            elif side == "sell" and price >= stop_loss:
+            elif not natively_protected and side == "sell" and price >= stop_loss:
                 should_exit = True
                 reason = "stop_loss_triggered"
             elif side == "sell" and price <= take_profit:
@@ -622,6 +629,38 @@ class ExecutionService:
             if not should_exit:
                 checked.append({"managed_exit_id": item["managed_exit_id"], "status": "open", "price": price})
                 continue
+            if natively_protected and reason == "take_profit_triggered" and hasattr(adapter, "cancel_order"):
+                # Take-profit fired while Kraken still holds a live native stop order for
+                # the same position -- cancel it first so it can't also fill (a stale
+                # resting order left on the book, or worse, a double-sell against the same
+                # balance) once this manual exit goes in.
+                cancel_result = adapter.cancel_order(str(item["native_stop_order_id"]))
+                if cancel_result.get("status") == "already_resolved":
+                    # The native stop won the race and already filled. Don't also submit a
+                    # manual sell -- the next broker-poll/reconciliation cycle will pick up
+                    # that fill through the ownership record already registered at entry
+                    # time and close this managed exit out naturally.
+                    checked.append(
+                        {
+                            "managed_exit_id": item["managed_exit_id"],
+                            "status": "native_stop_already_filled",
+                            "price": price,
+                        }
+                    )
+                    continue
+                if cancel_result.get("status") != "cancelled":
+                    # Cancel itself failed (not "already resolved") -- the native order
+                    # might still be live. Safer to skip this cycle and retry than to place
+                    # a manual sell that could double up against it.
+                    checked.append(
+                        {
+                            "managed_exit_id": item["managed_exit_id"],
+                            "status": "native_stop_cancel_failed",
+                            "reason": cancel_result.get("reason"),
+                            "price": price,
+                        }
+                    )
+                    continue
             exit_side = "sell" if side == "buy" else "buy"
             client_order_id = f"exit-{item['managed_exit_id']}"
             order_request = OrderRequest(

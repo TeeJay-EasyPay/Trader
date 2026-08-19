@@ -190,6 +190,89 @@ class KrakenReconciliationTests(unittest.TestCase):
             self.assertEqual(learning["processed"], 1)
             self.assertEqual(duplicate_learning["processed"], 0)
 
+    def test_one_orders_id_mismatch_does_not_block_every_other_trades_learning(self):
+        # 2026-08-19 hosted finding, reproduced live via /kraken-reconciliation/replay: an
+        # exit order whose logical_trade_id and proposal_id had drifted apart (see
+        # _merge_managed_exit_payload's docstring in multi_broker.py) made every reconcile
+        # attempt for it raise "duplicate key value violates unique constraint
+        # 'logical_trades_proposal_id_key'" -- a DIFFERENT logical_trade_id row trying to
+        # claim a proposal_id another row already owns. Uncaught, that aborted the entire
+        # batch before the terminals loop ever ran, so learning_queued stayed 0 for every
+        # trade in the cycle, not just the poisoned one. This reproduces that exact
+        # mismatched-ownership shape directly (bypassing however it originally arose) and
+        # proves a healthy trade folded into the SAME batch still reconciles and gets its
+        # learning workflow queued.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+
+            trade_a = proposal("trade-A")
+            register_execution_intent(db_path, proposal=trade_a, broker="kraken", decision_context={"proposal_id": trade_a.proposal_id})
+            register_kraken_order_ownership(
+                db_path, broker_order_id="entry-a", logical_trade_id=trade_a.proposal_id,
+                proposal_id=trade_a.proposal_id, order_role="entry", symbol=trade_a.symbol, side="buy",
+            )
+            register_kraken_order_ownership(
+                db_path, broker_order_id="exit-a", logical_trade_id=trade_a.proposal_id,
+                proposal_id=trade_a.proposal_id, order_role="exit", symbol=trade_a.symbol, side="sell",
+            )
+            # Trade A closes cleanly first, so LOGICAL_TRADES already owns proposal_id
+            # "trade-A" under logical_trade_id "trade-A" before the mismatch below is created.
+            first = replay_kraken_evidence(
+                db_path,
+                events=[
+                    trade_fill("entry-a", "fill-entry-a", "buy", 1.0, "2026-07-10T10:00:00+00:00"),
+                    trade_fill("exit-a", "fill-exit-a", "sell", 1.2, "2026-07-10T11:00:00+00:00"),
+                ],
+            )
+            self.assertEqual(first["learning_queued"], 1)
+
+            # A different order pair, registered with a synthetic logical_trade_id but the
+            # SAME proposal_id as trade A -- the exact corrupted shape this session found.
+            register_kraken_order_ownership(
+                db_path, broker_order_id="poison-entry", logical_trade_id="kraken-managed-exit:99",
+                proposal_id=trade_a.proposal_id, order_role="entry", symbol="BCHGBP", side="buy",
+            )
+            register_kraken_order_ownership(
+                db_path, broker_order_id="poison-exit", logical_trade_id="kraken-managed-exit:99",
+                proposal_id=trade_a.proposal_id, order_role="exit", symbol="BCHGBP", side="sell",
+            )
+
+            trade_b = proposal("trade-B")
+            register_execution_intent(db_path, proposal=trade_b, broker="kraken", decision_context={"proposal_id": trade_b.proposal_id})
+            register_kraken_order_ownership(
+                db_path, broker_order_id="entry-b", logical_trade_id=trade_b.proposal_id,
+                proposal_id=trade_b.proposal_id, order_role="entry", symbol=trade_b.symbol, side="buy",
+            )
+            register_kraken_order_ownership(
+                db_path, broker_order_id="exit-b", logical_trade_id=trade_b.proposal_id,
+                proposal_id=trade_b.proposal_id, order_role="exit", symbol=trade_b.symbol, side="sell",
+            )
+
+            # No exception -- the poisoned events must not abort the whole batch.
+            result = replay_kraken_evidence(
+                db_path,
+                events=[
+                    trade_fill("poison-entry", "fill-poison-entry", "buy", 100.0, "2026-07-11T10:00:00+00:00"),
+                    trade_fill("poison-exit", "fill-poison-exit", "sell", 110.0, "2026-07-11T11:00:00+00:00"),
+                    trade_fill("entry-b", "fill-entry-b", "buy", 1.0, "2026-07-11T12:00:00+00:00"),
+                    trade_fill("exit-b", "fill-exit-b", "sell", 1.2, "2026-07-11T13:00:00+00:00"),
+                ],
+            )
+
+            self.assertEqual(result["reconciliation_errors"], 2, "Both poisoned events must be recorded as errors, not silently dropped.")
+            self.assertEqual(result["terminal_trades"], 1, "Trade B must still reach terminal despite the poisoned events earlier in the same batch.")
+            self.assertEqual(result["learning_queued"], 1, "Trade B's learning workflow must still be queued.")
+
+            trade_b_canonical = canonical_trade(db_path, trade_b.proposal_id)
+            self.assertEqual(trade_b_canonical["terminal"], 1)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                error_cases = conn.execute(
+                    "SELECT COUNT(*) FROM KRAKEN_RECONCILIATION_CASES WHERE classification = 'reconciliation_error'"
+                ).fetchone()[0]
+            self.assertEqual(error_cases, 2)
+
     def test_holding_position_missing_a_managed_exit_gets_backfilled(self):
         # 2026-08-13 hosted incident: BCH and XRP were both confirmed open on Kraken (real
         # stop/target recorded, status='holding') but neither had a MANAGED_TRADE_EXITS row --

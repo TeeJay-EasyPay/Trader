@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import sys
@@ -32,13 +33,16 @@ from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, O
 from ai_trader.multi_broker import (
     acquire_order_intent_lock,
     broker_auto_trading_enabled,
+    close_managed_exit,
     close_managed_exit_and_record,
     initialize_multi_broker_schema,
     latest_recommendation_set,
     list_performance_attribution,
+    mark_managed_exit_submitted,
     record_broker_trade_history,
     record_crypto_research_score,
     record_managed_trade_exit,
+    record_native_stop_order_id,
     record_recommendation_set,
     set_broker_auto_trading,
 )
@@ -1497,6 +1501,207 @@ class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):
             self.assertEqual(second_call_kwargs.get("current_prices"), {"BTC": 50000.0})
 
 
+class KrakenNativeTrailingStopAdapterTests(unittest.TestCase):
+    """2026-08-19: Founder asked for Kraken's own trailing-stop order, not just software
+    tracking, so the stop-loss keeps working even if AI Trader's process is down or Kraken
+    is briefly unreachable during heavy traffic. These pin the new adapter methods in
+    isolation, mirroring the existing place_order/place_exit_order coverage style."""
+
+    def _env(self):
+        return {
+            key: os.environ.get(key)
+            for key in ["KRAKEN_API_KEY", "KRAKEN_PRIVATE_KEY", "KRAKEN_LIVE_TRADING_APPROVED", "KRAKEN_SUBMIT_REAL_ORDERS"]
+        }
+
+    def _activate_kraken(self):
+        os.environ["KRAKEN_API_KEY"] = "key"
+        os.environ["KRAKEN_PRIVATE_KEY"] = "c2VjcmV0"
+        os.environ["KRAKEN_LIVE_TRADING_APPROVED"] = "true"
+        os.environ["KRAKEN_SUBMIT_REAL_ORDERS"] = "true"
+
+    def _order_request(self):
+        return OrderRequest(
+            symbol="BTC",
+            side="sell",
+            quantity=0.1,
+            asset_type="crypto",
+            exchange="KRAKEN",
+            stop_loss=0,
+            take_profit=0,
+            broker_pair="XBTGBP",
+        )
+
+    def test_place_trailing_stop_order_submits_krakens_native_trailing_stop_ordertype(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_trailing_stop_order(self._order_request(), 0.02)
+
+            self.assertEqual(result["status"], "accepted")
+            self.assertEqual(result["id"], "TST-ORDER")
+            self.assertEqual(len(adapter.submitted_orders), 1)
+            submitted = adapter.submitted_orders[0]
+            self.assertEqual(submitted["ordertype"], "trailing-stop")
+            self.assertEqual(submitted["price"], "+2%")
+            self.assertEqual(submitted["type"], "sell")
+            self.assertEqual(submitted["pair"], "XBTGBP")
+        finally:
+            restore_env(previous)
+
+    def test_place_trailing_stop_order_rejects_a_non_positive_percentage(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.place_trailing_stop_order(self._order_request(), 0.0)
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(len(adapter.submitted_orders), 0)
+        finally:
+            restore_env(previous)
+
+    def test_cancel_order_succeeds_when_kraken_confirms_cancellation(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            adapter = FakeKrakenAdapter()
+
+            result = adapter.cancel_order("TST-ORDER")
+
+            self.assertEqual(result["status"], "cancelled")
+        finally:
+            restore_env(previous)
+
+    def test_cancel_order_reports_already_resolved_for_a_native_stop_that_already_filled(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+
+            class AlreadyFilledAdapter(FakeKrakenAdapter):
+                def _private_request(self, path, payload=None):
+                    if path == "/0/private/CancelOrder":
+                        raise RuntimeError("EOrder:Unknown order")
+                    return super()._private_request(path, payload)
+
+            result = AlreadyFilledAdapter().cancel_order("TST-ORDER")
+
+            self.assertEqual(result["status"], "already_resolved")
+        finally:
+            restore_env(previous)
+
+    def test_cancel_order_reports_cancel_failed_for_a_genuine_broker_error(self):
+        previous = self._env()
+        try:
+            self._activate_kraken()
+
+            class FlakyAdapter(FakeKrakenAdapter):
+                def _private_request(self, path, payload=None):
+                    if path == "/0/private/CancelOrder":
+                        raise RuntimeError("EService:Unavailable")
+                    return super()._private_request(path, payload)
+
+            result = FlakyAdapter().cancel_order("TST-ORDER")
+
+            self.assertEqual(result["status"], "cancel_failed")
+        finally:
+            restore_env(previous)
+
+
+class ManagedExitPayloadPreservationTests(unittest.TestCase):
+    """2026-08-19 hosted finding: mark_managed_exit_submitted/close_managed_exit/
+    close_managed_exit_and_record all overwrote payload_json wholesale with only their own
+    exit-time fields -- silently discarding the entry-time payload, the only place a managed
+    exit's proposal_id lives. bootstrap_kraken_order_ownership re-derives each order's
+    logical_trade_id from this same payload every reconciliation cycle; once proposal_id
+    disappeared from it, the exit order got re-registered under a synthetic
+    "kraken-managed-exit:N" logical_trade_id while its proposal_id column (preserved
+    separately via ON CONFLICT ... COALESCE) still pointed at the real UUID -- confirmed live
+    via /kraken-reconciliation/replay ("duplicate key value violates unique constraint
+    \"logical_trades_proposal_id_key\""), which aborted reconciliation before
+    enqueue_learning_workflow ever ran for any trade in that cycle. These pin that the
+    entry-time payload -- proposal_id specifically -- survives every exit-time payload write."""
+
+    def test_mark_managed_exit_submitted_preserves_the_entry_time_proposal_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="ETH", side="buy", quantity=0.001,
+                entry_order_id="entry-1", entry_price=1500.0, stop_loss=1470.0, take_profit=1560.0,
+                payload={"proposal_id": "real-uuid-123", "entry_reason": "test reasoning"},
+            )
+            managed_exit_id = int(entry["managed_exit_id"])
+
+            mark_managed_exit_submitted(
+                db_path, managed_exit_id, exit_order_id="exit-1",
+                exit_reason="take_profit_triggered", payload={"price": 1560.0},
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM MANAGED_TRADE_EXITS WHERE managed_exit_id = ?", (managed_exit_id,)
+                ).fetchone()
+            payload = json.loads(row[0])
+            self.assertEqual(payload["proposal_id"], "real-uuid-123")
+            self.assertEqual(payload["entry_reason"], "test reasoning")
+            self.assertEqual(payload["price"], 1560.0)
+
+    def test_close_managed_exit_preserves_the_entry_time_proposal_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="ETH", side="buy", quantity=0.001,
+                entry_order_id="entry-1", entry_price=1500.0, stop_loss=1470.0, take_profit=1560.0,
+                payload={"proposal_id": "real-uuid-123", "entry_reason": "test reasoning"},
+            )
+            managed_exit_id = int(entry["managed_exit_id"])
+
+            mark_managed_exit_submitted(
+                db_path, managed_exit_id, exit_order_id="exit-1",
+                exit_reason="take_profit_triggered", payload={"price": 1560.0},
+            )
+            close_managed_exit(
+                db_path, managed_exit_id, exit_order_id="exit-1",
+                exit_reason="take_profit_triggered", payload={"order": {"status": "filled"}},
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM MANAGED_TRADE_EXITS WHERE managed_exit_id = ?", (managed_exit_id,)
+                ).fetchone()
+            payload = json.loads(row[0])
+            self.assertEqual(payload["proposal_id"], "real-uuid-123", "The real proposal_id must survive both exit-time writes.")
+            self.assertEqual(payload["entry_reason"], "test reasoning")
+            self.assertEqual(payload["order"], {"status": "filled"})
+
+    def test_close_managed_exit_and_record_preserves_the_entry_time_proposal_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="ETH", side="buy", quantity=0.001,
+                entry_order_id="entry-1", entry_price=1500.0, stop_loss=1470.0, take_profit=1560.0,
+                payload={"proposal_id": "real-uuid-123", "entry_reason": "test reasoning"},
+            )
+            managed_exit_id = int(entry["managed_exit_id"])
+
+            close_managed_exit_and_record(
+                db_path, managed_exit_id, broker="kraken", symbol="ETH", asset_type="crypto",
+                side="buy", quantity=0.001, price=1560.0, exit_order_id="exit-1",
+                exit_reason="take_profit_triggered", order_payload={"status": "filled"},
+                entry_price=1500.0, entry_side="buy",
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM MANAGED_TRADE_EXITS WHERE managed_exit_id = ?", (managed_exit_id,)
+                ).fetchone()
+            payload = json.loads(row[0])
+            self.assertEqual(payload["proposal_id"], "real-uuid-123")
+            self.assertEqual(payload["status"], "filled")
+
+
 class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
     """CRITICAL_REMEDIATION_PLAN.md P0-2: exit orders must have the same
     duplicate-submission protection entry orders already had. These tests
@@ -1551,6 +1756,82 @@ class ManagedExitDuplicateOrderProtectionTests(unittest.TestCase):
                 second = service.monitor_managed_exits()
                 self.assertEqual(len(adapter.submitted_orders), 1, "A second cycle must not submit a second exit order.")
                 self.assertEqual(second["managed_exits"], [])
+        finally:
+            restore_env(previous)
+
+    def test_monitor_managed_exits_does_not_stop_loss_check_a_natively_protected_position(self):
+        # 2026-08-19: once a native Kraken trailing-stop order owns the stop-loss leg
+        # (native_stop_order_id set), the software loop must not also race its own
+        # stop-loss check against it -- that would risk a double exit attempt for the
+        # exact connectivity/traffic scenario the native order exists to survive.
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["48000.0"]}}  # below stop_loss
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+                record_native_stop_order_id(service.settings.db_path, managed_exit_id, "NATIVE-STOP-1")
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(len(adapter.submitted_orders), 0)
+                self.assertEqual(result["managed_exits"][0]["status"], "open")
+        finally:
+            restore_env(previous)
+
+    def test_monitor_managed_exits_cancels_the_native_stop_before_taking_profit(self):
+        # Kraken's native trailing-stop is a downside-only construct -- take-profit is
+        # still this loop's job. Firing it must cancel the resting native order first so
+        # it can't also fill (a stale order left on the book, or a double sell).
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["53000.0"]}}  # above take_profit
+                adapter.cancelled_orders = []
+
+                def cancel_order(order_id):
+                    adapter.cancelled_orders.append(order_id)
+                    return {"status": "cancelled", "order_id": order_id}
+
+                adapter.cancel_order = cancel_order
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+                record_native_stop_order_id(service.settings.db_path, managed_exit_id, "NATIVE-STOP-1")
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(adapter.cancelled_orders, ["NATIVE-STOP-1"])
+                self.assertEqual(len(adapter.submitted_orders), 1)
+                self.assertEqual(result["managed_exits"][0]["status"], "exit_submitted")
+        finally:
+            restore_env(previous)
+
+    def test_monitor_managed_exits_skips_the_manual_exit_when_the_native_stop_already_filled(self):
+        # Race case: price crossed take-profit in the same tick the native stop already
+        # triggered on Kraken's side. cancel_order reports "already_resolved" -- must not
+        # also submit a manual sell against a position that is already closing out.
+        previous = self._env()
+        try:
+            self._activate_kraken()
+            with tempfile.TemporaryDirectory() as tmp:
+                service = LocalApiService(settings_for(tmp))
+                adapter = FakeKrakenAdapter()
+                adapter.prices = {"XBTGBP": {"c": ["53000.0"]}}
+                adapter.cancel_order = lambda order_id: {"status": "already_resolved", "order_id": order_id}
+                service.orchestrator.adapters["kraken"] = adapter
+                managed_exit_id = self._open_position(service)
+                record_native_stop_order_id(service.settings.db_path, managed_exit_id, "NATIVE-STOP-1")
+
+                result = service.monitor_managed_exits()
+
+                self.assertEqual(len(adapter.submitted_orders), 0)
+                self.assertEqual(result["managed_exits"][0]["status"], "native_stop_already_filled")
         finally:
             restore_env(previous)
 

@@ -432,6 +432,78 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "kraken_result": result.get("result", {}),
         }
 
+    def place_trailing_stop_order(self, order_request: OrderRequest, trailing_pct: float) -> dict[str, Any]:
+        """Place a native Kraken trailing-stop order so the stop-loss lives on Kraken's own
+        order book instead of only in AI Trader's polling loop. Founder's stated reasoning
+        (2026-08-19): the software-side trailing stop in monitor_managed_exits can only act
+        while this process is up and Kraken is reachable -- a connectivity gap or heavy
+        traffic during a bull run would leave an open position with no working exit. A
+        native order is Kraken's own responsibility to trigger and fill, independent of
+        AI Trader's uptime.
+        """
+        if not self.configured:
+            return self._not_configured()
+        if not _bool_env("KRAKEN_LIVE_TRADING_APPROVED", False):
+            return {"status": "disabled", "broker": self.name, "reason": "KRAKEN_LIVE_TRADING_APPROVED is false"}
+        if trailing_pct <= 0:
+            return {"status": "rejected", "broker": self.name, "reason": "trailing_pct_invalid"}
+        pair = order_request.broker_pair or _kraken_pair(order_request.symbol, order_request.quote_currency)
+        volume = order_request.quantity
+        if order_request.side.lower() == "sell":
+            # Same reasoning as place_exit_order: the recorded quantity can end up a hair
+            # above Kraken's own rounded wallet balance, so cap to what is actually available.
+            available = self._available_balance(order_request.symbol)
+            if available is not None and 0 < available < volume:
+                volume = available
+        payload = {
+            "pair": pair,
+            "type": order_request.side.lower(),
+            "ordertype": "trailing-stop",
+            "price": f"+{trailing_pct * 100:g}%",
+            "volume": _format_decimal(volume),
+            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
+        }
+        userref = _userref(order_request.client_order_id)
+        if userref is not None:
+            payload["userref"] = str(userref)
+        try:
+            result = self._private_request("/0/private/AddOrder", payload)
+        except RuntimeError as exc:
+            # Same reasoning as place_order/place_exit_order: _private_request only raises
+            # for Kraken's own populated "error" response, a definite synchronous rejection.
+            return {"status": "rejected", "broker": self.name, "reason": str(exc), "pair": pair}
+        txids = result.get("result", {}).get("txid", [])
+        order_id = txids[0] if txids else None
+        return {
+            "status": "accepted" if order_id else "submitted",
+            "broker": self.name,
+            "id": order_id,
+            "order_id": order_id,
+            "pair": pair,
+            "side": order_request.side.lower(),
+            "quantity": volume,
+            "trailing_pct": trailing_pct,
+            "kraken_result": result.get("result", {}),
+        }
+
+    def cancel_order(self, order_id: str) -> dict[str, Any]:
+        if not self.configured:
+            return self._not_configured()
+        if not order_id:
+            return {"status": "rejected", "broker": self.name, "reason": "order_id_missing"}
+        try:
+            result = self._private_request("/0/private/CancelOrder", {"txid": order_id})
+        except RuntimeError as exc:
+            # Kraken's real error string for an order that already filled, was already
+            # cancelled, or never existed. Treated as a non-fatal "nothing left to cancel"
+            # outcome rather than a failure, so a caller racing a native trailing-stop fill
+            # against its own take-profit check can tell "it already triggered" apart from
+            # "the cancel attempt itself failed and the order might still be live."
+            if "unknown order" in str(exc).lower():
+                return {"status": "already_resolved", "broker": self.name, "order_id": order_id, "reason": str(exc)}
+            return {"status": "cancel_failed", "broker": self.name, "order_id": order_id, "reason": str(exc)}
+        return {"status": "cancelled", "broker": self.name, "order_id": order_id, "kraken_result": result.get("result", {})}
+
     def _available_balance(self, symbol: str) -> float | None:
         account = self.get_account()
         balances = account.get("balances") if isinstance(account, dict) else None

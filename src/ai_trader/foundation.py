@@ -301,7 +301,12 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     "emergency_shutdown_balance": (0.0, "float", "Minimum equity before emergency shutdown."),
     "default_stop_loss_pct": (0.03, "float", "Default stop loss distance."),
     "maximum_stop_loss_pct": (0.05, "float", "Maximum permitted stop loss distance."),
-    "trailing_stop_enabled": (False, "boolean", "Trailing stops require founder approval."),
+    # 2026-08-19: Founder approved native (Kraken-side) trailing stops so a stop-loss
+    # keeps working even if AI Trader's own process is down or Kraken is unreachable --
+    # see KrakenBrokerAdapter.place_trailing_stop_order and orchestrator.py's entry hook.
+    # This default only seeds a *new* RISK_POLICIES row (see set_risk_policy_value's
+    # docstring for why an already-seeded row needs an explicit UPDATE, not a code change).
+    "trailing_stop_enabled": (True, "boolean", "Trailing stops require founder approval."),
     "trailing_stop_pct": (0.02, "float", "Trailing stop distance once trailing stops are enabled."),
     "take_profit_required": (True, "boolean", "Every autonomous trade needs a take profit."),
     "maximum_concurrent_positions": (3, "integer", "Maximum open positions."),

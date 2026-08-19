@@ -257,6 +257,7 @@ def initialize_multi_broker_schema(db_path: Path) -> None:
                         "trailing_stop_pct": "REAL",
                         "high_water_mark": "REAL",
                         "low_water_mark": "REAL",
+                        "native_stop_order_id": "TEXT",
                     },
                 )
                 _ensure_columns(conn, "NOTIFICATION_EVENTS", {"push_sent_at": "TEXT"})
@@ -862,6 +863,22 @@ def update_trailing_water_marks(db_path: Path, managed_exit_id: int, *, high_wat
             )
 
 
+def record_native_stop_order_id(db_path: Path, managed_exit_id: int, order_id: str) -> None:
+    """Attach a native (broker-side) stop order's ID to an already-open managed exit.
+
+    monitor_managed_exits treats a non-null native_stop_order_id as "Kraken owns the
+    stop-loss leg for this position" -- it stops evaluating its own stop trigger for that
+    row and only watches take-profit, cancelling this order first if take-profit fires.
+    """
+    initialize_multi_broker_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                "UPDATE MANAGED_TRADE_EXITS SET native_stop_order_id = ?, last_checked_at = ? WHERE managed_exit_id = ?",
+                (order_id, utc_now_iso(), managed_exit_id),
+            )
+
+
 def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[str, Any]]:
     initialize_multi_broker_schema(db_path)
     sql = "SELECT * FROM MANAGED_TRADE_EXITS WHERE status = 'open'"
@@ -876,6 +893,30 @@ def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[st
     return [dict(row) for row in rows]
 
 
+def _merge_managed_exit_payload(conn: Any, managed_exit_id: int, new_fields: dict[str, Any] | None) -> str:
+    """Merge new fields into a managed exit's existing payload_json instead of replacing it.
+
+    2026-08-19 hosted finding: close_managed_exit/mark_managed_exit_submitted/
+    close_managed_exit_and_record all overwrote payload_json wholesale with only their own
+    exit-time fields (price/order/reason) -- silently discarding the entry-time payload,
+    which is the only place proposal_id (and entry_reason) lives for a managed exit.
+    bootstrap_kraken_order_ownership re-derives each order's logical_trade_id from this same
+    payload every reconciliation cycle; once proposal_id disappeared from it, the exit order
+    got re-registered under a synthetic "kraken-managed-exit:N" logical_trade_id while its
+    proposal_id column (preserved separately via ON CONFLICT ... COALESCE) still pointed at
+    the real UUID -- two different logical_trade_id rows then collided on LOGICAL_TRADES'
+    proposal_id UNIQUE constraint the next time that trade's evidence was reconciled,
+    confirmed live via /kraken-reconciliation/replay ("duplicate key value violates unique
+    constraint \"logical_trades_proposal_id_key\""). That crash aborted reconciliation before
+    ever reaching enqueue_learning_workflow for real closed trades. Merging keeps proposal_id
+    (and any other entry-time context) intact across every exit-time payload update.
+    """
+    row = conn.execute("SELECT payload_json FROM MANAGED_TRADE_EXITS WHERE managed_exit_id = ?", (managed_exit_id,)).fetchone()
+    existing = _json_dict(row[0]) if row else {}
+    existing.update(new_fields or {})
+    return json.dumps(existing, sort_keys=True, default=str)
+
+
 def close_managed_exit(
     db_path: Path,
     managed_exit_id: int,
@@ -887,6 +928,7 @@ def close_managed_exit(
     initialize_multi_broker_schema(db_path)
     with closing(connect(db_path)) as conn:
         with conn:
+            merged_payload = _merge_managed_exit_payload(conn, managed_exit_id, payload)
             conn.execute(
                 """
                 UPDATE MANAGED_TRADE_EXITS
@@ -899,7 +941,7 @@ def close_managed_exit(
                     exit_order_id,
                     exit_reason,
                     utc_now_iso(),
-                    json.dumps(payload or {}, sort_keys=True, default=str),
+                    merged_payload,
                     managed_exit_id,
                 ),
             )
@@ -919,6 +961,7 @@ def mark_managed_exit_submitted(
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
+            merged_payload = _merge_managed_exit_payload(conn, managed_exit_id, payload)
             conn.execute(
                 """
                 UPDATE MANAGED_TRADE_EXITS
@@ -931,7 +974,7 @@ def mark_managed_exit_submitted(
                     exit_order_id,
                     exit_reason,
                     now,
-                    json.dumps(payload or {}, sort_keys=True, default=str),
+                    merged_payload,
                     managed_exit_id,
                 ),
             )
@@ -974,6 +1017,7 @@ def close_managed_exit_and_record(
         holding_period_seconds = (closed_dt - opened_dt).total_seconds()
     with closing(connect(db_path)) as conn:
         with conn:
+            merged_payload = _merge_managed_exit_payload(conn, managed_exit_id, order_payload)
             conn.execute(
                 """
                 UPDATE MANAGED_TRADE_EXITS
@@ -981,7 +1025,7 @@ def close_managed_exit_and_record(
                     exit_reason = ?, last_checked_at = ?, payload_json = ?
                 WHERE managed_exit_id = ?
                 """,
-                (now, exit_order_id, exit_reason, now, json.dumps(order_payload or {}, sort_keys=True, default=str), managed_exit_id),
+                (now, exit_order_id, exit_reason, now, merged_payload, managed_exit_id),
             )
             conn.execute(
                 """

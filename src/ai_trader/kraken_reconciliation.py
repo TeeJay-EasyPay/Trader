@@ -517,6 +517,7 @@ def replay_kraken_evidence(
             "duplicates": 0,
             "terminal_trades": 0,
             "learning_queued": 0,
+            "reconciliation_errors": 0,
         }
         terminals: set[str] = set()
         for raw in events:
@@ -555,13 +556,40 @@ def replay_kraken_evidence(
                     "fill_role": owner["order_role"],
                 }
             )
-            reconciled = reconcile_canonical_broker_event(
-                db_path,
-                broker="kraken",
-                event=event,
-                source=source,
-                conn=conn,
-            )
+            try:
+                reconciled = reconcile_canonical_broker_event(
+                    db_path,
+                    broker="kraken",
+                    event=event,
+                    source=source,
+                    conn=conn,
+                )
+            except sqlite3.IntegrityError as exc:
+                # 2026-08-19 hosted finding: one Kraken order whose logical_trade_id and
+                # proposal_id had drifted apart (see _merge_managed_exit_payload's docstring
+                # in multi_broker.py for how that happens) hit LOGICAL_TRADES' proposal_id
+                # UNIQUE constraint on every single replay -- confirmed live via
+                # /kraken-reconciliation/replay. Uncaught, this aborted the whole batch before
+                # ever reaching the terminals loop below, so enqueue_learning_workflow never
+                # ran for ANY trade in that cycle, not just the poisoned one -- the entire
+                # reason learning_queued stayed 0 across every broker-poll-kraken run despite
+                # 7 real trades closing the same day. The PostgresConnection.__exit__ that
+                # raised this already rolled back just this statement's own transaction scope
+                # (see database.py), so the connection is safe to keep using for the
+                # remaining events -- one bad order must never block every other trade's
+                # learning from ever being recorded again.
+                _record_case(
+                    db_path,
+                    raw_hash=raw_hash,
+                    event=event,
+                    owner=owner,
+                    classification="reconciliation_error",
+                    reason=f"Reconciling this event raised {exc.__class__.__name__}: {exc}",
+                    confidence=0.0,
+                    conn=conn,
+                )
+                counts["reconciliation_errors"] += 1
+                continue
             duplicate = reconciled["event"].get("status") == "duplicate"
             counts["duplicates"] += int(duplicate)
             counts["owned_reconciled"] += int(not duplicate)

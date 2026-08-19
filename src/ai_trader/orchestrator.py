@@ -31,6 +31,7 @@ from .multi_broker import (
     acquire_order_intent_lock,
     complete_order_intent_lock,
     record_managed_trade_exit,
+    record_native_stop_order_id,
     record_notification,
     record_seatbelt_event,
 )
@@ -447,6 +448,16 @@ class InvestmentOrchestrator:
                         symbol=p.symbol,
                         side=p.side,
                     )
+                    _attach_kraken_native_trailing_stop(
+                        self.db_path,
+                        adapter=selected,
+                        policy=policy,
+                        proposal=p,
+                        logical_trade_id=logical_trade_id,
+                        order=order,
+                        order_request=order_request,
+                        managed_exit_id=int(managed["managed_exit_id"]),
+                    )
                     record_notification(
                         self.db_path,
                         event_type="trade_accepted",
@@ -611,6 +622,81 @@ def _order_request(proposal: TradeProposal, approved_notional: float) -> OrderRe
         notional_amount=approved_notional,
         client_order_id=proposal.proposal_id,
     )
+
+
+def _attach_kraken_native_trailing_stop(
+    db_path: Path,
+    *,
+    adapter: Any,
+    policy: Any,
+    proposal: TradeProposal,
+    logical_trade_id: str,
+    order: dict[str, Any],
+    order_request: OrderRequest,
+    managed_exit_id: int,
+) -> dict[str, Any]:
+    """Attach a native Kraken trailing-stop order to a just-confirmed entry, so the
+    stop-loss leg lives on Kraken's own order book instead of only in AI Trader's polling
+    loop. Founder's stated reasoning (2026-08-19): the software-side trailing stop in
+    monitor_managed_exits can only act while this process is up and Kraken is reachable --
+    a connectivity gap or heavy traffic during a bull run would leave a position with no
+    working exit.
+
+    Pulled out of evaluate_recommendation as its own function -- like
+    _kraken_min_order_floor_notional above -- specifically so it can be unit-tested in
+    isolation without needing a from-scratch test database to clear every other governance
+    gate (due diligence, investment score, crypto policy, reconciliation hold) that a
+    genuinely 'approved' end-to-end decision would require.
+
+    Never raises: a failure here must not lose or roll back an entry that has already
+    filled. On any non-success outcome, record_managed_trade_exit's own trailing_stop_pct
+    (already written before this runs) keeps monitor_managed_exits protecting the position
+    in software, just not natively -- so this always degrades gracefully, never silently.
+    """
+    if not policy.trailing_stop_enabled or not hasattr(adapter, "place_trailing_stop_order"):
+        return {"status": "skipped"}
+    exit_side = "sell" if proposal.side.lower() == "buy" else "buy"
+    trailing_order_request = OrderRequest(
+        symbol=proposal.symbol,
+        side=exit_side,
+        quantity=float(order.get("quantity") or order_request.quantity),
+        asset_type=proposal.asset_type,
+        exchange=proposal.exchange,
+        stop_loss=0,
+        take_profit=0,
+        client_order_id=f"trailing-stop-{managed_exit_id}",
+        quote_currency=order_request.quote_currency,
+        broker_pair=order.get("pair"),
+    )
+    try:
+        native_stop = adapter.place_trailing_stop_order(trailing_order_request, policy.trailing_stop_pct)
+    except Exception as exc:  # noqa: BLE001 - never let stop-attachment failure lose a confirmed entry
+        native_stop = {"status": "attach_failed", "reason": str(exc)}
+    native_order_id = str(native_stop.get("id") or native_stop.get("order_id") or "")
+    if native_stop.get("status") in {"accepted", "submitted"} and native_order_id:
+        record_native_stop_order_id(db_path, managed_exit_id, native_order_id)
+        register_kraken_order_ownership(
+            db_path,
+            broker_order_id=native_order_id,
+            logical_trade_id=logical_trade_id,
+            proposal_id=proposal.proposal_id,
+            managed_exit_id=managed_exit_id,
+            order_role="exit",
+            symbol=proposal.symbol,
+            side=exit_side,
+            source="native_trailing_stop_entry",
+        )
+    else:
+        record_seatbelt_event(
+            db_path,
+            broker=adapter.name,
+            symbol=proposal.symbol,
+            event_type="native_trailing_stop_attach_failed",
+            result="degraded",
+            message="Native Kraken trailing-stop placement failed; falling back to software-side trailing-stop monitoring.",
+            payload={"managed_exit_id": managed_exit_id, "native_stop_result": native_stop},
+        )
+    return native_stop
 
 
 def _snapshot_equity_basis_matches_context(peak_equity: float, account_equity: float) -> bool:

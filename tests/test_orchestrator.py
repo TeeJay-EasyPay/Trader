@@ -8,6 +8,7 @@ import unittest
 from contextlib import closing, redirect_stdout
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -20,7 +21,15 @@ from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, O
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.operational import initialize_operational_schema
 from ai_trader.kraken_reconciliation import set_reconciliation_hold
-from ai_trader.orchestrator import InvestmentOrchestrator, OrchestratorContext, _snapshot_equity_basis_matches_context, _kraken_min_order_floor_notional
+from ai_trader.multi_broker import open_managed_exits, record_managed_trade_exit
+from ai_trader.orchestrator import (
+    InvestmentOrchestrator,
+    OrchestratorContext,
+    _attach_kraken_native_trailing_stop,
+    _kraken_min_order_floor_notional,
+    _order_request,
+    _snapshot_equity_basis_matches_context,
+)
 from ai_trader.scheduler import ResearchScheduler
 from ai_trader.sprint6 import apply_founder_strategy_authorization, seed_default_strategy_registry, set_kill_switch
 
@@ -716,6 +725,161 @@ class KrakenExchangeMinimumOrderTests(unittest.TestCase):
             # A negligible exchange minimum must never be the reason for a rejection --
             # unaffected, this new check simply never fires.
             self.assertNotIn("kraken_exchange_minimum_not_tradeable_at_current_limits", decision.rejection_reason or "")
+
+
+class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
+    """2026-08-19: Founder asked for Kraken's own trailing-stop order to protect a fresh
+    entry, not just software polling, so the stop-loss keeps working even if AI Trader's
+    process is briefly down or Kraken is unreachable during heavy traffic.
+
+    Exercises _attach_kraken_native_trailing_stop directly rather than the full
+    evaluate_recommendation pipeline -- it was pulled out specifically so these tests don't
+    need a from-scratch test database to clear every unrelated governance gate (due
+    diligence, investment score, crypto policy, reconciliation hold) the way every other
+    Kraken orchestrator test in this file explicitly disclaims doing (see
+    KrakenExchangeMinimumOrderTests above)."""
+
+    class FakeKrakenAdapter:
+        name = "kraken"
+
+        def __init__(self, *, native_stop_result=None, native_stop_raises=None):
+            self.trailing_stop_calls = []
+            self._native_stop_result = native_stop_result
+            self._native_stop_raises = native_stop_raises
+
+        def place_trailing_stop_order(self, order_request, trailing_pct):
+            self.trailing_stop_calls.append((order_request, trailing_pct))
+            if self._native_stop_raises:
+                raise self._native_stop_raises
+            return self._native_stop_result or {"id": "native-stop-1", "status": "accepted"}
+
+    class AdapterWithoutNativeTrailingStop:
+        name = "kraken"
+
+    def _entry_fixture(self, *, trailing_stop_enabled=True):
+        policy = SimpleNamespace(trailing_stop_enabled=trailing_stop_enabled, trailing_stop_pct=0.02)
+        crypto_proposal = proposal(symbol="BTC", asset_type="crypto", exchange="KRAKEN", entry_price=50_000.0, stop_loss=49_000.0, take_profit=52_000.0)
+        order = {"id": "entry-order-1", "status": "accepted", "quantity": 0.002, "pair": "XBTGBP"}
+        order_request = _order_request(crypto_proposal, 100.0)
+        return policy, crypto_proposal, order, order_request
+
+    def test_attaches_a_native_trailing_stop_when_the_policy_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter()
+            policy, crypto_proposal, order, order_request = self._entry_fixture()
+            managed = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="BTC", side="buy", quantity=0.002,
+                entry_order_id="entry-order-1", entry_price=50_000.0, stop_loss=49_000.0,
+                take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
+                trailing_stop_pct=policy.trailing_stop_pct,
+            )
+
+            result = _attach_kraken_native_trailing_stop(
+                db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
+                logical_trade_id="logical-1", order=order, order_request=order_request,
+                managed_exit_id=int(managed["managed_exit_id"]),
+            )
+
+            self.assertEqual(result["status"], "accepted")
+            self.assertEqual(len(adapter.trailing_stop_calls), 1)
+            trailing_order_request, trailing_pct = adapter.trailing_stop_calls[0]
+            self.assertEqual(trailing_order_request.side, "sell")
+            self.assertEqual(trailing_order_request.quantity, 0.002)
+            self.assertEqual(trailing_order_request.broker_pair, "XBTGBP")
+            self.assertAlmostEqual(trailing_pct, 0.02)
+            open_exits = open_managed_exits(db_path, "kraken")
+            self.assertEqual(open_exits[0]["native_stop_order_id"], "native-stop-1")
+
+    def test_does_not_attach_a_native_stop_when_the_policy_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter()
+            policy, crypto_proposal, order, order_request = self._entry_fixture(trailing_stop_enabled=False)
+            managed = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="BTC", side="buy", quantity=0.002,
+                entry_order_id="entry-order-1", entry_price=50_000.0, stop_loss=49_000.0,
+                take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
+            )
+
+            result = _attach_kraken_native_trailing_stop(
+                db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
+                logical_trade_id="logical-1", order=order, order_request=order_request,
+                managed_exit_id=int(managed["managed_exit_id"]),
+            )
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(adapter.trailing_stop_calls, [])
+            open_exits = open_managed_exits(db_path, "kraken")
+            self.assertIsNone(open_exits[0]["native_stop_order_id"])
+
+    def test_an_adapter_without_native_trailing_stop_support_is_skipped_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.AdapterWithoutNativeTrailingStop()
+            policy, crypto_proposal, order, order_request = self._entry_fixture()
+            managed = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="BTC", side="buy", quantity=0.002,
+                entry_order_id="entry-order-1", entry_price=50_000.0, stop_loss=49_000.0,
+                take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
+                trailing_stop_pct=policy.trailing_stop_pct,
+            )
+
+            result = _attach_kraken_native_trailing_stop(
+                db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
+                logical_trade_id="logical-1", order=order, order_request=order_request,
+                managed_exit_id=int(managed["managed_exit_id"]),
+            )
+
+            self.assertEqual(result["status"], "skipped")
+
+    def test_a_failed_native_stop_attachment_does_not_lose_the_confirmed_entry(self):
+        # Falls back to today's software trailing-stop tracking: trailing_stop_pct is
+        # already recorded on the managed exit (set before this function ever runs), so
+        # monitor_managed_exits keeps protecting the position, just not natively.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter(native_stop_result={"status": "rejected", "reason": "pair_not_supported"})
+            policy, crypto_proposal, order, order_request = self._entry_fixture()
+            managed = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="BTC", side="buy", quantity=0.002,
+                entry_order_id="entry-order-1", entry_price=50_000.0, stop_loss=49_000.0,
+                take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
+                trailing_stop_pct=policy.trailing_stop_pct,
+            )
+
+            result = _attach_kraken_native_trailing_stop(
+                db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
+                logical_trade_id="logical-1", order=order, order_request=order_request,
+                managed_exit_id=int(managed["managed_exit_id"]),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            open_exits = open_managed_exits(db_path, "kraken")
+            self.assertIsNone(open_exits[0]["native_stop_order_id"])
+            self.assertAlmostEqual(open_exits[0]["trailing_stop_pct"], 0.02)
+
+    def test_a_native_stop_placement_exception_does_not_propagate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            adapter = self.FakeKrakenAdapter(native_stop_raises=RuntimeError("network timeout"))
+            policy, crypto_proposal, order, order_request = self._entry_fixture()
+            managed = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="BTC", side="buy", quantity=0.002,
+                entry_order_id="entry-order-1", entry_price=50_000.0, stop_loss=49_000.0,
+                take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
+                trailing_stop_pct=policy.trailing_stop_pct,
+            )
+
+            result = _attach_kraken_native_trailing_stop(
+                db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
+                logical_trade_id="logical-1", order=order, order_request=order_request,
+                managed_exit_id=int(managed["managed_exit_id"]),
+            )
+
+            self.assertEqual(result["status"], "attach_failed")
+            open_exits = open_managed_exits(db_path, "kraken")
+            self.assertIsNone(open_exits[0]["native_stop_order_id"])
 
 
 class KrakenPairMinimumNotionalTests(unittest.TestCase):
