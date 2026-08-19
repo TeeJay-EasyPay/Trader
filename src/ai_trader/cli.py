@@ -260,8 +260,9 @@ def main(argv: list[str] | None = None) -> int:
                     pulse,
                     scheduled_for=_time_bucket(
                         datetime.now(timezone.utc),
-                        max(60, settings.worker_job_timeout_seconds),
+                        max(60, settings.kraken_startup_reconciliation_timeout_seconds),
                     ),
+                    timeout_seconds=settings.kraken_startup_reconciliation_timeout_seconds,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve worker availability and surface the fault
                 startup_reconciliation = {

@@ -78,6 +78,16 @@ class Settings:
     production_snapshot_interval_seconds: int = 600
     worker_heartbeat_interval_seconds: int = 30
     worker_job_timeout_seconds: int = 180
+    # 2026-08-19 hosted finding: kraken-startup-reconciliation replays up to 1000 persisted
+    # historical Kraken events, oldest-first, each requiring its own round trip to Postgres --
+    # confirmed live it needs multiple hundred-second passes to work through a real backlog
+    # (one that had silently accumulated since 2026-08-12, when a separate bug -- see
+    # _merge_managed_exit_payload's docstring in multi_broker.py -- was blocking every single
+    # learning-workflow enqueue). Unlike every other worker job, this one runs exactly once at
+    # process startup, not on a recurring schedule, so a longer budget here doesn't cost
+    # anything on an ongoing basis -- it only has to be long enough to let one real backlog
+    # actually finish instead of timing out and needing another full worker restart to resume.
+    kraken_startup_reconciliation_timeout_seconds: int = 900
     evidence_snapshot_job_timeout_seconds: int = 300
     research_job_timeout_seconds: int = 450
     auto_execution_job_timeout_seconds: int = 600
@@ -170,6 +180,7 @@ def load_settings() -> Settings:
         production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 600),
         worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
+        kraken_startup_reconciliation_timeout_seconds=_int_env("AI_TRADER_KRAKEN_STARTUP_RECONCILIATION_TIMEOUT_SECONDS", 900),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),
         research_job_timeout_seconds=_int_env("AI_TRADER_RESEARCH_JOB_TIMEOUT_SECONDS", 450),
         auto_execution_job_timeout_seconds=_int_env("AI_TRADER_AUTO_EXECUTION_TIMEOUT_SECONDS", 600),
