@@ -422,11 +422,42 @@ _TRADE_EVIDENCE_INSERT_SQL = """
 """
 
 
+def _normalize_broker_timestamp(value: Any) -> str | None:
+    """Convert a raw Kraken-style Unix-epoch timestamp to a real ISO-8601 UTC string.
+
+    2026-08-19 hosted finding: Kraken's own API returns timestamps as raw epoch floats
+    (e.g. a TradesHistory trade's "time" field), never ISO-8601 strings the way Alpaca's
+    API does -- stored as-is, `new Date("1787154660.049352")` on the mobile side parses to
+    Invalid Date, silently dropping every real Kraken exit from the Forecast Centre's
+    closed-trade sample even after ai_decided correctly recognised them as AI-decided.
+    This exact bug class already caused a real production incident once before (2026-08-08,
+    see BROKER_TRADE_HISTORY's exclusion comment above): a plain string comparison against
+    an epoch-formatted value does not sort the way a real date would, and a retention pass
+    deleted rows it should have kept as a direct result -- that incident was worked around
+    by excluding one table from pruning, not by fixing the root cause. This is the actual
+    fix, at the one place (_trade_evidence_values) that writes every trade's observed_at/
+    opened_at/closed_at. A value that fails to parse as a bare number (any real ISO string,
+    which always contains non-numeric characters) passes through unchanged.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        epoch_seconds = float(text)
+    except (TypeError, ValueError):
+        return text
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
+
+
 def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...]:
     broker_order_id = _first(event, "order_id", "ordertxid", "id", "client_order_id")
     broker_trade_id = _first(event, "trade_id", "activity_id", "fill_id", "id")
     status = str(_first(event, "status", "order_status", "type") or "observed").lower()
-    observed_at = str(_first(event, "updated_at", "transaction_time", "time", "timestamp", "filled_at", "created_at") or utc_now_iso())
+    observed_at = _normalize_broker_timestamp(
+        _first(event, "updated_at", "transaction_time", "time", "timestamp", "filled_at", "created_at")
+    ) or utc_now_iso()
     symbol = _first(event, "symbol", "pair")
     quantity = _number(_first(event, "qty", "quantity", "vol", "filled_qty", "cum_qty"))
     price = _number(_first(event, "price", "filled_avg_price", "average_price", "avg_price"))
@@ -437,7 +468,8 @@ def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...
         str(symbol).upper() if symbol else None, _first(event, "side", "type"), status, quantity, price,
         _number(_first(event, "filled_avg_price", "average_price", "avg_price")),
         _number(_first(event, "fee", "fees", "commission")), _number(_first(event, "realized_pnl", "pnl", "profit_loss")),
-        _first(event, "opened_at", "created_at"), _first(event, "closed_at", "filled_at"),
+        _normalize_broker_timestamp(_first(event, "opened_at", "created_at")),
+        _normalize_broker_timestamp(_first(event, "closed_at", "filled_at")),
         event.get("entry_reason"), event.get("exit_reason"), _json(event),
     )
 

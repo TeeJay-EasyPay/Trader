@@ -366,6 +366,40 @@ class ProductionEvidenceTests(unittest.TestCase):
             xrp_row = next(row for row in payload["closed_trade_history"] if row["symbol"] == "XRPGBP")
             self.assertEqual(xrp_row["ai_decided"], True)
 
+    def test_normalize_broker_timestamp_converts_krakens_raw_epoch_seconds_to_iso(self):
+        # 2026-08-19 hosted finding: Kraken's own API returns timestamps as raw epoch
+        # floats (e.g. a TradesHistory trade's own "time" field, confirmed live:
+        # observed_at was literally stored as the string "1787154660.049352"). Stored as-is,
+        # `new Date("1787154660.049352")` on the mobile side parses to Invalid Date, silently
+        # dropping every real Kraken exit from the Forecast Centre's sample even after
+        # ai_decided correctly recognised them as AI-decided. This exact bug class already
+        # caused a real production incident once before (2026-08-08, see
+        # BROKER_TRADE_HISTORY's exclusion comment in this file) -- worked around there by
+        # excluding a table from pruning, not by fixing the root cause. This is the real fix.
+        result = production_evidence._normalize_broker_timestamp("1787154660.049352")
+        self.assertEqual(result, "2026-08-19T15:51:00.049352+00:00")
+
+    def test_normalize_broker_timestamp_passes_through_a_real_iso_string_unchanged(self):
+        # Alpaca's API already returns real ISO-8601 strings -- must never be mangled.
+        result = production_evidence._normalize_broker_timestamp("2026-08-12T13:33:46.716923Z")
+        self.assertEqual(result, "2026-08-12T13:33:46.716923Z")
+
+    def test_normalize_broker_timestamp_handles_none_and_empty_string(self):
+        self.assertIsNone(production_evidence._normalize_broker_timestamp(None))
+        self.assertIsNone(production_evidence._normalize_broker_timestamp(""))
+
+    def test_trade_evidence_values_normalizes_krakens_raw_epoch_observed_at(self):
+        # End-to-end: a real Kraken TradesHistory-shaped event (raw epoch "time" field, no
+        # opened_at/closed_at/created_at/filled_at keys at all -- Kraken's API has none of
+        # those) must still end up with a real, parseable ISO observed_at, not the raw
+        # epoch string that broke the Forecast Centre's date parsing.
+        values = production_evidence._trade_evidence_values("kraken", {
+            "id": "order-xrp-exit", "status": "filled", "symbol": "XRPGBP", "side": "sell",
+            "qty": 2.7023, "price": 0.78735, "time": 1787154660.049352,
+        })
+        observed_at = values[1]
+        self.assertEqual(observed_at, "2026-08-19T15:51:00.049352+00:00")
+
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
