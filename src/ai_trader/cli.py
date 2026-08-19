@@ -235,11 +235,22 @@ def main(argv: list[str] | None = None) -> int:
         service.intelligence.seed_initial_data()
         worker_id = default_worker_id("background-worker")
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
-        with WorkerHeartbeatPulse(
-            settings.db_path,
-            worker_id,
-            interval_seconds=settings.worker_heartbeat_interval_seconds,
-        ) as pulse:
+        with (
+            # 2026-08-19 Founder-directed fix: evidence-snapshot runs on its own thread/timer
+            # here, independent of the main loop below -- see EvidenceSnapshotScheduler's
+            # docstring for why the old in-loop scheduling left the mobile app reading stale
+            # for part of every cycle.
+            EvidenceSnapshotScheduler(
+                service,
+                worker_id,
+                interval_seconds=settings.production_snapshot_interval_seconds,
+            ),
+            WorkerHeartbeatPulse(
+                settings.db_path,
+                worker_id,
+                interval_seconds=settings.worker_heartbeat_interval_seconds,
+            ) as pulse,
+        ):
             pulse.set_job("kraken-startup-reconciliation")
             try:
                 startup_reconciliation = _run_pulsed_job(
@@ -307,22 +318,10 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     broker_poll_alpaca = broker_poll_results["broker-poll-alpaca"]
                     broker_poll_kraken = broker_poll_results["broker-poll-kraken"]
-                    snapshot_schedule = next((value for name, value in due_jobs if name == "evidence-snapshot"), None)
-                    if snapshot_schedule:
-                        scheduled_results["evidence-snapshot"] = _run_pulsed_job(
-                            service,
-                            "evidence-snapshot",
-                            worker_id,
-                            pulse,
-                            scheduled_for=snapshot_schedule,
-                            # Captures both brokers' portfolios, governance, persistence,
-                            # and founder-evidence generation in one job -- strictly more
-                            # Postgres round trips than any other worker job sharing the
-                            # default budget. Logs showed it hitting the shared 180s
-                            # timeout on every cycle even with no single stage visibly
-                            # hung (AT-ED-003 follow-up, 2026-07-31 hosted evidence).
-                            timeout_seconds=service.settings.evidence_snapshot_job_timeout_seconds,
-                        )
+                    # evidence-snapshot no longer runs here as of 2026-08-19 -- it has its
+                    # own independent scheduler (EvidenceSnapshotScheduler, started alongside
+                    # this loop in the run-worker command) so its cadence never has to wait
+                    # for this loop's own jobs to finish. See that class's docstring.
                     auto_execution_results = _run_broker_job_group(
                         service,
                         "auto-execution",
@@ -834,15 +833,74 @@ class WorkerHeartbeatPulse:
         )
 
 
+class EvidenceSnapshotScheduler:
+    """Runs evidence-snapshot on its own independent timer, off the main worker loop.
+
+    2026-08-19 Founder-directed fix. Two compounding problems, confirmed live the same day:
+    (1) production_snapshot_interval_seconds defaulted to 1200s (20 min) while the mobile
+    app's own staleness threshold (FOUNDER_SNAPSHOT_MAX_AGE_SECONDS, production_evidence.py)
+    is 900s (15 min) -- a snapshot refreshing every 20 minutes against a 15-minute staleness
+    bar guarantees the app reads "stale" for part of every cycle, by construction, regardless
+    of how fast anything else runs. (2) even a correctly-configured interval only got a
+    chance to fire once per lap of the shared sequential `while True:` worker loop -- and
+    that lap's OTHER jobs (auto-execution, research) routinely took 20-40+ minutes once real
+    trading activity was happening (confirmed live: auto-execution-alpaca 582s,
+    crypto-research 242s, market-open-equity still running past 11 minutes, same day), so
+    evidence-snapshot's own turn arrived far less often than even the misconfigured interval
+    intended.
+
+    Runs on its own daemon thread with its own timer, calling the exact same
+    _run_worker_cycle_job() the main loop used to call inline -- same idempotency claiming,
+    subprocess isolation, and timeout enforcement, just no longer waiting behind whatever the
+    main loop's other jobs are doing. Safe to run concurrently with the main loop: every
+    write in this codebase already opens its own database connection per call (no shared
+    connection state across threads), the same property that already lets
+    auto-execution-alpaca/-kraken run concurrently via _run_broker_job_group.
+    """
+
+    def __init__(self, service, worker_id: str, *, interval_seconds: int) -> None:
+        self.service = service
+        self.worker_id = worker_id
+        self.interval_seconds = max(60, int(interval_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="evidence-snapshot-scheduler", daemon=True)
+
+    def __enter__(self) -> "EvidenceSnapshotScheduler":
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self._stop.set()
+        self._thread.join(timeout=self.interval_seconds + 30)
+
+    def _run(self) -> None:
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                result = _run_worker_cycle_job(
+                    self.service,
+                    "evidence-snapshot",
+                    self.worker_id,
+                    scheduled_for=_time_bucket(now, self.interval_seconds),
+                    timeout_seconds=self.service.settings.evidence_snapshot_job_timeout_seconds,
+                    restart_worker_on_timeout=True,
+                )
+                print(f"[evidence-snapshot-scheduler] status={result.get('status')}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - one failed cycle must never kill this thread
+                print(f"[evidence-snapshot-scheduler] status=failed error={exc!r}", flush=True)
+            if self._stop.wait(self.interval_seconds):
+                return
+
+
 def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tuple[str, str]]:
-    """Return durable work buckets owned by the worker, independent of the mobile app."""
+    """Return durable work buckets owned by the worker, independent of the mobile app.
+
+    evidence-snapshot is deliberately NOT included here as of 2026-08-19 -- it now runs on
+    its own independent timer (EvidenceSnapshotScheduler) rather than waiting for a turn in
+    this shared sequential loop's due-jobs list. See that class's docstring for why.
+    """
     now = now or datetime.now(timezone.utc)
-    due = [
-        (
-            "evidence-snapshot",
-            _time_bucket(now, max(60, settings.production_snapshot_interval_seconds)),
-        )
-    ]
+    due: list[tuple[str, str]] = []
     if not settings.worker_research_enabled:
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)

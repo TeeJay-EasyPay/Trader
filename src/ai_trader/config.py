@@ -61,7 +61,21 @@ class Settings:
     research_scheduler_limit: int = 30
     auto_execution_interval_seconds: int = 60
     worker_research_enabled: bool = True
-    production_snapshot_interval_seconds: int = 1200
+    # 2026-08-19 hosted finding: this defaulted to 1200s (20 min) while the mobile app's own
+    # staleness threshold (FOUNDER_SNAPSHOT_MAX_AGE_SECONDS, production_evidence.py) is 900s
+    # (15 min) -- a snapshot scheduled to refresh only every 20 minutes against a 15-minute
+    # staleness bar guaranteed the app read "stale" for part of every cycle, by construction.
+    # Two real, competing constraints, both previously confirmed live and neither one simply
+    # overridable: staleness wants this shorter; the 2026-08-12 Supabase egress finding (see
+    # test_production_snapshot_interval_balances_staleness_against_egress) wants
+    # it longer, since _load_founder_evidence_rows re-fetches ~99 of 100 mostly-unchanged
+    # PRODUCTION_RECOMMENDATION_EVIDENCE rows every single run. 600s halves that job's run
+    # frequency versus the old 1200s (not the 4x increase a return to the original 300s
+    # default would cause) while still leaving a real ~135s safety margin under the 900s
+    # staleness threshold even accounting for the job's own ~150-165s runtime. See cli.py's
+    # EvidenceSnapshotScheduler for the other half of this fix -- decoupling from the shared
+    # worker loop so this interval is actually achievable regardless of what else is running.
+    production_snapshot_interval_seconds: int = 600
     worker_heartbeat_interval_seconds: int = 30
     worker_job_timeout_seconds: int = 180
     evidence_snapshot_job_timeout_seconds: int = 300
@@ -153,7 +167,7 @@ def load_settings() -> Settings:
         research_scheduler_limit=_int_env("RESEARCH_SCHEDULER_LIMIT", 30),
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
         worker_research_enabled=_bool_env("AI_TRADER_WORKER_RESEARCH_ENABLED", True),
-        production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 1200),
+        production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 600),
         worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),

@@ -103,8 +103,14 @@ services:
         value: "false"
       - key: AI_TRADER_WORKER_RESEARCH_ENABLED
         value: "true"
+      # 2026-08-19 hosted finding: 1200s (20 min) against the app's own 900s (15 min)
+      # staleness threshold guaranteed the app read "stale" for part of every cycle, by
+      # construction. 600s (not the original 300s default) deliberately balances that
+      # against the 2026-08-12 Supabase egress finding this job is also subject to -- see
+      # config.py's production_snapshot_interval_seconds and cli.py's
+      # EvidenceSnapshotScheduler for the full reasoning.
       - key: AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS
-        value: "1200"
+        value: "600"
       - key: AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS
         value: "30"
       - key: AI_TRADER_BROKER_POLL_INTERVAL_SECONDS

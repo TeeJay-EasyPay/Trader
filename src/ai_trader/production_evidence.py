@@ -687,7 +687,10 @@ _JOB_HEALTH_SPECS: tuple[tuple[str, str, int, str | None, tuple[str, ...]], ...]
     ("auto-execution-alpaca", "Alpaca Auto-Execution", 180, "alpaca", ("auto-execution-alpaca", "auto-execution")),
     ("auto-execution-kraken", "Kraken Auto-Execution", 180, "kraken", ("auto-execution-kraken", "auto-execution")),
     ("managed-exits", "Managed Exits", 180, None, ("managed-exits",)),
-    ("evidence-snapshot", "Evidence Snapshot", 1200, None, ("evidence-snapshot",)),
+    # 2026-08-19: matches production_snapshot_interval_seconds's new default (600s) --
+    # config.py's own comment explains the balance between the app's 900s staleness
+    # threshold and this job's known Supabase egress cost per run.
+    ("evidence-snapshot", "Evidence Snapshot", 600, None, ("evidence-snapshot",)),
     ("push-dispatch", "Push Notification Dispatch", 90, None, ("push-dispatch",)),
     ("crypto-research", "Crypto Research (24/7)", 4200, None, ("crypto-research",)),
     ("daily-learning", "Daily Learning", 90000, None, ("daily-learning",)),

@@ -414,27 +414,71 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertEqual(result, expected)
         refresh.assert_called_once_with(service.settings.db_path, service.settings)
 
-    def test_production_snapshot_interval_defaults_to_twenty_minutes_not_five(self):
-        # 2026-08-12 Supabase egress finding: the evidence-snapshot job's own
-        # _load_founder_evidence_rows fetches up to 100 full PRODUCTION_RECOMMENDATION_EVIDENCE
-        # rows (real, uncapped-by-time SELECT *) every time it runs. Real production evidence:
-        # only ~105 new recommendations are created per 24h, so on a 5-minute cadence,
-        # consecutive refreshes re-transfer the same ~99 of 100 rows essentially unchanged --
-        # confirmed live via a direct sample (recent recommendation rows run tens of KB each,
-        # inflated by the historical-analogue/backtest/knowledge-base context Phase C/D added
-        # to proposals). _JOB_HEALTH_SPECS already expected this job on a 1200s (20-minute)
-        # cadence (production_evidence.py's own job-health table), so the 300s scheduling
-        # default was already inconsistent with the rest of the codebase's own expectations,
-        # not just expensive. Raising the default to 1200s cuts this redundant re-fetch volume
-        # by roughly 4x with no reduction in how much history is shown (unlike a LIMIT cut,
-        # this changes cadence, not content).
+    def test_production_snapshot_interval_balances_staleness_against_egress(self):
+        # 2026-08-12 Supabase egress finding (why this was ever raised from 300s): the
+        # evidence-snapshot job's own _load_founder_evidence_rows fetches up to 100 full
+        # PRODUCTION_RECOMMENDATION_EVIDENCE rows (real, uncapped-by-time SELECT *) every
+        # time it runs. Real production evidence: only ~105 new recommendations are created
+        # per 24h, so on a fast cadence, consecutive refreshes re-transfer the same ~99 of
+        # 100 rows essentially unchanged (recent recommendation rows run tens of KB each).
+        # Raising the interval cuts this redundant re-fetch volume with no reduction in how
+        # much history is shown.
+        #
+        # 2026-08-19 hosted finding (why 1200s, the fix for the above, was itself wrong): the
+        # mobile app's own staleness threshold (FOUNDER_SNAPSHOT_MAX_AGE_SECONDS,
+        # production_evidence.py) is 900s (15 min) -- a snapshot refreshing only every 20
+        # minutes against a 15-minute staleness bar guaranteed the app read "stale" for part
+        # of every cycle, by construction, confirmed live. 600s is the deliberate balance:
+        # halves the egress-cost job's run frequency versus 1200s (not the 4x increase a
+        # full return to 300s would cause) while leaving a real ~135s margin under the 900s
+        # staleness threshold even accounting for the job's own ~150-165s runtime.
         previous = os.environ.pop("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", None)
         try:
             settings = load_settings()
-            self.assertEqual(settings.production_snapshot_interval_seconds, 1200)
+            self.assertEqual(settings.production_snapshot_interval_seconds, 600)
         finally:
             if previous is not None:
                 os.environ["AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS"] = previous
+
+    def test_due_worker_jobs_no_longer_includes_evidence_snapshot(self):
+        # 2026-08-19 Founder-directed fix: evidence-snapshot used to be the one
+        # unconditional entry _due_worker_jobs always returned, consumed once per lap of
+        # the shared sequential worker loop. It now runs on its own independent timer
+        # (EvidenceSnapshotScheduler) instead -- confirmed live that waiting for a turn in
+        # this loop left the mobile app reading "stale" for a large fraction of every cycle
+        # once real trading activity made the loop's other jobs routinely take 20-40+
+        # minutes. Regression coverage: it must never reappear here.
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=600,
+            worker_research_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc))
+        self.assertNotIn("evidence-snapshot", [name for name, _ in due])
+
+    def test_evidence_snapshot_scheduler_calls_the_same_job_runner_the_old_in_loop_call_used(self):
+        # 2026-08-19 Founder-directed fix: EvidenceSnapshotScheduler replaces the removed
+        # in-loop _run_pulsed_job("evidence-snapshot", ...) call -- confirms it reuses the
+        # same underlying _run_worker_cycle_job (idempotency claiming, subprocess isolation,
+        # timeout enforcement) with the job's own configured timeout, not a made-up one.
+        from ai_trader.cli import EvidenceSnapshotScheduler
+
+        service = SimpleNamespace(settings=SimpleNamespace(evidence_snapshot_job_timeout_seconds=300))
+        scheduler = EvidenceSnapshotScheduler(service, "worker-1", interval_seconds=600)
+        # Exit the internal loop after exactly one iteration instead of waiting on the real
+        # thread timer (interval_seconds is floored to 60s in __init__, far too slow for a
+        # unit test).
+        scheduler._stop.wait = lambda timeout: True
+        with patch("ai_trader.cli._run_worker_cycle_job", return_value={"status": "completed"}) as run_job:
+            scheduler._run()
+        run_job.assert_called_once()
+        args, kwargs = run_job.call_args
+        self.assertEqual(args[:3], (service, "evidence-snapshot", "worker-1"))
+        self.assertEqual(kwargs["timeout_seconds"], 300)
+        self.assertTrue(kwargs["restart_worker_on_timeout"])
 
     def test_due_worker_jobs_omits_external_intelligence_refresh_when_disabled(self):
         from datetime import datetime, timezone
