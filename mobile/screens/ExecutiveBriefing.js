@@ -222,6 +222,12 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
           without needing to already know the AT-ED-017 history behind the two figures. */}
       <PositionLine label="This week (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
       <PositionLine label="This month (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
+      {/* 2026-08-19 Founder request: "Realised this month" existed but there was no daily
+          equivalent - the leading prose sentence above states today's realised/unrealised
+          split in words, but nothing put a real number next to it the same way the monthly
+          figure gets one. Same real data (realizedPnlByCurrencyToday, already computed for
+          the prose sentence), just also surfaced as its own line. */}
+      <PositionLine label="Realised today (closed trades only)" value={formatByCurrency(realizedPnlByCurrencyToday(performanceAttribution))} />
       {/* AT-ED-017 (Founder request, 2026-08-05): "This month" above is a portfolio-value delta
           (realised + unrealised mixed, like "Today"), not specifically realised gains - a
           distinct line so the Founder can watch realised profit accumulate through the month
@@ -534,6 +540,14 @@ function ClosingRecommendationCard({ themes, recommendations, marketCentre, aver
 
 function rhythmMark(stage, isCurrent) {
   if (stage.status === 'completed') return '✓';
+  // 2026-08-19 Founder request: '○' next to "Learning Complete"/"Strategy Committee"/"Risk
+  // Committee" read as "hasn't happened yet today, but will tick like Research did" - it
+  // never will, by design (see investmentRhythm.js: those three run continuously
+  // per-recommendation, not as a scheduled daily batch with its own timestamp, so this app
+  // will never fabricate a "complete" tick for them). A distinct mark plus the real reason
+  // (stage.note, already computed, previously unrendered) makes that permanent-by-design
+  // state visually different from "pending today" instead of looking like the same thing.
+  if (stage.status === 'not_tracked') return '–';
   if (isCurrent) return '▶';
   return '○';
 }
@@ -545,7 +559,7 @@ function InvestmentRhythmTimeline({ status, founderBriefCreatedAt }) {
     founderBriefCreatedAt,
   });
   return (
-    <CollapsibleSection title="Investment Rhythm" subtitle="Today's schedule, current stage highlighted.">
+    <CollapsibleSection title="Investment Rhythm" subtitle="Today's schedule, current stage highlighted. '–' marks a stage that runs continuously, not on this daily schedule.">
       {rhythm.stages.map((stage) => {
         const isCurrent = rhythm.scheduledCurrent?.key === stage.key;
         return (
@@ -553,6 +567,7 @@ function InvestmentRhythmTimeline({ status, founderBriefCreatedAt }) {
             <Text style={isCurrent ? styles.cardTitle : styles.bodyText}>
               {rhythmMark(stage, isCurrent)} {stage.name}{isCurrent ? ' (current stage)' : ''}
             </Text>
+            {stage.status === 'not_tracked' ? <Text style={styles.metricLabel}>{stage.note}</Text> : null}
           </View>
         );
       })}

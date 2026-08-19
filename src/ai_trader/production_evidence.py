@@ -569,33 +569,52 @@ def _load_closed_trade_history(db_path: Path, *, limit: int = 200) -> list[dict[
 
 
 def _ai_decided_broker_order_ids(db_path: Path) -> set[str]:
-    """Every broker_order_id AI Trader's own production path actually submitted.
+    """Every broker_order_id AI Trader's own production path actually submitted, entry or exit.
 
     2026-08-18 Founder request: separate the AI's real trading judgment from whatever else
     is sitting in a broker account. orchestrator.py's evaluate_recommendation is the only
-    production order-placement path (for both brokers) -- it links the broker's resulting
-    order id to a real proposal_id immediately after submission via link_broker_order(),
-    which is the ONLY call site anywhere in this codebase using event_source="broker_submission"
-    (canonical_trades.py:259) -- confirmed via a full-codebase grep. That specific event_source
-    is the actual signal, not merely "a LOGICAL_TRADE_EVENTS row exists for this order":
-    2026-08-18 hosted incident, caught before ever shipping to the Founder as correct --
-    poll_broker_activity's own broker-history reconciliation (normalize_broker_events ->
-    reconcile_canonical_broker_event, source_endpoint="poll_broker_activity") ALSO writes a
-    LOGICAL_TRADE_EVENTS row for every historical broker order it observes, AI-decided or
-    not (confirmed live: this made every one of the 13 legacy Alpaca exits read as
-    ai_decided=true, the exact opposite of correct). Filtering to event_source=
-    'broker_submission' specifically excludes that general reconciliation noise.
+    production ENTRY-order path (both brokers) -- it links the broker's resulting order id
+    to a real proposal_id via link_broker_order(), the only call site anywhere in this
+    codebase using event_source="broker_submission" (canonical_trades.py:259, confirmed via a
+    full-codebase grep). That specific event_source is the actual signal, not merely "a
+    LOGICAL_TRADE_EVENTS row exists for this order": 2026-08-18 hosted incident, caught
+    before ever shipping to the Founder as correct -- poll_broker_activity's own routine
+    broker-history reconciliation (normalize_broker_events -> reconcile_canonical_broker_event,
+    source_endpoint="poll_broker_activity") ALSO writes a LOGICAL_TRADE_EVENTS row for every
+    historical broker order it observes, AI-decided or not, so the query is filtered to that
+    literal event_source to exclude the general reconciliation noise.
+
+    2026-08-19 hosted finding: that signal alone still marked real, governed Kraken EXITS
+    (and, it turned out, some Kraken entries too) as not AI-decided -- confirmed live, a real
+    XRP position the AI had itself entered (documented due-diligence reasoning on record) and
+    then exited via its own stop/take-profit management showed ai_decided=false on both legs.
+    monitor_managed_exits (execution_service.py) is a SEPARATE production order-placement
+    path from evaluate_recommendation -- it places every real Kraken managed exit and never
+    calls link_broker_order at all, only register_kraken_order_ownership(). That function
+    writes KRAKEN_AI_ORDER_OWNERSHIP unconditionally for both order_role='entry' (called from
+    evaluate_recommendation too) and order_role='exit' (called only from
+    monitor_managed_exits) -- unioning it in is what actually closes the gap for both legs of
+    a real Kraken round trip, not just entries.
     """
     from .canonical_trades import initialize_canonical_trade_schema
+    from .kraken_reconciliation import initialize_kraken_reconciliation_schema
 
     initialize_canonical_trade_schema(db_path)
-    rows = _query(
+    initialize_kraken_reconciliation_schema(db_path)
+    logical_event_rows = _query(
         db_path,
         "SELECT DISTINCT broker_order_id FROM LOGICAL_TRADE_EVENTS WHERE broker_order_id IS NOT NULL AND event_source = {x}",
         ("broker_submission",),
         limit=500,
     )
-    return {str(row["broker_order_id"]) for row in rows}
+    kraken_ownership_rows = _query(
+        db_path,
+        "SELECT DISTINCT broker_order_id FROM KRAKEN_AI_ORDER_OWNERSHIP WHERE broker_order_id IS NOT NULL",
+        limit=500,
+    )
+    return {str(row["broker_order_id"]) for row in logical_event_rows} | {
+        str(row["broker_order_id"]) for row in kraken_ownership_rows
+    }
 
 
 def _load_founder_evidence_rows(

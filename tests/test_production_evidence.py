@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_trader.always_on import record_research_funnel, record_worker_heartbeat
 from ai_trader.api import LocalApiService
 from ai_trader.canonical_trades import link_broker_order
+from ai_trader.kraken_reconciliation import register_kraken_order_ownership
 from ai_trader.sprint6 import normalize_broker_events
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from ai_trader.config import Settings
@@ -332,6 +333,38 @@ class ProductionEvidenceTests(unittest.TestCase):
 
             csl_row = next(row for row in payload["closed_trade_history"] if row["symbol"] == "CSL")
             self.assertEqual(csl_row["ai_decided"], False)
+
+    def test_kraken_managed_exit_is_recognised_as_ai_decided(self):
+        # 2026-08-19 hosted finding: a real XRP position the AI itself entered (documented
+        # due-diligence reasoning on record) and then exited via its own stop/take-profit
+        # management showed ai_decided=false on both legs -- confirmed live.
+        # monitor_managed_exits (execution_service.py) is a separate production
+        # order-placement path from evaluate_recommendation: it places every real Kraken
+        # managed exit and never calls link_broker_order, only
+        # register_kraken_order_ownership(order_role='exit'). Regression coverage: an exit
+        # order registered exactly the way monitor_managed_exits actually registers one must
+        # be recognised as AI-decided.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id="order-xrp-exit",
+                logical_trade_id="proposal-xrp-entry",
+                proposal_id="proposal-xrp-entry",
+                order_role="exit",
+                symbol="XRPGBP",
+                side="sell",
+                source="managed_exit_monitor",
+            )
+            record_trade_evidence(db_path, broker="kraken", event={
+                "id": "order-xrp-exit", "status": "filled", "symbol": "XRPGBP", "side": "sell",
+                "qty": 2.7023, "filled_avg_price": 0.79, "realized_pnl": -0.12,
+            })
+
+            payload = founder_evidence_payload(db_path)
+
+            xrp_row = next(row for row in payload["closed_trade_history"] if row["symbol"] == "XRPGBP")
+            self.assertEqual(xrp_row["ai_decided"], True)
 
     def test_worker_refresh_persists_all_requested_periods(self):
         with tempfile.TemporaryDirectory() as tmp:
