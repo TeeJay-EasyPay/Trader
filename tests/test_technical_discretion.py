@@ -30,13 +30,31 @@ class TechnicalStopLossTests(unittest.TestCase):
         self.assertLess(stop, 97.0, "The stop must sit just BEYOND support, not inside it.")
         self.assertGreater(stop, 96.0, "The buffer should be modest, not a wholesale widening.")
 
-    def test_never_exceeds_the_policy_maximum_stop_distance(self):
-        # A support level far below entry must never widen real risk past policy.
+    def test_a_support_level_beyond_policy_falls_back_to_the_default_not_the_ceiling(self):
+        """2026-08-20 live finding, second-order and more serious than the first.
+
+        A real XLM proposal came out at exactly the 5% policy ceiling because support sat
+        further than 5% away and the old logic clamped out to `widest`. With crypto's
+        fixed-notional sizing that is 2.5x the cash at risk versus the previous 2% stop --
+        for a price level with no technical significance at all. A ceiling is a limit, not
+        a target: when the real structure cannot be respected inside policy, the honest
+        answer is the calibrated default.
+        """
         stop = technical_stop_loss(
             entry_price=100.0, side="buy", support=50.0, resistance=110.0, atr=2.0,
             max_stop_loss_pct=0.05, default_stop_loss_pct=0.03,
         )
-        self.assertAlmostEqual(stop, 95.0, places=6, msg="Must clamp to the 5% policy ceiling, not follow support to 50.")
+        self.assertAlmostEqual(stop, 97.0, places=6, msg="Must fall back to the 3% default, NOT clamp out to the 5% ceiling.")
+        self.assertNotAlmostEqual(stop, 95.0, places=6, msg="Clamping to maximum permitted risk for a meaningless level is the bug.")
+
+    def test_never_exceeds_the_policy_maximum_even_if_the_default_is_wider(self):
+        # The hard ceiling still holds unconditionally: a caller-supplied default wider
+        # than policy must never slip through.
+        stop = technical_stop_loss(
+            entry_price=100.0, side="buy", support=None, resistance=None, atr=None,
+            max_stop_loss_pct=0.05, default_stop_loss_pct=0.20,
+        )
+        self.assertAlmostEqual(stop, 95.0, places=6, msg="A too-wide default must still be clamped to the policy ceiling.")
 
     def test_never_tighter_than_the_noise_floor(self):
         stop = technical_stop_loss(
@@ -60,17 +78,19 @@ class TechnicalStopLossTests(unittest.TestCase):
         self.assertAlmostEqual(stop, 97.0, places=6, msg="A support above entry is not a stop level; use the flat default.")
         self.assertLess(stop, 100.0, "A buy stop must always be below entry.")
 
-    def test_sell_side_places_the_stop_above_resistance_and_clamps(self):
+    def test_sell_side_places_the_stop_above_resistance_and_respects_policy(self):
         stop = technical_stop_loss(
             entry_price=100.0, side="sell", support=90.0, resistance=103.0, atr=2.0,
             max_stop_loss_pct=0.10, default_stop_loss_pct=0.03,
         )
         self.assertGreater(stop, 103.0, "A sell stop must sit just beyond resistance.")
-        clamped = technical_stop_loss(
+        # Mirror of the buy-side finding: a resistance beyond policy falls back to the
+        # default rather than clamping out to maximum permitted risk.
+        beyond_policy = technical_stop_loss(
             entry_price=100.0, side="sell", support=90.0, resistance=150.0, atr=2.0,
             max_stop_loss_pct=0.05, default_stop_loss_pct=0.03,
         )
-        self.assertAlmostEqual(clamped, 105.0, places=6)
+        self.assertAlmostEqual(beyond_policy, 103.0, places=6, msg="Falls back to the 3% default, not the 5% ceiling.")
 
 
 class TechnicalTakeProfitTests(unittest.TestCase):

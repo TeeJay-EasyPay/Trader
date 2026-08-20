@@ -35,38 +35,56 @@ def technical_stop_loss(
     default_stop_loss_pct: float,
     min_stop_loss_pct: float = 0.005,
 ) -> float:
-    """A stop placed just beyond a real technical level, clamped to policy.
+    """A stop placed just beyond a real technical level, or the calibrated default.
 
     Rationale (knowledge/stop_loss_and_take_profit_mechanics.md): a stop sitting just
     inside an obvious support level gets taken out by ordinary noise that the level
     itself would have absorbed; placing it just beyond that level means the stop is hit
     only when the level genuinely fails, which is the actual thesis-invalidation event.
 
-    Clamped at BOTH ends, and this is the safety property that matters:
-      - never further than max_stop_loss_pct from entry (policy ceiling -- a technical
-        level far away must never widen real risk beyond what policy allows)
+    A technical level is used ONLY when it fits inside policy. If the real level sits
+    further away than max_stop_loss_pct, this falls back to default_stop_loss_pct rather
+    than clamping out to the ceiling -- 2026-08-20 live finding, and the distinction
+    matters for real money: clamping produced an XLM stop at exactly the 5% ceiling
+    (2.5x the previous 2% distance, and with crypto's fixed-notional sizing that is 2.5x
+    the cash at risk) sitting at a price with no technical significance whatsoever. A
+    ceiling is a limit, not a target. If the structure cannot be respected within policy,
+    the honest answer is the calibrated volatility-scaled default, not maximum permitted
+    risk for no reason.
+
+    Guarantees, in order:
+      - never further from entry than max_stop_loss_pct (hard policy ceiling)
       - never tighter than min_stop_loss_pct (a stop a hair from entry is noise-triggered
         and would churn the account)
-    Falls back to default_stop_loss_pct whenever no usable level exists.
+      - falls back to default_stop_loss_pct when no usable in-policy level exists
     """
     if entry_price <= 0:
         return 0.0
     is_buy = str(side or "").lower() == "buy"
     level = support if is_buy else resistance
     buffer = atr * 0.25 if atr and atr > 0 else entry_price * 0.002
+    widest = entry_price * (1 - max_stop_loss_pct) if is_buy else entry_price * (1 + max_stop_loss_pct)
+    tightest = entry_price * (1 - min_stop_loss_pct) if is_buy else entry_price * (1 + min_stop_loss_pct)
     candidate: float | None = None
     if level and level > 0:
         candidate = (level - buffer) if is_buy else (level + buffer)
         # A "support" above entry (or resistance below it) is not a stop level for this
-        # side at all -- fall through to the flat default rather than inverting the trade.
+        # side at all -- fall through to the default rather than inverting the trade.
         if is_buy and candidate >= entry_price:
             candidate = None
         elif not is_buy and candidate <= entry_price:
             candidate = None
+        # A level outside policy is not usable either. Reject it rather than clamping to
+        # the ceiling -- see the docstring above for why that distinction is load-bearing.
+        elif is_buy and candidate < widest:
+            candidate = None
+        elif not is_buy and candidate > widest:
+            candidate = None
     if candidate is None:
         candidate = entry_price * (1 - default_stop_loss_pct) if is_buy else entry_price * (1 + default_stop_loss_pct)
-    widest = entry_price * (1 - max_stop_loss_pct) if is_buy else entry_price * (1 + max_stop_loss_pct)
-    tightest = entry_price * (1 - min_stop_loss_pct) if is_buy else entry_price * (1 + min_stop_loss_pct)
+    # Final safety clamp. The technical branch is already inside policy by construction;
+    # this additionally guarantees a caller-supplied default wider than policy can never
+    # slip through, and enforces the noise floor.
     if is_buy:
         return round(min(max(candidate, widest), tightest), 8)
     return round(max(min(candidate, widest), tightest), 8)
