@@ -15,7 +15,8 @@ from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .proposal_context import build_proposal_context
 from .market_intelligence_platform import load_recent_observations_batch
-from .trading_intelligence import evaluate_trade_intelligence, load_recent_candles_batch
+from .technical_discretion import technical_stop_loss, technical_take_profit
+from .trading_intelligence import analyze_price_series, evaluate_trade_intelligence, load_recent_candles_batch
 
 # 2026-08-15 (Founder-requested, following observed buy-high/sell-low entries): four
 # deterministic gates layered onto the crypto entry heuristic below, each translating a
@@ -465,8 +466,33 @@ def propose_crypto_trades(
             volatility_score = row["volatility"]
             volatility_multiplier = 1.0 + max(0.0, min(1.0, float(volatility_score))) if volatility_score is not None else 1.0
             effective_stop_pct = default_stop_loss_pct * volatility_multiplier
-            stop_loss = round(price * (1 - effective_stop_pct), 8)
-            take_profit = round(price * (1 + effective_stop_pct * 2), 8)
+            # Phase 5.5 (2026-08-20, Founder-requested): place the stop/target at REAL
+            # technical levels from the price history Phase 1/2 now provide, instead of a
+            # flat percentage -- but clamped so the result can never be riskier than the
+            # flat calculation above would have been. Discretion within the mandate, never
+            # authority to rewrite it (see technical_discretion.py's module docstring).
+            # max_stop_loss_pct here is the effective volatility-scaled distance, so this
+            # can only ever tighten the stop relative to today's behavior, never widen it.
+            symbol_candles = crypto_candle_history.get(symbol.upper()) or []
+            symbol_metrics = analyze_price_series(symbol_candles) if symbol_candles else {}
+            atr_absolute = symbol_metrics.get("atr_pct") * price if symbol_metrics.get("atr_pct") else None
+            stop_loss = technical_stop_loss(
+                entry_price=price,
+                side="buy",
+                support=symbol_metrics.get("support"),
+                resistance=symbol_metrics.get("resistance"),
+                atr=atr_absolute,
+                max_stop_loss_pct=effective_stop_pct,
+                default_stop_loss_pct=effective_stop_pct,
+            )
+            take_profit = technical_take_profit(
+                entry_price=price,
+                stop_loss=stop_loss,
+                side="buy",
+                resistance=symbol_metrics.get("resistance"),
+                support=symbol_metrics.get("support"),
+                min_reward_risk=2.0,
+            )
             quantity = requested_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0

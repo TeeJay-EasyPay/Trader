@@ -13,6 +13,7 @@ from typing import Any
 
 from .models import TradeProposal, utc_now_iso
 from .operational import safe_score
+from .technical_discretion import conviction_scaled_notional
 
 
 FOUNDATION_SCHEMA = """
@@ -742,6 +743,18 @@ def calculate_capital_allocation(
     risk_limited_qty = max_risk_amount / per_unit_risk if per_unit_risk > 0 else 0.0
     risk_limited_notional = risk_limited_qty * p.entry_price
     approved_notional = min(value for value in [requested_notional, max_position_notional, risk_limited_notional] if value >= 0)
+    # Phase 5.5 (2026-08-20, Founder-requested): use conviction to decide how much of the
+    # already-approved allowance to actually take. Strictly risk-reducing by construction
+    # -- conviction_scaled_notional only ever returns between 50% and 100% of what every
+    # existing policy check above already approved, so this can never increase exposure,
+    # only decline to use the full allowance when the case is weak. Discretion within the
+    # mandate, never authority to rewrite it (see technical_discretion.py).
+    ceiling_notional = approved_notional
+    approved_notional = conviction_scaled_notional(
+        approved_notional=approved_notional,
+        confidence=p.confidence_score,
+        min_confidence=policy.min_ai_confidence,
+    )
     approved_quantity = approved_notional / p.entry_price if p.entry_price > 0 else 0.0
     risk_amount = approved_quantity * per_unit_risk
     result = "approved" if approved_notional > 0 else "rejected"
@@ -776,6 +789,10 @@ def calculate_capital_allocation(
         "approved_notional": approved_notional,
         "approved_quantity": approved_quantity,
         "risk_amount": risk_amount,
+        # The policy ceiling before conviction scaling, so an auditor can always see both
+        # what was permitted and what was actually taken -- and confirm the second never
+        # exceeds the first.
+        "policy_ceiling_notional": ceiling_notional,
         "result": result,
         "notes": notes,
     }
