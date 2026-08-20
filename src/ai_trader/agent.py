@@ -340,6 +340,9 @@ def propose_crypto_trades(
     min_confidence: float,
     requested_notional: float,
     default_stop_loss_pct: float,
+    # 2026-08-20 live finding: this MUST be the real policy ceiling, not the default.
+    # See the technical_stop_loss call below for the bug this fixes.
+    max_stop_loss_pct: float = 0.05,
     now: datetime | None = None,
     on_symbol_complete: Callable[[str, list[TradeProposal]], None] | None = None,
     reviewer: Any = None,
@@ -476,13 +479,23 @@ def propose_crypto_trades(
             symbol_candles = crypto_candle_history.get(symbol.upper()) or []
             symbol_metrics = analyze_price_series(symbol_candles) if symbol_candles else {}
             atr_absolute = symbol_metrics.get("atr_pct") * price if symbol_metrics.get("atr_pct") else None
+            # 2026-08-20 live verification caught a real bug here: this originally passed
+            # effective_stop_pct as BOTH the ceiling and the default, so the clamp ceiling
+            # equalled the fallback -- any support level further than the default distance
+            # clamped exactly back to it. Since support (a 20-day low) is almost always
+            # further than ~2% away on a trending asset, the technical stop was inert in
+            # the common case: a live XLM proposal came out at exactly 2.0000%/4.0000%,
+            # i.e. the flat calculation, despite XLM having real stored candle history.
+            # The ceiling must be the real POLICY maximum (5%), which is what "never wider
+            # than policy allows" actually meant -- the volatility-scaled value stays as
+            # the fallback for when no usable technical level exists.
             stop_loss = technical_stop_loss(
                 entry_price=price,
                 side="buy",
                 support=symbol_metrics.get("support"),
                 resistance=symbol_metrics.get("resistance"),
                 atr=atr_absolute,
-                max_stop_loss_pct=effective_stop_pct,
+                max_stop_loss_pct=max(effective_stop_pct, max_stop_loss_pct),
                 default_stop_loss_pct=effective_stop_pct,
             )
             take_profit = technical_take_profit(

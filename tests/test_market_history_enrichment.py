@@ -141,6 +141,55 @@ class CryptoProposalHistoryEnrichmentTests(unittest.TestCase):
             metrics = proposals[0].intelligence["market_intelligence"]["metrics"]
             self.assertIsNotNone(metrics.get("short_ma"), "With 25 real candles, a real 5-period moving average must be computable, not None.")
 
+    def test_a_real_support_level_between_default_and_policy_max_actually_moves_the_stop(self):
+        """2026-08-20 live-verification regression.
+
+        Phase 5.5's technical stop placement shipped effectively INERT: propose_crypto_trades
+        passed effective_stop_pct as BOTH the clamp ceiling and the fallback default, so any
+        support level further than the default distance clamped exactly back to that default.
+        A live XLM proposal came out at precisely 2.0000%/4.0000% -- the flat calculation --
+        despite XLM having real stored candle history. Unit tests passed throughout because
+        technical_stop_loss itself was correct in isolation; only the WIRING was wrong, which
+        is exactly what live verification is for.
+
+        Here the seeded history puts support ~3.4% below entry: further than the 2% default
+        (so the old wiring would clamp it back to a flat 2%) but inside the 5% policy
+        ceiling, so it must genuinely be used.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            audit = AuditDatabase(db_path, None)
+            _seed_score(db_path)
+            # Closes drift up to ~100; lows bottom out at 96.5 -> support ~96.5 vs entry 100.
+            for i in range(25):
+                close = 96.0 + i * 0.2
+                record_market_observations(
+                    db_path, provider="kraken", original_symbol="XXBTZGBP", normalized_symbol="BTC",
+                    exchange="KRAKEN", asset_type="crypto", timeframe="1d",
+                    candles=[{
+                        "observation_time": f"2026-07-{i + 1:02d}T00:00:00+00:00",
+                        "open": close, "high": close + 0.5, "low": close - 0.2, "close": close, "volume": 10.0,
+                    }],
+                )
+
+            proposals = propose_crypto_trades(
+                db_path, FakeAdapter(), ["BTC"], _account(), GuardrailConfig(), audit,
+                min_confidence=0.85, requested_notional=5.0,
+                default_stop_loss_pct=0.02, max_stop_loss_pct=0.05,
+            )
+
+            self.assertEqual(len(proposals), 1)
+            proposal = proposals[0]
+            flat_stop = round(proposal.entry_price * 0.98, 8)
+            self.assertNotAlmostEqual(
+                proposal.stop_loss, flat_stop, places=6,
+                msg="The stop must reflect the real support level, not clamp back to the flat 2% default.",
+            )
+            stop_pct = (proposal.entry_price - proposal.stop_loss) / proposal.entry_price
+            self.assertGreater(stop_pct, 0.02, "A support level further than the default must widen the stop toward it.")
+            self.assertLessEqual(stop_pct, 0.05 + 1e-9, "But it must never exceed the policy ceiling.")
+
     def test_a_proposal_with_no_seeded_history_still_completes_without_a_moving_average(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

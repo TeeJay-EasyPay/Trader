@@ -562,6 +562,11 @@ class ResearchService:
             min_confidence=self.settings.auto_trade.min_confidence,
             requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
+            # The real policy ceiling for a technical stop (2026-08-20): without this the
+            # clamp defaulted to the same value as default_stop_loss_pct, making Phase
+            # 5.5's technical stop placement inert -- see agent.py's technical_stop_loss
+            # call for the live evidence.
+            max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct,
             on_symbol_complete=_on_symbol_complete,
             # Phase 5 (2026-08-20): real qualitative review for crypto candidates that
             # clear every mechanical gate. None when no OpenAI key is configured, which
