@@ -59,6 +59,7 @@ export default function App() {
     recommendations,
     notifications,
     performanceAttribution,
+    marketForecast,
     dailyLearning,
     latestReport,
     activity,
@@ -185,6 +186,7 @@ export default function App() {
             themes={marketData.themes}
             dailyLearning={dailyLearning}
             performanceAttribution={performanceAttribution}
+            marketForecast={marketForecast}
             brief={founderBrief.brief}
             onRefresh={screenRefresh.ExecutiveBriefing.refresh}
             onOpenOperations={() => setScreen('Operations')}

@@ -35,7 +35,12 @@ const {
 const { currentInvestmentThesis, alternativeThesis } = require('../lib/investmentThesis');
 const { describeDailyPlan } = require('../lib/todaysStrategy');
 const { deriveConviction } = require('../lib/forecasting');
-const { normalizeClosedTradesFromAttribution, projectPortfolioHorizons, tradeStatistics } = require('../lib/forecastEngine');
+// projectPortfolioHorizons is deliberately NOT imported: the trade-averaging projection it
+// produced was retired from this screen in Phase 7 (2026-08-20) per the Founder's decision.
+// normalizeClosedTradesFromAttribution/tradeStatistics remain -- they feed the AI's own
+// track-record stats in InvestmentOrganisationCard, a separate and still-wanted feature.
+const { normalizeClosedTradesFromAttribution, tradeStatistics } = require('../lib/forecastEngine');
+const { marketForecastCards } = require('../lib/marketForecast');
 const { evaluateFactors } = require('../lib/forecastFactors');
 const { buildInvestmentRhythm } = require('../lib/investmentRhythm');
 const { buildInvestmentCommittee } = require('../lib/investmentCommittee');
@@ -364,16 +369,54 @@ function ForecastHorizonCard({ horizon }) {
   );
 }
 
-function ForecastCentreCard({ portfolio, performanceAttribution }) {
-  // 2026-08-18 Founder request: normalizeClosedTradesFromAttribution now only counts trades
-  // the AI itself proposed and had governed through its own execution path (isAiDecidedClosedTrade
-  // in forecastEngine.js) - a pre-existing or manually-placed position closing never affects
-  // this forecast, however real its own profit or loss was.
-  const closedTrades = normalizeClosedTradesFromAttribution(performanceAttribution);
-  const horizons = projectPortfolioHorizons({ closedTrades, currentPortfolioValue: portfolio?.portfolio_value });
+// Phase 7 of the CIO-level forecasting build (2026-08-20, Founder-directed).
+//
+// This card used to project the AVERAGE of the AI's own past closed trades forward. The
+// Founder rejected that outright -- "that's not forecasting... forecasting is about
+// planning, looking at market trends, looking at whether there is a bull run coming or
+// not" -- and explicitly decided the same day to REPLACE it rather than keep it as a
+// secondary panel. It now renders the real backend market forecast (/market-forecast,
+// built from genuine multi-timeframe technical analysis; see forecasting.py).
+//
+// Note the deliberately different shape: this is a per-symbol directional view with a
+// confidence and an invalidation level, NOT a portfolio-value point estimate. It is not
+// dressed up as one -- see marketForecast.js's honest-disclosure note.
+function MarketForecastCard({ forecast }) {
+  if (!forecast.available) {
+    return (
+      <View style={styles.compactRow}>
+        <Text style={styles.cardTitle}>{forecast.horizon}</Text>
+        <Text style={styles.bodyText}>{forecast.reason}</Text>
+      </View>
+    );
+  }
   return (
-    <CollapsibleSection title="Forecast Centre" subtitle="Where I believe we are heading, and why. Based only on trades I decided and executed myself." defaultExpanded={true}>
-      {horizons.map((horizon) => <ForecastHorizonCard key={horizon.horizonKey} horizon={horizon} />)}
+    <View style={styles.compactRow}>
+      <Text style={styles.cardTitle}>{forecast.horizon}</Text>
+      <Text style={styles.metricLabel}>What I expect</Text>
+      <Text style={styles.bodyText}>{forecast.whatIExpect}</Text>
+      <Text style={styles.metricLabel}>Why</Text>
+      <Text style={styles.bodyText}>{forecast.why}</Text>
+      <Text style={styles.metricLabel}>What could change it</Text>
+      <Text style={styles.bodyText}>{forecast.whatCouldChange}</Text>
+      <Text style={styles.metricLabel}>Confidence</Text>
+      <StatusPill
+        label={forecast.confidence}
+        tone={forecast.confidence === 'High' ? 'good' : forecast.confidence === 'Low' ? 'warn' : 'neutral'}
+      />
+    </View>
+  );
+}
+
+function ForecastCentreCard({ marketForecast }) {
+  const cards = marketForecastCards({ forecasts: marketForecast });
+  return (
+    <CollapsibleSection
+      title="Forecast Centre"
+      subtitle="Where I believe each market is heading, and why. Built from real price history and technical analysis, not from my own past trade results."
+      defaultExpanded={true}
+    >
+      {cards.map((forecast) => <MarketForecastCard key={forecast.horizonKey} forecast={forecast} />)}
     </CollapsibleSection>
   );
 }
@@ -603,6 +646,7 @@ function ExecutiveBriefing({
   themes,
   dailyLearning,
   performanceAttribution,
+  marketForecast,
   brief,
   onRefresh,
   onOpenOperations,
@@ -629,8 +673,18 @@ function ExecutiveBriefing({
   });
   const conviction = deriveConviction({ marketHealthTone: riskTone(marketCentre?.market_health), averageConfidence: confidence, winRate });
 
-  const horizons = projectPortfolioHorizons({ closedTrades, currentPortfolioValue: portfolio?.portfolio_value });
-  const { summary: forecastAccountabilitySummary } = useForecastHistory({ horizons, currentPortfolioValue: portfolio?.portfolio_value });
+  // Phase 7 (2026-08-20): projectPortfolioHorizons (the trade-averaging projection the
+  // Founder retired) is deliberately no longer called here. It previously fed BOTH the
+  // Forecast Centre and this accountability tracker; continuing to grade a model that is
+  // no longer shown anywhere would be scoring a retired forecast, which tells the Founder
+  // nothing useful. Accountability for the NEW directional per-symbol forecasts is real
+  // and worth having, but needs a genuinely different grading mechanism (symbol price at
+  // horizon end vs at forecast time, rather than portfolio value vs a point estimate) --
+  // tracked as a follow-up rather than bodged onto a tracker built for a different shape.
+  const { summary: forecastAccountabilitySummary } = useForecastHistory({
+    horizons: [],
+    currentPortfolioValue: portfolio?.portfolio_value,
+  });
 
   return (
     <View>
@@ -640,7 +694,7 @@ function ExecutiveBriefing({
       <OvernightNarrativeCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
       <MarketAssessmentCard marketCentre={marketCentre} />
       <InvestmentThesisSection themes={themes} recommendations={recommendations} factors={factors} conviction={conviction} />
-      <ForecastCentreCard portfolio={portfolio} performanceAttribution={performanceAttribution} />
+      <ForecastCentreCard marketForecast={marketForecast} />
       <ForecastAccountabilityCard summary={forecastAccountabilitySummary} />
       <PrincipalRisksSection marketCentre={marketCentre} portfolio={portfolio} />
       <PrincipalOpportunitiesSection recommendations={recommendations} themes={themes} />

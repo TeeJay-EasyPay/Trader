@@ -197,6 +197,9 @@ function useFounderEvidence() {
   const [cacheWarning, setCacheWarning] = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
   const [notifications, setNotifications] = useState([]);
+  // Phase 7 (2026-08-20): the real market forecast, from /market-forecast. Separate from
+  // founder-evidence because it has its own worker-side refresh cadence (every 6h).
+  const [marketForecast, setMarketForecast] = useState([]);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
@@ -452,6 +455,19 @@ function useFounderEvidence() {
               setNotifications(nextNotifications.notifications || []);
             }
           });
+        // Phase 7 of the CIO-level forecasting build (2026-08-20): the real market
+        // forecast has its own endpoint and its own worker-side refresh cadence (every
+        // 6h), so it is fetched alongside /notifications rather than bloating the
+        // founder-evidence snapshot. Same fire-and-forget shape: its own .catch resolves
+        // to an empty result, so a forecast outage can never fail or delay the main
+        // refresh -- marketForecastCards then renders the honest "no forecast yet" state.
+        apiRequest('/market-forecast', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
+          .catch(() => ({ forecasts: [] }))
+          .then((nextForecasts) => {
+            if (isMountedRef.current) {
+              setMarketForecast(nextForecasts.forecasts || []);
+            }
+          });
         return;
       }
 
@@ -613,6 +629,7 @@ function useFounderEvidence() {
     portfolio,
     recommendations,
     notifications,
+    marketForecast,
     performanceAttribution,
     dailyLearning,
     latestReport,
