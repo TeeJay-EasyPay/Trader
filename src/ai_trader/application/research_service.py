@@ -11,9 +11,11 @@ from ..agent import AITradingAgent, propose_crypto_trades
 from ..ai import OpenAIProposalAnalyzer
 from ..alpaca import AlpacaPaperClient
 from ..audit import AuditDatabase
+from ..broker_adapters import _kraken_pair
 from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
+from ..market_intelligence_platform import latest_observation_time, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
     record_crypto_research_score,
@@ -273,6 +275,98 @@ class ResearchService:
             event_type="strategy_lab_completed",
             summary=f"Strategy lab refresh: {candles_written} candles across {len(symbols_with_history)} symbols; {len(strategy_results)} strategies evaluated; {len(pending_approval)} pending Founder approval.",
             details={"candles_written": candles_written, "symbols_with_history": sorted(symbols_with_history), "pending_founder_approval": pending_approval},
+        )
+        return result
+
+    def refresh_crypto_candle_history(self) -> dict[str, Any]:
+        """Ingests real Kraken OHLC candle history for the crypto universe -- Phase 1 of
+        the CIO-level forecasting build (2026-08-20, Founder-directed).
+
+        Crypto has never had multi-point price history anywhere in this codebase before
+        this method; every existing live crypto price read was a single current-price
+        snapshot (KrakenAdapter.current_prices, `/0/public/Ticker`). This is the crypto
+        equivalent of refresh_strategy_lab's equity candle ingestion above -- daily bars,
+        written into the same real, quality-validated, previously-zero-caller
+        MARKET_DATA_OBSERVATIONS table (market_intelligence_platform.py) rather than a
+        new parallel schema.
+
+        record_market_observations has no dedup of its own, so this only ever fetches
+        candles newer than what's already stored (latest_observation_time), matching
+        Kraken's own OHLC `since` parameter -- safe to run on a recurring schedule
+        without the table growing duplicate rows.
+        """
+        adapter = self.orchestrator.adapters.get("kraken")
+        if adapter is None or not getattr(adapter, "configured", False):
+            result = {"status": "not_available", "message": "Kraken credentials are required for crypto candle ingestion."}
+            record_operational_event(
+                self.settings.db_path,
+                component="crypto_candle_history",
+                event_type="crypto_candle_refresh_blocked_configuration",
+                broker="kraken",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=30)
+        if not symbols:
+            result = {"status": "not_available", "message": "No active crypto symbols are available yet."}
+            record_operational_event(
+                self.settings.db_path,
+                component="crypto_candle_history",
+                event_type="crypto_candle_refresh_completed_no_action",
+                broker="kraken",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        candles_written = 0
+        symbols_with_history: list[str] = []
+        quality_issues: list[dict[str, Any]] = []
+        for symbol in symbols:
+            pair = _kraken_pair(symbol)
+            since_iso = latest_observation_time(self.settings.db_path, provider="kraken", normalized_symbol=symbol, timeframe="1d")
+            since_epoch = int(datetime.fromisoformat(since_iso).timestamp()) if since_iso else None
+            try:
+                candles = adapter.get_ohlc_candles(pair, interval_minutes=1440, since=since_epoch)
+            except Exception as exc:  # noqa: BLE001 - one pair's fetch failure must never block the rest
+                quality_issues.append({"symbol": symbol, "pair": pair, "reason": str(exc)})
+                continue
+            if not candles:
+                continue
+            quality = record_market_observations(
+                self.settings.db_path,
+                provider="kraken",
+                original_symbol=pair,
+                normalized_symbol=symbol,
+                exchange="KRAKEN",
+                asset_type="crypto",
+                timeframe="1d",
+                candles=candles,
+                adjusted_status="unadjusted",
+                payload_provenance="kraken_ohlc_api",
+            )
+            candles_written += len(candles)
+            symbols_with_history.append(symbol)
+            if quality["severity"] != "pass":
+                quality_issues.append({"symbol": symbol, "pair": pair, "quality": quality["severity"], "plain_english": quality["plain_english"]})
+        result = {
+            "status": "completed",
+            "symbols_requested": symbols,
+            "symbols_with_history": symbols_with_history,
+            "candles_written": candles_written,
+            "quality_issues": quality_issues,
+        }
+        record_operational_event(
+            self.settings.db_path,
+            component="crypto_candle_history",
+            event_type="crypto_candle_refresh_completed",
+            broker="kraken",
+            summary=f"Crypto candle refresh: {candles_written} new candle(s) across {len(symbols_with_history)} symbol(s); {len(quality_issues)} issue(s).",
+            details=result,
         )
         return result
 

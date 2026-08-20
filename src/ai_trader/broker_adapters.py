@@ -317,6 +317,15 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         query = parse.urlencode({"pair": ",".join(pairs)})
         return self._public_request(f"/0/public/Ticker?{query}").get("result", {})
 
+    def get_ohlc_candles(self, pair: str, *, interval_minutes: int = 1440, since: int | None = None) -> list[dict[str, Any]]:
+        """Real multi-candle price history for one pair -- see kraken_market_data.py's
+        module docstring for why this didn't exist anywhere in the codebase before
+        2026-08-20 (every prior Kraken price read was a single current-price snapshot).
+        """
+        from .kraken_market_data import fetch_kraken_ohlc
+
+        return fetch_kraken_ohlc(pair, interval_minutes=interval_minutes, since=since)
+
     def is_asset_available(self, symbol: str, exchange: str, asset_type: str) -> bool:
         if not self.configured or asset_type.lower() != "crypto":
             return False

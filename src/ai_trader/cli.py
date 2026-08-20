@@ -524,6 +524,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.dispatch_pending_push_notifications()
     if job_name == "strategy-lab-refresh":
         return service.refresh_strategy_lab()
+    if job_name == "crypto-candle-refresh":
+        return service.refresh_crypto_candle_history()
     if job_name == "external-intelligence-refresh":
         # A true no-op (no HTTP calls, no writes) whenever
         # settings.external_intelligence_enabled is False -- see
@@ -906,6 +908,13 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
     due.append(("crypto-research", _time_bucket(now, research_seconds)))
+    # Phase 1 of the CIO-level forecasting build (2026-08-20): real Kraken OHLC candle
+    # ingestion. Crypto-only, hourly, on a plain UTC clock like crypto-research above
+    # (crypto trades 24/7, so this must not be gated behind the NYSE weekday check
+    # below). Purely additive -- writes to MARKET_DATA_OBSERVATIONS, which nothing else
+    # reads yet -- so unlike external-intelligence-refresh it is not gated behind a
+    # settings flag.
+    due.append(("crypto-candle-refresh", _time_bucket(now, 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see

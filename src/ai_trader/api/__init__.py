@@ -381,6 +381,12 @@ class LocalApiService:
         # calls this externally (`service.refresh_strategy_lab()`).
         return self._research_service.refresh_strategy_lab()
 
+    def refresh_crypto_candle_history(self) -> dict[str, Any]:
+        # Delegates to ResearchService. Kept as a thin wrapper since cli.py calls this
+        # externally (`service.refresh_crypto_candle_history()`), same convention as
+        # refresh_strategy_lab above.
+        return self._research_service.refresh_crypto_candle_history()
+
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper so callers
         # (POST /run-crypto-analysis, refresh_crypto_universe, run_analysis) needed no changes.
@@ -536,6 +542,11 @@ class LocalApiService:
             if isinstance(symbols, str):
                 symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
             return 200, self.run_crypto_analysis(symbols, limit=_int_or_default(body.get("limit"), 10))
+        if path == "/refresh-crypto-candle-history":
+            # Manual trigger for the Phase 1 CIO-forecasting work (2026-08-20) -- lets the
+            # hourly worker job be verified on demand against production instead of
+            # waiting for its own schedule.
+            return 200, self.refresh_crypto_candle_history()
         if path == "/start-trading":
             return 200, self.set_trading_state("running", "start-trading")
         if path == "/pause-trading":

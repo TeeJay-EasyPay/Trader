@@ -172,6 +172,28 @@ def validate_candles(candles: list[dict[str, Any]], *, stale_after_minutes: int 
     }
 
 
+def latest_observation_time(db_path: Path, *, provider: str, normalized_symbol: str, timeframe: str) -> str | None:
+    """Most recent observation_time already stored for this provider/symbol/timeframe.
+
+    record_market_observations has no dedup/ON CONFLICT of its own -- calling it
+    repeatedly with the same candles would insert duplicate rows forever. Callers that
+    poll on a schedule (crypto-candle-refresh) should use this to only fetch/write
+    candles newer than what's already recorded, the same "since" pattern Kraken's own
+    OHLC endpoint is designed around.
+    """
+    initialize_market_intelligence_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT observation_time FROM MARKET_DATA_OBSERVATIONS
+            WHERE provider = ? AND normalized_symbol = ? AND timeframe = ?
+            ORDER BY observation_time DESC LIMIT 1
+            """,
+            (provider, normalized_symbol.upper(), timeframe),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
 def record_market_observations(
     db_path: Path,
     *,
