@@ -225,6 +225,50 @@ def latest_observation_time(db_path: Path, *, provider: str, normalized_symbol: 
     return str(row[0]) if row else None
 
 
+def load_recent_observations(db_path: Path, normalized_symbol: str, *, timeframe: str = "1d", limit: int = 120) -> list[dict[str, Any]]:
+    """Real stored crypto candle history, oldest-first (matches analyze_price_series'
+    expectation that candles[-1] is the latest close) -- the crypto equivalent of
+    trading_intelligence.py's load_recent_candles (equities).
+
+    2026-08-20 (Phase 2 of the CIO-level forecasting build): first reader
+    MARKET_DATA_OBSERVATIONS has ever had since it was built. Provider is deliberately
+    not filtered here -- Kraken is the only writer today (kraken_market_data.py), but a
+    future second provider for the same symbol/timeframe should transparently extend
+    the same history rather than needing a second read path.
+    """
+    initialize_market_intelligence_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return _recent_observations_query(conn, normalized_symbol, timeframe=timeframe, limit=limit)
+
+
+def _recent_observations_query(conn: Any, normalized_symbol: str, *, timeframe: str, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT observation_time, open, high, low, close, volume FROM (
+            SELECT observation_time, open, high, low, close, volume
+            FROM MARKET_DATA_OBSERVATIONS
+            WHERE normalized_symbol = ? AND timeframe = ?
+            ORDER BY observation_time DESC LIMIT ?
+        ) ORDER BY observation_time ASC
+        """,
+        (normalized_symbol.upper(), timeframe, max(1, int(limit))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def load_recent_observations_batch(db_path: Path, normalized_symbols: list[str], *, timeframe: str = "1d", limit: int = 120) -> dict[str, list[dict[str, Any]]]:
+    """Same as load_recent_observations, for many symbols on ONE connection -- see
+    trading_intelligence.py::load_recent_candles_batch's docstring for why (avoids
+    opening N fresh remote-Postgres connections in a live research cycle's per-symbol
+    loop, the exact cost class already found and fixed elsewhere in this codebase).
+    """
+    initialize_market_intelligence_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return {symbol: _recent_observations_query(conn, symbol, timeframe=timeframe, limit=limit) for symbol in normalized_symbols}
+
+
 def record_market_observations(
     db_path: Path,
     *,

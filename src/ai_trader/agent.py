@@ -14,7 +14,8 @@ from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .proposal_context import build_proposal_context
-from .trading_intelligence import evaluate_trade_intelligence
+from .market_intelligence_platform import load_recent_observations_batch
+from .trading_intelligence import evaluate_trade_intelligence, load_recent_candles_batch
 
 # 2026-08-15 (Founder-requested, following observed buy-high/sell-low entries): four
 # deterministic gates layered onto the crypto entry heuristic below, each translating a
@@ -94,6 +95,20 @@ class AITradingAgent:
                     {"symbol": symbol, "reason": reason},
                 )
             return proposals
+
+        # Phase 2 of the CIO-level forecasting build (2026-08-20): analyze_price_series/
+        # infer_market_regime were already called on every proposal via
+        # evaluate_trade_intelligence below, but starved to a single current-price bar --
+        # HISTORICAL_CANDLES has had real daily equity history since the strategy-lab
+        # work, just never reached this live path. Additive only: on any read failure,
+        # market["history"] is simply absent and _candles_for_symbol falls back to its
+        # existing single-bar behavior, same "must never block a proposal" convention as
+        # build_proposal_context below.
+        if self.db_path is not None:
+            try:
+                market["history"] = load_recent_candles_batch(self.db_path, symbols=symbols, asset_type="stock", timeframe="1d", limit=120)
+            except Exception:  # noqa: BLE001
+                pass
 
         for symbol in symbols:
             try:
@@ -345,6 +360,17 @@ def propose_crypto_trades(
         (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(hours=CRYPTO_RE_ENTRY_COOLDOWN_HOURS)
     ).isoformat()
     btc_change_pct = _kraken_btc_daily_change_pct(adapter)
+    # Phase 2 of the CIO-level forecasting build (2026-08-20): evaluate_trade_intelligence
+    # was already called for every crypto proposal below, but never even received a
+    # `market` kwarg at all -- analyze_price_series/infer_market_regime saw nothing.
+    # Real Kraken candle history exists now (Phase 1, MARKET_DATA_OBSERVATIONS); read once
+    # for the whole batch, not per symbol. On any read failure this is simply an empty
+    # dict and every symbol falls back to today's crypto_score-only behavior -- additive,
+    # never blocks a proposal.
+    try:
+        crypto_candle_history = load_recent_observations_batch(db_path, [symbol.upper() for symbol in symbols], timeframe="1d", limit=120)
+    except Exception:  # noqa: BLE001
+        crypto_candle_history = {}
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         for symbol in symbols:
@@ -469,6 +495,7 @@ def propose_crypto_trades(
                 db_path,
                 proposal,
                 account,
+                market={"history": {symbol.upper(): crypto_candle_history.get(symbol.upper(), [])}},
                 crypto_score=score_payload,
                 source="crypto",
             )

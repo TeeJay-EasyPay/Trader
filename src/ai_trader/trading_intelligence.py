@@ -1413,7 +1413,7 @@ def run_strategy_backtest(
 ) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
     if candles is None:
-        candles = _load_historical_candles(db_path, symbol=symbol, asset_type=asset_type, timeframe=timeframe)
+        candles = load_recent_candles(db_path, symbol=symbol, asset_type=asset_type, timeframe=timeframe)
     results = _simulate_strategy(strategy_definition(strategy_id), candles, transaction_cost_r=transaction_cost_r, slippage_r=slippage_r)
     with closing(connect(db_path)) as conn:
         with conn:
@@ -1481,7 +1481,7 @@ def run_walk_forward_validation(
 ) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
     if candles is None:
-        candles = _load_historical_candles(db_path, symbol=symbol, asset_type=asset_type, timeframe=timeframe)
+        candles = load_recent_candles(db_path, symbol=symbol, asset_type=asset_type, timeframe=timeframe)
     windows = []
     if len(candles) >= train_window + test_window:
         for start in range(0, len(candles) - train_window - test_window + 1, test_window):
@@ -2080,9 +2080,8 @@ def _candles_for_symbol(symbol: str, market: dict[str, Any]) -> list[dict[str, A
     return [dict(row)] if isinstance(row, dict) else []
 
 
-def _load_historical_candles(db_path: Path, *, symbol: str, asset_type: str, timeframe: str) -> list[dict[str, Any]]:
-    with closing(connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
+def _recent_candles_query(conn: Any, *, symbol: str, asset_type: str, timeframe: str, limit: int | None) -> list[dict[str, Any]]:
+    if limit is None:
         rows = conn.execute(
             """
             SELECT observed_at, open, high, low, close, volume
@@ -2092,7 +2091,50 @@ def _load_historical_candles(db_path: Path, *, symbol: str, asset_type: str, tim
             """,
             (symbol, asset_type, timeframe),
         ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT observed_at, open, high, low, close, volume FROM (
+                SELECT observed_at, open, high, low, close, volume
+                FROM HISTORICAL_CANDLES
+                WHERE UPPER(symbol) = UPPER(?) AND asset_type = ? AND timeframe = ?
+                ORDER BY observed_at DESC LIMIT ?
+            ) ORDER BY observed_at ASC
+            """,
+            (symbol, asset_type, timeframe, max(1, int(limit))),
+        ).fetchall()
     return [dict(row) for row in rows]
+
+
+def load_recent_candles(db_path: Path, *, symbol: str, asset_type: str, timeframe: str, limit: int | None = None) -> list[dict[str, Any]]:
+    """Real stored equity candle history, oldest-first (matches analyze_price_series'
+    expectation that candles[-1] is the latest close).
+
+    2026-08-20 (Phase 2 of the CIO-level forecasting build): promoted from a private,
+    backtester-only helper (_load_historical_candles) so agent.py's live proposal path
+    can feed real multi-candle history into analyze_price_series/infer_market_regime
+    too -- both were previously starved to a single current-price bar on that path.
+    `limit` is new and optional (defaults to unbounded, the backtester's existing
+    behavior) -- the live path passes a real bound (e.g. 120) since it only ever needs a
+    20-period moving-average window, not a strategy's full backtest history.
+    """
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return _recent_candles_query(conn, symbol=symbol, asset_type=asset_type, timeframe=timeframe, limit=limit)
+
+
+def load_recent_candles_batch(db_path: Path, *, symbols: list[str], asset_type: str, timeframe: str, limit: int = 120) -> dict[str, list[dict[str, Any]]]:
+    """Same as load_recent_candles, for many symbols on ONE connection.
+
+    A live equity research cycle evaluates up to ~30 symbols in one batch; opening a
+    fresh remote-Postgres connection per symbol here would be the exact "N fresh
+    Postgres connections" cost class already found and fixed elsewhere in this codebase
+    (see kraken_reconciliation.py's replay_kraken_evidence docstring for the same issue's
+    prior incident). One connection, N cheap queries on it instead.
+    """
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return {symbol: _recent_candles_query(conn, symbol=symbol, asset_type=asset_type, timeframe=timeframe, limit=limit) for symbol in symbols}
 
 
 def _simulate_strategy(strategy: dict[str, Any], candles: list[dict[str, Any]], *, transaction_cost_r: float, slippage_r: float) -> dict[str, Any]:
