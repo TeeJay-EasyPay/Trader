@@ -150,7 +150,8 @@ def load_closed_trades(db_path: Path, *, limit: int = 400) -> list[dict[str, Any
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT symbol, side, status, exit_time, net_pnl, gross_pnl, net_r
+                SELECT symbol, side, status, exit_time, net_pnl, gross_pnl, net_r,
+                       planned_r, exchange_fee, broker_fee, entry_slippage, exit_slippage
                 FROM KRAKEN_RECONCILED_RESULTS
                 WHERE exit_time IS NOT NULL AND status = 'closed'
                 ORDER BY updated_at DESC
@@ -168,12 +169,96 @@ def trade_scorecard(db_path: Path, *, now_epoch: float | None = None) -> dict[st
     now = datetime.now(timezone.utc).timestamp() if now_epoch is None else float(now_epoch)
     trades = load_closed_trades(db_path)
     buckets = summarize_trade_outcomes(trades, now_epoch=now)
+    # Lead with the CAUSE when one is genuinely identifiable, and fall back to the count
+    # line only when no driver clears its threshold. Founder feedback 2026-08-20: the count
+    # line alone "is just stating the obvious... It should actually say the why".
+    why = explain_trade_outcomes(trades, now_epoch=now, window="month")
     return {
         "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         "day": buckets["day"],
         "week": buckets["week"],
         "month": buckets["month"],
-        "lessons": deterministic_lessons_line(buckets),
-        "lessons_source": "counts",
+        "lessons": why or deterministic_lessons_line(buckets),
+        "lessons_source": "driver_analysis" if why else "counts",
         "closed_trades_considered": len(trades),
     }
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def explain_trade_outcomes(trades: Iterable[dict[str, Any]], *, now_epoch: float, window: str = "month") -> str | None:
+    """Explain WHY the period went the way it did, using real reconciled numbers.
+
+    Founder feedback 2026-08-20: *"I just feel that the AI explanation is just stating the
+    obvious. It should actually say the why something was negative or positive, not just
+    what the numbers are saying."* Counting wins and losses restates the scoreboard; this
+    names the dominant cause and quotes the figure behind it.
+
+    Drivers are checked most-actionable first and only ONE is reported, because the Founder
+    asked for one or two sentences and a list of every contributing factor is exactly the
+    wall-of-text that already buries the good sections of this briefing.
+
+    Every driver is derived arithmetically from reconciled fields -- never inferred, never
+    generated. Returns None when no driver clears its threshold, so the caller falls back
+    to the plain count line rather than this inventing a narrative.
+    """
+    window_seconds = _PERIODS.get(window, _PERIODS["month"])
+    recent: list[dict[str, Any]] = []
+    for trade in trades or []:
+        if not isinstance(trade, dict):
+            continue
+        exit_epoch = _as_epoch(trade.get("exit_time") or trade.get("closed_at") or trade.get("updated_at"))
+        if exit_epoch is None or now_epoch - exit_epoch > window_seconds or exit_epoch > now_epoch + 60:
+            continue
+        recent.append(trade)
+    if not recent:
+        return None
+
+    fees = 0.0
+    gross_wins = 0.0
+    net_total = 0.0
+    overruns: list[str] = []
+    for trade in recent:
+        fee = (_num(trade.get("exchange_fee")) or 0.0) + (_num(trade.get("broker_fee")) or 0.0)
+        fees += fee
+        gross = _num(trade.get("gross_pnl"))
+        if gross is not None and gross > 0:
+            gross_wins += gross
+        net = _num(trade.get("net_pnl"))
+        if net is not None:
+            net_total += net
+        # net_r below -1 means the trade lost MORE than the risk it was sized for, which can
+        # only happen if the exit filled past the stop. That is a slippage/execution problem,
+        # not a bad-thesis problem, and the two need very different fixes.
+        net_r = _num(trade.get("net_r"))
+        if net_r is not None and net_r < -1.25:
+            symbol = str(trade.get("symbol") or "").upper() or "a position"
+            overruns.append(f"{symbol} lost {abs(net_r):.1f}x the risk it was sized for")
+
+    # 1. Fee drag. The clearest and most fixable cause when trade sizes are small: a fee
+    #    that is a fixed-ish cost per round trip consumes a far larger share of a tiny
+    #    position's move than of a normal one.
+    if fees > 0 and gross_wins > 0 and fees >= gross_wins * 0.5:
+        return (
+            f"The trades themselves were not the main problem: fees of {fees:.2f} came to more than "
+            f"{fees / gross_wins:.1f}x everything the winners made before costs ({gross_wins:.2f}), "
+            "so position sizes were too small for the moves captured to survive the cost of trading."
+        )
+    # 2. Exits filling past the stop.
+    if overruns:
+        return (
+            f"The damage came from exits filling past their stop rather than from bad entries: "
+            f"{overruns[0]}. Tightening how exits are placed matters more here than picking different trades."
+        )
+    # 3. Fees material but not dominant.
+    if fees > 0 and abs(net_total) > 0 and fees >= abs(net_total) * 0.3:
+        return (
+            f"Trading costs are a meaningful drag: {fees:.2f} of fees against a net result of "
+            f"{net_total:+.2f}, so a large share of the outcome is the cost of trading rather than the calls themselves."
+        )
+    return None

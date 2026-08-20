@@ -63,6 +63,7 @@ from ..experience_engine import initialize_experience_engine_schema
 from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..trade_scorecard import trade_scorecard
+from ..decline_reasons import recent_decline_reasons
 from ..intelligence import InvestmentIntelligenceDatabase
 from ..models import AccountContext, Position, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -445,6 +446,9 @@ class LocalApiService:
                     limit=_int_or_default(_first(query, "limit"), 100),
                 )
             }
+        if path == "/decline-reasons":
+            limit = max(1, min(_int_or_default(_first(query, "limit"), 8), 25))
+            return 200, recent_decline_reasons(self.settings.db_path, limit=limit)
         if path == "/trade-scorecard":
             return 200, trade_scorecard(self.settings.db_path)
         if path == "/admin/trading-policy":

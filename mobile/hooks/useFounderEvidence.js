@@ -201,6 +201,7 @@ function useFounderEvidence() {
   // founder-evidence because it has its own worker-side refresh cadence (every 6h).
   const [marketForecast, setMarketForecast] = useState([]);
   const [tradeScorecard, setTradeScorecard] = useState(null);
+  const [declineReasons, setDeclineReasons] = useState(null);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
@@ -481,6 +482,16 @@ function useFounderEvidence() {
               setTradeScorecard(nextScorecard);
             }
           });
+        // Founder-requested 2026-08-20: why the AI turned trades down, in short plain
+        // English. Same fire-and-forget shape -- an explanation query must never be able
+        // to fail or delay the refresh the rest of the briefing depends on.
+        apiRequest('/decline-reasons', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
+          .catch(() => null)
+          .then((nextDeclines) => {
+            if (isMountedRef.current && nextDeclines) {
+              setDeclineReasons(nextDeclines);
+            }
+          });
         return;
       }
 
@@ -644,6 +655,7 @@ function useFounderEvidence() {
     notifications,
     marketForecast,
     tradeScorecard,
+    declineReasons,
     performanceAttribution,
     dailyLearning,
     latestReport,

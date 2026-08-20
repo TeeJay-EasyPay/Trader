@@ -6,13 +6,18 @@ the Founder confident-looking figures derived from absent data, so a closed trad
 reconciled P&L must be reported as `unknown` and must never be folded into "successful".
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.trade_scorecard import deterministic_lessons_line, summarize_trade_outcomes
+from ai_trader.trade_scorecard import (
+    deterministic_lessons_line,
+    explain_trade_outcomes,
+    summarize_trade_outcomes,
+)
 
 
 NOW = 1_787_200_000.0
@@ -110,6 +115,60 @@ class LessonsLineTests(unittest.TestCase):
         trades = [{"exit_time": NOW - DAY, "net_pnl": 4.0}]
         line = deterministic_lessons_line(summarize_trade_outcomes(trades, now_epoch=NOW))
         self.assertLessEqual(line.count("."), 2, "The Founder asked for one or two sentences.")
+
+
+
+class ExplainTradeOutcomesTests(unittest.TestCase):
+    """Founder feedback 2026-08-20: the summary must say WHY, not restate the scoreboard."""
+
+    def test_names_fee_drag_as_the_cause_when_fees_swamp_the_winners(self):
+        # Modelled on the real live numbers: fees GBP 0.247 against gross winnings GBP 0.107.
+        trades = [
+            {"exit_time": NOW - DAY, "symbol": "XRP", "gross_pnl": 0.036, "net_pnl": 0.0044, "exchange_fee": 0.0316},
+            {"exit_time": NOW - DAY, "symbol": "BCH", "gross_pnl": 0.071, "net_pnl": 0.0386, "exchange_fee": 0.0324},
+            {"exit_time": NOW - DAY, "symbol": "SOL", "gross_pnl": -0.181, "net_pnl": -0.240, "exchange_fee": 0.0591},
+        ]
+        line = explain_trade_outcomes(trades, now_epoch=NOW)
+        self.assertIsNotNone(line)
+        self.assertIn("fees", line.lower())
+        self.assertIn("too small", line.lower(), "Must name the actionable cause, not just report a fee total.")
+        self.assertNotIn("made money and", line, "Must not fall back to restating the win/loss count.")
+
+    def test_names_stop_overrun_when_a_trade_lost_more_than_its_planned_risk(self):
+        trades = [
+            {"exit_time": NOW - DAY, "symbol": "ETH", "gross_pnl": -0.05, "net_pnl": -0.08,
+             "exchange_fee": 0.0, "net_r": -2.04, "planned_r": 2.0},
+        ]
+        line = explain_trade_outcomes(trades, now_epoch=NOW)
+        self.assertIsNotNone(line)
+        self.assertIn("past their stop", line.lower())
+        self.assertIn("ETH", line)
+        self.assertIn("2.0x", line)
+
+    def test_returns_none_when_no_driver_is_strong_enough_to_claim(self):
+        # Healthy trades with negligible fees: nothing causal to say, so it must NOT invent one.
+        trades = [
+            {"exit_time": NOW - DAY, "symbol": "BTC", "gross_pnl": 5.0, "net_pnl": 4.99, "exchange_fee": 0.01},
+        ]
+        self.assertIsNone(explain_trade_outcomes(trades, now_epoch=NOW))
+
+    def test_returns_none_with_no_trades_in_the_window(self):
+        self.assertIsNone(explain_trade_outcomes([], now_epoch=NOW))
+        old = [{"exit_time": NOW - 60 * DAY, "gross_pnl": 1.0, "net_pnl": 0.1, "exchange_fee": 0.9}]
+        self.assertIsNone(explain_trade_outcomes(old, now_epoch=NOW))
+
+    def test_stays_short(self):
+        trades = [
+            {"exit_time": NOW - DAY, "symbol": "XRP", "gross_pnl": 0.036, "net_pnl": 0.004, "exchange_fee": 0.0316},
+        ]
+        line = explain_trade_outcomes(trades, now_epoch=NOW)
+        # A period between digits is a decimal, not a sentence end.
+        sentences = len(re.findall(r"(?<!\d)\.(?:\s|$)", line))
+        self.assertLessEqual(sentences, 2, "The Founder asked for one or two sentences.")
+
+    def test_tolerates_junk_rows(self):
+        trades = [None, "x", {"exit_time": NOW - DAY, "gross_pnl": "abc", "net_pnl": None, "exchange_fee": "z"}]
+        explain_trade_outcomes(trades, now_epoch=NOW)  # must not raise
 
 
 if __name__ == "__main__":

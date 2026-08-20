@@ -42,6 +42,7 @@ const { deriveConviction } = require('../lib/forecasting');
 const { normalizeClosedTradesFromAttribution, tradeStatistics } = require('../lib/forecastEngine');
 const { marketForecastCards } = require('../lib/marketForecast');
 const { tradeScorecardCard } = require('../lib/tradeScorecard');
+const { declineReasonsCard } = require('../lib/declineReasons');
 const { evaluateFactors } = require('../lib/forecastFactors');
 const { buildInvestmentRhythm } = require('../lib/investmentRhythm');
 const { buildInvestmentCommittee } = require('../lib/investmentCommittee');
@@ -454,6 +455,35 @@ function TradeScorecardCard({ tradeScorecard }) {
   );
 }
 
+// Founder-requested 2026-08-20: "AIs decline reasoning should be available but in a short
+// easy to understand answers." The reviewer vetoes real trades that cleared every
+// mechanical gate; until now the Founder could see that a trade did not happen but never
+// why. Mechanical gates are excluded here -- they are already covered elsewhere and would
+// only pad the card.
+function DeclineReasonsCard({ declineReasons }) {
+  const card = declineReasonsCard(declineReasons);
+  return (
+    <CollapsibleSection
+      title="Trades I Turned Down"
+      subtitle="Where I judged a trade was not worth taking, and why."
+      defaultExpanded={false}
+    >
+      {card.rows.length === 0 ? (
+        <Text style={styles.bodyText}>{card.emptyMessage}</Text>
+      ) : (
+        card.rows.map((row) => (
+          <View key={row.key} style={styles.compactRow}>
+            <Text style={styles.metricLabel}>{row.symbol} - {row.outcome}</Text>
+            <Text style={styles.bodyText}>{row.why}</Text>
+            {row.concern ? <Text style={styles.smallText}>Main concern: {row.concern}</Text> : null}
+            {row.confidence ? <Text style={styles.smallText}>{row.confidence}</Text> : null}
+          </View>
+        ))
+      )}
+    </CollapsibleSection>
+  );
+}
+
 function ForecastAccountabilityCard({ summary }) {
   if (!summary.available) {
     return null;
@@ -681,6 +711,7 @@ function ExecutiveBriefing({
   performanceAttribution,
   marketForecast,
   tradeScorecard,
+  declineReasons,
   brief,
   onRefresh,
   onOpenOperations,
@@ -730,6 +761,7 @@ function ExecutiveBriefing({
       <InvestmentThesisSection themes={themes} recommendations={recommendations} factors={factors} conviction={conviction} />
       <ForecastCentreCard marketForecast={marketForecast} />
       <TradeScorecardCard tradeScorecard={tradeScorecard} />
+      <DeclineReasonsCard declineReasons={declineReasons} />
       <ForecastAccountabilityCard summary={forecastAccountabilitySummary} />
       <PrincipalRisksSection marketCentre={marketCentre} portfolio={portfolio} />
       <PrincipalOpportunitiesSection recommendations={recommendations} themes={themes} />
