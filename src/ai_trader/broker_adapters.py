@@ -352,6 +352,31 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "volume": _format_decimal(check["volume"]),
             "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
         }
+        # Founder-directed 2026-08-20: entries as resting limit orders to earn the maker fee.
+        # Confirmed on pro.kraken.com, Tier 1: maker 0.40% vs taker 0.80% -- so a patient
+        # entry halves the cost of that leg (1.60% -> 1.20% round trip).
+        #
+        # ENTRIES ONLY, deliberately. The sell side is already occupied by the native
+        # trailing stop, and a resting sell reserves the coins, so only one can exist per
+        # position. Buying is uncontested: nothing else is waiting there, so this costs no
+        # protection whatsoever.
+        #
+        # post-only (`oflags: post`) is what actually guarantees the saving. Without it a
+        # limit order priced at or through the current market executes immediately and is
+        # charged as a taker anyway -- the exact trap that made the reactive take-profit
+        # version of this change worthless. post-only tells Kraken to CANCEL rather than
+        # cross, so the order either rests (maker) or does not exist. The caller is then
+        # responsible for falling back to a market order, which is why this is gated off by
+        # default until that fallback is wired.
+        limit_price = _limit_entry_price(order_request)
+        if limit_price is not None and order_request.side.lower() == "buy":
+            payload["ordertype"] = "limit"
+            payload["price"] = _format_decimal(limit_price)
+            payload["oflags"] = "post"
+            expire_seconds = max(30, int(_float_env("KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS", 120)))
+            # Kraken cancels the order itself once this expires, so an unfilled patient
+            # entry cannot sit on the book indefinitely holding cash against a stale idea.
+            payload["expiretm"] = f"+{expire_seconds}"
         userref = _userref(order_request.client_order_id)
         if userref is not None:
             payload["userref"] = str(userref)
@@ -752,6 +777,35 @@ def _format_decimal(value: float) -> str:
     text = f"{value:.10f}"
     return text.rstrip("0").rstrip(".")
 
+
+
+def _limit_entry_price(order_request: Any) -> float | None:
+    """The price to rest a patient buy at, or None to keep today's market order.
+
+    Founder-directed 2026-08-20. Returns None unless KRAKEN_LIMIT_ENTRIES_ENABLED is on, so
+    this ships inert: the behaviour change only begins when the market-order fallback that
+    protects against an unfilled entry is wired and the Founder switches it on.
+
+    Prices at or just below the intended entry, never above it. Paying MORE than the
+    proposal's entry price to save a fee would be self-defeating -- the fee saved on this
+    leg is 0.40%, so any slippage beyond that wipes out the whole point.
+    """
+    if not _bool_env("KRAKEN_LIMIT_ENTRIES_ENABLED", False):
+        return None
+    # OrderRequest carries no entry price of its own, but notional/quantity is exactly
+    # that -- and it is the figure the proposal was actually sized against.
+    try:
+        notional = float(order_request.notional_amount or 0.0)
+        quantity = float(order_request.quantity or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if notional <= 0 or quantity <= 0:
+        return None
+    price = notional / quantity
+    # A small inside-the-spread concession makes resting far more likely to fill without
+    # ever bidding above the price the proposal was built on.
+    offset = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_OFFSET_PCT", 0.0005))
+    return round(price * (1.0 - offset), 10)
 
 def _userref(client_order_id: str | None) -> int | None:
     if not client_order_id:
