@@ -544,7 +544,24 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         notional = order_request.notional_amount or 0.0
         if notional <= 0:
             failures.append("notional_missing")
-        max_notional = _float_env("KRAKEN_MAX_ORDER_GBP", 5.0)
+        # 2026-08-20, Founder-directed: cap order size as a PERCENTAGE of the cash actually
+        # available rather than a fixed pound amount, "that way they can scale with the cash
+        # available". The previous flat KRAKEN_MAX_ORDER_GBP (GBP 5) was a hard rejection
+        # that silently capped every trade regardless of how much capital had been added --
+        # so growing the account changed nothing. The percentage cap is authoritative; the
+        # flat amount is kept only as the fallback for when the live balance cannot be read
+        # (a failed balance call must not become an accidental green light).
+        gbp_balance: float | None = None
+        if order_request.side.lower() == "buy":
+            balances = self.get_account().get("balances", {})
+            gbp_balance = _balance_amount(balances, ("ZGBP", "GBP"))
+            if gbp_balance is not None and gbp_balance < notional * 1.01:
+                failures.append("insufficient_gbp_balance")
+        max_order_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05)
+        if gbp_balance is not None and max_order_pct > 0:
+            max_notional = max(0.0, gbp_balance) * max_order_pct
+        else:
+            max_notional = _float_env("KRAKEN_MAX_ORDER_GBP", 5.0)
         if notional > max_notional:
             failures.append("max_order_amount_exceeded")
         allocation = _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0)
@@ -553,11 +570,6 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         min_notional = _float_env("KRAKEN_MIN_ORDER_GBP", 1.0)
         if notional < min_notional:
             failures.append("min_order_amount_not_met")
-        if order_request.side.lower() == "buy":
-            balances = self.get_account().get("balances", {})
-            gbp_balance = _balance_amount(balances, ("ZGBP", "GBP"))
-            if gbp_balance is not None and gbp_balance < notional * 1.01:
-                failures.append("insufficient_gbp_balance")
         if order_request.stop_loss <= 0:
             failures.append("stop_loss_missing")
         if order_request.take_profit <= 0:

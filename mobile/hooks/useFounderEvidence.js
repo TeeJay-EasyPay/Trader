@@ -200,6 +200,7 @@ function useFounderEvidence() {
   // Phase 7 (2026-08-20): the real market forecast, from /market-forecast. Separate from
   // founder-evidence because it has its own worker-side refresh cadence (every 6h).
   const [marketForecast, setMarketForecast] = useState([]);
+  const [tradeScorecard, setTradeScorecard] = useState(null);
   const [performanceAttribution, setPerformanceAttribution] = useState([]);
   const [dailyLearning, setDailyLearning] = useState(null);
   const [latestReport, setLatestReport] = useState(null);
@@ -468,6 +469,18 @@ function useFounderEvidence() {
               setMarketForecast(nextForecasts.forecasts || []);
             }
           });
+        // Founder-requested 2026-08-20: the trade scorecard (day/week/month wins and
+        // losses plus a short lessons line). Same fire-and-forget shape for the same
+        // reason -- a reporting query must never be able to fail or delay the refresh
+        // that the rest of the briefing depends on. null means "not loaded yet", which
+        // the card renders as its own honest empty state rather than as zero trades.
+        apiRequest('/trade-scorecard', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
+          .catch(() => null)
+          .then((nextScorecard) => {
+            if (isMountedRef.current && nextScorecard) {
+              setTradeScorecard(nextScorecard);
+            }
+          });
         return;
       }
 
@@ -630,6 +643,7 @@ function useFounderEvidence() {
     recommendations,
     notifications,
     marketForecast,
+    tradeScorecard,
     performanceAttribution,
     dailyLearning,
     latestReport,

@@ -30,7 +30,14 @@ class AutoTradeConfig:
     default_stop_loss_pct: float = 0.03
     max_stop_loss_pct: float = 0.05
     crypto_max_trade_amount: float = 10.0
-    crypto_default_stop_loss_pct: float = 0.02
+    # Founder-directed 2026-08-20: size as a share of available capital so trades scale
+    # with the account instead of being pinned to a flat pound amount.
+    crypto_max_trade_pct: float = 0.05
+    # Founder-directed 2026-08-20: tightened 0.02 -> 0.015. His reasoning: the market has
+    # bottomed and looks like turning, so downside room matters less than keeping the loss
+    # small if a trade is wrong. Tradeoff stated plainly to him: a tighter stop on an asset
+    # with ~4% daily ATR will be hit more often by ordinary noise.
+    crypto_default_stop_loss_pct: float = 0.015
     crypto_max_stop_loss_pct: float = 0.05
 
 

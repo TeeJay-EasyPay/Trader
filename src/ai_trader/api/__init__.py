@@ -62,6 +62,7 @@ from ..foundation import (
 from ..experience_engine import initialize_experience_engine_schema
 from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
+from ..trade_scorecard import trade_scorecard
 from ..intelligence import InvestmentIntelligenceDatabase
 from ..models import AccountContext, Position, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -444,6 +445,8 @@ class LocalApiService:
                     limit=_int_or_default(_first(query, "limit"), 100),
                 )
             }
+        if path == "/trade-scorecard":
+            return 200, trade_scorecard(self.settings.db_path)
         if path == "/admin/trading-policy":
             # 2026-08-20: RISK_POLICIES had a writer (/admin/set-risk-policy) but no reader,
             # so the only way to learn a live policy value was to overwrite it and read the

@@ -80,6 +80,25 @@ def _crypto_display_name(symbol: str) -> str:
     return names.get(normalized, normalized)
 
 
+def _crypto_requested_notional(*, account_equity: float, pct: float, fallback_amount: float) -> float:
+    """Per-trade notional as a share of the AI's own capital, not a flat pound amount.
+
+    Founder-directed 2026-08-20. The flat CRYPTO_MAX_AUTO_TRADE_AMOUNT meant adding capital
+    to the account changed nothing about trade size -- every entry stayed pinned at the same
+    few pounds. A percentage scales automatically as the account grows or shrinks.
+
+    Pure function so the scaling is directly testable without standing up a research cycle.
+    Falls back to the flat amount when equity is missing or non-positive: a failed balance
+    read must degrade to the old behaviour, never to a zero-size (and therefore rejected)
+    order. Never returns more than the percentage of real equity.
+    """
+    equity = float(account_equity or 0.0)
+    share = float(pct or 0.0)
+    if equity <= 0 or share <= 0:
+        return max(0.0, float(fallback_amount or 0.0))
+    return round(equity * share, 8)
+
+
 def _proposal_expected_r(proposal: TradeProposal) -> float | None:
     risk = abs(float(proposal.entry_price) - float(proposal.stop_loss))
     reward = abs(float(proposal.take_profit) - float(proposal.entry_price))
@@ -560,7 +579,17 @@ class ResearchService:
             self.settings.guardrails,
             self.audit,
             min_confidence=self.settings.auto_trade.min_confidence,
-            requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
+            # Founder-directed 2026-08-20: "I would rather they be a percentage of the
+            # available cash rather than a fixed value... that way they can scale with the
+            # cash available." account.equity is the AI's own allocated capital for this
+            # broker (for Kraken, the AI capital ledger balance -- deliberately NOT the
+            # Founder's personal holdings). Falls back to the flat amount when equity is
+            # unavailable, so a missing balance can never silently size a trade at zero.
+            requested_notional=_crypto_requested_notional(
+                account_equity=account.equity,
+                pct=self.settings.auto_trade.crypto_max_trade_pct,
+                fallback_amount=self.settings.auto_trade.crypto_max_trade_amount,
+            ),
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
             # The real policy ceiling for a technical stop (2026-08-20): without this the
             # clamp defaulted to the same value as default_stop_loss_pct, making Phase

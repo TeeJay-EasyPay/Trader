@@ -41,6 +41,7 @@ const { deriveConviction } = require('../lib/forecasting');
 // track-record stats in InvestmentOrganisationCard, a separate and still-wanted feature.
 const { normalizeClosedTradesFromAttribution, tradeStatistics } = require('../lib/forecastEngine');
 const { marketForecastCards } = require('../lib/marketForecast');
+const { tradeScorecardCard } = require('../lib/tradeScorecard');
 const { evaluateFactors } = require('../lib/forecastFactors');
 const { buildInvestmentRhythm } = require('../lib/investmentRhythm');
 const { buildInvestmentCommittee } = require('../lib/investmentCommittee');
@@ -421,6 +422,38 @@ function ForecastCentreCard({ marketForecast }) {
   );
 }
 
+// Founder-requested 2026-08-20: "a small card on the executive briefing screen with how
+// many trades each day, week and month were successful and how many were not with them a
+// short ai summary of one or two sentences on the lessons learned."
+//
+// Deliberately compact. The briefing already suffers from long generated text burying the
+// short high-value sections, so this stays to three lines plus a lessons sentence.
+function TradeScorecardCard({ tradeScorecard }) {
+  const card = tradeScorecardCard(tradeScorecard);
+  return (
+    <CollapsibleSection
+      title="Trade Scorecard"
+      subtitle="How many of my trades worked out, and what I have learned from them."
+      defaultExpanded={true}
+    >
+      {card.rows.map((row) => (
+        <View key={row.key} style={styles.compactRow}>
+          <Text style={styles.metricLabel}>{row.label}</Text>
+          <Text style={styles.bodyText}>
+            {row.counts}
+            {row.net ? ` (${row.net})` : ''}
+          </Text>
+          {row.winRate ? <Text style={styles.smallText}>{row.winRate}</Text> : null}
+          {/* Closed but not yet reconciled: shown separately so it can never be mistaken
+              for a win or a loss. */}
+          {row.pending ? <Text style={styles.smallText}>{row.pending}</Text> : null}
+        </View>
+      ))}
+      <Text style={styles.summaryReason}>{card.lessons}</Text>
+    </CollapsibleSection>
+  );
+}
+
 function ForecastAccountabilityCard({ summary }) {
   if (!summary.available) {
     return null;
@@ -647,6 +680,7 @@ function ExecutiveBriefing({
   dailyLearning,
   performanceAttribution,
   marketForecast,
+  tradeScorecard,
   brief,
   onRefresh,
   onOpenOperations,
@@ -695,6 +729,7 @@ function ExecutiveBriefing({
       <MarketAssessmentCard marketCentre={marketCentre} />
       <InvestmentThesisSection themes={themes} recommendations={recommendations} factors={factors} conviction={conviction} />
       <ForecastCentreCard marketForecast={marketForecast} />
+      <TradeScorecardCard tradeScorecard={tradeScorecard} />
       <ForecastAccountabilityCard summary={forecastAccountabilitySummary} />
       <PrincipalRisksSection marketCentre={marketCentre} portfolio={portfolio} />
       <PrincipalOpportunitiesSection recommendations={recommendations} themes={themes} />
