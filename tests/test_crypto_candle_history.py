@@ -123,6 +123,30 @@ class RefreshCryptoCandleHistoryTests(unittest.TestCase):
             self.assertEqual(second["candles_written"], 0)
             self.assertIsNotNone(adapter.requested_since["XBTGBP"], "The second call must pass a real since= cursor, not refetch from scratch.")
 
+    def test_a_kraken_since_boundary_that_returns_the_same_candle_again_is_not_rewritten(self):
+        # 2026-08-20 hosted finding: Kraken's `since` boundary is inclusive (or at least
+        # not reliably exclusive) -- confirmed live, the same "latest" candle kept coming
+        # back and being rewritten forever instead of the refresh ever converging to
+        # "nothing new". record_market_observations has no dedup of its own, so this must
+        # be filtered by the caller.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            stamp = utc_now_iso()
+            adapter = FakeKrakenAdapter({"XBTGBP": [_candle(stamp, 41000.0)], "ETHGBP": [_candle(stamp, 1500.0)], "SOLGBP": [_candle(stamp, 60.0)]})
+            service.orchestrator.adapters["kraken"] = adapter
+
+            first = service.refresh_crypto_candle_history()
+            # Simulate Kraken's real inclusive-since behavior: it returns the exact same
+            # boundary candle again on the very next call, not an empty result.
+            second = service.refresh_crypto_candle_history()
+
+            self.assertEqual(first["candles_written"], 3)
+            self.assertEqual(second["candles_written"], 0, "The already-stored boundary candle must be filtered out, not rewritten.")
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM MARKET_DATA_OBSERVATIONS WHERE provider = 'kraken'").fetchone()[0]
+            self.assertEqual(count, 3, "No duplicate rows should have been written on the second call.")
+
     def test_blocked_without_kraken_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)

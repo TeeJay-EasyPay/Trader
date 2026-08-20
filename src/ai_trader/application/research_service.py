@@ -343,6 +343,15 @@ class ResearchService:
             except Exception as exc:  # noqa: BLE001 - one pair's fetch failure must never block the rest
                 quality_issues.append({"symbol": symbol, "pair": pair, "reason": str(exc)})
                 continue
+            if since_iso:
+                # Confirmed live: Kraken's `since` boundary is inclusive (or at least not
+                # reliably exclusive) -- without this filter, the candle already stored as
+                # the latest observation kept coming back and being rewritten on every
+                # single call, forever, instead of converging to "nothing new" once caught
+                # up. record_market_observations has no dedup of its own (see
+                # latest_observation_time's docstring), so this must be filtered before it
+                # ever reaches that call, not relied on to be handled downstream.
+                candles = [candle for candle in candles if str(candle.get("observation_time") or "") > since_iso]
             if not candles:
                 continue
             quality = record_market_observations(
