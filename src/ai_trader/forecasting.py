@@ -229,8 +229,12 @@ def build_forecast_evidence(db_path: Path, *, symbol: str | None, asset_type: st
             "metrics": weekly_metrics,
         },
         "macro_and_news": _macro_and_news_context(db_path, symbol=symbol),
+        # Trimmed to 600 chars: this is a reminder of the relevant principle, not the
+        # whole document, and a live 2026-08-20 verification run timed out against the
+        # model with larger excerpts. The full text stays available via the knowledge
+        # base itself for anything that needs it.
         "reference_material": [
-            {"title": item.get("title"), "excerpt": str(item.get("excerpt") or "")[:1200]}
+            {"title": item.get("title"), "excerpt": str(item.get("excerpt") or "")[:600]}
             for item in excerpts
         ],
     }
