@@ -151,7 +151,8 @@ def load_closed_trades(db_path: Path, *, limit: int = 400) -> list[dict[str, Any
             rows = conn.execute(
                 """
                 SELECT symbol, side, status, exit_time, net_pnl, gross_pnl, net_r,
-                       planned_r, exchange_fee, broker_fee, entry_slippage, exit_slippage
+                       planned_r, exchange_fee, broker_fee, entry_slippage, exit_slippage,
+                       quantity, actual_entry, actual_exit
                 FROM KRAKEN_RECONCILED_RESULTS
                 WHERE exit_time IS NOT NULL AND status = 'closed'
                 ORDER BY updated_at DESC
@@ -262,3 +263,41 @@ def explain_trade_outcomes(trades: Iterable[dict[str, Any]], *, now_epoch: float
             f"{net_total:+.2f}, so a large share of the outcome is the cost of trading rather than the calls themselves."
         )
     return None
+
+
+def estimate_round_trip_fee_pct(trades: Iterable[dict[str, Any]], *, default: float = 0.0) -> float:
+    """The fee rate actually being paid, measured from settled trades.
+
+    Measured rather than assumed, because the assumption would have been wrong. Kraken's
+    published taker fee is 0.26%, but every one of the first eight settled trades paid
+    1.56-1.62% of notional -- roughly six times that, and remarkably consistent, which rules
+    out a fixed minimum charge diluting on small orders. Whatever the cause, the strategy
+    has to be judged against the rate being paid, not the rate on the fee schedule.
+
+    Uses the median so a single odd fill cannot move the estimate.
+
+    Defaults to 0.0 (meaning "unknown", which leaves the fee gate inactive) rather than to
+    the observed 1.6%. Carrying one account's measured rate over to a system with no trade
+    history would block every trade on an assumption instead of on evidence -- caught by a
+    real test failure, where a fresh database inherited the punitive rate and produced zero
+    proposals. The gate should act on what this account actually pays, or not at all.
+    """
+    rates: list[float] = []
+    for trade in trades or []:
+        if not isinstance(trade, dict):
+            continue
+        fee = (_num(trade.get("exchange_fee")) or 0.0) + (_num(trade.get("broker_fee")) or 0.0)
+        quantity = _num(trade.get("quantity"))
+        price = _num(trade.get("actual_exit")) or _num(trade.get("actual_entry"))
+        if fee <= 0 or not quantity or not price:
+            continue
+        notional = abs(quantity * price)
+        if notional <= 0:
+            continue
+        rates.append(fee / notional)
+    if not rates:
+        return float(default)
+    rates.sort()
+    middle = len(rates) // 2
+    median = rates[middle] if len(rates) % 2 else (rates[middle - 1] + rates[middle]) / 2
+    return round(median, 6)

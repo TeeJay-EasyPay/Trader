@@ -179,6 +179,8 @@ def load_settings() -> Settings:
             max_stop_loss_pct=_float_env("MAX_STOP_LOSS_PCT", 0.05),
             crypto_max_trade_amount=_float_env("CRYPTO_MAX_AUTO_TRADE_AMOUNT", 10.0),
             crypto_max_trade_pct=_float_env("CRYPTO_MAX_AUTO_TRADE_PCT", 0.05),
+            crypto_risk_per_trade_pct=_float_env("CRYPTO_RISK_PER_TRADE_PCT", 0.0015),
+            crypto_min_net_reward_risk=_float_env("CRYPTO_MIN_NET_REWARD_RISK", 1.0),
             crypto_default_stop_loss_pct=_float_env("CRYPTO_DEFAULT_STOP_LOSS_PCT", 0.015),
             crypto_max_stop_loss_pct=_float_env("CRYPTO_MAX_STOP_LOSS_PCT", 0.05),
         ),

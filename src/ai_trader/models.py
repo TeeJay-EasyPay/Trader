@@ -33,6 +33,12 @@ class AutoTradeConfig:
     # Founder-directed 2026-08-20: size as a share of available capital so trades scale
     # with the account instead of being pinned to a flat pound amount.
     crypto_max_trade_pct: float = 0.05
+    # Founder-directed 2026-08-20: size crypto from the money at risk rather than a flat
+    # amount, so choosing a wider stop shrinks the position instead of risking more.
+    crypto_risk_per_trade_pct: float = 0.0015
+    # Minimum reward-to-risk AFTER trading costs. 1.0 only removes trades that cannot pay
+    # for themselves; it is a floor, not a second opinion on trade quality.
+    crypto_min_net_reward_risk: float = 1.0
     # Founder-directed 2026-08-20: tightened 0.02 -> 0.015. His reasoning: the market has
     # bottomed and looks like turning, so downside room matters less than keeping the loss
     # small if a trade is wrong. Tradeoff stated plainly to him: a tighter stop on an asset

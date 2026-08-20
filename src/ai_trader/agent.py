@@ -15,7 +15,12 @@ from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .proposal_context import build_proposal_context
 from .market_intelligence_platform import load_recent_observations_batch
-from .technical_discretion import technical_stop_loss, technical_take_profit
+from .technical_discretion import (
+    clears_fee_hurdle,
+    risk_based_notional,
+    technical_stop_loss,
+    technical_take_profit,
+)
 from .trading_intelligence import analyze_price_series, evaluate_trade_intelligence, load_recent_candles_batch
 
 # 2026-08-15 (Founder-requested, following observed buy-high/sell-low entries): four
@@ -346,6 +351,12 @@ def propose_crypto_trades(
     now: datetime | None = None,
     on_symbol_complete: Callable[[str, list[TradeProposal]], None] | None = None,
     reviewer: Any = None,
+    # Founder-directed 2026-08-20. risk_budget=None keeps the previous flat sizing, so an
+    # existing caller is unaffected until it opts in. round_trip_fee_pct=0 disables the
+    # fee gate entirely rather than blocking every trade on an unknown cost.
+    risk_budget: float | None = None,
+    round_trip_fee_pct: float = 0.0,
+    min_net_reward_risk: float = 1.0,
 ) -> list[TradeProposal]:
     """Generates crypto trade proposals from the same CRYPTO_RESEARCH_SCORES data the due
     diligence pipeline reads, so a proposal only exists when there's real evidence behind
@@ -506,7 +517,47 @@ def propose_crypto_trades(
                 support=symbol_metrics.get("support"),
                 min_reward_risk=2.0,
             )
-            quantity = requested_notional / price if price > 0 else 0.0
+            # Founder-directed 2026-08-20. Two changes here, in this order deliberately.
+            #
+            # (a) Size from the money at risk, not a flat pound amount. Under the old flat
+            #     sizing the stop distance mapped one-for-one into cash at risk, so a wider
+            #     stop simply risked more -- which is why handing a model the stop distance
+            #     would have handed it a risk dial. Now a wider stop buys a smaller position
+            #     and the risk stops growing. requested_notional remains the hard ceiling.
+            if risk_budget and risk_budget > 0:
+                sized_notional = risk_based_notional(
+                    risk_budget=risk_budget,
+                    entry_price=price,
+                    stop_loss=stop_loss,
+                    max_notional=requested_notional,
+                )
+            else:
+                sized_notional = requested_notional
+            # (b) Refuse trades that cannot pay for themselves. Measured live: fees run about
+            #     1.6% of notional per round trip, so a target only 3% away keeps barely half
+            #     the move. XRP was a CORRECT call that returned +0.004 net on +0.036 gross.
+            if not clears_fee_hurdle(
+                entry_price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                round_trip_fee_pct=round_trip_fee_pct,
+                min_net_reward_risk=min_net_reward_risk,
+            ):
+                audit.record_execution_event(
+                    proposal_id=f"fee-hurdle-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "fee_hurdle_not_cleared",
+                             "round_trip_fee_pct": round_trip_fee_pct},
+                )
+                print(
+                    f"[crypto-research] symbol={symbol} stage=completed outcome=fee_hurdle_not_cleared "
+                    f"fee_pct={round_trip_fee_pct:.4f}",
+                    flush=True,
+                )
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
+            quantity = sized_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0
             reasoning = _json_loads(row["reasoning_json"]) or {}

@@ -181,3 +181,97 @@ def conviction_scaled_notional(
     position = max(0.0, min(1.0, position))
     fraction = min_fraction + (1.0 - min_fraction) * position
     return round(ceiling * fraction, 8)
+
+
+def risk_based_notional(
+    *,
+    risk_budget: float,
+    entry_price: float,
+    stop_loss: float,
+    max_notional: float,
+) -> float:
+    """Size the position from the money at risk, not from a flat pound amount.
+
+    Founder-directed 2026-08-20, and the change that makes AI-chosen stop distances safe.
+
+    Before this, crypto used a flat notional (buy GBP 25 of it), so the stop distance
+    translated one-for-one into cash at risk: a wider stop simply risked more money. Handing
+    a model the stop distance under that scheme hands it a risk dial, and every model drifts
+    wider because wider stops look better right up until the losses land.
+
+    Sizing from risk inverts the incentive. `notional = risk_budget / stop_distance`, so a
+    wider stop buys a SMALLER position and the cash at risk stops growing with it. Widening
+    is no longer free -- it costs position size.
+
+    `max_notional` remains a hard concentration ceiling. Note the honest consequence on a
+    small account: when that ceiling binds (which it does at tight stops), the realised risk
+    is LOWER than the budget, never higher. Risk is therefore bounded above by risk_budget
+    and never grows past it, which is the property that matters.
+    """
+    if entry_price <= 0 or risk_budget <= 0:
+        return 0.0
+    per_unit_risk = abs(float(entry_price) - float(stop_loss))
+    if per_unit_risk <= 0:
+        return 0.0
+    quantity = float(risk_budget) / per_unit_risk
+    notional = quantity * float(entry_price)
+    return round(max(0.0, min(notional, max(0.0, float(max_notional)))), 8)
+
+
+def net_reward_risk_after_fees(
+    *,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    round_trip_fee_pct: float,
+) -> float | None:
+    """Reward-to-risk once the cost of trading is taken out of both sides.
+
+    The live numbers that motivated this: across the first 8 closed trades, fees came to
+    more than everything the winners made before costs. XRP was RIGHT -- it moved the way
+    the AI predicted -- and still returned GBP 0.004 net on GBP 0.036 gross. A trade whose
+    target barely clears its own costs is not worth taking however good the call is.
+
+    Fees are charged on both legs, so the round-trip cost is subtracted from the reward and
+    added to the risk. Returns None when the inputs cannot produce a meaningful ratio, so
+    the caller can decline to judge rather than act on a fabricated number.
+    """
+    if entry_price <= 0:
+        return None
+    reward = abs(float(take_profit) - float(entry_price))
+    risk = abs(float(entry_price) - float(stop_loss))
+    if risk <= 0:
+        return None
+    fee_cost = float(entry_price) * max(0.0, float(round_trip_fee_pct))
+    net_reward = reward - fee_cost
+    net_risk = risk + fee_cost
+    if net_reward <= 0:
+        return 0.0
+    return round(net_reward / net_risk, 6)
+
+
+def clears_fee_hurdle(
+    *,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    round_trip_fee_pct: float,
+    min_net_reward_risk: float = 1.0,
+) -> bool:
+    """Whether a trade is still worth taking once trading costs are paid.
+
+    Deliberately permissive by default (1.0) -- this is a floor that removes trades which
+    are pointless after costs, not a second opinion on trade quality. With no fee estimate
+    available it passes rather than blocking everything on an unknown.
+    """
+    if round_trip_fee_pct <= 0:
+        return True
+    ratio = net_reward_risk_after_fees(
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        round_trip_fee_pct=round_trip_fee_pct,
+    )
+    if ratio is None:
+        return True
+    return ratio >= float(min_net_reward_risk)

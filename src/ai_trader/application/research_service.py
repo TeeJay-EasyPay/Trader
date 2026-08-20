@@ -40,6 +40,7 @@ from ..trading_intelligence import (
 )
 from ..always_on import record_research_funnel, record_shadow_trade
 from .shared_helpers import _csv_env, _int_or_default
+from ..trade_scorecard import estimate_round_trip_fee_pct, load_closed_trades
 
 logger = logging.getLogger("ai_trader.api")
 
@@ -596,6 +597,13 @@ class ResearchService:
             # 5.5's technical stop placement inert -- see agent.py's technical_stop_loss
             # call for the live evidence.
             max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct,
+            # Founder-directed 2026-08-20: size from money at risk, and refuse trades that
+            # cannot pay their own trading costs. The fee rate is MEASURED from settled
+            # trades rather than taken from Kraken's published schedule, because the two
+            # disagree by roughly 6x on this account (1.6% observed vs 0.26% published).
+            risk_budget=max(0.0, account.equity * self.settings.auto_trade.crypto_risk_per_trade_pct),
+            round_trip_fee_pct=estimate_round_trip_fee_pct(load_closed_trades(self.settings.db_path, limit=60)),
+            min_net_reward_risk=self.settings.auto_trade.crypto_min_net_reward_risk,
             on_symbol_complete=_on_symbol_complete,
             # Phase 5 (2026-08-20): real qualitative review for crypto candidates that
             # clear every mechanical gate. None when no OpenAI key is configured, which
