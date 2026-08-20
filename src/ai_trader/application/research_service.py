@@ -451,6 +451,24 @@ class ResearchService:
         )
         return result
 
+    def forecast_one_symbol(self, symbol: str, *, asset_type: str = "crypto") -> dict[str, Any]:
+        """Single-symbol forecast, for on-demand verification and Founder-initiated checks.
+
+        refresh_market_forecasts covers the whole universe and is far too long for a
+        synchronous web request (one real OpenAI call per symbol); this is the one-symbol
+        equivalent that fits inside Render's ~60s proxy timeout.
+        """
+        if not self.settings.openai_api_key:
+            return {"status": "not_available", "message": "OPENAI_API_KEY is required for market forecasting."}
+        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        return generate_market_forecast(
+            self.settings.db_path,
+            analyzer=analyzer,
+            symbol=symbol.upper(),
+            asset_type=asset_type,
+            scope="symbol",
+        )
+
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
         _crypto_research_t0 = time.monotonic()

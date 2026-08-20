@@ -393,6 +393,9 @@ class LocalApiService:
         # calls this externally for the forecast-refresh worker job).
         return self._research_service.refresh_market_forecasts()
 
+    def forecast_one_symbol(self, symbol: str, *, asset_type: str = "crypto") -> dict[str, Any]:
+        return self._research_service.forecast_one_symbol(symbol, asset_type=asset_type)
+
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper so callers
         # (POST /run-crypto-analysis, refresh_crypto_universe, run_analysis) needed no changes.
@@ -560,6 +563,14 @@ class LocalApiService:
             if isinstance(symbols, str):
                 symbols = [item.strip().upper() for item in symbols.split(",") if item.strip()]
             return 200, self.run_crypto_analysis(symbols, limit=_int_or_default(body.get("limit"), 10))
+        if path == "/forecast-symbol":
+            # Single-symbol on-demand forecast (Phase 3 verification path). The full
+            # forecast-refresh job is one real OpenAI call per symbol and far exceeds a
+            # synchronous web request's budget; this one fits.
+            symbol = str(body.get("symbol") or "").strip()
+            if not symbol:
+                return 400, {"error": "missing_symbol", "message": "Body must include a 'symbol'."}
+            return 200, self.forecast_one_symbol(symbol, asset_type=str(body.get("asset_type") or "crypto"))
         if path == "/refresh-crypto-candle-history":
             # Manual trigger for the Phase 1 CIO-forecasting work (2026-08-20) -- lets the
             # hourly worker job be verified on demand against production instead of
