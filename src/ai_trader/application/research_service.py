@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -517,7 +518,12 @@ class ResearchService:
             self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols or [], result)
             return result
         if symbols is None:
-            limit = max(1, min(int(limit or 10), 30))
+            # 2026-08-20: this defaulted to 10, which silently capped the researched
+            # universe at ten coins no matter how many pairs KRAKEN_ALLOWED_PAIRS listed --
+            # so the Founder pasting a 19-coin list changed nothing, and the cycle kept
+            # examining the same 9. Raised to a configurable default that covers the full
+            # approved list. The hard 30 ceiling is untouched.
+            limit = max(1, min(int(limit or _int_or_default(os.getenv("CRYPTO_RESEARCH_SYMBOL_LIMIT"), 25)), 30))
             symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=limit)
         if not symbols:
             result = {
