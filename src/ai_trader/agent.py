@@ -341,6 +341,7 @@ def propose_crypto_trades(
     default_stop_loss_pct: float,
     now: datetime | None = None,
     on_symbol_complete: Callable[[str, list[TradeProposal]], None] | None = None,
+    reviewer: Any = None,
 ) -> list[TradeProposal]:
     """Generates crypto trade proposals from the same CRYPTO_RESEARCH_SCORES data the due
     diligence pipeline reads, so a proposal only exists when there's real evidence behind
@@ -523,13 +524,7 @@ def propose_crypto_trades(
             if validation.passed:
                 # Phase D: the same historical-analogue/backtest/external-intelligence/
                 # knowledge-base context Phase C gives the Alpaca LLM proposal call, folded
-                # into this already-deterministic-and-approved crypto proposal's reasoning
-                # text for transparency and audit -- not a gate. This governed path has no
-                # LLM call at all (propose_crypto_trades never had one, and adding a live,
-                # synchronous OpenAI call into this job's per-symbol loop is a separate,
-                # larger decision involving real timeout and real-money-veto tradeoffs not
-                # made here) and this enrichment never changes whether validation.passed or
-                # the proposal's price/size/stop/target -- only what its reasoning text says.
+                # into this crypto proposal's reasoning text for transparency and audit.
                 try:
                     context = build_proposal_context(db_path, symbol=symbol, asset_type="crypto")
                     # 2026-08-15 incident: reference_material (the actual curated knowledge-base
@@ -544,7 +539,45 @@ def propose_crypto_trades(
                     ).strip()
                     proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note)
                 except Exception:  # noqa: BLE001 - enrichment is additive; its failure must never block a proposal
-                    pass
+                    context = None
+                # Phase 5 of the CIO-level forecasting build (2026-08-20, Founder-directed):
+                # a real qualitative review, which this path has never had -- crypto trade
+                # generation was pure scoring arithmetic while equities got genuine LLM
+                # judgment. Runs only for candidates that already cleared every mechanical
+                # gate (so at most a couple of symbols per cycle, not one call per symbol),
+                # and can only veto or LOWER confidence, never raise it or touch
+                # price/size/stop/target -- those stay deterministic risk-management math,
+                # never model-authored. Any failure falls back to the existing deterministic
+                # proposal unchanged, matching propose_trades' per-symbol isolation.
+                review = None
+                if reviewer is not None:
+                    try:
+                        review = reviewer.review(symbol=symbol, candidate=_review_candidate(proposal, row), context=context)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[crypto-research] symbol={symbol} stage=review outcome=failed detail={exc}", flush=True)
+                        review = None
+                if review is not None:
+                    proposal = _apply_crypto_review(proposal, review)
+                    if not review["proceed"]:
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="agent_no_trade",
+                            payload={"symbol": symbol, "reason": "ai_review_declined", "review": review},
+                        )
+                        print(f"[crypto-research] symbol={symbol} stage=completed outcome=ai_review_declined", flush=True)
+                        if on_symbol_complete:
+                            on_symbol_complete(symbol, [])
+                        continue
+                    if proposal.confidence_score < min_confidence:
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="agent_no_trade",
+                            payload={"symbol": symbol, "reason": "ai_review_lowered_confidence_below_minimum", "review": review},
+                        )
+                        print(f"[crypto-research] symbol={symbol} stage=completed outcome=ai_review_lowered_confidence", flush=True)
+                        if on_symbol_complete:
+                            on_symbol_complete(symbol, [])
+                        continue
             audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
             if validation.passed:
                 proposals.append(proposal)
@@ -566,6 +599,47 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
     return proposals
+
+
+def _review_candidate(proposal: TradeProposal, row: Any) -> dict[str, Any]:
+    """The candidate as the reviewer sees it: real evidence plus the already-fixed
+    risk-management numbers, clearly labelled as fixed so the model treats them as
+    context rather than something to negotiate."""
+    return {
+        "confidence_score": proposal.confidence_score,
+        "scores": {
+            "technical_trend": row["technical_trend_score"],
+            "momentum": row["momentum_score"],
+            "volatility": row["volatility"],
+            "liquidity": row["liquidity"],
+            "risk_score": row["risk_score"],
+            "overall_due_diligence": row["overall_due_diligence_score"],
+        },
+        "technical_read": proposal.intelligence.get("market_intelligence", {}).get("metrics") if proposal.intelligence else None,
+        "regime": proposal.intelligence.get("regime") if proposal.intelligence else None,
+        "fixed_by_risk_management_not_negotiable": {
+            "entry_price": proposal.entry_price,
+            "stop_loss": proposal.stop_loss,
+            "take_profit": proposal.take_profit,
+            "position_size": proposal.position_size,
+        },
+    }
+
+
+def _apply_crypto_review(proposal: TradeProposal, review: dict[str, Any]) -> TradeProposal:
+    """Fold a review into the proposal: real reasoning text always, and a LOWERED
+    confidence when the reviewer argued for one. Never raises confidence -- see
+    CryptoTradeReviewer's docstring for why that asymmetry is deliberate."""
+    reasoning = str(proposal.plain_english_reasoning or "")
+    addition = f"\n\nAI review: {review['reasoning']}"
+    if review.get("concerns"):
+        addition += f" Concerns: {'; '.join(review['concerns'])}."
+    confidence = proposal.confidence_score
+    reviewed = review.get("confidence")
+    if reviewed is not None and reviewed < confidence:
+        addition += f" Confidence lowered from {confidence:.2f} to {reviewed:.2f} on this review."
+        confidence = reviewed
+    return replace(proposal, plain_english_reasoning=reasoning + addition, confidence_score=confidence)
 
 
 def _json_loads(value: Any) -> dict[str, Any] | None:

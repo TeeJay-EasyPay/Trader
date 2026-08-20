@@ -148,6 +148,66 @@ class MarketForecastAnalyzer:
         return _forecast_from_response_text(_extract_response_text(raw))
 
 
+class CryptoTradeReviewer:
+    """A real qualitative review of an already-deterministically-approved crypto candidate.
+
+    Phase 5 of the CIO-level forecasting build (2026-08-20, Founder-directed). Crypto
+    trade generation has never had an LLM step at all -- propose_crypto_trades is pure
+    scoring arithmetic. The Founder asked for genuine judgment here, matching what
+    equities already get.
+
+    Deliberately a REVIEW, not a proposal: price, size, stop-loss and take-profit stay
+    deterministic risk-management math and are never authored by a model. This step can
+    only (a) veto a candidate, or (b) lower its confidence -- never raise it, never widen
+    risk. That asymmetry is the point: real-money sizing must not depend on model output,
+    but a model spotting a reason not to trade is genuinely valuable.
+    """
+
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+
+    def review(self, *, symbol: str, candidate: dict[str, Any], context: dict[str, str] | None = None) -> dict[str, Any] | None:
+        prompt = {
+            "role": "crypto_trade_reviewer",
+            "instruction": (
+                "You are reviewing a crypto trade candidate that has already passed this system's mechanical "
+                "screens (due-diligence score, trend, 24h-range position, BTC regime, re-entry cooldown). "
+                "Your job is judgment, not arithmetic: decide whether this is genuinely worth taking right now. "
+                "Return only JSON with fields: proceed, confidence, reasoning, concerns. "
+                "proceed must be true or false. confidence must be a decimal fraction between 0 and 1 and must "
+                "NOT exceed the supplied candidate confidence -- you may lower it, never raise it. "
+                "reasoning must be 2-4 sentences in plain English a non-technical founder can follow, citing the "
+                "actual evidence supplied. concerns must be an array of at most 3 short strings. "
+                "Set proceed=false when the evidence genuinely does not support entering now -- a thin or "
+                "contradictory case is a real reason to pass, and passing costs nothing. "
+                "You are NOT setting the entry price, position size, stop-loss or take-profit; those are fixed by "
+                "risk management and are shown only as context."
+            ),
+            "symbol": symbol,
+            "candidate": candidate,
+        }
+        if context:
+            prompt.update(context)
+        payload = {
+            "model": self.model,
+            "input": json.dumps(prompt, default=str),
+            "text": {"format": {"type": "json_object"}},
+        }
+        request = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=25) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        return _review_from_response_text(_extract_response_text(raw))
+
+
 class OpenAIReadOnlyExplainer:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
@@ -234,6 +294,36 @@ def _forecast_from_response_text(text: str) -> dict[str, Any] | None:
         "contradictory_evidence": _string_list(data.get("contradictory_evidence")),
         "key_risks": _string_list(data.get("key_risks")),
         "invalidation": str(data.get("invalidation") or "").strip(),
+    }
+
+
+def _review_from_response_text(text: str) -> dict[str, Any] | None:
+    """Parse a crypto trade review. Returns None when the response isn't usable -- the
+    caller then keeps the existing deterministic proposal unchanged rather than acting on
+    a half-understood answer."""
+    if not text or text.strip() == "null":
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "proceed" not in data:
+        return None
+    reasoning = str(data.get("reasoning") or "").strip()
+    if not reasoning:
+        return None
+    confidence: float | None
+    try:
+        confidence = float(data.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = None
+    if confidence is not None and not 0.0 <= confidence <= 1.0:
+        confidence = None
+    return {
+        "proceed": bool(data.get("proceed")),
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "concerns": _string_list(data.get("concerns")),
     }
 
 

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..agent import AITradingAgent, propose_crypto_trades
-from ..ai import MarketForecastAnalyzer, OpenAIProposalAnalyzer
+from ..ai import CryptoTradeReviewer, MarketForecastAnalyzer, OpenAIProposalAnalyzer
 from ..alpaca import AlpacaPaperClient
 from ..audit import AuditDatabase
 from ..broker_adapters import _kraken_pair
@@ -563,6 +563,10 @@ class ResearchService:
             requested_notional=self.settings.auto_trade.crypto_max_trade_amount,
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct,
             on_symbol_complete=_on_symbol_complete,
+            # Phase 5 (2026-08-20): real qualitative review for crypto candidates that
+            # clear every mechanical gate. None when no OpenAI key is configured, which
+            # simply leaves the existing deterministic behavior untouched.
+            reviewer=CryptoTradeReviewer(self.settings.openai_api_key, self.settings.openai_model) if self.settings.openai_api_key else None,
         )
         print(f"[crypto-research] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
         # Deliberately does not call auto_execute_recommendations() here. The dedicated,
