@@ -98,8 +98,13 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
   // AI-managed positions only ever come from a broker's own managed_exits (an explicit,
   // open MANAGED_TRADE_EXITS row) - never inferred from the raw position list, so a manual
   // Kraken holding can never be mislabeled as AI-managed.
+  // 2026-08-21 bug: this read `open_positions_detail`, a field NO broker panel actually
+  // provides -- production payloads carry `positions`. The result was an AI-managed
+  // positions list that was permanently empty for BOTH brokers, which is why the Founder
+  // saw no Kraken holdings here despite holding 13 of them. Reads `positions` with the old
+  // name kept first as a harmless fallback in case any payload shape still supplies it.
   const aiManagedPositions = brokerPanels.flatMap((broker) =>
-    (broker.open_positions_detail || [])
+    (broker.open_positions_detail || broker.positions || [])
       .map((position) => ({ position, broker, ownership: positionOwnership(position, broker.managed_exits) }))
       .filter((row) => row.ownership.isAiManaged)
   );
@@ -158,7 +163,10 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
               <Metric label="Entry Time" value={formatDateTime(ownership.managedExit?.created_at)} />
               <Metric label="Current State" value={ownership.managedExit?.status} />
               <Metric label="Managed-Exit Status" value={ownership.managedExit?.status === 'open' ? 'Monitoring for stop-loss/take-profit' : ownership.managedExit?.status} />
-              <Metric label="Unrealised Result" value={moneyOrText(position.unrealized_pl)} />
+              <Metric label="Quantity" value={position.qty ?? position.quantity ?? 'Not available'} />
+              {position.unrealized_pl !== undefined && position.unrealized_pl !== null ? (
+                <Metric label="Unrealised Result" value={moneyOrText(position.unrealized_pl)} />
+              ) : null}
               <Metric label="Latest Learning State" value="Not available yet - learning only follows a closed, reconciled trade." />
             </View>
           );

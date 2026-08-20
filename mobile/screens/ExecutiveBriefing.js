@@ -140,6 +140,7 @@ function TodaysStrategyCard({ activity }) {
       <Text style={styles.bodyText}>{described.reasoning}</Text>
       <Text style={styles.metricLabel}>How today is going</Text>
       <Text style={styles.bodyText}>{described.outcomeText}</Text>
+      {described.scope ? <Text style={styles.smallText}>{described.scope}</Text> : null}
     </Section>
   );
 }

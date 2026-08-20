@@ -37,7 +37,7 @@ test('describeDailyPlan: seek_trades renders a positive-tone "seeking" label', (
     outcome_plain_english: 'Still seeking -- no trade has executed yet today.',
   });
   assert.strictEqual(described.status, 'generated');
-  assert.strictEqual(described.decisionLabel, 'Seeking trades today');
+  assert.strictEqual(described.decisionLabel, 'Seeking share trades today');
   assert.strictEqual(described.decisionTone, 'good');
   assert.strictEqual(described.reasoning, 'AAPL: strong quarter.');
   assert.strictEqual(described.outcomeText, 'Still seeking -- no trade has executed yet today.');
@@ -50,8 +50,23 @@ test('describeDailyPlan: stand_aside renders a neutral-tone "standing aside" lab
     reasoning: 'No candidate cleared due diligence.',
     outcome_plain_english: 'Stood aside as planned -- no trades attempted today.',
   });
-  assert.strictEqual(described.decisionLabel, 'Standing aside today');
+  assert.strictEqual(described.decisionLabel, 'Standing aside on shares today');
   assert.strictEqual(described.decisionTone, 'neutral');
+});
+
+
+test('an Alpaca plan says which market it covers so it cannot read as "did nothing"', () => {
+  // 2026-08-21: the flat label read as inactivity while crypto was actively trading.
+  const described = describeDailyPlan({ status: 'generated', decision: 'stand_aside', broker: 'alpaca' });
+  assert.ok(described.scope, 'An Alpaca plan must disclose that it covers shares only.');
+  assert.ok(/crypto/i.test(described.scope));
+});
+
+test('a non-Alpaca plan adds no shares-only caveat', () => {
+  assert.strictEqual(
+    describeDailyPlan({ status: 'generated', decision: 'stand_aside', broker: 'kraken' }).scope,
+    null,
+  );
 });
 
 console.log(`${passed} passed`);

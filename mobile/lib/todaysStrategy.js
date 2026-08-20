@@ -11,15 +11,26 @@
 
 'use strict';
 
+function scopeNote(source) {
+  const broker = String(source.broker || '').toLowerCase();
+  if (broker && broker !== 'alpaca') return null;
+  return 'This is the shares plan only. Crypto is researched continuously through the day and is not covered here.';
+}
+
 function describeDailyPlan(plan) {
   const source = plan || {};
   if (source.status === 'generated') {
     return {
       status: 'generated',
-      decisionLabel: source.decision === 'seek_trades' ? 'Seeking trades today' : 'Standing aside today',
+      // 2026-08-21: the label said a flat "Standing aside today" while crypto was actively
+      // trading, so the Founder reasonably read it as "the app did nothing". The plan is
+      // Alpaca-only and honest about that -- it just never said which market it covered.
+      // Naming the market makes the same true statement stop being misleading.
+      decisionLabel: source.decision === 'seek_trades' ? 'Seeking share trades today' : 'Standing aside on shares today',
       decisionTone: source.decision === 'seek_trades' ? 'good' : 'neutral',
       reasoning: source.reasoning || null,
       outcomeText: source.outcome_plain_english || null,
+      scope: scopeNote(source),
     };
   }
   return {
