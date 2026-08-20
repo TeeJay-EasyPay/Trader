@@ -8,13 +8,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..agent import AITradingAgent, propose_crypto_trades
-from ..ai import OpenAIProposalAnalyzer
+from ..ai import MarketForecastAnalyzer, OpenAIProposalAnalyzer
 from ..alpaca import AlpacaPaperClient
 from ..audit import AuditDatabase
 from ..broker_adapters import _kraken_pair
 from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
+from ..forecasting import generate_market_forecast
 from ..market_intelligence_platform import latest_observation_time, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -384,6 +385,69 @@ class ResearchService:
             broker="kraken",
             summary=f"Crypto candle refresh: {candles_written} new candle(s) across {len(symbols_with_history)} symbol(s); {len(quality_issues)} issue(s).",
             details=result,
+        )
+        return result
+
+    def refresh_market_forecasts(self) -> dict[str, Any]:
+        """Generate real CIO-level market forecasts -- Phase 3 of the forecasting build
+        (2026-08-20, Founder-directed).
+
+        Covers the crypto universe (real Kraken history from Phase 1) and the equity
+        universe (HISTORICAL_CANDLES, already populated daily by strategy-lab-refresh).
+        Per-symbol failures are recorded and skipped, never allowed to abort the batch --
+        same per-symbol isolation convention as propose_trades/refresh_crypto_candle_history.
+
+        See forecasting.py's module docstring for the anti-circularity rule this path
+        must respect: no trade-performance data ever reaches a forecast prompt.
+        """
+        if not self.settings.openai_api_key:
+            result = {"status": "not_available", "message": "OPENAI_API_KEY is required for market forecasting."}
+            record_operational_event(
+                self.settings.db_path,
+                component="market_forecast",
+                event_type="forecast_refresh_blocked_configuration",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        targets: list[tuple[str, str]] = []
+        try:
+            targets.extend((symbol, "crypto") for symbol in self._bootstrap_crypto_universe_from_kraken_permissions(limit=30))
+        except Exception:  # noqa: BLE001 - one universe's lookup failure must not block the other
+            pass
+        try:
+            targets.extend(
+                (row["ticker"], "stock")
+                for row in self._query_executor.rows("SELECT ticker FROM COMPANY_MASTER ORDER BY id ASC LIMIT 15")
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        forecasts: list[dict[str, Any]] = []
+        for symbol, asset_type in targets:
+            outcome = generate_market_forecast(
+                self.settings.db_path,
+                analyzer=analyzer,
+                symbol=symbol,
+                asset_type=asset_type,
+                scope="symbol",
+            )
+            forecasts.append({"symbol": symbol, "asset_type": asset_type, **outcome})
+        completed = [item for item in forecasts if item.get("status") == "completed"]
+        result = {
+            "status": "completed",
+            "symbols_requested": [symbol for symbol, _ in targets],
+            "forecasts_generated": len(completed),
+            "forecasts": forecasts,
+        }
+        record_operational_event(
+            self.settings.db_path,
+            component="market_forecast",
+            event_type="forecast_refresh_completed",
+            summary=f"Market forecast refresh: {len(completed)} real forecast(s) generated across {len(targets)} symbol(s).",
+            details={"forecasts_generated": len(completed), "symbols_requested": len(targets)},
         )
         return result
 

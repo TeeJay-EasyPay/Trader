@@ -526,6 +526,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.refresh_strategy_lab()
     if job_name == "crypto-candle-refresh":
         return service.refresh_crypto_candle_history()
+    if job_name == "forecast-refresh":
+        return service.refresh_market_forecasts()
     if job_name == "external-intelligence-refresh":
         # A true no-op (no HTTP calls, no writes) whenever
         # settings.external_intelligence_enabled is False -- see
@@ -915,6 +917,11 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # reads yet -- so unlike external-intelligence-refresh it is not gated behind a
     # settings flag.
     due.append(("crypto-candle-refresh", _time_bucket(now, 3600)))
+    # Phase 3 of the CIO-level forecasting build (2026-08-20): real CIO-style market
+    # forecasts. Every 6 hours, not hourly -- each symbol costs a real OpenAI call, and a
+    # multi-day directional view does not meaningfully change within an hour. Covers both
+    # asset classes, so like crypto-candle-refresh it sits above the NYSE weekday gate.
+    due.append(("forecast-refresh", _time_bucket(now, 6 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see

@@ -68,6 +68,78 @@ class OpenAIProposalAnalyzer:
         return _proposal_from_response_text(text)
 
 
+FORECAST_DIRECTIONS = ("bullish", "bearish", "neutral", "uncertain")
+
+
+class MarketForecastAnalyzer:
+    """Produces a real, CIO-style market forecast from genuine market evidence.
+
+    Phase 3 of the CIO-level forecasting build (2026-08-20, Founder-directed). The
+    Founder's own words on why this exists: the previous "forecast" simply averaged the
+    AI's own past closed trades and projected that forward -- "that's not forecasting...
+    forecasting is about planning, looking at market trends, looking at whether there is
+    a bull run coming or not."
+
+    CRITICAL, non-negotiable design constraint: this must NEVER see the AI's own trade
+    P&L or win rate. Feeding a model its own past results and calling the output a market
+    forecast is circular -- it would reinforce whatever pattern it already had on no new
+    information, and the Founder explicitly accepted this risk framing when approving the
+    build. Every input here traces back to real market data (price history, technical
+    analysis, regime, macro/news evidence) or curated reference material. See
+    forecasting.py::build_forecast_evidence for the assembly side and its accompanying
+    anti-circularity regression test.
+    """
+
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+
+    def forecast(self, *, scope: str, symbol: str | None, asset_type: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
+        prompt = {
+            "role": "chief_investment_officer_market_forecast",
+            "instruction": (
+                "You are acting as a Chief Investment Officer briefing a founder on where a market is heading. "
+                "Reason like a professional investor over the supplied evidence: multi-timeframe price trend, "
+                "momentum, volatility, support/resistance structure, the detected market regime, and any macro or "
+                "news context. Judge whether conditions favour continuation, reversal, or neither. "
+                "Return only JSON with fields: direction, horizon_days, confidence, reasoning, supporting_evidence, "
+                "contradictory_evidence, key_risks, invalidation. "
+                f"direction must be one of {list(FORECAST_DIRECTIONS)}. "
+                "confidence must be a decimal fraction between 0 and 1. "
+                "horizon_days must be a positive integer. "
+                "supporting_evidence, contradictory_evidence and key_risks must each be arrays of short strings. "
+                "invalidation must state, in one sentence, what would prove this view wrong. "
+                "reasoning must cite the actual numbers you were given -- a reader must be able to check your "
+                "claims against the evidence block. Never invent a data point that is not present. "
+                "If the evidence is too thin to support a real view, say so honestly: return direction 'uncertain' "
+                "with low confidence and explain what is missing, rather than manufacturing a confident call. "
+                "You are forecasting the MARKET, not grading any trading system's past performance -- no "
+                "past-trade results are supplied and you must not speculate about any."
+            ),
+            "scope": scope,
+            "symbol": symbol,
+            "asset_type": asset_type,
+            "evidence": evidence,
+        }
+        payload = {
+            "model": self.model,
+            "input": json.dumps(prompt, default=str),
+            "text": {"format": {"type": "json_object"}},
+        }
+        request = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=45) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        return _forecast_from_response_text(_extract_response_text(raw))
+
+
 class OpenAIReadOnlyExplainer:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
@@ -113,6 +185,56 @@ def _extract_response_text(response: dict[str, Any]) -> str:
     if chunks:
         return "".join(chunks)
     return str(response.get("output_text", ""))
+
+
+def _forecast_from_response_text(text: str) -> dict[str, Any] | None:
+    """Parse and sanity-check a forecast response. Returns None rather than a
+    half-trusted dict when the model didn't produce a usable, in-range answer -- the
+    caller records an honest "no forecast available" instead of a fabricated one."""
+    if not text or text.strip() == "null":
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    direction = str(data.get("direction") or "").strip().lower()
+    if direction not in FORECAST_DIRECTIONS:
+        return None
+    try:
+        confidence = float(data.get("confidence"))
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= confidence <= 1.0:
+        return None
+    try:
+        horizon_days = int(data.get("horizon_days"))
+    except (TypeError, ValueError):
+        return None
+    if horizon_days <= 0:
+        return None
+    reasoning = str(data.get("reasoning") or "").strip()
+    if not reasoning:
+        return None
+    return {
+        "direction": direction,
+        "horizon_days": horizon_days,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "supporting_evidence": _string_list(data.get("supporting_evidence")),
+        "contradictory_evidence": _string_list(data.get("contradictory_evidence")),
+        "key_risks": _string_list(data.get("key_risks")),
+        "invalidation": str(data.get("invalidation") or "").strip(),
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _proposal_from_response_text(text: str) -> TradeProposal | None:

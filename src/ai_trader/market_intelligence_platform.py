@@ -116,6 +116,22 @@ CREATE TABLE IF NOT EXISTS MARKET_REGIME_EVIDENCE (
     data_quality_json TEXT NOT NULL,
     plain_english TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS FORECAST_RECORDS (
+    forecast_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    symbol TEXT,
+    asset_type TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    horizon_days INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    reasoning TEXT NOT NULL,
+    invalidation TEXT,
+    evidence_json TEXT NOT NULL,
+    generated_by TEXT NOT NULL,
+    expires_at TEXT
+);
 """
 
 
@@ -156,6 +172,7 @@ def initialize_market_intelligence_schema(db_path: Path) -> None:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_mdo_symbol_time ON MARKET_DATA_OBSERVATIONS(normalized_symbol, timeframe, observation_time)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_mq_symbol ON MARKET_DATA_QUALITY_EVENTS(normalized_symbol, issue_type)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_news_cluster ON NEWS_CATALYST_EVIDENCE(normalized_symbol, cluster_key)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_scope ON FORECAST_RECORDS(scope, symbol, created_at)")
         _INITIALIZED_SCHEMA_KEYS.add(key)
 
 

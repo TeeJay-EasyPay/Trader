@@ -59,6 +59,7 @@ from ..foundation import (
     set_risk_policy_value,
 )
 from ..experience_engine import initialize_experience_engine_schema
+from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..intelligence import InvestmentIntelligenceDatabase
 from ..models import AccountContext, Position, TradeProposal, utc_now_iso
@@ -387,6 +388,11 @@ class LocalApiService:
         # refresh_strategy_lab above.
         return self._research_service.refresh_crypto_candle_history()
 
+    def refresh_market_forecasts(self) -> dict[str, Any]:
+        # Delegates to ResearchService, same thin-wrapper convention as above (cli.py
+        # calls this externally for the forecast-refresh worker job).
+        return self._research_service.refresh_market_forecasts()
+
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper so callers
         # (POST /run-crypto-analysis, refresh_crypto_universe, run_analysis) needed no changes.
@@ -413,6 +419,18 @@ class LocalApiService:
                 period=_first(query, "period") or "24h",
                 trade_limit=_int_or_default(_first(query, "trade_limit"), 100),
             )
+        if path == "/market-forecast":
+            # Phase 3/6 of the CIO-level forecasting build (2026-08-20). Returns the real
+            # stored forecasts; an empty list is an honest "none generated yet", never a
+            # placeholder or fabricated view.
+            symbol = _first(query, "symbol")
+            if symbol:
+                forecast = latest_forecast(self.settings.db_path, symbol=symbol)
+                return 200, {"symbol": symbol.upper(), "forecast": forecast, "generated_at": utc_now_iso()}
+            return 200, {
+                "forecasts": recent_forecasts(self.settings.db_path, limit=_int_or_default(_first(query, "limit"), 25)),
+                "generated_at": utc_now_iso(),
+            }
         if path == "/founder/trades":
             return 200, {
                 "trades": list_production_trade_evidence(
