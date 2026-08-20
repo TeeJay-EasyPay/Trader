@@ -652,7 +652,18 @@ class BrokerService:
                 "reconciliation_hold_reason": reconciliation.get("hold_reason"),
                 "ai_capital_ledger": ledger,
                 "trading_allocation_gbp": _float_env("KRAKEN_TRADING_ALLOCATION_GBP", 100.0),
-                "max_order_gbp": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
+                # 2026-08-20: order size is now capped as a PERCENTAGE of available cash
+                # (Founder-directed), so reporting only the flat fallback here would state a
+                # limit that is no longer the one being enforced. Both are surfaced: the
+                # percentage and the pounds it currently works out to, plus the flat value
+                # that applies only when the live balance cannot be read.
+                "max_order_pct_of_cash": _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05),
+                "max_order_gbp": round(
+                    max(0.0, float((ledger or {}).get("available_cash_gbp") or 0.0))
+                    * _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05),
+                    2,
+                ),
+                "max_order_gbp_fallback": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
                 "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
                 "max_open_trades": max_open_trades,
                 "ai_managed_open_trades": ai_managed_open_trades,
