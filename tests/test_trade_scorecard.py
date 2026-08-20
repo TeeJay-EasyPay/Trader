@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ai_trader.trade_scorecard import (
     deterministic_lessons_line,
+    fee_summary,
     explain_trade_outcomes,
     summarize_trade_outcomes,
 )
@@ -169,6 +170,49 @@ class ExplainTradeOutcomesTests(unittest.TestCase):
     def test_tolerates_junk_rows(self):
         trades = [None, "x", {"exit_time": NOW - DAY, "gross_pnl": "abc", "net_pnl": None, "exchange_fee": "z"}]
         explain_trade_outcomes(trades, now_epoch=NOW)  # must not raise
+
+
+class FeeSummaryTests(unittest.TestCase):
+    """Founder-requested 2026-08-20: track what commission is actually being paid.
+
+    Built from the real Kraken screenshots: 0.80% per leg on Tier 1, confirmed to three
+    decimal places on four separate fills.
+    """
+
+    def _round_trip(self):
+        # One complete ETH trade, both legs, exactly as Kraken reported it.
+        return {"exchange_fee": 0.0161 + 0.0157, "quantity": 0.00119932,
+                "actual_entry": 1675.10, "actual_exit": 1633.57}
+
+    def test_reports_the_real_tier_one_taker_rate(self):
+        got = fee_summary([self._round_trip()])
+        self.assertTrue(got["available"])
+        self.assertAlmostEqual(got["fee_pct_per_leg"], 0.80, places=1)
+        self.assertAlmostEqual(got["fee_pct_round_trip"], 1.60, places=1)
+
+    def test_break_even_move_equals_the_round_trip_cost(self):
+        got = fee_summary([self._round_trip()])
+        self.assertEqual(got["break_even_move_pct"], got["fee_pct_round_trip"])
+
+    def test_per_leg_and_round_trip_are_never_confused(self):
+        """The exact mistake made earlier today: a round-trip fee quoted against one leg."""
+        got = fee_summary([self._round_trip()])
+        self.assertAlmostEqual(got["fee_pct_round_trip"], got["fee_pct_per_leg"] * 2, places=6)
+
+    def test_says_so_honestly_when_there_is_nothing_to_measure(self):
+        got = fee_summary([])
+        self.assertFalse(got["available"])
+        self.assertEqual(got["trades_counted"], 0)
+        self.assertIn("No settled trade", got["reason"])
+
+    def test_plain_english_avoids_jargon_and_states_both_numbers(self):
+        text = fee_summary([self._round_trip()])["plain_english"]
+        self.assertIn("break", text.lower())
+        for jargon in ("notional", "maker", "taker", "bps"):
+            self.assertNotIn(jargon, text.lower())
+
+    def test_tolerates_junk(self):
+        fee_summary([None, "x", {"exchange_fee": "a", "quantity": None}])
 
 
 if __name__ == "__main__":

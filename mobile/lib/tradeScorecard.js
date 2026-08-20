@@ -71,6 +71,14 @@ function scorecardRows(scorecard) {
   });
 }
 
+function feesText(scorecard) {
+  const fees = scorecard && scorecard.fees;
+  if (!fees || !fees.available) return null;
+  return typeof fees.plain_english === 'string' && fees.plain_english.trim()
+    ? fees.plain_english.trim()
+    : null;
+}
+
 function lessonsText(scorecard) {
   if (!scorecard) return NO_SCORECARD_MESSAGE;
   const lessons = typeof scorecard.lessons === 'string' ? scorecard.lessons.trim() : '';
@@ -83,6 +91,7 @@ function tradeScorecardCard(scorecard) {
     loaded: Boolean(scorecard),
     rows: scorecardRows(scorecard),
     lessons: lessonsText(scorecard),
+    fees: feesText(scorecard),
   };
 }
 
@@ -90,6 +99,7 @@ module.exports = {
   NO_SCORECARD_MESSAGE,
   NO_SCORECARD_ROWS,
   countText,
+  feesText,
   lessonsText,
   netText,
   pendingText,

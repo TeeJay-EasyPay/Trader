@@ -181,6 +181,7 @@ def trade_scorecard(db_path: Path, *, now_epoch: float | None = None) -> dict[st
         "month": buckets["month"],
         "lessons": why or deterministic_lessons_line(buckets),
         "lessons_source": "driver_analysis" if why else "counts",
+        "fees": fee_summary(trades),
         "closed_trades_considered": len(trades),
     }
 
@@ -301,3 +302,59 @@ def estimate_round_trip_fee_pct(trades: Iterable[dict[str, Any]], *, default: fl
     middle = len(rates) // 2
     median = rates[middle] if len(rates) % 2 else (rates[middle - 1] + rates[middle]) / 2
     return round(median, 6)
+
+
+def fee_summary(trades: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """What trading is actually costing, measured from settled trades.
+
+    Founder-requested 2026-08-20: *"I also like tracking what commission we keep paying for
+    each trade."* Reported per LEG (one buy or one sell) as well as per round trip, because
+    those are the two numbers that matter and confusing them is easy -- it is exactly the
+    mistake made earlier today, quoting a round-trip cost against a one-way trade value.
+
+    This also becomes the evidence for whether a future switch to resting limit orders
+    genuinely earns the cheaper maker rate. Kraken's Tier 1 is 0.40% maker / 0.80% taker, so
+    a per-leg figure that stays at 0.80 means the orders are still taking liquidity whatever
+    the code intended. Measured, not assumed.
+    """
+    total_fee = 0.0
+    total_volume = 0.0
+    counted = 0
+    for trade in trades or []:
+        if not isinstance(trade, dict):
+            continue
+        fee = (_num(trade.get("exchange_fee")) or 0.0) + (_num(trade.get("broker_fee")) or 0.0)
+        quantity = _num(trade.get("quantity"))
+        entry = _num(trade.get("actual_entry"))
+        exit_price = _num(trade.get("actual_exit"))
+        if fee <= 0 or not quantity or not entry or not exit_price:
+            continue
+        # Both legs are real traded volume, and Kraken charges its rate against each.
+        total_volume += abs(quantity * entry) + abs(quantity * exit_price)
+        total_fee += fee
+        counted += 1
+    if counted == 0 or total_volume <= 0:
+        return {
+            "available": False,
+            "reason": "No settled trade yet carries both a fee and a traded value.",
+            "trades_counted": 0,
+        }
+    per_leg = total_fee / total_volume
+    # Derive the round trip from the ALREADY-ROUNDED per-leg figure so the two numbers the
+    # Founder sees always agree exactly (0.80 and 1.60, never 0.801 and 1.601 which look
+    # like a discrepancy). Rounding each independently produced exactly that mismatch.
+    per_leg_pct = round(per_leg * 100, 2)
+    round_trip_pct = round(per_leg_pct * 2, 2)
+    return {
+        "available": True,
+        "trades_counted": counted,
+        "total_fees_paid": round(total_fee, 6),
+        "fee_pct_per_leg": per_leg_pct,
+        "fee_pct_round_trip": round_trip_pct,
+        "break_even_move_pct": round_trip_pct,
+        "plain_english": (
+            f"Every buy and every sell costs {per_leg_pct:.2f}% of the amount traded, so a "
+            f"complete trade must gain {round_trip_pct:.2f}% before it breaks even. "
+            f"{total_fee:.2f} paid in fees across {counted} completed trade(s)."
+        ),
+    }

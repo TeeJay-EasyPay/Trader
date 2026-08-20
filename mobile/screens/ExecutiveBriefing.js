@@ -451,6 +451,8 @@ function TradeScorecardCard({ tradeScorecard }) {
         </View>
       ))}
       <Text style={styles.summaryReason}>{card.lessons}</Text>
+      {/* Founder-requested 2026-08-20: track what commission is actually being paid. */}
+      {card.fees ? <Text style={styles.smallText}>{card.fees}</Text> : null}
     </CollapsibleSection>
   );
 }
