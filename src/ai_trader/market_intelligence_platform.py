@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from .database import connect
+import threading
+from .database import connect, selected_backend
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,14 +119,44 @@ CREATE TABLE IF NOT EXISTS MARKET_REGIME_EVIDENCE (
 """
 
 
+_SCHEMA_LOCK = threading.Lock()
+_INITIALIZED_SCHEMA_KEYS: set[str] = set()
+
+
+def _schema_key(db_path: Path) -> str:
+    if selected_backend() == "postgres":
+        return "postgres"
+    return f"sqlite:{Path(db_path).resolve()}"
+
+
 def initialize_market_intelligence_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(db_path)) as conn:
-        with conn:
-            conn.executescript(MARKET_INTELLIGENCE_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_mdo_symbol_time ON MARKET_DATA_OBSERVATIONS(normalized_symbol, timeframe, observation_time)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_mq_symbol ON MARKET_DATA_QUALITY_EVENTS(normalized_symbol, issue_type)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_news_cluster ON NEWS_CATALYST_EVIDENCE(normalized_symbol, cluster_key)")
+    """Create schema once per process.
+
+    Same "repeated schema setup mistaken for slow work" bug already fixed for
+    multi_broker/kraken_reconciliation/trading_intelligence, missed here: this was
+    unconditionally re-running a 10-statement DDL script (7 CREATE TABLE + 3 CREATE
+    INDEX) against remote Postgres on every call -- record_market_observations and
+    latest_observation_time both call it once per symbol, so a 3-symbol crypto-candle
+    refresh paid this cost 6 times, confirmed live as the actual cause of that endpoint
+    blowing past Render's ~60s proxy timeout even after the fetch window was bounded and
+    the candle insert batched. Caching per-process is safe for the same reason as the
+    other three modules: every statement here is idempotent, and every job run is its
+    own fresh process.
+    """
+    key = _schema_key(db_path)
+    if key in _INITIALIZED_SCHEMA_KEYS:
+        return
+    with _SCHEMA_LOCK:
+        if key in _INITIALIZED_SCHEMA_KEYS:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(connect(db_path)) as conn:
+            with conn:
+                conn.executescript(MARKET_INTELLIGENCE_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_mdo_symbol_time ON MARKET_DATA_OBSERVATIONS(normalized_symbol, timeframe, observation_time)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_mq_symbol ON MARKET_DATA_QUALITY_EVENTS(normalized_symbol, issue_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_news_cluster ON NEWS_CATALYST_EVIDENCE(normalized_symbol, cluster_key)")
+        _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
 def validate_candles(candles: list[dict[str, Any]], *, stale_after_minutes: int = 1440) -> dict[str, Any]:
