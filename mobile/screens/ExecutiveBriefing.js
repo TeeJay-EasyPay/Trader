@@ -44,7 +44,6 @@ const { marketForecastCards } = require('../lib/marketForecast');
 const { tradeScorecardCard } = require('../lib/tradeScorecard');
 const { declineReasonsCard } = require('../lib/declineReasons');
 const { evaluateFactors } = require('../lib/forecastFactors');
-const { buildInvestmentRhythm } = require('../lib/investmentRhythm');
 const { buildInvestmentCommittee } = require('../lib/investmentCommittee');
 const { buildRiskCards } = require('../lib/principalRisks');
 const { buildOpportunityCards } = require('../lib/principalOpportunities');
@@ -647,43 +646,6 @@ function ClosingRecommendationCard({ themes, recommendations, marketCentre, aver
 // --- Below the fold: Investment Rhythm, Executive Messages -----------------------------------
 // Supporting detail, not part of the three-minute read.
 
-function rhythmMark(stage, isCurrent) {
-  if (stage.status === 'completed') return '✓';
-  // 2026-08-19 Founder request: '○' next to "Learning Complete"/"Strategy Committee"/"Risk
-  // Committee" read as "hasn't happened yet today, but will tick like Research did" - it
-  // never will, by design (see investmentRhythm.js: those three run continuously
-  // per-recommendation, not as a scheduled daily batch with its own timestamp, so this app
-  // will never fabricate a "complete" tick for them). A distinct mark plus the real reason
-  // (stage.note, already computed, previously unrendered) makes that permanent-by-design
-  // state visually different from "pending today" instead of looking like the same thing.
-  if (stage.status === 'not_tracked') return '–';
-  if (isCurrent) return '▶';
-  return '○';
-}
-
-function InvestmentRhythmTimeline({ status, founderBriefCreatedAt }) {
-  const rhythm = buildInvestmentRhythm({
-    lastEquityResearchCompletedAt: status?.operations_health?.last_equity_research?.completed_at,
-    lastCryptoResearchCompletedAt: status?.operations_health?.last_crypto_research?.completed_at,
-    founderBriefCreatedAt,
-  });
-  return (
-    <CollapsibleSection title="Investment Rhythm" subtitle="Today's schedule, current stage highlighted. '–' marks a stage that runs continuously, not on this daily schedule.">
-      {rhythm.stages.map((stage) => {
-        const isCurrent = rhythm.scheduledCurrent?.key === stage.key;
-        return (
-          <View key={stage.key} style={styles.compactRow}>
-            <Text style={isCurrent ? styles.cardTitle : styles.bodyText}>
-              {rhythmMark(stage, isCurrent)} {stage.name}{isCurrent ? ' (current stage)' : ''}
-            </Text>
-            {stage.status === 'not_tracked' ? <Text style={styles.metricLabel}>{stage.note}</Text> : null}
-          </View>
-        );
-      })}
-    </CollapsibleSection>
-  );
-}
-
 function ExecutiveMessagesCard({ status }) {
   const evidence = status?.world_class_evidence || {};
   const messages = evidence.unavailable || [];
@@ -780,7 +742,6 @@ function ExecutiveBriefing({
         unresolvedIncidentCount={unresolvedIncidentCount}
       />
 
-      <InvestmentRhythmTimeline status={status} founderBriefCreatedAt={brief?.created_at} />
       <ExecutiveMessagesCard status={status} />
     </View>
   );
@@ -801,6 +762,5 @@ module.exports = {
   FounderActionsSection,
   InvestmentOrganisationCard,
   ClosingRecommendationCard,
-  InvestmentRhythmTimeline,
   ExecutiveMessagesCard,
 };
