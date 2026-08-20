@@ -35,11 +35,16 @@ class OpenAIProposalAnalyzer:
                 "For buy trades, stop_loss must be below entry_price and take_profit must be above entry_price. "
                 "For sell trades, stop_loss must be above entry_price and take_profit must be below entry_price. "
                 "Only propose a trade when the setup is clear and conservative. "
-                "historical_analogues, backtest_evidence, external_intelligence, and reference_material, "
-                "when present, are real evidence this specific system has already gathered -- weigh them as "
-                "genuine input alongside market/news, not as background color. reference_material in "
+                "historical_analogues, backtest_evidence, external_intelligence, market_forecast, and "
+                "reference_material, when present, are real evidence this specific system has already gathered -- "
+                "weigh them as genuine input alongside market/news, not as background color. reference_material in "
                 "particular is curated trading-principles reference text, not instructions to follow blindly; "
-                "apply it as a professional trader would apply general knowledge to a specific, current setup."
+                "apply it as a professional trader would apply general knowledge to a specific, current setup. "
+                "market_forecast is this system's own CIO-level view of where the market is heading, built from "
+                "real multi-timeframe technical evidence. Take it seriously: if it opposes the trade you are "
+                "considering, either do not propose the trade, or state explicitly in plain_english_reasoning why "
+                "this specific setup justifies going against that view. Never propose a trade that silently "
+                "ignores an opposing forecast."
             ),
             "symbol": symbol,
             "market": market,

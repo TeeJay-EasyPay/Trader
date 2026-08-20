@@ -445,7 +445,14 @@ def pre_execution_decision_packet(
                     proposal.symbol,
                     broker.lower(),
                     strategy["strategy_id"],
-                    strategy.get("regime_id"),
+                    # 2026-08-20: this column has been silently NULL on every row ever
+                    # written. strategy_entitlement_decision (a strategy/broker/mode
+                    # eligibility check) has no business knowing about regimes and never
+                    # returned a regime_id, but the real value has always been sitting on
+                    # the proposal itself -- infer_market_regime computes and attaches it
+                    # to proposal.intelligence for every single proposal. Read it from
+                    # there instead of from a function that never had it.
+                    ((proposal.intelligence or {}).get("regime") or {}).get("regime_id"),
                     proposal.confidence_score,
                     evidence_for,
                     evidence_against,
@@ -712,6 +719,79 @@ def refresh_strategy_maturity(db_path: Path, *, strategy_id: str, evidence: dict
     }
 
 
+# Deliberately high bars, both of them. Phase 4 of the CIO-level forecasting build
+# (2026-08-20): this gate exists to catch the genuinely severe case -- entering a fresh
+# position straight into a confidently-called opposite move, with nothing in the AI's own
+# reasoning acknowledging it -- not to add routine friction to every trade. It sits
+# alongside kill_switch_active and market_data_quality in the Risk Sentinel, which are
+# similarly rare. Set high on purpose: a gate that fires often would silently starve trade
+# volume, which this system has already suffered from other causes and which is far harder
+# to notice than an outright failure.
+FORECAST_CONFLICT_MIN_CONFIDENCE = 0.7
+FORECAST_CONFLICT_MAX_AGE_HOURS = 48
+
+
+def _market_forecast_conflict(db_path: Path, *, proposal: TradeProposal) -> dict[str, Any] | None:
+    """Block only when a recent, high-confidence forecast directly opposes this trade AND
+    the proposal's own reasoning never engages with that opposing view.
+
+    The "reasoning didn't address it" condition is what keeps this from overriding real
+    judgment: an AI that has genuinely considered a bearish backdrop and still argues for
+    the trade is doing exactly what a good analyst does, and is left alone. What gets
+    stopped is a trade that appears to be unaware of the conflict entirely.
+    """
+    try:
+        from .forecasting import latest_forecast
+    except Exception:  # noqa: BLE001 - forecasting being unavailable must never block trading
+        return None
+    try:
+        forecast = latest_forecast(db_path, symbol=proposal.symbol)
+    except Exception:  # noqa: BLE001
+        return None
+    if not forecast:
+        return None
+    direction = str(forecast.get("direction") or "").lower()
+    confidence = float(forecast.get("confidence") or 0.0)
+    if confidence < FORECAST_CONFLICT_MIN_CONFIDENCE:
+        return None
+    # A stale forecast must not keep blocking trades long after the view was formed.
+    created_at = str(forecast.get("created_at") or "")
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - created) > timedelta(hours=FORECAST_CONFLICT_MAX_AGE_HOURS):
+            return None
+    except ValueError:
+        return None
+    side = str(proposal.side or "").lower()
+    opposed = (side == "buy" and direction == "bearish") or (side == "sell" and direction == "bullish")
+    if not opposed:
+        return None
+    reasoning_text = " ".join(
+        str(value or "").lower()
+        for value in (proposal.plain_english_reasoning, proposal.technical_summary, proposal.market_sentiment_summary)
+    )
+    # If the proposal's own words engage with the opposing case at all, this is a
+    # considered disagreement rather than an unnoticed conflict -- leave it alone.
+    acknowledgement_markers = (direction, "despite", "counter", "contrarian", "against the trend", "downtrend", "uptrend", "headwind", "pullback")
+    if any(marker in reasoning_text for marker in acknowledgement_markers):
+        return None
+    return {
+        "issue": (
+            f"market_forecast_conflict: a {direction} forecast (confidence {confidence:.2f}) opposes this {side}, "
+            "and the proposal's reasoning does not address it"
+        ),
+        "evidence": {
+            "forecast_id": forecast.get("forecast_id"),
+            "direction": direction,
+            "confidence": confidence,
+            "created_at": created_at,
+            "proposal_side": side,
+        },
+    }
+
+
 def production_risk_sentinel_decision(
     db_path: Path,
     *,
@@ -746,6 +826,10 @@ def production_risk_sentinel_decision(
     if incident:
         issues.append(f"open_incident_{incident['component']}: {incident['explanation']}")
         evidence["open_incident"] = incident
+    conflict = _market_forecast_conflict(db_path, proposal=proposal)
+    if conflict:
+        issues.append(conflict["issue"])
+        evidence["market_forecast_conflict"] = conflict["evidence"]
     decision = "approved" if not issues else "blocked"
     reason = "Risk Sentinel clear." if not issues else "; ".join(issues)
     with closing(connect(db_path)) as conn:

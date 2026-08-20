@@ -204,4 +204,47 @@ def build_proposal_context(
         "backtest_evidence": _serialize_backtest(backtest),
         "external_intelligence": _serialize_external_intelligence(db_path, symbol=symbol),
         "reference_material": _serialize_knowledge(excerpts),
+        "market_forecast": _serialize_market_forecast(db_path, symbol=symbol),
     }
+
+
+def _serialize_market_forecast(db_path: Path, *, symbol: str) -> str:
+    """The latest real CIO-level market forecast for this symbol, as prompt text.
+
+    Phase 4 of the CIO-level forecasting build (2026-08-20). This is the "upstream" half
+    of making the forecast a genuine input to trade selection: the model sees the market
+    view BEFORE it reasons, so the forecast shapes confidence and the written thesis at
+    the point they are formed, rather than only being checked against afterwards. The
+    "downstream" half is the rare hard-block circuit breaker in sprint6.py's Risk
+    Sentinel (_market_forecast_conflict).
+
+    Deliberately includes the contradictory evidence and invalidation level too -- a
+    forecast presented as one-sided would push the model toward agreeing with it, which
+    is the opposite of the judgment this is meant to improve.
+    """
+    try:
+        from .forecasting import latest_forecast
+
+        forecast = latest_forecast(db_path, symbol=symbol)
+    except Exception:  # noqa: BLE001 - context is additive; its failure must never block a proposal
+        return "No market forecast is available for this symbol."
+    if not forecast:
+        return "No market forecast has been generated for this symbol yet."
+    lines = [
+        f"Direction: {forecast.get('direction')} over ~{forecast.get('horizon_days')} days "
+        f"(confidence {forecast.get('confidence')}), generated {forecast.get('created_at')}.",
+        f"Reasoning: {forecast.get('reasoning')}",
+    ]
+    if forecast.get("invalidation"):
+        lines.append(f"What would invalidate this view: {forecast['invalidation']}")
+    payload = _safe_json_loads(forecast.get("evidence_json"))
+    if isinstance(payload, dict):
+        for label, key in (("Supporting", "supporting_evidence"), ("Contradictory", "contradictory_evidence"), ("Key risks", "key_risks")):
+            items = payload.get(key) or []
+            if items:
+                lines.append(f"{label}: " + "; ".join(str(item) for item in items[:3]))
+    lines.append(
+        "Weigh this as a real market view, not an instruction -- if the specific setup in front of you "
+        "genuinely argues otherwise, say so explicitly and explain why."
+    )
+    return "\n".join(lines)
