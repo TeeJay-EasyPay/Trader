@@ -40,7 +40,7 @@ _MARKDOWN = re.compile(r"[*_`#>]+")
 _WHITESPACE = re.compile(r"\s+")
 
 
-def shorten(text: str, *, max_sentences: int = 2, max_chars: int = 240) -> str:
+def shorten(text: str, *, max_sentences: int = 2, max_chars: int = 170) -> str:
     """Trim reviewer prose to a couple of plain sentences with no raw markdown.
 
     Markdown is stripped rather than rendered because the mobile card shows plain Text --
@@ -54,7 +54,14 @@ def shorten(text: str, *, max_sentences: int = 2, max_chars: int = 240) -> str:
     parts = re.split(r"(?<!\d)(?<=[.!?])\s+", cleaned)
     kept = " ".join(parts[:max_sentences]).strip()
     if len(kept) > max_chars:
-        kept = kept[: max_chars - 1].rstrip() + "…"
+        # Cut at a word boundary, not mid-word. Plain "..." rather than the single-character
+        # ellipsis: the payload crosses JSON, an HTTP layer and React Native Text, and a
+        # non-ASCII character there is one more thing that can arrive mangled for no benefit.
+        clipped = kept[:max_chars]
+        space = clipped.rfind(" ")
+        if space > max_chars // 2:
+            clipped = clipped[:space]
+        kept = clipped.rstrip(" ,;:.") + "..."
     return kept
 
 
@@ -75,6 +82,12 @@ def summarize_decline(payload: dict[str, Any]) -> dict[str, Any] | None:
     concern = ""
     if isinstance(concerns, list) and concerns:
         concern = shorten(concerns[0], max_sentences=1, max_chars=140)
+    # For a DECLINE, the concern is the actual answer to "why not?". The reviewer's
+    # reasoning field characteristically opens with the bullish case before pivoting, so
+    # leading with it answers the opposite question -- live example: a declined BTC trade
+    # whose reasoning began "strong momentum and a bullish bias" while the real reason,
+    # "weekly trend weakness undermines daily bullish signals", sat in `concerns`.
+    headline = concern or reasoning
     confidence = review.get("confidence")
     try:
         confidence_value = None if confidence is None else round(float(confidence), 2)
@@ -83,7 +96,9 @@ def summarize_decline(payload: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "symbol": str(payload.get("symbol") or "").upper() or None,
         "outcome": label,
-        "why": reasoning,
+        "why": headline,
+        # Kept alongside so the fuller assessment is still available, but never the headline.
+        "assessment": reasoning if concern else None,
         "main_concern": concern or None,
         "confidence": confidence_value,
     }

@@ -28,7 +28,8 @@ function declineRow(record) {
     symbol: record.symbol,
     outcome: record.outcome || 'Declined',
     why: record.why,
-    concern: record.main_concern || null,
+    // `why` is already the concern when one exists; `assessment` is the fuller view.
+    assessment: record.assessment || null,
     confidence: confidenceNote(record.confidence),
   };
 }

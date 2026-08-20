@@ -17,7 +17,7 @@ function test(name, fn) {
 
 const record = {
   symbol: 'XLM', outcome: 'Declined', why: 'Price sits near the top of its range.',
-  main_concern: 'Little room to resistance.', confidence: 0.42, created_at: '2026-08-20T07:16:18Z',
+  assessment: 'Momentum is strong but the weekly view disagrees.', confidence: 0.42, created_at: '2026-08-20T07:16:18Z',
 };
 
 test('a record becomes a compact row', () => {
@@ -25,7 +25,7 @@ test('a record becomes a compact row', () => {
   assert.strictEqual(row.symbol, 'XLM');
   assert.strictEqual(row.outcome, 'Declined');
   assert.strictEqual(row.confidence, '42% confident');
-  assert.strictEqual(row.concern, 'Little room to resistance.');
+  assert.strictEqual(row.assessment, 'Momentum is strong but the weekly view disagrees.');
 });
 
 test('records without a symbol or reason are dropped, not rendered blank', () => {

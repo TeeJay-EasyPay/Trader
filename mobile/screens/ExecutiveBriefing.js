@@ -475,7 +475,7 @@ function DeclineReasonsCard({ declineReasons }) {
           <View key={row.key} style={styles.compactRow}>
             <Text style={styles.metricLabel}>{row.symbol} - {row.outcome}</Text>
             <Text style={styles.bodyText}>{row.why}</Text>
-            {row.concern ? <Text style={styles.smallText}>Main concern: {row.concern}</Text> : null}
+            {row.assessment ? <Text style={styles.smallText}>{row.assessment}</Text> : null}
             {row.confidence ? <Text style={styles.smallText}>{row.confidence}</Text> : null}
           </View>
         ))

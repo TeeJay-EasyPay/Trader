@@ -38,8 +38,24 @@ class SummarizeDeclineTests(unittest.TestCase):
         self.assertEqual(got["symbol"], "XLM")
         self.assertEqual(got["outcome"], "Declined")
         self.assertEqual(got["confidence"], 0.42)
-        self.assertIn("top of its 24-hour range", got["why"])
         self.assertIn("Range position", got["main_concern"])
+
+    def test_the_headline_is_the_concern_not_the_bullish_preamble(self):
+        """Live finding: reviewer reasoning opens with the BULLISH case before pivoting, so
+        leading with it answers the opposite of "why not?"."""
+        got = summarize_decline(payload(review={
+            "proceed": False,
+            "reasoning": "Strong momentum and a bullish bias with price above key moving averages.",
+            "concerns": ["Weekly trend weakness undermines the daily signal."],
+        }))
+        self.assertEqual(got["why"], "Weekly trend weakness undermines the daily signal.")
+        self.assertNotIn("bullish bias", got["why"])
+        self.assertIn("bullish bias", got["assessment"], "The fuller view is kept, just not as the headline.")
+
+    def test_falls_back_to_the_reasoning_when_there_is_no_concern(self):
+        got = summarize_decline(payload(review={"proceed": False, "reasoning": "Too extended here."}))
+        self.assertEqual(got["why"], "Too extended here.")
+        self.assertIsNone(got["assessment"])
 
     def test_lowered_confidence_is_labelled_differently_from_an_outright_veto(self):
         got = summarize_decline(payload(reason="ai_review_lowered_confidence_below_minimum"))
@@ -83,10 +99,12 @@ class ShortenTests(unittest.TestCase):
     def test_collapses_whitespace_and_newlines(self):
         self.assertEqual(shorten("a\n\n   b"), "a b")
 
-    def test_truncates_very_long_text_with_an_ellipsis(self):
+    def test_truncates_long_text_at_a_word_boundary_with_ascii_dots(self):
         got = shorten("word " * 200, max_chars=60)
-        self.assertLessEqual(len(got), 60)
-        self.assertTrue(got.endswith("…"))
+        self.assertLessEqual(len(got), 63)
+        self.assertTrue(got.endswith("..."))
+        self.assertTrue(got.isascii(), "Non-ASCII can arrive mangled through JSON/HTTP/RN Text.")
+        self.assertFalse(got[:-3].endswith("wor"), "Must not cut mid-word.")
 
     def test_empty_input_returns_empty(self):
         self.assertEqual(shorten(""), "")
