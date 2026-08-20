@@ -120,6 +120,41 @@ def technical_take_profit(
     return round(level if level <= ratio_target else ratio_target, 8)
 
 
+def cash_capped_notional(
+    *,
+    approved_notional: float,
+    available_cash: float,
+    max_pct_of_available_cash: float,
+    max_absolute_gbp: float = 0.0,
+) -> float:
+    """Cap one trade at a share of the cash actually free to deploy, and/or a hard amount.
+
+    Founder-requested 2026-08-20: *"there should be guard rails on the maximum percentage
+    of the available cash for each trade or max amount."* Both are implemented, and both
+    are strictly reducing -- this function can only ever lower an already-approved size,
+    never raise one, so it cannot widen risk no matter how it is configured.
+
+    Why this is NOT redundant with the existing `max_position_size_pct` ceiling: that one
+    is a share of *equity* (total allocated capital), which does not fall as capital gets
+    deployed. This one is a share of *available cash*. With GBP 500 allocated and GBP 400
+    already committed, 5% of equity still permits GBP 25 while only GBP 100 is actually
+    free -- this cap correctly tightens to GBP 10 as the account fills up, which is the
+    behaviour that stops the last few trades over-committing a nearly-full book.
+
+    `max_absolute_gbp <= 0` disables the absolute cap (the percentage cap still applies).
+    """
+    if approved_notional <= 0:
+        return 0.0
+    candidates = [float(approved_notional)]
+    if max_pct_of_available_cash > 0:
+        # Negative/zero cash means nothing is free to deploy -- cap at zero rather than
+        # letting a negative multiply through into a nonsense size.
+        candidates.append(max(0.0, float(available_cash)) * float(max_pct_of_available_cash))
+    if max_absolute_gbp > 0:
+        candidates.append(float(max_absolute_gbp))
+    return round(max(0.0, min(candidates)), 8)
+
+
 def conviction_scaled_notional(
     *,
     approved_notional: float,

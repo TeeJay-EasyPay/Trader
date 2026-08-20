@@ -56,6 +56,7 @@ from ..foundation import (
     initialize_foundation_schema,
     latest_due_diligence_batch,
     latest_investment_score_batch,
+    load_trading_policy,
     set_risk_policy_value,
 )
 from ..experience_engine import initialize_experience_engine_schema
@@ -83,6 +84,7 @@ from ..kraken_reconciliation import (
     founder_override_kraken_hold,
     initialize_kraken_reconciliation_schema,
     kraken_reconciliation_status,
+    record_founder_allocation,
     replay_persisted_kraken_evidence,
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
@@ -442,6 +444,17 @@ class LocalApiService:
                     limit=_int_or_default(_first(query, "limit"), 100),
                 )
             }
+        if path == "/admin/trading-policy":
+            # 2026-08-20: RISK_POLICIES had a writer (/admin/set-risk-policy) but no reader,
+            # so the only way to learn a live policy value was to overwrite it and read the
+            # returned previous_value. That is a poor tool for a project whose standing rule
+            # is to verify against live production -- and it is how trailing_stop_enabled sat
+            # at false, unnoticed, while the feature that depends on it was believed active.
+            return 200, load_trading_policy(
+                self.settings.db_path,
+                auto_trade=self.settings.auto_trade,
+                guardrails=self.settings.guardrails,
+            ).to_dict()
         if path == "/portfolio":
             return 200, self.portfolio(_first(query, "broker") or "all")
         if path == "/founder-brief":
@@ -660,6 +673,22 @@ class LocalApiService:
             if not key:
                 return 400, {"error": "missing_key", "message": "Body must include a 'key' naming an existing RISK_POLICIES row."}
             return 200, set_risk_policy_value(self.settings.db_path, key, body.get("value"), updated_by=str(body.get("updated_by") or "founder"))
+        if path == "/admin/kraken-allocation":
+            # Founder capital top-up for the Kraken AI ledger. Needs an explicit
+            # `reference` so a retried call cannot double-credit the allocation.
+            try:
+                amount = float(body.get("amount_gbp"))
+            except (TypeError, ValueError):
+                return 400, {"error": "invalid_amount", "message": "Body must include a numeric 'amount_gbp'."}
+            reference = str(body.get("reference") or "").strip()
+            if not reference:
+                return 400, {"error": "missing_reference", "message": "Body must include a unique 'reference' for idempotency."}
+            return 200, record_founder_allocation(
+                self.settings.db_path,
+                amount_gbp=amount,
+                reference=reference,
+                note=body.get("note"),
+            )
         if path == "/notifications/ack":
             return 200, self.ack_notifications(body)
         if path == "/register-push-token":

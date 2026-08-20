@@ -13,7 +13,7 @@ from typing import Any
 
 from .models import TradeProposal, utc_now_iso
 from .operational import safe_score
-from .technical_discretion import conviction_scaled_notional
+from .technical_discretion import cash_capped_notional, conviction_scaled_notional
 
 
 FOUNDATION_SCHEMA = """
@@ -309,6 +309,13 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     # docstring for why an already-seeded row needs an explicit UPDATE, not a code change).
     "trailing_stop_enabled": (True, "boolean", "Trailing stops require founder approval."),
     "trailing_stop_pct": (0.02, "float", "Trailing stop distance once trailing stops are enabled."),
+    # 2026-08-20, Founder-requested: "there should be guard rails on the maximum percentage
+    # of the available cash for each trade or max amount." Both are provided. These are a
+    # share of *available cash*, which tightens as capital gets deployed -- unlike
+    # maximum_position_size_pct, which is a share of total equity and does not. Strictly
+    # reducing: see technical_discretion.cash_capped_notional. 0 disables the absolute cap.
+    "max_trade_pct_of_available_cash": (0.20, "float", "Maximum share of currently-available cash committed to one trade."),
+    "max_trade_absolute_gbp": (0.0, "float", "Hard per-trade cash ceiling; 0 disables the absolute cap."),
     "take_profit_required": (True, "boolean", "Every autonomous trade needs a take profit."),
     "maximum_concurrent_positions": (3, "integer", "Maximum open positions."),
     "maximum_drawdown_pct": (0.15, "float", "Maximum tolerated drawdown before shutdown."),
@@ -354,6 +361,8 @@ class TradingPolicy:
     max_stop_loss_pct: float
     trailing_stop_enabled: bool
     trailing_stop_pct: float
+    max_trade_pct_of_available_cash: float
+    max_trade_absolute_gbp: float
     take_profit_required: bool
     max_concurrent_positions: int
     max_drawdown_pct: float
@@ -379,6 +388,8 @@ class TradingPolicy:
             "max_stop_loss_pct": self.max_stop_loss_pct,
             "trailing_stop_enabled": self.trailing_stop_enabled,
             "trailing_stop_pct": self.trailing_stop_pct,
+            "max_trade_pct_of_available_cash": self.max_trade_pct_of_available_cash,
+            "max_trade_absolute_gbp": self.max_trade_absolute_gbp,
             "take_profit_required": self.take_profit_required,
             "max_concurrent_positions": self.max_concurrent_positions,
             "max_drawdown_pct": self.max_drawdown_pct,
@@ -454,6 +465,8 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         max_stop_loss_pct=float(risk.get("maximum_stop_loss_pct", getattr(auto_trade, "max_stop_loss_pct", 0.05))),
         trailing_stop_enabled=bool(risk.get("trailing_stop_enabled", False)),
         trailing_stop_pct=float(risk.get("trailing_stop_pct", 0.02)),
+        max_trade_pct_of_available_cash=float(risk.get("max_trade_pct_of_available_cash", 0.20)),
+        max_trade_absolute_gbp=float(risk.get("max_trade_absolute_gbp", 0.0)),
         take_profit_required=bool(risk.get("take_profit_required", True)),
         max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
         max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
@@ -734,6 +747,7 @@ def calculate_capital_allocation(
     policy: TradingPolicy,
     *,
     account_equity: float,
+    available_cash: float | None = None,
 ) -> dict[str, Any]:
     p = proposal.normalized()
     requested_notional = max(0.0, p.entry_price * p.position_size)
@@ -749,6 +763,17 @@ def calculate_capital_allocation(
     # existing policy check above already approved, so this can never increase exposure,
     # only decline to use the full allowance when the case is weak. Discretion within the
     # mandate, never authority to rewrite it (see technical_discretion.py).
+    # Founder-requested guardrail (2026-08-20): cap one trade at a share of the cash that
+    # is actually free, and/or a hard amount. Applied BEFORE conviction scaling so the
+    # recorded ceiling reflects the true policy limit. Strictly reducing -- it can only
+    # lower an already-approved size. `available_cash` falls back to account_equity when a
+    # caller has no separate cash figure, which reproduces today's behaviour exactly.
+    approved_notional = cash_capped_notional(
+        approved_notional=approved_notional,
+        available_cash=account_equity if available_cash is None else available_cash,
+        max_pct_of_available_cash=policy.max_trade_pct_of_available_cash,
+        max_absolute_gbp=policy.max_trade_absolute_gbp,
+    )
     ceiling_notional = approved_notional
     approved_notional = conviction_scaled_notional(
         approved_notional=approved_notional,

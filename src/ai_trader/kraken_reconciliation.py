@@ -182,6 +182,95 @@ def initialize_kraken_reconciliation_schema(db_path: Path, *, allocation_gbp: fl
                 )
 
 
+def record_founder_allocation(
+    db_path: Path,
+    *,
+    amount_gbp: float,
+    reference: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Append a founder capital top-up to the Kraken AI capital ledger.
+
+    2026-08-20, found live and confirmed: the ledger's opening balance is written exactly
+    once by initialize_kraken_reconciliation_schema, guarded by `if not ledger_exists` plus
+    ON CONFLICT DO NOTHING. It was seeded while KRAKEN_TRADING_ALLOCATION_GBP was still its
+    GBP 100 default. The env var was later raised to GBP 500, but that seeded row was never
+    revisited -- so `/broker-decisions` reported `trading_allocation_gbp: 500.0` (read live
+    from the env) next to `ai_capital_ledger.allocation_gbp: 100.0` (the stale row), and
+    every sizing decision used the GBP 100 figure. Per-trade size is a percentage of that
+    number, so the Founder's trades were being sized off a fifth of the real capital.
+
+    This is the third instance of this exact bug class in this codebase (see
+    set_risk_policy_value's docstring for the RISK_POLICIES one, and the four disagreeing
+    MAX_OPEN_POSITIONS values before it): a seed-once default that silently outlives the
+    configuration change meant to replace it.
+
+    The ledger is append-only and `allocation_gbp` is the SUM of every `founder_allocation`
+    row, so a top-up is recorded as a new entry rather than by rewriting history -- which
+    is both how a capital ledger is supposed to work and what keeps the original deposit
+    auditable. `available_cash_gbp` sums ALL ledger rows, so a top-up correctly raises both
+    the allocation and the free cash.
+
+    Deliberately positive-only: this exists to add approved capital. Reducing the AI's
+    allocation is a materially different, higher-risk operation (it can strand capital
+    already deployed in open positions) and should not share a code path with topping up.
+    """
+    amount = float(amount_gbp)
+    if amount <= 0:
+        return {"status": "rejected", "reason": "amount_must_be_positive", "amount_gbp": amount}
+    reference_key = str(reference or "").strip()
+    if not reference_key:
+        return {"status": "rejected", "reason": "reference_required"}
+    _ensure_schema(db_path)
+    before = kraken_capital_ledger_summary(db_path)
+    idempotency_key = f"kraken-founder-allocation-topup:{reference_key}"
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            "SELECT 1 FROM KRAKEN_AI_CAPITAL_LEDGER WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing:
+            return {
+                "status": "already_recorded",
+                "reference": reference_key,
+                "allocation_gbp": before["allocation_gbp"],
+                "available_cash_gbp": before["available_cash_gbp"],
+            }
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO KRAKEN_AI_CAPITAL_LEDGER (
+                    created_at, event_time, logical_trade_id, broker_order_id,
+                    broker_fill_id, entry_type, amount_gbp, quantity, price,
+                    fee_gbp, idempotency_key, payload_json
+                ) VALUES (?, ?, NULL, NULL, NULL, 'founder_allocation', ?, NULL, NULL, 0, ?, ?)
+                """,
+                (
+                    now,
+                    now,
+                    amount,
+                    idempotency_key,
+                    json.dumps(
+                        {"allocation_gbp": amount, "reference": reference_key, "note": note},
+                        sort_keys=True,
+                    ),
+                ),
+            )
+    after = kraken_capital_ledger_summary(db_path)
+    return {
+        "status": "recorded",
+        "reference": reference_key,
+        "amount_gbp": amount,
+        "previous_allocation_gbp": before["allocation_gbp"],
+        "allocation_gbp": after["allocation_gbp"],
+        "previous_available_cash_gbp": before["available_cash_gbp"],
+        "available_cash_gbp": after["available_cash_gbp"],
+        "note": note,
+    }
+
+
 _SCHEMA_LOCK = threading.Lock()
 _INITIALIZED_SCHEMA_KEYS: set[str] = set()
 
