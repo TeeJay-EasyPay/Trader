@@ -364,8 +364,17 @@ def main(argv: list[str] | None = None) -> int:
                             # shared default budget left it with no realistic chance of
                             # completing before generating a single proposal (2026-07-31
                             # follow-up: same root cause class as evidence-snapshot).
+                            # forecast-refresh needs its own, larger budget again: it is
+                            # one real OpenAI call per symbol across the whole universe,
+                            # which is strictly more work than any single research job.
+                            # Confirmed live 2026-08-20 -- on the shared 180s default it
+                            # started once and never completed, and having already claimed
+                            # its 6-hour bucket it never retried, so it had never run to
+                            # completion since shipping.
                             timeout_seconds=(
-                                service.settings.research_job_timeout_seconds
+                                service.settings.forecast_refresh_timeout_seconds
+                                if job_name == "forecast-refresh"
+                                else service.settings.research_job_timeout_seconds
                                 if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research"}
                                 else None
                             ),

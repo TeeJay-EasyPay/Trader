@@ -90,6 +90,15 @@ class Settings:
     kraken_startup_reconciliation_timeout_seconds: int = 900
     evidence_snapshot_job_timeout_seconds: int = 300
     research_job_timeout_seconds: int = 450
+    # 2026-08-20 live finding: forecast-refresh started exactly once (02:38:35) with the
+    # shared 180s default and never logged a completion -- it makes ONE real OpenAI call
+    # per symbol across the WHOLE universe (9 crypto + up to 15 equities), and a single
+    # forecast was measured live at ~14s, so ~24 symbols could never fit in 180s. Worse,
+    # it had already claimed its 6-hour idempotency bucket before dying, so it would not
+    # retry until the next bucket -- meaning the job had never once completed since it
+    # shipped. Same root-cause class as the kraken-startup-reconciliation timeout fixed
+    # earlier the same night. Runs 4x a day, so a generous budget costs nothing.
+    forecast_refresh_timeout_seconds: int = 1200
     auto_execution_job_timeout_seconds: int = 600
     broker_poll_interval_seconds: int = 600
     process_role: str = "local"
@@ -183,6 +192,7 @@ def load_settings() -> Settings:
         kraken_startup_reconciliation_timeout_seconds=_int_env("AI_TRADER_KRAKEN_STARTUP_RECONCILIATION_TIMEOUT_SECONDS", 900),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),
         research_job_timeout_seconds=_int_env("AI_TRADER_RESEARCH_JOB_TIMEOUT_SECONDS", 450),
+        forecast_refresh_timeout_seconds=_int_env("AI_TRADER_FORECAST_REFRESH_TIMEOUT_SECONDS", 1200),
         auto_execution_job_timeout_seconds=_int_env("AI_TRADER_AUTO_EXECUTION_TIMEOUT_SECONDS", 600),
         broker_poll_interval_seconds=_int_env("AI_TRADER_BROKER_POLL_INTERVAL_SECONDS", 600),
         process_role=os.getenv("AI_TRADER_PROCESS_ROLE", "local").strip().lower(),

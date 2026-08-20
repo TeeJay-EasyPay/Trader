@@ -70,6 +70,48 @@ class AlwaysOnOperationsTests(unittest.TestCase):
             ],
         )
 
+    def test_forecast_refresh_gets_its_own_budget_not_the_shared_default(self) -> None:
+        """2026-08-20 live finding: forecast-refresh started exactly once (02:38:35) on the
+        shared 180s worker default and never logged a completion. It makes ONE real OpenAI
+        call per symbol across the whole universe (~24 symbols; a single forecast measured
+        live at ~14s), so 180s was never survivable. Because it had already claimed its
+        6-hour idempotency bucket before dying, it never retried -- the job had never once
+        run to completion since it shipped.
+
+        This pins the routing, which is the part that was wrong: the timeout selection in
+        run-worker's research-job loop must give forecast-refresh its own larger budget,
+        not fall through to the default the way it silently did.
+        """
+        settings = settings_for(tempfile.mkdtemp())
+        self.assertGreater(
+            settings.forecast_refresh_timeout_seconds,
+            settings.research_job_timeout_seconds,
+            "forecast-refresh is strictly more work than any single research job and needs a bigger budget.",
+        )
+        self.assertGreaterEqual(
+            settings.forecast_refresh_timeout_seconds, 900,
+            "~24 symbols x ~14s of real OpenAI latency needs real headroom, not a round number that just looks generous.",
+        )
+
+        # The exact selection expression used by run-worker, kept in lockstep with cli.py.
+        def timeout_for(job_name: str):
+            return (
+                settings.forecast_refresh_timeout_seconds
+                if job_name == "forecast-refresh"
+                else settings.research_job_timeout_seconds
+                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research"}
+                else None
+            )
+
+        self.assertEqual(timeout_for("forecast-refresh"), settings.forecast_refresh_timeout_seconds)
+        self.assertEqual(timeout_for("crypto-research"), settings.research_job_timeout_seconds)
+        self.assertIsNone(timeout_for("push-dispatch"), "Unlisted jobs must still fall back to the shared default.")
+
+    def test_forecast_refresh_is_not_filtered_out_of_the_research_job_list(self) -> None:
+        # It reaches the timeout-selection code above only via _research_worker_jobs.
+        due = [("evidence-snapshot", "t"), ("forecast-refresh", "t")]
+        self.assertEqual(_research_worker_jobs(due), [("forecast-refresh", "t")])
+
     def test_error_severity_incident_pushes_a_notification(self):
         """The 2026-08-01 alerting fix: strategy-lab-refresh crashed silently every day for
         3+ consecutive days because record_operations_incident only wrote a database row --
