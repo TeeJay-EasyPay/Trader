@@ -230,17 +230,14 @@ def record_market_observations(
                         json.dumps(issue, sort_keys=True),
                     ),
                 )
+            # Batched (one round trip for the whole candle set) rather than one INSERT per
+            # candle -- confirmed live this mattered: a first-time fetch of ~200 daily
+            # candles per symbol, inserted one row at a time against remote Postgres, blew
+            # past Render's ~60s proxy timeout on its own with nothing else running.
+            rows = []
             for candle in candles:
                 observation_time = str(candle.get("observation_time") or candle.get("time") or candle.get("timestamp") or utc_now_iso())
-                conn.execute(
-                    """
-                    INSERT INTO MARKET_DATA_OBSERVATIONS (
-                        created_at, provider, original_symbol, normalized_symbol, exchange,
-                        asset_type, timeframe, observation_time, retrieval_time, freshness,
-                        completeness, adjusted_status, source_quality_status, payload_provenance,
-                        open, high, low, close, volume, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                rows.append(
                     (
                         utc_now_iso(),
                         provider,
@@ -262,7 +259,19 @@ def record_market_observations(
                         _float(candle.get("close")),
                         _float(candle.get("volume")),
                         json.dumps(candle, sort_keys=True, default=str),
-                    ),
+                    )
+                )
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO MARKET_DATA_OBSERVATIONS (
+                        created_at, provider, original_symbol, normalized_symbol, exchange,
+                        asset_type, timeframe, observation_time, retrieval_time, freshness,
+                        completeness, adjusted_status, source_quality_status, payload_provenance,
+                        open, high, low, close, volume, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
                 )
     return quality
 

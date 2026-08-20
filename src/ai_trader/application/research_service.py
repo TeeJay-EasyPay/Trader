@@ -329,7 +329,15 @@ class ResearchService:
         for symbol in symbols:
             pair = _kraken_pair(symbol)
             since_iso = latest_observation_time(self.settings.db_path, provider="kraken", normalized_symbol=symbol, timeframe="1d")
-            since_epoch = int(datetime.fromisoformat(since_iso).timestamp()) if since_iso else None
+            if since_iso:
+                since_epoch = int(datetime.fromisoformat(since_iso).timestamp())
+            else:
+                # First-ever fetch for this symbol: bound to ~200 days rather than
+                # Kraken's full multi-year default history. analyze_price_series only
+                # ever needs a 20-period moving-average window; fetching years of daily
+                # candles just to write them one row at a time to remote Postgres was
+                # confirmed live to blow past Render's ~60s proxy timeout for no benefit.
+                since_epoch = int((datetime.now(timezone.utc) - timedelta(days=200)).timestamp())
             try:
                 candles = adapter.get_ohlc_candles(pair, interval_minutes=1440, since=since_epoch)
             except Exception as exc:  # noqa: BLE001 - one pair's fetch failure must never block the rest
