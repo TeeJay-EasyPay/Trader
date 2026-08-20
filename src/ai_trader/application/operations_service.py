@@ -319,7 +319,11 @@ class OperationsService:
             dict(row)
             for row in self._query_executor.rows(
                 """
-                SELECT created_at, proposal_id, symbol, broker, strategy_id,
+                -- regime_id added 2026-08-20: the column has existed in DECISION_JOURNAL
+                -- since it was created but was never selected here, so the market regime
+                -- behind a decision was unauditable even once it started being written
+                -- (Phase 4 fixed the write side; this makes it actually visible).
+                SELECT created_at, proposal_id, symbol, broker, strategy_id, regime_id,
                        confidence, final_decision, execution_eligibility,
                        evidence_for, evidence_against, market_data_quality
                 FROM DECISION_JOURNAL
