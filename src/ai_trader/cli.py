@@ -371,11 +371,23 @@ def main(argv: list[str] | None = None) -> int:
                             # started once and never completed, and having already claimed
                             # its 6-hour bucket it never retried, so it had never run to
                             # completion since shipping.
+                            # 2026-08-21: daily-report was in this exact same trap -- properly
+                            # scheduled (see _due_worker_jobs above) but stuck on job_health's
+                            # "Awaiting First Run" indefinitely, the same self-sustaining
+                            # silent-failure shape as forecast-refresh's bug (claims its daily
+                            # idempotency bucket, dies on the shared 180s timeout before
+                            # finishing its PERFORMANCE_ATTRIBUTION/ORCHESTRATOR_DECISIONS/
+                            # PORTFOLIO_SNAPSHOTS queries and report generation, then cannot
+                            # retry until the next day's bucket). daily-learning is newly
+                            # scheduled in this same pass and does comparably query-heavy work
+                            # (the same three tables plus a calibration recompute), so it gets
+                            # the same realistic budget from the start rather than waiting to
+                            # be caught the same way.
                             timeout_seconds=(
                                 service.settings.forecast_refresh_timeout_seconds
                                 if job_name == "forecast-refresh"
                                 else service.settings.research_job_timeout_seconds
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning"}
                                 else None
                             ),
                         )
@@ -947,6 +959,17 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         due.append(("rejection-outcome-review", f"{now.date().isoformat()}T03:00:00+00:00"))
     if now.day == 1 and 4 <= now.hour < 5:
         due.append(("rejection-outcome-rollup", f"{now.strftime('%Y-%m')}-01T04:00:00+00:00"))
+    # 2026-08-21 Founder-directed fix: daily-learning has a working dispatch handler
+    # (daily_learning_update, below) and was reachable via manual/debug `run-job`, but
+    # nothing in this schedule ever added it to the due list -- job_health showed it stuck
+    # at "Awaiting First Run" indefinitely, not because it failed, but because it was never
+    # once called automatically. Runs once near the end of the UTC day (this project's
+    # day-boundary convention throughout -- see utc_now_iso()) so it captures nearly the
+    # full day's activity before the date rolls over. Scheduled on the plain UTC clock, not
+    # gated behind the NYSE weekday check below, since crypto trades every day and its own
+    # performance/rejection review should not skip weekends just because equities do.
+    if now.hour == 23:
+        due.append(("daily-learning", f"{now.date().isoformat()}T23:00:00+00:00"))
     market_now = now.astimezone(ZoneInfo("America/New_York"))
     if market_now.weekday() >= 5:
         return due

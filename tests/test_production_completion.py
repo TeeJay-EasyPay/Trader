@@ -567,6 +567,54 @@ class ProductionCompletionTests(unittest.TestCase):
         due = _due_worker_jobs(settings, datetime(2026, 8, 16, 3, 30, tzinfo=timezone.utc))
         self.assertNotIn("rejection-outcome-review", [name for name, _ in due])
 
+    def test_due_worker_jobs_includes_daily_learning_at_23_utc_including_weekends(self):
+        # 2026-08-21 Founder-directed fix: daily-learning had a working dispatch handler
+        # (daily_learning_update) and was reachable via manual/debug run-job, but nothing
+        # in this schedule ever added it to the due list -- job_health showed it stuck at
+        # "Awaiting First Run" forever, not because it failed, but because it was never
+        # once called automatically. 2026-08-16 is a Sunday -- confirms this fires on
+        # weekends too, unlike the equity jobs which are gated on market_now.weekday() < 5,
+        # since crypto trades every day and its own daily review should not skip weekends
+        # just because equities do.
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 23, 30, tzinfo=timezone.utc))
+        self.assertIn("daily-learning", [name for name, _ in due])
+
+    def test_due_worker_jobs_omits_daily_learning_outside_its_window(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc))
+        self.assertNotIn("daily-learning", [name for name, _ in due])
+
+    def test_due_worker_jobs_omits_daily_learning_when_research_disabled(self):
+        from datetime import datetime, timezone
+
+        from ai_trader.cli import _due_worker_jobs
+
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=False,
+        )
+        due = _due_worker_jobs(settings, datetime(2026, 8, 16, 23, 30, tzinfo=timezone.utc))
+        self.assertNotIn("daily-learning", [name for name, _ in due])
+
     def test_push_dispatch_is_a_named_job_reachable_from_the_worker_loop(self):
         """CRITICAL_REMEDIATION_PLAN.md P0-5: push notifications were previously
         wired only into the API service's background-worker set, which

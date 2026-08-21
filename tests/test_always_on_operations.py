@@ -99,13 +99,43 @@ class AlwaysOnOperationsTests(unittest.TestCase):
                 settings.forecast_refresh_timeout_seconds
                 if job_name == "forecast-refresh"
                 else settings.research_job_timeout_seconds
-                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research"}
+                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning"}
                 else None
             )
 
         self.assertEqual(timeout_for("forecast-refresh"), settings.forecast_refresh_timeout_seconds)
         self.assertEqual(timeout_for("crypto-research"), settings.research_job_timeout_seconds)
         self.assertIsNone(timeout_for("push-dispatch"), "Unlisted jobs must still fall back to the shared default.")
+
+    def test_daily_report_and_daily_learning_get_the_research_budget_not_the_shared_default(self) -> None:
+        """2026-08-21 finding: daily-report was properly scheduled (_due_worker_jobs fires
+        it every weekday after 17:00 ET) but job_health showed it stuck at "Awaiting First
+        Run" indefinitely -- the same self-sustaining silent-failure shape as
+        forecast-refresh's bug above (claims its daily idempotency bucket, dies on the
+        shared 180s timeout before finishing its PERFORMANCE_ATTRIBUTION/
+        ORCHESTRATOR_DECISIONS/PORTFOLIO_SNAPSHOTS queries and report generation, then
+        cannot retry until the next day's bucket). daily-learning does comparably
+        query-heavy work (the same three tables plus a calibration recompute) and was
+        newly scheduled in the same pass, so it gets the same realistic budget from the
+        start instead of waiting to be caught the same way.
+        """
+        settings = settings_for(tempfile.mkdtemp())
+
+        def timeout_for(job_name: str):
+            return (
+                settings.forecast_refresh_timeout_seconds
+                if job_name == "forecast-refresh"
+                else settings.research_job_timeout_seconds
+                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning"}
+                else None
+            )
+
+        self.assertEqual(timeout_for("daily-report"), settings.research_job_timeout_seconds)
+        self.assertEqual(timeout_for("daily-learning"), settings.research_job_timeout_seconds)
+        self.assertGreater(
+            settings.research_job_timeout_seconds, 180,
+            "Must be strictly more than the shared 180s default that starved both jobs, or this fix changes nothing.",
+        )
 
     def test_forecast_refresh_is_not_filtered_out_of_the_research_job_list(self) -> None:
         # It reaches the timeout-selection code above only via _research_worker_jobs.
