@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .models import AccountContext, GuardrailConfig, TradeProposal
@@ -278,8 +279,18 @@ class BenchmarkResearchAnalyzer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=60) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=60) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            # 2026-08-21 live-verification finding: this is the first analyzer in this
+            # codebase to use a hosted tool (web_search_preview) -- the other analyzers'
+            # plain "HTTP Error 400: Bad Request" (no body) was never enough to diagnose a
+            # tool/model-compatibility rejection, only enough to know something failed.
+            # Surfacing OpenAI's real error body here, not changing the other analyzers,
+            # since this is the one where a bare status code was actually insufficient.
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{exc}: {detail}") from exc
         return _benchmark_research_from_response_text(_extract_response_text(raw))
 
 
