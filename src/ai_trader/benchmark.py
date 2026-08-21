@@ -115,6 +115,48 @@ class BenchmarkIntelligenceDatabase:
                 )
             )
 
+    def record_daily_research(self, research_date: date, trader_name: str, result: dict[str, Any]) -> bool:
+        """Writes one real, web-grounded research row for a single trader on a single
+        date -- BenchmarkResearchAnalyzer's output (ai.py), one real OpenAI web-search
+        call per trader.
+
+        2026-08-21 Founder-directed fix: the only other writer of this table
+        (seed_initial_data, above) inserts a fixed, one-time historical seed list -- it
+        never produces a row dated today, which is exactly what foundation.py's equity
+        due-diligence check requires (_behavioural_context_available only reports
+        "completed" for a row dated exactly today). This was the missing piece silently
+        blocking every Alpaca due-diligence assessment. Looks the trader up by name
+        rather than reusing _upsert_trader, so this can never accidentally null out that
+        trader's own seeded metadata (region, risk_rating, etc.) on ON CONFLICT.
+        """
+        with closing(self.connect()) as conn:
+            with conn:
+                row = conn.execute(
+                    "SELECT trader_id FROM BENCHMARK_TRADERS WHERE trader_name = ? ORDER BY trader_id LIMIT 1",
+                    (trader_name,),
+                ).fetchone()
+                if row is None:
+                    return False
+                trader_id = int(row["trader_id"])
+                research = {
+                    "research_date": research_date.isoformat(),
+                    "source": "OpenAI web search (real-time)",
+                    "observed_trade_or_portfolio_change": result["observed_trade_or_portfolio_change"],
+                    "ai_interpretation": result.get("ai_interpretation"),
+                    "risk_lesson": result.get("risk_lesson"),
+                    "market_lesson": result.get("market_lesson"),
+                    "related_company": None,
+                    "related_sector": result.get("related_sector"),
+                    "related_theme": result.get("related_theme"),
+                    "confidence": result.get("confidence"),
+                    "impact_on_our_view": (
+                        "Real, web-grounded research found genuine recent public activity."
+                        if result.get("found_activity")
+                        else "No notable public activity found by web search in the last ~30 days."
+                    ),
+                }
+                return self._append_research(conn, trader_id, research)
+
     def write_schema_doc(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_schema_doc(), encoding="utf-8")

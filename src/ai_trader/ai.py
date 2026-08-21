@@ -208,6 +208,81 @@ class CryptoTradeReviewer:
         return _review_from_response_text(_extract_response_text(raw))
 
 
+BENCHMARK_CONFIDENCE_LABELS = ("High", "Medium", "Low")
+
+
+class BenchmarkResearchAnalyzer:
+    """Produces genuine, web-grounded research on what a specific real benchmark trader
+    has publicly done or said recently.
+
+    Founder-directed 2026-08-21. Replaces the static, one-time-seeded
+    BENCHMARK_DAILY_RESEARCH content (frozen at whatever date benchmark.py's seed list
+    was written with) that was silently blocking every Alpaca due-diligence assessment --
+    foundation.py's _behavioural_context_available() only reports "completed" when a row
+    exists dated exactly today, and nothing in this codebase ever wrote one before this.
+
+    CRITICAL, non-negotiable design constraint: this must use the Responses API's real
+    web_search_preview tool and report ONLY what search results actually surface. There
+    is no other live data source in this codebase for "what did a specific real investor
+    do today" -- inventing plausible-sounding content without grounding it in a real
+    search would be fabrication, which every other AI feature in this project explicitly
+    refuses to do (forecasting.py's anti-circularity check; this module's other analyzers
+    all return None rather than a half-trusted answer). When nothing concrete turns up,
+    this returns an honest "no notable public activity found" result -- never invented
+    detail dressed up as a finding.
+    """
+
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+
+    def research(self, *, trader_name: str, platform: str, strategy_style: str) -> dict[str, Any] | None:
+        prompt = {
+            "role": "benchmark_trader_researcher",
+            "instruction": (
+                "Use web search to find real, recent, publicly available information about this specific "
+                "investor's activity in roughly the last 30 days -- portfolio changes, 13F filings, public "
+                "statements, or interviews. Report only what your search actually finds; never invent a trade, "
+                "holding, or quote that is not backed by a real source you found. "
+                "Return only JSON with fields: found_activity, observed_trade_or_portfolio_change, "
+                "ai_interpretation, risk_lesson, market_lesson, related_sector, related_theme, confidence, "
+                "source_urls. "
+                "found_activity must be true or false -- set it false when nothing concrete turned up, and in "
+                "that case observed_trade_or_portfolio_change must honestly say so rather than being padded with "
+                "generic filler dressed up as a finding. "
+                "observed_trade_or_portfolio_change must describe only what a real source reports, naming that "
+                "source's general nature (e.g. '13F filing', 'public interview') without fabricating a quote. "
+                "ai_interpretation, risk_lesson and market_lesson are your own analysis of what this system "
+                "should learn from that real activity -- one sentence each, and honestly thin (e.g. 'no fresh "
+                "lesson without new activity') when found_activity is false. "
+                f"confidence must be one of {list(BENCHMARK_CONFIDENCE_LABELS)}, reflecting how directly your "
+                "search results support what you reported, not how interesting the story is. "
+                "source_urls must be an array of the real URLs your search actually returned, or an empty array."
+            ),
+            "trader_name": trader_name,
+            "platform": platform,
+            "strategy_style": strategy_style,
+        }
+        payload = {
+            "model": self.model,
+            "input": json.dumps(prompt, default=str),
+            "tools": [{"type": "web_search_preview"}],
+            "text": {"format": {"type": "json_object"}},
+        }
+        request = Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=60) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        return _benchmark_research_from_response_text(_extract_response_text(raw))
+
+
 class OpenAIReadOnlyExplainer:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
@@ -324,6 +399,44 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         "confidence": confidence,
         "reasoning": reasoning,
         "concerns": _string_list(data.get("concerns")),
+    }
+
+
+def _benchmark_research_from_response_text(text: str) -> dict[str, Any] | None:
+    """Parse a benchmark-research response. Returns None when the response isn't usable
+    -- the caller then records nothing for this trader today rather than a half-understood
+    or fabricated-looking answer.
+
+    Deliberately does NOT require found_activity=True or a real source URL to accept the
+    result: an honest "nothing found" is a valid, usable answer here (that's the entire
+    point of asking the model to say so rather than invent something), so this only
+    rejects responses that are structurally unusable, not ones that are honestly empty.
+    """
+    if not text or text.strip() == "null":
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    confidence = str(data.get("confidence") or "").strip().title()
+    if confidence not in BENCHMARK_CONFIDENCE_LABELS:
+        return None
+    found_activity = bool(data.get("found_activity"))
+    observed = str(data.get("observed_trade_or_portfolio_change") or "").strip()
+    if not observed:
+        return None
+    return {
+        "found_activity": found_activity,
+        "observed_trade_or_portfolio_change": observed,
+        "ai_interpretation": str(data.get("ai_interpretation") or "").strip() or None,
+        "risk_lesson": str(data.get("risk_lesson") or "").strip() or None,
+        "market_lesson": str(data.get("market_lesson") or "").strip() or None,
+        "related_sector": str(data.get("related_sector") or "").strip() or None,
+        "related_theme": str(data.get("related_theme") or "").strip() or None,
+        "confidence": confidence,
+        "source_urls": _string_list(data.get("source_urls")),
     }
 
 

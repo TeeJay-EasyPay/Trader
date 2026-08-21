@@ -5,13 +5,15 @@ import logging
 import os
 import time
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..agent import AITradingAgent, propose_crypto_trades
-from ..ai import CryptoTradeReviewer, MarketForecastAnalyzer, OpenAIProposalAnalyzer
+from ..ai import BenchmarkResearchAnalyzer, CryptoTradeReviewer, MarketForecastAnalyzer, OpenAIProposalAnalyzer
 from ..alpaca import AlpacaPaperClient
 from ..audit import AuditDatabase
+from ..benchmark import BenchmarkIntelligenceDatabase
+from ..benchmark_data import BENCHMARK_TRADERS
 from ..broker_adapters import _kraken_pair
 from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
@@ -495,6 +497,85 @@ class ResearchService:
             asset_type=asset_type,
             scope="symbol",
         )
+
+    def _research_one_benchmark_trader(self, analyzer: BenchmarkResearchAnalyzer, trader: dict[str, Any]) -> dict[str, Any]:
+        trader_name = trader["trader_name"]
+        try:
+            result = analyzer.research(
+                trader_name=trader_name,
+                platform=trader.get("platform") or "",
+                strategy_style=trader.get("strategy_style") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - one trader's model/network failure must never abort the batch
+            return {"trader_name": trader_name, "status": "failed", "reason": str(exc)}
+        if not result:
+            return {"trader_name": trader_name, "status": "no_usable_research", "reason": "The model did not return a usable research response."}
+        benchmark_db = BenchmarkIntelligenceDatabase(self.settings.db_path)
+        written = benchmark_db.record_daily_research(date.today(), trader_name, result)
+        if not written:
+            return {"trader_name": trader_name, "status": "trader_not_found", "reason": f"No BENCHMARK_TRADERS row for '{trader_name}' -- run benchmark-init/seed_initial_data first."}
+        return {"trader_name": trader_name, "status": "completed", "found_activity": result["found_activity"]}
+
+    def refresh_benchmark_research(self) -> dict[str, Any]:
+        """Generate REAL, web-grounded benchmark-trader research for today -- Founder-
+        directed 2026-08-21.
+
+        Root cause this exists to fix: foundation.py's equity due-diligence assessment
+        can only report behavioural_status="completed" when a BENCHMARK_DAILY_RESEARCH
+        row exists dated exactly today, and nothing before this method has ever written
+        one (seed_initial_data only ever inserts a fixed historical seed list) -- live-
+        confirmed this was silently blocking 100% of Alpaca candidates on the identical
+        due_diligence_incomplete reason, every day, since the seed data's own date.
+
+        One real OpenAI web-search call per tracked trader (4 today) -- deliberately not
+        gated behind confidence/found_activity, since an honest "nothing found" is still
+        a real, today-dated row and that is exactly what the due-diligence check needs to
+        see. Per-trader failures are recorded and skipped, never allowed to abort the
+        batch, matching refresh_market_forecasts' per-symbol isolation convention.
+        """
+        if not self.settings.openai_api_key:
+            result = {"status": "not_available", "message": "OPENAI_API_KEY is required for benchmark research."}
+            record_operational_event(
+                self.settings.db_path,
+                component="benchmark_research",
+                event_type="benchmark_research_refresh_blocked_configuration",
+                severity="warning",
+                summary=result["message"],
+                details=result,
+                success=False,
+            )
+            return result
+        analyzer = BenchmarkResearchAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        outcomes = [self._research_one_benchmark_trader(analyzer, trader) for trader in BENCHMARK_TRADERS]
+        completed = [item for item in outcomes if item["status"] == "completed"]
+        result = {
+            "status": "completed",
+            "traders_requested": len(BENCHMARK_TRADERS),
+            "research_written": len(completed),
+            "outcomes": outcomes,
+        }
+        record_operational_event(
+            self.settings.db_path,
+            component="benchmark_research",
+            event_type="benchmark_research_refresh_completed",
+            summary=f"Benchmark research refresh: {len(completed)} real, web-grounded research row(s) written for {len(BENCHMARK_TRADERS)} trader(s).",
+            details={"research_written": len(completed), "traders_requested": len(BENCHMARK_TRADERS)},
+        )
+        return result
+
+    def research_one_benchmark_trader(self, trader_name: str) -> dict[str, Any]:
+        """Single-trader research, for on-demand verification and Founder-initiated
+        checks. refresh_benchmark_research covers every tracked trader and is too long
+        for a synchronous web request (one real OpenAI web-search call per trader); this
+        is the one-trader equivalent that fits inside Render's ~60s proxy timeout.
+        """
+        if not self.settings.openai_api_key:
+            return {"status": "not_available", "message": "OPENAI_API_KEY is required for benchmark research."}
+        trader = next((item for item in BENCHMARK_TRADERS if item["trader_name"] == trader_name), None)
+        if trader is None:
+            return {"status": "not_available", "message": f"'{trader_name}' is not a tracked benchmark trader."}
+        analyzer = BenchmarkResearchAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        return self._research_one_benchmark_trader(analyzer, trader)
 
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()

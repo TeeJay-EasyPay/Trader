@@ -233,6 +233,15 @@ def main(argv: list[str] | None = None) -> int:
         # research-once's own pattern below) -- safe and cheap to run on every worker startup,
         # so watchlist edits actually take effect on the next deploy without a manual step.
         service.intelligence.seed_initial_data()
+        # 2026-08-21: the identical gap, missed here -- service.benchmark.seed_initial_data()
+        # was never added alongside the fix above, even though research-once (below) has
+        # always called both together. BENCHMARK_TRADERS happened to already be populated in
+        # this deployment from a past manual benchmark-init run, so this was not the cause of
+        # the due-diligence finding it was found alongside (see benchmark.py's
+        # record_daily_research, ai.py's BenchmarkResearchAnalyzer) -- but a genuinely fresh
+        # database would have had an empty BENCHMARK_TRADERS table with no automatic recovery.
+        # Same idempotent-upsert safety as the call above.
+        service.benchmark.seed_initial_data()
         worker_id = default_worker_id("background-worker")
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
         with (
@@ -383,11 +392,16 @@ def main(argv: list[str] | None = None) -> int:
                             # (the same three tables plus a calibration recompute), so it gets
                             # the same realistic budget from the start rather than waiting to
                             # be caught the same way.
+                            # benchmark-research-refresh: 4 real OpenAI calls with the
+                            # web_search_preview tool (BenchmarkResearchAnalyzer, ai.py),
+                            # each bounded at 60s client-side -- ~240s worst case, well
+                            # inside the same research budget the other query/LLM-heavy
+                            # jobs above already get.
                             timeout_seconds=(
                                 service.settings.forecast_refresh_timeout_seconds
                                 if job_name == "forecast-refresh"
                                 else service.settings.research_job_timeout_seconds
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh"}
                                 else None
                             ),
                         )
@@ -549,6 +563,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.refresh_crypto_candle_history()
     if job_name == "forecast-refresh":
         return service.refresh_market_forecasts()
+    if job_name == "benchmark-research-refresh":
+        return service.refresh_benchmark_research()
     if job_name == "external-intelligence-refresh":
         # A true no-op (no HTTP calls, no writes) whenever
         # settings.external_intelligence_enabled is False -- see
@@ -955,6 +971,21 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # daily-report/strategy-lab-refresh below are) to avoid claiming a job slot on
     # nearly every one of the day's worker cycles for something that only needs to
     # run once; a missed window just means it runs the following day/month instead.
+    # 2026-08-21 Founder-directed fix: real, web-grounded benchmark-trader research
+    # (BenchmarkResearchAnalyzer, ai.py) replacing the static one-time-seeded content
+    # that was silently blocking every Alpaca due-diligence assessment --
+    # _behavioural_context_available (foundation.py) only reports "completed" for a row
+    # dated exactly today, and nothing ever wrote one before this. This only affects
+    # EQUITY due diligence -- crypto's behavioural check reads
+    # CRYPTO_RESEARCH_SCORES.sentiment instead and is unaffected either way. Scheduled
+    # early in the UTC day (10:00, before even premarket-equity's earliest possible
+    # ET-8am window in either DST offset) so equity due diligence has a real today-dated
+    # row to read for the rest of the day. Scheduled on the plain UTC clock rather than
+    # gated behind the NYSE weekday check below, simply so a missed weekday window
+    # (worker restart, etc.) still has weekend days available to catch up before
+    # Monday's premarket-equity run needs it.
+    if now.hour == 10:
+        due.append(("benchmark-research-refresh", f"{now.date().isoformat()}T10:00:00+00:00"))
     if 3 <= now.hour < 4:
         due.append(("rejection-outcome-review", f"{now.date().isoformat()}T03:00:00+00:00"))
     if now.day == 1 and 4 <= now.hour < 5:

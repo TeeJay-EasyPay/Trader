@@ -400,6 +400,14 @@ class LocalApiService:
     def forecast_one_symbol(self, symbol: str, *, asset_type: str = "crypto") -> dict[str, Any]:
         return self._research_service.forecast_one_symbol(symbol, asset_type=asset_type)
 
+    def refresh_benchmark_research(self) -> dict[str, Any]:
+        # Delegates to ResearchService, same thin-wrapper convention as above (cli.py
+        # calls this externally for the benchmark-research-refresh worker job).
+        return self._research_service.refresh_benchmark_research()
+
+    def research_one_benchmark_trader(self, trader_name: str) -> dict[str, Any]:
+        return self._research_service.research_one_benchmark_trader(trader_name)
+
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper so callers
         # (POST /run-crypto-analysis, refresh_crypto_universe, run_analysis) needed no changes.
@@ -591,6 +599,16 @@ class LocalApiService:
             if not symbol:
                 return 400, {"error": "missing_symbol", "message": "Body must include a 'symbol'."}
             return 200, self.forecast_one_symbol(symbol, asset_type=str(body.get("asset_type") or "crypto"))
+        if path == "/research-benchmark-trader":
+            # Single-trader on-demand benchmark research (2026-08-21 verification path,
+            # same reasoning as /forecast-symbol above). The full benchmark-research-refresh
+            # job calls this once per tracked trader (currently 4) with real web search,
+            # which comfortably exceeds a synchronous web request's budget; this one call
+            # fits inside Render's ~60s proxy timeout.
+            trader_name = str(body.get("trader_name") or "").strip()
+            if not trader_name:
+                return 400, {"error": "missing_trader_name", "message": "Body must include a 'trader_name' matching a BENCHMARK_TRADERS entry."}
+            return 200, self.research_one_benchmark_trader(trader_name)
         if path == "/refresh-crypto-candle-history":
             # Manual trigger for the Phase 1 CIO-forecasting work (2026-08-20) -- lets the
             # hourly worker job be verified on demand against production instead of
