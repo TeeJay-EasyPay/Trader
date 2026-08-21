@@ -737,7 +737,10 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             os.environ["KRAKEN_MAX_ORDER_GBP"] = "5"
             adapter = FakeKrakenAdapter()
 
-            result = adapter.place_order(OrderRequest("BTC", "buy", 0.001, "crypto", "KRAKEN", 90, 120, notional_amount=10, client_order_id="too-large"))
+            # Balance is a fixed GBP 100 (see FakeKrakenAdapter.get_account), and the live
+            # percentage cap is 10% of that (2026-08-22, Founder-directed larger sizing) ->
+            # GBP 10 ceiling. GBP 20 is unambiguously over it regardless of that percentage.
+            result = adapter.place_order(OrderRequest("BTC", "buy", 0.002, "crypto", "KRAKEN", 90, 120, notional_amount=20, client_order_id="too-large"))
 
             self.assertEqual(result["status"], "rejected")
             self.assertIn("max_order_amount_exceeded", result["seatbelt_failures"])

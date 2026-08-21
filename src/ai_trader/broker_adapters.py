@@ -368,8 +368,10 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # cross, so the order either rests (maker) or does not exist. The caller is then
         # responsible for falling back to a market order, which is why this is gated off by
         # default until that fallback is wired.
+        is_patient_limit_entry = False
         limit_price = _limit_entry_price(order_request)
         if limit_price is not None and order_request.side.lower() == "buy":
+            is_patient_limit_entry = True
             payload["ordertype"] = "limit"
             payload["price"] = _format_decimal(limit_price)
             payload["oflags"] = "post"
@@ -393,7 +395,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             return {"status": "rejected", "broker": self.name, "reason": str(exc), "pair": pair}
         txids = result.get("result", {}).get("txid", [])
         order_id = txids[0] if txids else None
-        return {
+        response = {
             "status": "accepted" if order_id else "submitted",
             "broker": self.name,
             "id": order_id,
@@ -404,6 +406,90 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "notional": check["notional"],
             "kraken_result": result.get("result", {}),
         }
+        # 2026-08-22 Founder-directed: this is the fallback the patient-limit-entry feature
+        # was shipped inert (2026-08-20) waiting on -- a post-only order that never rests
+        # simply does not exist, so without this, enabling limit entries would have quietly
+        # turned some fraction of unfilled patient entries into missed trades. Bounded wait,
+        # not the full expiretm window: polling for the whole 120s would tie up a research
+        # cycle that evaluates many candidates per run. If the maker fill hasn't happened
+        # by the shorter wait, fall back to a normal market order so the trade still
+        # happens -- paying the taker fee this one time is strictly better than not trading
+        # the idea at all.
+        if is_patient_limit_entry and order_id:
+            return self._await_fill_or_fallback_to_market(order_id, order_request, check, pair, response)
+        return response
+
+    def _await_fill_or_fallback_to_market(
+        self,
+        order_id: str,
+        order_request: OrderRequest,
+        check: dict[str, Any],
+        pair: str,
+        limit_response: dict[str, Any],
+    ) -> dict[str, Any]:
+        poll_interval = max(1.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS", 5.0))
+        poll_budget = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS", 20.0))
+        deadline = time.monotonic() + poll_budget
+        while time.monotonic() < deadline:
+            time.sleep(poll_interval)
+            try:
+                status = self._order_status(order_id)
+            except Exception:  # noqa: BLE001 - a status-check failure must not crash order placement
+                status = None
+            if status == "closed":
+                # Filled as a maker -- the whole point of resting the order.
+                return limit_response
+            if status not in ("open", "pending", None):
+                # Kraken already cancelled/expired it (post-only crossed the spread, or the
+                # window ran out on Kraken's own clock) -- stop waiting and fall back now
+                # rather than burning the rest of the poll budget on a dead order.
+                break
+        try:
+            self._private_request("/0/private/CancelOrder", {"txid": order_id})
+        except Exception:  # noqa: BLE001 - best-effort; if it already filled or is already gone, cancellation legitimately fails
+            pass
+        market_payload = {
+            "pair": pair,
+            "type": order_request.side.lower(),
+            "ordertype": "market",
+            "volume": _format_decimal(check["volume"]),
+            "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
+        }
+        userref = _userref(order_request.client_order_id)
+        if userref is not None:
+            market_payload["userref"] = str(userref)
+        try:
+            fallback_result = self._private_request("/0/private/AddOrder", market_payload)
+        except RuntimeError as exc:
+            return {
+                "status": "rejected", "broker": self.name, "pair": pair,
+                "reason": f"Patient limit entry {order_id} did not fill and the market fallback was also rejected: {exc}",
+            }
+        fallback_txids = fallback_result.get("result", {}).get("txid", [])
+        fallback_order_id = fallback_txids[0] if fallback_txids else None
+        return {
+            "status": "accepted" if fallback_order_id else "submitted",
+            "broker": self.name,
+            "id": fallback_order_id,
+            "order_id": fallback_order_id,
+            "pair": pair,
+            "side": order_request.side.lower(),
+            "quantity": check["volume"],
+            "notional": check["notional"],
+            "kraken_result": fallback_result.get("result", {}),
+            "fallback_from_unfilled_limit_order_id": order_id,
+        }
+
+    def _order_status(self, order_id: str) -> str | None:
+        """The real Kraken status string ("open", "closed", "canceled", "expired", ...) for
+        one order, or None if it cannot be determined -- treated as "assume gone" by the
+        caller so a status-check failure can never leave a patient entry waiting forever."""
+        result = self._private_request("/0/private/QueryOrders", {"txid": order_id})
+        orders = result.get("result", {})
+        order = orders.get(order_id)
+        if not isinstance(order, dict):
+            return None
+        return order.get("status")
 
     def place_bracket_order(self, order_request: OrderRequest) -> dict[str, Any]:
         result = self.place_order(order_request)
@@ -582,7 +668,13 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             gbp_balance = _balance_amount(balances, ("ZGBP", "GBP"))
             if gbp_balance is not None and gbp_balance < notional * 1.01:
                 failures.append("insufficient_gbp_balance")
-        max_order_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05)
+        # Raised 0.05 -> 0.10 (2026-08-22, Founder-directed): must move together with
+        # AutoTradeConfig.crypto_max_trade_pct (models.py) -- this is the hard rejection
+        # ceiling, so leaving it at 5% while the requested-size percentage moved to 10%
+        # would have rejected every trade the sizing change was meant to produce, the
+        # exact "three limits must move together" trap already documented in this file's
+        # history (see the 2026-08-20 GBP 100 ledger incident above).
+        max_order_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.10)
         if gbp_balance is not None and max_order_pct > 0:
             max_notional = max(0.0, gbp_balance) * max_order_pct
         else:

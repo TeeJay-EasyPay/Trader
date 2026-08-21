@@ -32,10 +32,22 @@ class AutoTradeConfig:
     crypto_max_trade_amount: float = 10.0
     # Founder-directed 2026-08-20: size as a share of available capital so trades scale
     # with the account instead of being pinned to a flat pound amount.
-    crypto_max_trade_pct: float = 0.05
+    # Raised 0.05 -> 0.10 (2026-08-22, Founder-directed: "trade larger, e.g. GBP 50 instead
+    # of GBP 25"). Live trade history showed real recent entries landing at ~GBP 2 (Kraken's
+    # own order minimum) -- reconstructing the OLD formula against a real trade's actual
+    # entry/stop does NOT reproduce GBP 2 (it lands near the old GBP 25 ceiling instead), so
+    # that specific historical pattern is not explained by this change and remains an open
+    # question, separate from the deliberate size increase here. 10% of a GBP 500
+    # allocation is the requested ~GBP 50 ceiling.
+    crypto_max_trade_pct: float = 0.10
     # Founder-directed 2026-08-20: size crypto from the money at risk rather than a flat
     # amount, so choosing a wider stop shrinks the position instead of risking more.
-    crypto_risk_per_trade_pct: float = 0.0015
+    # Raised 0.0015 -> 0.005 (2026-08-22, Founder-directed) so the risk budget itself (GBP
+    # 2.50 on a GBP 500 account) is large enough that the percentage-of-cash ceiling above,
+    # not an unrelated tiny risk budget, is what actually determines typical trade size: at
+    # a 5% (policy-maximum) stop distance it lands exactly on the new GBP 50 ceiling, and
+    # only sizes smaller than that when a genuinely tighter stop justifies it.
+    crypto_risk_per_trade_pct: float = 0.005
     # Minimum reward-to-risk AFTER trading costs. 1.0 only removes trades that cannot pay
     # for themselves; it is a floor, not a second opinion on trade quality.
     crypto_min_net_reward_risk: float = 1.0

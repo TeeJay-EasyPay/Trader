@@ -19,7 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ai_trader.models import AutoTradeConfig
 from ai_trader.technical_discretion import (
+    cash_capped_notional,
     clears_fee_hurdle,
     net_reward_risk_after_fees,
     risk_based_notional,
@@ -57,6 +59,77 @@ class RiskBasedNotionalTests(unittest.TestCase):
         self.assertEqual(risk_based_notional(risk_budget=0.75, entry_price=0.0, stop_loss=1.0, max_notional=25.0), 0.0)
         self.assertEqual(risk_based_notional(risk_budget=0.0, entry_price=100.0, stop_loss=97.0, max_notional=25.0), 0.0)
         self.assertEqual(risk_based_notional(risk_budget=0.75, entry_price=100.0, stop_loss=100.0, max_notional=25.0), 0.0)
+
+
+class CryptoSizingDefaultsTests(unittest.TestCase):
+    """2026-08-22 Founder-directed: "trade larger, e.g. GBP 50 instead of GBP 25". Live trade
+    history showed real recent entries landing at ~GBP 2 (Kraken's own order minimum), well
+    below even the old ~GBP 25 ceiling -- reconstructing the old formula against the real
+    entry/stop from one such trade does NOT reproduce GBP 2 (it comes out close to the old
+    GBP 25 ceiling instead), so the exact mechanism behind those specific historical GBP 2
+    fills is not confirmed by this change and is called out as still open, separate from the
+    sizing increase itself. What IS confirmed and tested here: the new defaults raise both
+    the typical and ceiling trade size to the Founder-requested ~GBP 50, and the two
+    ceilings that must move together (the requested-size percentage and the broker's hard
+    rejection percentage) stay in agreement.
+    """
+
+    def _typical_notional(self, config: AutoTradeConfig, *, equity: float, entry: float, stop_pct: float) -> float:
+        risk_budget = max(0.0, equity * config.crypto_risk_per_trade_pct)
+        ceiling = equity * config.crypto_max_trade_pct
+        stop_loss = entry * (1.0 - stop_pct)
+        return risk_based_notional(risk_budget=risk_budget, entry_price=entry, stop_loss=stop_loss, max_notional=ceiling)
+
+    def test_the_old_defaults_did_not_actually_reproduce_the_observed_two_pound_fills(self):
+        # Documented so this isn't re-litigated as "obviously explained" later: reconstructing
+        # the OLD formula (0.0015 / 0.05) against the real entry/stop from a live ETH trade
+        # produces a notional near the old GBP 25 ceiling, not GBP 2. Whatever produced the
+        # historical GBP 2 fills, it was not simply "the risk budget was too small" under
+        # realistic stop distances.
+        old_risk_pct, old_max_pct = 0.0015, 0.05
+        equity = 500.0
+        entry = 1666.50  # the real ETH entry price from the observed live trade.
+        stop_loss = 1640.08  # that same trade's real original_stop.
+        risk_budget = equity * old_risk_pct
+        ceiling = equity * old_max_pct
+        notional = risk_based_notional(risk_budget=risk_budget, entry_price=entry, stop_loss=stop_loss, max_notional=ceiling)
+        self.assertGreater(notional, 20.0, "The old formula, reconstructed against the real trade, does not land near GBP 2.")
+
+    def test_the_new_defaults_produce_a_meaningfully_larger_trade_at_every_realistic_stop_distance(self):
+        config = AutoTradeConfig()
+        equity = 500.0
+        entry = 1666.50
+        for stop_pct in (0.015, 0.03, 0.05):
+            notional = self._typical_notional(config, equity=equity, entry=entry, stop_pct=stop_pct)
+            self.assertGreaterEqual(
+                notional, 20.0,
+                f"stop_pct={stop_pct}: new defaults still only produced GBP {notional:.2f} -- "
+                "the fix must move real trade size well clear of the GBP 2 exchange minimum.",
+            )
+
+    def test_the_new_percentage_of_cash_ceiling_is_the_founder_requested_fifty_pounds_on_a_typical_account(self):
+        config = AutoTradeConfig()
+        equity = 500.0
+        ceiling = equity * config.crypto_max_trade_pct
+        self.assertAlmostEqual(ceiling, 50.0, places=2)
+
+    def test_the_hard_reject_ceiling_and_the_requested_size_ceiling_agree(self):
+        # Regression guard for the "three limits must move together" trap already found
+        # twice in this codebase's history (KRAKEN_MAX_ORDER_PCT_OF_CASH vs.
+        # crypto_max_trade_pct): if these two ever drift apart again, the sizing change
+        # would be silently rejected at the broker layer instead of taking effect.
+        from ai_trader.broker_adapters import _float_env
+
+        config = AutoTradeConfig()
+        broker_reject_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.10)
+        self.assertAlmostEqual(config.crypto_max_trade_pct, broker_reject_pct, places=6)
+
+    def test_cash_capped_notional_never_undoes_the_larger_ceiling(self):
+        # Sanity check that the risk-reducing cash cap (max_trade_pct_of_available_cash,
+        # a SEPARATE RISK_POLICIES-driven guard) does not itself reintroduce a tiny ceiling
+        # when available cash matches the AI's allocation.
+        capped = cash_capped_notional(approved_notional=50.0, available_cash=500.0, max_pct_of_available_cash=0.20)
+        self.assertAlmostEqual(capped, 50.0, places=2)
 
 
 class FeeHurdleTests(unittest.TestCase):
