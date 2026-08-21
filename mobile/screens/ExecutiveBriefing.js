@@ -392,7 +392,10 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
   const risks = buildRiskCards({ upcomingRisks: marketCentre?.upcoming_risks, positionsAtLoss, portfolioValue: portfolio?.portfolio_value });
   const opportunities = buildOpportunityCards({ recommendations, themes });
   return (
-    <Section title="The View Ahead">
+    // 2026-08-21 Founder feedback: happy with the length given the per-asset detail, but wants
+    // it collapsible since it is the longest of the 6 sections - defaultExpanded keeps today's
+    // first-read content identical, this only adds the ability to collapse it on repeat visits.
+    <CollapsibleSection title="The View Ahead" defaultExpanded={true}>
       <Text style={styles.metricLabel}>Market assessment</Text>
       <Text style={styles.bodyText}>{marketOutlookText(marketCentre)}</Text>
 
@@ -420,7 +423,7 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
 
       <Text style={styles.metricLabel}>Principal opportunities</Text>
       {opportunities.length ? opportunities.map((opportunity, index) => <OpportunityCard key={`${opportunity.title}-${index}`} opportunity={opportunity} />) : <Text style={styles.bodyText}>Nothing currently clears my bar for a new opportunity.</Text>}
-    </Section>
+    </CollapsibleSection>
   );
 }
 
