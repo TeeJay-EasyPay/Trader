@@ -21,7 +21,7 @@ const {
   tradeHistorySummary,
   tradeHistoryBrokers,
   tradeKey,
-  describeTransaction,
+  tradeTableRow,
   normalizeTradeRow,
   isOpenTrade,
   unavailableReason,
@@ -70,19 +70,45 @@ function TradeDetail({ item, onForceExit }) {
   );
 }
 
+// 2026-08-21 Founder request: Trade History rebuilt as a real column table (Date | Symbol |
+// Side | Price | P&L) instead of one dense sentence per trade - tapping a row still expands
+// the same full TradeDetail below it (quantity, entry/exit reason, stop/target, etc.), which a
+// five-column summary row was never meant to replace.
+function TradeHistoryHeaderRow() {
+  return (
+    <View style={styles.tradeTableHeaderRow}>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellDate]}>Date</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSymbol]}>Symbol</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSide]}>Side</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPrice, styles.tradeTableCellTextRight]}>Price</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPnl, styles.tradeTableCellTextRight]}>P&L</Text>
+    </View>
+  );
+}
+
 function TradeHistoryRow({ item, onCommand }) {
   const [open, setOpen] = useState(false);
+  const row = tradeTableRow(item);
+  const pnlStyle = row.pnlSign === 'positive' ? styles.tradeTablePnlPositive : row.pnlSign === 'negative' ? styles.tradeTablePnlNegative : null;
   return (
-    <View style={styles.compactRow}>
-      <TouchableOpacity onPress={() => setOpen((value) => !value)}>
-        <Text style={styles.cardTitle}>{open ? 'v' : '>'} {describeTransaction(item)}</Text>
-        <Text style={styles.smallText}>{formatDateTime(normalizeTradeRow(item).eventTime)}</Text>
+    <View style={styles.tradeTableRow}>
+      <TouchableOpacity style={styles.tradeTableRowTouchable} onPress={() => setOpen((value) => !value)}>
+        <View style={styles.tradeTableRowCells}>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellDate]} numberOfLines={2}>{row.dateText}</Text>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSymbol]} numberOfLines={1} adjustsFontSizeToFit>{row.symbol}</Text>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSide]}>{row.side}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPrice]} numberOfLines={1} adjustsFontSizeToFit>{row.priceText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPnl, pnlStyle]} numberOfLines={1} adjustsFontSizeToFit>{row.pnlText}</Text>
+        </View>
+        <Text style={styles.smallText}>{open ? 'Tap to collapse' : 'Tap for full detail'}</Text>
       </TouchableOpacity>
       {open ? (
-        <TradeDetail
-          item={item}
-          onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
-        />
+        <View style={styles.tradeTableExpandedDetail}>
+          <TradeDetail
+            item={item}
+            onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -182,9 +208,16 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         <Metric label="Daily P&L" value={formatByCurrency(summary.dailyPnlByCurrency)} />
         <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
-        {trades.slice(0, 20).map((item, index) => (
-          <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
-        ))}
+        {trades.length ? (
+          <View style={styles.tradeTable}>
+            <TradeHistoryHeaderRow />
+            {trades.slice(0, 20).map((item, index) => (
+              <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+            ))}
+          </View>
+        ) : (
+          <Empty />
+        )}
       </CollapsibleSection>
 
       <CollapsibleSection title="Broker Diagnostics" subtitle="Per-broker connection, governance, and balance detail.">

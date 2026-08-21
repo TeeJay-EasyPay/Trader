@@ -3,7 +3,7 @@
 'use strict';
 
 const assert = require('assert');
-const { dateMs, formatDateTime, formatPercent } = require('./datetime');
+const { dateMs, formatDateTime, formatShortDateTime, formatPercent } = require('./datetime');
 
 let passed = 0;
 function test(name, fn) {
@@ -48,6 +48,24 @@ test('formatDateTime: formats a valid date into a readable string', () => {
 
 test('formatDateTime: unparseable value is returned unchanged', () => {
   assert.strictEqual(formatDateTime('not a date'), 'not a date');
+});
+
+// 2026-08-21: Trade History rebuilt as a real column table (Founder request) - full
+// formatDateTime()'s "21 Aug 2026, 07:49" doesn't fit alongside four other columns on a phone,
+// so this drops only the year.
+test('formatShortDateTime: null/falsy returns null', () => {
+  assert.strictEqual(formatShortDateTime(null), null);
+  assert.strictEqual(formatShortDateTime(''), null);
+});
+
+test('formatShortDateTime: formats day, month, and time but omits the year', () => {
+  const result = formatShortDateTime('2026-03-15T10:30:00Z');
+  assert.ok(typeof result === 'string' && result.length > 0);
+  assert.ok(!result.includes('2026'));
+});
+
+test('formatShortDateTime: unparseable value is returned unchanged', () => {
+  assert.strictEqual(formatShortDateTime('not a date'), 'not a date');
 });
 
 test('formatPercent: null/undefined/empty returns null', () => {

@@ -27,6 +27,7 @@ const {
   dedupeTransactions,
   sameTrade,
   transactionRank,
+  tradeTableRow,
 } = require('./tradeHistory');
 
 let passed = 0;
@@ -334,6 +335,47 @@ test('combinedTransactions: filters by the selected exchange and sorts newest-fi
   const alpacaOnly = combinedTransactions(status, null, 'Alpaca', [], 20);
   assert.strictEqual(alpacaOnly.length, 1);
   assert.strictEqual(alpacaOnly[0].symbol, 'AAPL');
+});
+
+// --- tradeTableRow ---------------------------------------------------------------------
+// 2026-08-21 Founder request: Trade History rebuilt as a real column table instead of a
+// sentence per trade.
+
+test('tradeTableRow: a closed Kraken trade reports its real symbol, side, price, and P&L in GBP', () => {
+  const row = tradeTableRow({
+    broker: 'kraken', symbol: 'XETHZGBP', side: 'sell', status: 'closed',
+    quantity: 0.00119506, exit_price: 1741.54, profit_loss: 0.48, closed_at: '2026-08-21T07:49:34Z',
+  });
+  assert.strictEqual(row.symbol, 'XETHZGBP');
+  assert.strictEqual(row.side, 'SELL');
+  assert.strictEqual(row.priceText, '£1,741.54');
+  assert.strictEqual(row.pnlText, '£0.48');
+  assert.strictEqual(row.pnlSign, 'positive');
+});
+
+test('tradeTableRow: a loss reports pnlSign negative', () => {
+  const row = tradeTableRow({
+    broker: 'alpaca', symbol: 'AAPL', side: 'sell', status: 'closed',
+    quantity: 10, exit_price: 100, profit_loss: -5, closed_at: '2026-08-21T07:49:34Z',
+  });
+  assert.strictEqual(row.pnlSign, 'negative');
+  assert.strictEqual(row.pnlText, '-$5');
+});
+
+test('tradeTableRow: an open/unsold position shows the entry price, and P&L reads Unsold rather than blank or a fabricated zero', () => {
+  const row = tradeTableRow({
+    broker: 'alpaca', symbol: 'MSFT', side: 'buy', status: 'filled',
+    quantity: 5, entry_price: 300, closed_at: null,
+  });
+  assert.strictEqual(row.priceText, '$300');
+  assert.strictEqual(row.pnlText, 'Unsold');
+  assert.strictEqual(row.pnlSign, 'neutral');
+});
+
+test('tradeTableRow: a bare broker_trade row with no symbol/side reports Not available for both rather than blank', () => {
+  const row = tradeTableRow({ broker: 'kraken', status: 'closed', quantity: 0.00119506, price: 1741.53, closed_at: '2026-08-21T07:56:00Z' });
+  assert.ok(row.symbol.startsWith('Not available'));
+  assert.ok(row.side.startsWith('Not available'));
 });
 
 console.log(`\n${passed} passed`);

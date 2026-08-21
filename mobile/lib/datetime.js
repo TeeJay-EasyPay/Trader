@@ -27,6 +27,25 @@ function formatDateTime(value) {
   });
 }
 
+// A compact "21 Aug, 07:49" form for narrow table columns (Trade History) where the full
+// formatDateTime() output ("21 Aug 2026, 07:49") does not fit alongside four other columns on a
+// phone screen. Drops the year (every row on this screen is recent enough that the year is
+// implied) rather than the day or time, since a trader's first two questions are "when, today
+// or a prior day" and "what time", not "what year".
+function formatShortDateTime(value) {
+  if (!value) {
+    return null;
+  }
+  const epochMs = dateMs(value);
+  const date = epochMs ? new Date(epochMs) : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const datePart = date.toLocaleString(undefined, { day: '2-digit', month: 'short' });
+  const timePart = date.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `${datePart}, ${timePart}`;
+}
+
 function formatPercent(value) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -53,6 +72,7 @@ function currentMonthPrefix() {
 module.exports = {
   dateMs,
   formatDateTime,
+  formatShortDateTime,
   formatPercent,
   todayIso,
   currentMonthPrefix,

@@ -323,4 +323,75 @@ export const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderColor: '#dde1e7',
   },
+  // Trade History table (2026-08-21 Founder request - real aligned columns instead of a
+  // sentence per trade). Column flex ratios are tuned for a ~360-400dp phone width: Symbol
+  // gets the most room since Kraken pair names ("XETHZGBP") run long, Side is the narrowest
+  // since it is always 3-4 letters.
+  tradeTable: {
+    marginTop: 4,
+  },
+  tradeTableHeaderRow: {
+    flexDirection: 'row',
+    borderBottomColor: '#adb5bd',
+    borderBottomWidth: 1,
+    paddingBottom: 6,
+    marginBottom: 2,
+  },
+  tradeTableHeaderText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#667085',
+    textTransform: 'uppercase',
+  },
+  tradeTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomColor: '#e6e9ee',
+    borderBottomWidth: 1,
+    paddingVertical: 9,
+  },
+  tradeTableRowTouchable: {
+    flex: 1,
+    flexDirection: 'column',
+  },
+  tradeTableRowCells: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  tradeTableCellDate: {
+    flex: 1.5,
+  },
+  tradeTableCellSymbol: {
+    flex: 1.7,
+  },
+  tradeTableCellSide: {
+    flex: 0.9,
+  },
+  tradeTableCellPrice: {
+    flex: 1.5,
+  },
+  tradeTableCellPnl: {
+    flex: 1.4,
+  },
+  tradeTableCellText: {
+    fontSize: 12,
+    color: '#17202a',
+  },
+  tradeTableCellTextRight: {
+    fontSize: 12,
+    color: '#17202a',
+    textAlign: 'right',
+  },
+  tradeTablePnlPositive: {
+    color: '#1a7f37',
+    fontWeight: '800',
+  },
+  tradeTablePnlNegative: {
+    color: '#cf222e',
+    fontWeight: '800',
+  },
+  tradeTableExpandedDetail: {
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
 });

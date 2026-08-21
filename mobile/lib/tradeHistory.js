@@ -5,7 +5,7 @@
 'use strict';
 
 const { brokerKey, historyMoneyOrText } = require('./money');
-const { dateMs, formatPercent } = require('./datetime');
+const { dateMs, formatPercent, formatShortDateTime } = require('./datetime');
 const { notAvailable } = require('./notAvailable');
 const { parseMaybeJson } = require('./json');
 const { brokerCurrency } = require('./portfolioPosition');
@@ -404,6 +404,28 @@ function describeTransaction(item) {
   return `${friendlyEvent(item.event_type)}${side}${symbol}${size}${price}${pnl}${confidence}${displayStatus}.`;
 }
 
+// 2026-08-21 Founder request: Trade History rebuilt as a real column table (Date/Symbol/Side/
+// Price/P&L) instead of one dense sentence per trade - the sentence form (describeTransaction
+// above) stays as-is for BrokerPanel's single-line "latest confirmed trade", where prose still
+// reads naturally; a five-column table is what a list of many trades actually needs. An open/
+// still-held position shows its entry price and reads "Unsold" for P&L rather than a blank or a
+// fabricated zero, matching TradeDetail's existing convention for the same case.
+function tradeTableRow(item) {
+  const normalized = normalizeTradeRow(item);
+  const isOpen = isOpenTrade(normalized);
+  const priceValue = isOpen ? normalized.entryPrice : (normalized.exitPrice ?? normalized.price ?? normalized.entryPrice);
+  const pnlValue = normalized.profitLoss;
+  const hasPnl = !isOpen && pnlValue !== null && pnlValue !== undefined;
+  return {
+    dateText: formatShortDateTime(normalized.eventTime) || notAvailable(null),
+    symbol: normalized.symbol || notAvailable(null),
+    side: normalized.side ? String(normalized.side).toUpperCase() : notAvailable(null),
+    priceText: priceValue !== null && priceValue !== undefined ? historyMoneyOrText(normalized.broker, priceValue) : notAvailable(null),
+    pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : notAvailable(null)),
+    pnlSign: hasPnl ? (pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'neutral') : 'neutral',
+  };
+}
+
 function tradeKey(item, index) {
   return String(item.attribution_id || item.trade_history_id || item.external_id || item.proposal_id || `${item.created_at}-${item.symbol}-${index}`);
 }
@@ -450,4 +472,5 @@ module.exports = {
   dedupeTransactions,
   sameTrade,
   transactionRank,
+  tradeTableRow,
 };
