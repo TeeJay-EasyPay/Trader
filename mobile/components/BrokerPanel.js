@@ -17,7 +17,7 @@ const {
   formatKrakenAssets,
   formatRawKrakenBalances,
 } = require('../lib/founderPresentation');
-const { brokerMoney, moneyOrText, gbpOrText } = require('../lib/money');
+const { brokerMoney, gbpOrText } = require('../lib/money');
 const { formatDateTime, todayIso } = require('../lib/datetime');
 const { formatListInline } = require('../lib/lists');
 const { describeLatestTrade } = require('../lib/tradeHistory');
@@ -61,7 +61,7 @@ function BrokerPanel({ broker, onCommand, onReport }) {
       )}
       <Metric label="Estimated In Positions" value={brokerMoney(broker, broker.estimated_in_positions)} />
       <Metric label="Open Positions" value={broker.open_positions} />
-      <Metric label="Today's P&L" value={moneyOrText(broker.todays_pnl)} />
+      <Metric label="Today's P&L" value={brokerMoney(broker, broker.todays_pnl)} />
 
       <Metric label="Latest Successful Check-in" value={broker.latest_successful_poll ? formatDateTime(broker.latest_successful_poll) : 'Not available yet'} />
       <Metric
@@ -86,8 +86,8 @@ function BrokerPanel({ broker, onCommand, onReport }) {
         <Metric label="Auto Trading" value={broker.auto_trading_status || enabledDisabled(broker.auto_trading_enabled)} />
         <Metric label="New Entries Allowed" value={readiness.newEntriesAllowed === null ? 'Unknown' : yesNo(readiness.newEntriesAllowed)} />
         {broker.block_reason ? <Metric label="Block Reason" value={broker.block_reason} /> : null}
-        <Metric label="Week P&L" value={moneyOrText(broker.week_pnl)} />
-        <Metric label="Month P&L" value={moneyOrText(broker.month_pnl)} />
+        <Metric label="Week P&L" value={brokerMoney(broker, broker.week_pnl)} />
+        <Metric label="Month P&L" value={brokerMoney(broker, broker.month_pnl)} />
         <Metric label="Trades Today" value={broker.trades_today} />
         {broker.balance_summary ? (
           <>

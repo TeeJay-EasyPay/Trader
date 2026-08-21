@@ -16,6 +16,7 @@ const { formatList } = require('../lib/lists');
 const { formatJsonText } = require('../lib/json');
 const { connectedFounderBrokers, formatReconciliation, positionOwnership, portfolioHeadline } = require('../lib/founderPresentation');
 const { portfolioProjection } = require('../lib/cio');
+const { sumBrokerFieldByCurrency } = require('../lib/portfolioPosition');
 const {
   combinedTransactions,
   tradeHistorySummary,
@@ -158,10 +159,15 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
     <View>
       <View style={styles.summaryCard}>
         <Text style={styles.summaryReason}>{headline}</Text>
-        <Metric label="Portfolio Value (Fact)" value={moneyOrText(portfolio?.portfolio_value)} />
-        <Metric label="Cash Available (Fact)" value={moneyOrText(portfolio?.cash_available)} />
-        <Metric label="Deployed Capital (Fact)" value={moneyOrText(portfolio?.deployed_capital)} />
-        <Metric label="Today's P&L (Fact)" value={moneyOrText(portfolio?.todays_pnl)} />
+        {/* 2026-08-22 Founder-flagged: these four used moneyOrText() directly against
+            `portfolio`, a figure blended across brokers regardless of currency -- Alpaca
+            (USD) and Kraken (GBP) summed under one $ sign, the exact mistake AT-ED-017
+            already fixed on Executive Briefing's equivalent card via sumBrokerFieldByCurrency/
+            formatByCurrency. Sourced from status.brokers here for the same reason. */}
+        <Metric label="Portfolio Value (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
+        <Metric label="Cash Available (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
+        <Metric label="Deployed Capital (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'estimated_in_positions'))} />
+        <Metric label="Today's P&L (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'todays_pnl'))} />
         <Metric label="Open Positions" value={(portfolio?.open_positions || []).length} />
         <Metric label="Positions Requiring Attention" value={positionsRequiringAttention.length} />
         {positionsRequiringAttention.length ? (

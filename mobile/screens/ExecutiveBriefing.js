@@ -25,7 +25,7 @@ const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
 const { money, gbp, formatByCurrency, brokerMoney } = require('../lib/money');
 const { formatList } = require('../lib/lists');
-const { riskTone } = require('../lib/founderPresentation');
+const { riskTone, krakenWholeAccountNote } = require('../lib/founderPresentation');
 const {
   cioGreeting,
   cioExecutiveSummary,
@@ -185,6 +185,13 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
     executive.portfolio_health ? `In short: ${String(executive.portfolio_health).replace(/\.+$/, '')}.` : null,
     currencyBreakdownText({ performanceAttribution, openPositions }),
   ].filter(Boolean).join('\n\n');
+  // 2026-08-22 Founder-flagged: the figures below (Portfolio value, week/month change, cash
+  // available) are summed straight from status.brokers, which for Kraken is the whole personal
+  // account (existing holdings plus the AI's own capital) - the exact same figures BrokerPanel
+  // already carries this same disclaimer above. This card had none, so the headline read as if
+  // every pound of movement was the AI's own trading result.
+  const krakenBroker = (status?.brokers || []).find((broker) => String(broker?.broker || '').toLowerCase() === 'kraken');
+  const wholeAccountNote = krakenBroker ? krakenWholeAccountNote(krakenBroker) : null;
   return (
     <Section title="Where We Stand">
       {/* AT-ED-016.2: a plain-English brief leads every fact card, with the numbers below it.
@@ -192,6 +199,7 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
           separate sibling <Text> elements - React Native puts no visual gap between adjacent
           <Text> siblings (only styles.bodyText's own lineHeight applies within one block). */}
       {leadingPositionText ? <Text style={styles.bodyText}>{leadingPositionText}</Text> : null}
+      {wholeAccountNote ? <Text style={styles.smallText}>{wholeAccountNote}</Text> : null}
       <PositionLine label="Portfolio value" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
       {/* 2026-08-18 Founder request: labels made explicit after real confusion between "This
           month" and "Realised this month" - both used to just say "This week"/"This month"
