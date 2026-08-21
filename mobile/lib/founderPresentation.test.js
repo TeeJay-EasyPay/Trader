@@ -14,7 +14,6 @@ const {
   portfolioHeadline,
   activityCategoryFor,
   groupActivity,
-  recommendationLifecycle,
   positionOwnership,
   learningSummary,
 } = require('./founderPresentation');
@@ -203,57 +202,6 @@ test('groupActivity: always returns all 9 named categories, even when empty', ()
     'Broker Operations', 'Decisions', 'Founder Actions', 'Learning', 'Portfolio',
     'Recommendations', 'Research', 'System Health', 'Trades',
   ].sort());
-});
-
-// --- recommendationLifecycle ---
-
-test('recommendationLifecycle: expired recommendation reads Expired', () => {
-  const result = recommendationLifecycle({ freshness_status: 'Expired', confidence: 0.9, guardrails_passed: true }, []);
-  assert.strictEqual(result.stage, 'Expired');
-});
-
-test('recommendationLifecycle: failed guardrails reads Blocked with the real failure reasons', () => {
-  const result = recommendationLifecycle(
-    { freshness_status: 'Fresh', confidence: 0.9, guardrails_passed: false, guardrail_failures: ['max_open_positions_exceeded'] },
-    []
-  );
-  assert.strictEqual(result.stage, 'Blocked');
-  assert.match(result.reason, /max open positions exceeded/);
-});
-
-test('recommendationLifecycle: below-threshold confidence reads No Action', () => {
-  const result = recommendationLifecycle({ freshness_status: 'Fresh', confidence: 0.6, guardrails_passed: true }, []);
-  assert.strictEqual(result.stage, 'No Action');
-});
-
-test('recommendationLifecycle: fresh, passing, high-confidence with no matching trade reads Under Review', () => {
-  const result = recommendationLifecycle({ freshness_status: 'Fresh', confidence: 0.9, guardrails_passed: true }, []);
-  assert.strictEqual(result.stage, 'Under Review');
-});
-
-test('recommendationLifecycle: a same-broker/symbol fill inside the window reads Executed', () => {
-  const item = {
-    freshness_status: 'Fresh',
-    confidence: 0.9,
-    guardrails_passed: true,
-    suggested_broker: 'alpaca',
-    ticker: 'AAPL',
-    created_at: '2026-07-31T09:00:00Z',
-    expires_at: '2026-07-31T13:00:00Z',
-  };
-  const trades = [{ broker: 'alpaca', symbol: 'AAPL', status: 'filled', observed_at: '2026-07-31T09:05:00Z' }];
-  const result = recommendationLifecycle(item, trades);
-  assert.strictEqual(result.stage, 'Executed');
-});
-
-test('recommendationLifecycle: a fill for a different symbol does not count as Executed', () => {
-  const item = {
-    freshness_status: 'Fresh', confidence: 0.9, guardrails_passed: true,
-    suggested_broker: 'alpaca', ticker: 'AAPL', created_at: '2026-07-31T09:00:00Z', expires_at: '2026-07-31T13:00:00Z',
-  };
-  const trades = [{ broker: 'alpaca', symbol: 'MSFT', status: 'filled', observed_at: '2026-07-31T09:05:00Z' }];
-  const result = recommendationLifecycle(item, trades);
-  assert.strictEqual(result.stage, 'Under Review');
 });
 
 // --- positionOwnership ---

@@ -1,31 +1,28 @@
-// Market screen's own data: benchmark traders, theme definitions, and monitored companies.
+// Theme definitions, fetched independently of the shared `/founder-evidence` payload.
 // AT-ED-011.5 (Mobile Refresh Reliability and Data-Truth Alignment): split out of
-// useFounderEvidence.js because these three endpoints are genuinely Market-screen-exclusive
-// (no other screen consumes them - verified by grepping every screen/component for `benchmark`,
-// `themes`, `companies` before this split) and have no relationship to the shared
-// `/founder-evidence` payload, so they can and should refresh independently of it: pulling to
-// refresh on Market must not re-fetch the founder-evidence payload or show the shared header's
-// "Refreshing" state, and refreshing founder-evidence (from Dashboard/Activity/Portfolio/
-// Recommendations/Learning, or the 2-minute auto-refresh) must not re-fetch these.
+// useFounderEvidence.js because this endpoint is genuinely exclusive of the shared payload, so
+// it can and should refresh independently of it.
+//
+// APP SIMPLIFICATION (2026-08-21): this hook used to also fetch `/benchmark-daily-brief` and
+// `/intelligence/companies` for the now-deleted dedicated Market screen. Themes are the only
+// field anything still reads (the Executive Briefing's Investment Thesis/Opportunities
+// content, via lib/investmentThesis.js and lib/principalOpportunities.js) - the other two
+// endpoints had no remaining reader, so fetching them was pure egress with nothing displaying
+// the result. Trimmed to just themes rather than kept "just in case".
 //
 // Owned by App.js (constructed once, alongside useFounderEvidence()) rather than mounted
-// inside the Market screen component itself, so its data survives switching away from and
-// back to the Market tab instead of being re-fetched on every visit - screen-owned in the
-// sense of "no other screen reads or writes this state", not "only exists while that screen
-// is mounted".
+// inside a screen component, so its data survives switching tabs instead of being re-fetched
+// on every visit to the Executive Briefing.
 
 'use strict';
 
 const React = require('react');
 const { useCallback, useEffect, useRef, useState } = React;
 const { SECONDARY_REFRESH_TIMEOUT_MS, apiRequest } = require('../api/client');
-const { todayIso } = require('../lib/datetime');
-const { combineOptionalResults, shouldStartRefresh } = require('../lib/refreshLifecycle');
+const { shouldStartRefresh } = require('../lib/refreshLifecycle');
 
 function useMarketData() {
-  const [benchmark, setBenchmark] = useState(null);
   const [themes, setThemes] = useState([]);
-  const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(false);
   const [hasAttempted, setHasAttempted] = useState(false);
   const [lastRefreshError, setLastRefreshError] = useState(null);
@@ -47,43 +44,19 @@ function useMarketData() {
     refreshInFlightRef.current = true;
     setLoading(true);
     try {
-      const optional = (path, fallback) =>
-        apiRequest(path, { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS }).catch((error) => ({
-          __error: String(error.message || error),
-          ...fallback,
-        }));
-      const [nextBenchmark, nextThemes, nextCompanies] = await Promise.all([
-        optional(`/benchmark-daily-brief?date=${todayIso()}`, {}),
-        optional('/intelligence/themes', { themes: [] }),
-        optional('/intelligence/companies', { companies: [] }),
-      ]);
+      const nextThemes = await apiRequest('/intelligence/themes', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS });
       if (!isMountedRef.current) {
         return;
       }
-      // See lib/refreshLifecycle.js's combineOptionalResults - a failed endpoint keeps
-      // whatever this screen was already showing (each of the three is applied independently)
-      // rather than overwriting good data with an empty error placeholder, isolating one
-      // slow/failed request from clobbering the other two.
-      const combined = combineOptionalResults([
-        { key: 'benchmark', result: nextBenchmark },
-        { key: 'themes', result: nextThemes },
-        { key: 'companies', result: nextCompanies },
-      ]);
-      if (combined.succeededKeys.includes('benchmark')) {
-        setBenchmark(nextBenchmark);
-      }
-      if (combined.succeededKeys.includes('themes')) {
-        setThemes(nextThemes.themes || []);
-      }
-      if (combined.succeededKeys.includes('companies')) {
-        setCompanies(nextCompanies.companies || []);
-      }
+      setThemes(nextThemes.themes || []);
       setHasAttempted(true);
-      // Partial failure is truthful, not hidden: any endpoint that failed is named, while the
-      // endpoints that succeeded still update their own state above (isolating one slow/failed
-      // request from blocking the others, per the AT-ED-011.5 directive).
-      setLastRefreshError(combined.error);
+      setLastRefreshError(null);
       setLastRefreshedAt(new Date().toISOString());
+    } catch (error) {
+      if (isMountedRef.current) {
+        setHasAttempted(true);
+        setLastRefreshError(String(error.message || error));
+      }
     } finally {
       refreshInFlightRef.current = false;
       if (isMountedRef.current) {
@@ -98,9 +71,7 @@ function useMarketData() {
   }, []);
 
   return {
-    benchmark,
     themes,
-    companies,
     loading,
     bootstrapping: !hasAttempted,
     lastRefreshError,

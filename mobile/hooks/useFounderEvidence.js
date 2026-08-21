@@ -2,19 +2,17 @@
 // top-level state as part of AT-ED-011 Phase 2 (mobile modularisation) - see the "one place
 // derives what the Founder should be told about data freshness" comment this hook now owns
 // (previously a comment on App.js's header render). App.js is left with only navigation/UI
-// state (screen, amounts, selectedExchange, targetRecommendationId, askMessages) and
-// composition; everything about founder-evidence data lives here.
+// state (screen, selectedExchange, askMessages) and composition; everything about
+// founder-evidence data lives here.
 //
-// AT-ED-011.5: this hook owns the ONE `/founder-evidence` payload that Dashboard, Activity,
-// Portfolio, Recommendations, and Learning all genuinely share (status/portfolio/activity/
+// AT-ED-011.5: this hook owns the ONE `/founder-evidence` payload that Operations, Activity,
+// Portfolio, ExecutiveBriefing, and Learning all genuinely share (status/portfolio/activity/
 // recommendation summaries/performanceAttribution/dailyLearning are fields of that response).
-// Full recommendation dossiers are screen-owned by useRecommendationDossiers so the periodic
-// shared refresh remains small.
 // - per the directive's own rule that shared data should use a shared hook only where multiple
 // screens genuinely consume the same authoritative payload. Data that has its OWN endpoint and
-// is only consumed by ONE screen (Market's themes/companies/benchmark, Dashboard's founder
-// brief) has been split into mobile/hooks/useMarketData.js and mobile/hooks/useFounderBrief.js
-// so those screens can refresh independently of this shared core and of each other.
+// is only consumed by ONE screen (the Executive Briefing's themes, Operations' founder brief)
+// has been split into mobile/hooks/useMarketData.js and mobile/hooks/useFounderBrief.js so
+// those sources can refresh independently of this shared core and of each other.
 
 'use strict';
 

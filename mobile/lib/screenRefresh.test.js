@@ -38,7 +38,7 @@ test('combineLoading: false when no source is loading', () => {
   assert.strictEqual(combineLoading([source(), source()]), false);
 });
 
-test('combineLoading: true when any one source is loading (Market must not appear to load because founder-evidence is mid-refresh, and vice versa)', () => {
+test('combineLoading: true when any one source is loading (one screen must not appear to load because another source is mid-refresh, and vice versa)', () => {
   assert.strictEqual(combineLoading([source({ loading: true }), source({ loading: false })]), true);
 });
 
@@ -48,7 +48,7 @@ test('latestTimestamp: null when no source has ever completed a refresh', () => 
   assert.strictEqual(latestTimestamp([source(), source()]), null);
 });
 
-test('latestTimestamp: picks the later of two independently-completed sources (ExecutiveBriefing/Operations = shared + founderBrief)', () => {
+test('latestTimestamp: picks the later of two independently-completed sources (ExecutiveBriefing = shared + founderBrief + market)', () => {
   const earlier = '2026-08-03T10:00:00.000Z';
   const later = '2026-08-03T10:05:00.000Z';
   assert.strictEqual(
@@ -78,14 +78,14 @@ test('combineErrors: names every failing source, truthfully, not merged into one
 
 // --- composeScreenRefresh ------------------------------------------------------------------
 
-test('composeScreenRefresh: a single-source screen (Market) never reports another screen as loading or erroring', () => {
-  const market = source({ loading: true, lastRefreshError: 'benchmark: timeout' });
-  const composed = composeScreenRefresh([market]);
+test('composeScreenRefresh: a single-source screen never reports another screen as loading or erroring', () => {
+  const single = source({ loading: true, lastRefreshError: 'benchmark: timeout' });
+  const composed = composeScreenRefresh([single]);
   assert.strictEqual(composed.loading, true);
   assert.strictEqual(composed.lastRefreshError, 'benchmark: timeout');
 });
 
-test('composeScreenRefresh: refresh() calls every underlying source exactly once and waits for all of them (ExecutiveBriefing/Operations = shared + founderBrief)', async () => {
+test('composeScreenRefresh: refresh() calls every underlying source exactly once and waits for all of them (ExecutiveBriefing = shared + founderBrief + market)', async () => {
   const calls = [];
   const shared = source({ refresh: async () => { calls.push('shared'); } });
   const founderBrief = source({ refresh: async () => { calls.push('founderBrief'); } });
@@ -103,27 +103,29 @@ test('composeScreenRefresh: one failing source does not stop the composed refres
 
 // --- buildScreenRefreshRegistry / SCREEN_DATA_SOURCES --------------------------------------
 
-test('SCREEN_DATA_SOURCES: exactly the seven navigable screens are registered (AT-ED-015 renamed CIO to ExecutiveBriefing)', () => {
+// APP SIMPLIFICATION (2026-08-21): Recommendations and Market were deleted as dedicated
+// screens; Market's 'market' (themes) source moved onto ExecutiveBriefing instead of being
+// dropped entirely, since the Briefing still genuinely needs it.
+test('SCREEN_DATA_SOURCES: exactly the five navigable screens are registered', () => {
   assert.deepStrictEqual(
     Object.keys(SCREEN_DATA_SOURCES).sort(),
-    ['Activity', 'ExecutiveBriefing', 'Learning', 'Market', 'Operations', 'Portfolio', 'Recommendations']
+    ['Activity', 'ExecutiveBriefing', 'Learning', 'Operations', 'Portfolio']
   );
 });
 
-test('buildScreenRefreshRegistry: Recommendations adds on-demand dossiers while other shared screens stay shared-only', () => {
+test('buildScreenRefreshRegistry: ExecutiveBriefing composes shared + founderBrief + market while other shared screens stay shared-only', () => {
   const shared = source({ lastRefreshedAt: '2026-08-03T10:00:00.000Z' });
-  const market = source({ lastRefreshedAt: '2026-08-03T09:00:00.000Z' });
+  const market = source({ lastRefreshedAt: '2026-08-03T10:02:00.000Z' });
   const founderBrief = source({ lastRefreshedAt: '2026-08-03T10:01:00.000Z' });
-  const recommendationDossiers = source({ lastRefreshedAt: '2026-08-03T10:02:00.000Z' });
-  const registry = buildScreenRefreshRegistry({ shared, market, founderBrief, recommendationDossiers });
+  const registry = buildScreenRefreshRegistry({ shared, market, founderBrief });
 
   ['Activity', 'Portfolio', 'Learning'].forEach((screen) => {
     assert.strictEqual(registry[screen].lastRefreshedAt, shared.lastRefreshedAt, `${screen} should mirror the shared source`);
   });
-  assert.strictEqual(registry.Recommendations.lastRefreshedAt, recommendationDossiers.lastRefreshedAt);
+  assert.strictEqual(registry.ExecutiveBriefing.lastRefreshedAt, market.lastRefreshedAt);
 });
 
-test('buildScreenRefreshRegistry: Market never fetches Founder Evidence and Learning never fetches Founder Brief', async () => {
+test('buildScreenRefreshRegistry: Learning never fetches Founder Brief or market', async () => {
   const sharedCalls = [];
   const marketCalls = [];
   const founderBriefCalls = [];
@@ -131,28 +133,21 @@ test('buildScreenRefreshRegistry: Market never fetches Founder Evidence and Lear
     shared: source({ refresh: async () => { sharedCalls.push(1); } }),
     market: source({ refresh: async () => { marketCalls.push(1); } }),
     founderBrief: source({ refresh: async () => { founderBriefCalls.push(1); } }),
-    recommendationDossiers: source(),
   });
-
-  await registry.Market.refresh();
-  assert.strictEqual(marketCalls.length, 1);
-  assert.strictEqual(sharedCalls.length, 0);
-  assert.strictEqual(founderBriefCalls.length, 0);
 
   await registry.Learning.refresh();
   assert.strictEqual(sharedCalls.length, 1);
   assert.strictEqual(founderBriefCalls.length, 0);
+  assert.strictEqual(marketCalls.length, 0);
 });
 
-test('buildScreenRefreshRegistry: ExecutiveBriefing and Operations both compose shared + founderBrief only, never market', async () => {
+test('buildScreenRefreshRegistry: Operations composes shared + founderBrief only, never market', async () => {
   const marketCalls = [];
   const registry = buildScreenRefreshRegistry({
     shared: source(),
     market: source({ refresh: async () => { marketCalls.push(1); } }),
     founderBrief: source(),
-    recommendationDossiers: source(),
   });
-  await registry.ExecutiveBriefing.refresh();
   await registry.Operations.refresh();
   assert.strictEqual(marketCalls.length, 0);
 });
@@ -162,36 +157,27 @@ test('buildScreenRefreshRegistry: ExecutiveBriefing and Operations both compose 
 // the directive's own checklist 1:1 so each requirement has a directly-traceable test.)
 
 function trackedRegistry() {
-  const calls = { shared: 0, market: 0, founderBrief: 0, recommendationDossiers: 0 };
+  const calls = { shared: 0, market: 0, founderBrief: 0 };
   const registry = buildScreenRefreshRegistry({
     shared: source({ refresh: async () => { calls.shared += 1; } }),
     market: source({ refresh: async () => { calls.market += 1; } }),
     founderBrief: source({ refresh: async () => { calls.founderBrief += 1; } }),
-    recommendationDossiers: source({ refresh: async () => { calls.recommendationDossiers += 1; } }),
   });
   return { registry, calls };
 }
 
-test('Activity refresh does not fetch Market-exclusive endpoints', async () => {
+test('Activity refresh does not fetch market-exclusive endpoints', async () => {
   const { registry, calls } = trackedRegistry();
   await registry.Activity.refresh();
   assert.strictEqual(calls.market, 0);
   assert.strictEqual(calls.shared, 1);
 });
 
-test('Portfolio refresh does not fetch Market-exclusive endpoints', async () => {
+test('Portfolio refresh does not fetch market-exclusive endpoints', async () => {
   const { registry, calls } = trackedRegistry();
   await registry.Portfolio.refresh();
   assert.strictEqual(calls.market, 0);
   assert.strictEqual(calls.shared, 1);
-});
-
-test('Recommendations refresh fetches shared summaries and full dossiers exactly once', async () => {
-  const { registry, calls } = trackedRegistry();
-  await registry.Recommendations.refresh();
-  assert.strictEqual(calls.shared, 1);
-  assert.strictEqual(calls.recommendationDossiers, 1);
-  assert.strictEqual(calls.market, 0);
 });
 
 test('Learning refresh does not fetch Founder Brief', async () => {
@@ -201,20 +187,12 @@ test('Learning refresh does not fetch Founder Brief', async () => {
   assert.strictEqual(calls.shared, 1);
 });
 
-test('Market refresh does not refresh Founder Evidence', async () => {
-  const { registry, calls } = trackedRegistry();
-  await registry.Market.refresh();
-  assert.strictEqual(calls.shared, 0);
-  assert.strictEqual(calls.founderBrief, 0);
-  assert.strictEqual(calls.market, 1);
-});
-
-test('ExecutiveBriefing refresh fetches only its required shared and exclusive (founderBrief) sources', async () => {
+test('ExecutiveBriefing refresh fetches its shared, founderBrief, and market sources exactly once each', async () => {
   const { registry, calls } = trackedRegistry();
   await registry.ExecutiveBriefing.refresh();
   assert.strictEqual(calls.shared, 1);
   assert.strictEqual(calls.founderBrief, 1);
-  assert.strictEqual(calls.market, 0);
+  assert.strictEqual(calls.market, 1);
 });
 
 test('Operations refresh fetches only its required shared and exclusive (founderBrief) sources', async () => {

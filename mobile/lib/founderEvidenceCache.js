@@ -37,17 +37,14 @@ const MAX_CACHED_TIMELINE_ITEMS = 20;
 const MAX_CACHED_RESEARCH_ROWS = 10;
 const MAX_CACHED_LEARNING_ROWS = 10;
 
-// The shared recommendations cache (mobile/hooks/useFounderEvidence.js) now receives compact
-// backend summaries and remains capped as defence in depth. Full dossiers use the separate
-// screen-owned cache in hooks/useRecommendationDossiers.js and are fetched only on demand.
+// The shared recommendations cache (mobile/hooks/useFounderEvidence.js) receives compact
+// backend summaries and remains capped as defence in depth.
 const MAX_CACHED_RECOMMENDATION_LIST_ITEMS = 15;
 
 // Fields kept per recommendation in the small founder-evidence-snapshot stub list. Confirmed
 // by reading every recommendation-field access in founderEvidenceMapping.js's
 // statusFromFounderEvidence(): only .length, .symbol, .freshness_status, .broker, and
-// .suggested_broker are ever read from the shared founder-evidence recommendations array (the
-// Recommendations screen's rich detail comes from useRecommendationDossiers, not from this
-// high-frequency Founder snapshot).
+// .suggested_broker are ever read from the shared founder-evidence recommendations array.
 const RECOMMENDATION_STUB_FIELDS = [
   'proposal_id',
   'recommendation_id',

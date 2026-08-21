@@ -24,13 +24,16 @@
 // CIO screen itself to ExecutiveBriefing. Both read the same shared + founderBrief sources
 // Dashboard always did - the briefing synthesises the same evidence Operations shows in detail,
 // it does not introduce a new backend source.
+// APP SIMPLIFICATION (2026-08-21): Recommendations and Market were deleted as dedicated
+// screens. Market's themes data is still genuinely needed (the Executive Briefing's Investment
+// Thesis/Opportunities content), so the 'market' source moved here rather than being dropped -
+// pulling to refresh the Briefing now also refreshes themes, since there is no longer a
+// separate screen whose own pull-to-refresh could do it.
 const SCREEN_DATA_SOURCES = Object.freeze({
-  ExecutiveBriefing: ['shared', 'founderBrief'],
+  ExecutiveBriefing: ['shared', 'founderBrief', 'market'],
   Operations: ['shared', 'founderBrief'],
   Activity: ['shared'],
-  Recommendations: ['shared', 'recommendationDossiers'],
   Portfolio: ['shared'],
-  Market: ['market'],
   Learning: ['shared'],
 });
 
@@ -86,8 +89,8 @@ function composeScreenRefresh(sources) {
 // Builds every screen's composed refresh object from the underlying source objects, in
 // one place, so App.js cannot accidentally wire a screen to a source SCREEN_DATA_SOURCES does
 // not list for it.
-function buildScreenRefreshRegistry({ shared, market, founderBrief, recommendationDossiers }) {
-  const sourcesByName = { shared, market, founderBrief, recommendationDossiers };
+function buildScreenRefreshRegistry({ shared, market, founderBrief }) {
+  const sourcesByName = { shared, market, founderBrief };
   const registry = {};
   Object.entries(SCREEN_DATA_SOURCES).forEach(([screen, sourceNames]) => {
     registry[screen] = composeScreenRefresh(sourceNames.map((name) => sourcesByName[name]));

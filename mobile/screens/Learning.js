@@ -152,6 +152,18 @@ function LearningStrategyLab({ status, dailyLearning, messages, setMessages, req
         )}
       </View>
 
+      {/* APP SIMPLIFICATION (2026-08-21): salvaged from the now-deleted Market screen's
+          "Today's Learning, In Brief" card. It carried the raw backend `dailyLearning.summary`
+          sentence, which is distinct from (and not otherwise shown by) the cioLearningNarrative
+          composed above from evidence_summary - worth keeping, not worth a whole screen. The
+          original card's pointer text ("See the Learning tab...") is dropped since this is now
+          that tab. */}
+      {dailyLearning?.summary ? (
+        <Section title="Today's Learning, In Brief">
+          <Text style={styles.bodyText}>{dailyLearning.summary}</Text>
+        </Section>
+      ) : null}
+
       {/* 2026-08-18 Founder request: labels made explicit after the 2026-08-17 finding that
           Alpaca legacy positions (never proposed by the AI) were being counted as "closed
           trades" here, misrepresenting the AI's own judgment. */}

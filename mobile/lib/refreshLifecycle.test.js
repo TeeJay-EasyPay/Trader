@@ -124,7 +124,7 @@ test('shouldStartRefresh: refuses to start a second refresh while one is already
   assert.strictEqual(shouldStartRefresh(true), false);
 });
 
-// --- combineOptionalResults (Market screen's independent-endpoint isolation) -----------
+// --- combineOptionalResults (independent-endpoint isolation for multi-source hooks) -----------
 
 test('combineOptionalResults: all endpoints succeed', () => {
   const combined = combineOptionalResults([

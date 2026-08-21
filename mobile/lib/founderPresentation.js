@@ -232,73 +232,6 @@ function groupActivity(items, { sinceIso } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Recommendations screen: lifecycle stage
-// ---------------------------------------------------------------------------
-
-function formatGuardrailFailures(failures) {
-  if (!failures || !failures.length) return null;
-  return failures.map((entry) => String(entry).replaceAll('_', ' ')).join(', ');
-}
-
-// Best-effort match: a recommendation record has no stable foreign key to a specific broker
-// fill in the current evidence model, so a trade is only treated as the outcome of this
-// recommendation when broker, symbol, and timing (fill observed within the recommendation's
-// created_at..expires_at window, plus a 24h grace period for delayed reconciliation) all line
-// up. This is a heuristic, not a guaranteed link - the returned reason says so.
-function findMatchingTrade(item, trades) {
-  const broker = String(item.suggested_broker || item.broker || '').toLowerCase();
-  const symbol = String(item.ticker || item.symbol || '').toUpperCase();
-  const createdMs = item.created_at ? new Date(item.created_at).getTime() : NaN;
-  if (!broker || !symbol || Number.isNaN(createdMs)) return null;
-  const expiresMs = item.expires_at ? new Date(item.expires_at).getTime() : createdMs + 24 * 60 * 60 * 1000;
-  const graceMs = 24 * 60 * 60 * 1000;
-  return (trades || []).find((trade) => {
-    if (String(trade.broker || '').toLowerCase() !== broker) return false;
-    if (String(trade.symbol || '').toUpperCase() !== symbol) return false;
-    const observedMs = trade.observed_at ? new Date(trade.observed_at).getTime() : NaN;
-    if (Number.isNaN(observedMs)) return false;
-    return observedMs >= createdMs && observedMs <= expiresMs + graceMs;
-  }) || null;
-}
-
-// Returns one of: Executed, Expired, Blocked, No Action, Under Review.
-// "Generated" (created_at is always present), "Approved", and "Rejected" are not separately
-// distinguishable from these five with the evidence currently exposed by /founder-evidence -
-// there is no persisted per-recommendation orchestrator decision record to read. Callers should
-// show created_at as a plain fact alongside the stage, not claim a 6th/7th/8th distinct stage.
-function recommendationLifecycle(item, trades) {
-  const confidence = Number(item.confidence_score ?? item.confidence ?? 0);
-  const guardrailsPassed = item.guardrails_passed !== false;
-  const guardrailText = formatGuardrailFailures(item.guardrail_failures);
-  const isExpired = item.freshness_status
-    ? item.freshness_status === 'Expired'
-    : Boolean(item.expires_at) && new Date(item.expires_at).getTime() < Date.now();
-
-  const matchingTrade = findMatchingTrade(item, trades);
-  if (matchingTrade) {
-    return {
-      stage: 'Executed',
-      reason: `Matched to a ${matchingTrade.broker || 'broker'} ${matchingTrade.status || 'fill'} event by broker, symbol, and timing (not a direct database link).`,
-      tone: 'good',
-    };
-  }
-  if (isExpired) {
-    return { stage: 'Expired', reason: 'This recommendation window has closed. Run new analysis for a fresh idea.', tone: 'neutral' };
-  }
-  if (!guardrailsPassed) {
-    return {
-      stage: 'Blocked',
-      reason: guardrailText ? `Execution guardrails failed: ${guardrailText}.` : 'Execution guardrails did not pass at generation time.',
-      tone: 'warn',
-    };
-  }
-  if (confidence < 0.85) {
-    return { stage: 'No Action', reason: 'Confidence is below the 85% auto-trade threshold.', tone: 'neutral' };
-  }
-  return { stage: 'Under Review', reason: 'Eligible for auto-trade; awaiting the next execution cycle or expiry.', tone: 'good' };
-}
-
-// ---------------------------------------------------------------------------
 // Portfolio screen: AI-managed vs manual holdings
 // ---------------------------------------------------------------------------
 
@@ -536,11 +469,9 @@ module.exports = {
   activityCategoryFor,
   describeActivityEvent,
   groupActivity,
-  recommendationLifecycle,
   positionOwnership,
   portfolioHeadline,
   learningSummary,
-  formatGuardrailFailures,
   activityStatusTone,
   activitySeverityTone,
   noTradeTone,
