@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.ai import _benchmark_research_from_response_text
+from ai_trader.ai import _benchmark_research_from_response_text, _lenient_json_object
 from ai_trader.api import LocalApiService
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.benchmark_data import BENCHMARK_TRADERS
@@ -136,6 +136,44 @@ class BenchmarkResearchResponseParsingTests(unittest.TestCase):
         self.assertIsNone(_benchmark_research_from_response_text("null"))
         self.assertIsNone(_benchmark_research_from_response_text(""))
         self.assertIsNone(_benchmark_research_from_response_text(json.dumps(["not", "a", "dict"])))
+
+    # 2026-08-21 live-verification finding: web_search_preview and structured JSON mode
+    # (text.format) are mutually exclusive on this API ("Web Search cannot be used with
+    # JSON mode", HTTP 400) -- this analyzer had to drop text.format and now relies on the
+    # instruction plus this tolerant parsing to still get a usable JSON object out.
+
+    def test_accepts_a_response_wrapped_in_a_markdown_code_fence(self):
+        wrapped = "```json\n" + json.dumps(_found_activity_result()) + "\n```"
+        parsed = _benchmark_research_from_response_text(wrapped)
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed["found_activity"])
+
+    def test_accepts_a_response_with_a_stray_sentence_before_and_after_the_json(self):
+        wrapped = "Here is my finding:\n" + json.dumps(_found_activity_result()) + "\nLet me know if you need more."
+        parsed = _benchmark_research_from_response_text(wrapped)
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed["found_activity"])
+
+
+class LenientJsonObjectTests(unittest.TestCase):
+    def test_parses_plain_json_unchanged(self):
+        self.assertEqual(_lenient_json_object('{"a": 1}'), {"a": 1})
+
+    def test_strips_a_json_code_fence(self):
+        self.assertEqual(_lenient_json_object('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_strips_a_bare_code_fence_with_no_language_tag(self):
+        self.assertEqual(_lenient_json_object('```\n{"a": 1}\n```'), {"a": 1})
+
+    def test_extracts_the_outermost_object_from_surrounding_prose(self):
+        self.assertEqual(_lenient_json_object('Sure, here it is: {"a": 1} - hope that helps!'), {"a": 1})
+
+    def test_returns_none_for_text_with_no_recoverable_json_object(self):
+        self.assertIsNone(_lenient_json_object("no json here at all"))
+        self.assertIsNone(_lenient_json_object(""))
+
+    def test_returns_none_for_a_json_array_not_an_object(self):
+        self.assertIsNone(_lenient_json_object("[1, 2, 3]"))
 
 
 class RecordDailyResearchTests(unittest.TestCase):

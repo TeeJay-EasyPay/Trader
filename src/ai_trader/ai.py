@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -245,7 +246,9 @@ class BenchmarkResearchAnalyzer:
                 "investor's activity in roughly the last 30 days -- portfolio changes, 13F filings, public "
                 "statements, or interviews. Report only what your search actually finds; never invent a trade, "
                 "holding, or quote that is not backed by a real source you found. "
-                "Return only JSON with fields: found_activity, observed_trade_or_portfolio_change, "
+                "Respond with ONLY a single raw JSON object and nothing else -- no markdown code fences, no "
+                "prose before or after it, no explanation of your search process. "
+                "The JSON object must have exactly these fields: found_activity, observed_trade_or_portfolio_change, "
                 "ai_interpretation, risk_lesson, market_lesson, related_sector, related_theme, confidence, "
                 "source_urls. "
                 "found_activity must be true or false -- set it false when nothing concrete turned up, and in "
@@ -267,8 +270,15 @@ class BenchmarkResearchAnalyzer:
         payload = {
             "model": self.model,
             "input": json.dumps(prompt, default=str),
+            # The web_search_preview tool and structured JSON mode (text.format) are
+            # mutually exclusive on this API -- live-confirmed 2026-08-21 ("Web Search
+            # cannot be used with JSON mode", HTTP 400). Every other analyzer in this file
+            # uses text.format because none of them need a live tool; this one trades that
+            # guarantee for real web grounding and relies on the instruction above plus
+            # _benchmark_research_from_response_text's tolerant parsing instead. An
+            # unparseable response still fails safely (returns None, caller records
+            # nothing for that trader today) rather than half-trusting free text.
             "tools": [{"type": "web_search_preview"}],
-            "text": {"format": {"type": "json_object"}},
         }
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -413,6 +423,36 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
     }
 
 
+def _lenient_json_object(text: str) -> dict[str, Any] | None:
+    """Parses a JSON object out of a response that was NOT produced under structured
+    JSON mode (BenchmarkResearchAnalyzer cannot use text.format alongside web_search_preview
+    -- see that class's docstring). Models asked for "only JSON" still sometimes wrap it in
+    a markdown code fence or add a stray sentence before/after it; this strips a fence if
+    present, then falls back to the outermost {...} substring if the text still isn't
+    directly parseable. Returns None rather than guessing at a fragment when no valid JSON
+    object can be recovered -- the caller then honestly records nothing for this trader
+    today instead of trusting a mangled parse.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped).strip()
+    try:
+        data = json.loads(stripped)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(stripped[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _benchmark_research_from_response_text(text: str) -> dict[str, Any] | None:
     """Parse a benchmark-research response. Returns None when the response isn't usable
     -- the caller then records nothing for this trader today rather than a half-understood
@@ -425,11 +465,8 @@ def _benchmark_research_from_response_text(text: str) -> dict[str, Any] | None:
     """
     if not text or text.strip() == "null":
         return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
+    data = _lenient_json_object(text)
+    if data is None:
         return None
     confidence = str(data.get("confidence") or "").strip().title()
     if confidence not in BENCHMARK_CONFIDENCE_LABELS:
