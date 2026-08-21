@@ -324,9 +324,12 @@ export const styles = StyleSheet.create({
     borderColor: '#dde1e7',
   },
   // Trade History table (2026-08-21 Founder request - real aligned columns instead of a
-  // sentence per trade). Column flex ratios are tuned for a ~360-400dp phone width: Symbol
-  // gets the most room since Kraken pair names ("XETHZGBP") run long, Side is the narrowest
-  // since it is always 3-4 letters.
+  // sentence per trade; Commission %/Commission columns added same day). Column flex ratios
+  // are tuned for a ~360-400dp phone width: Symbol gets the most room since Kraken pair names
+  // ("XETHZGBP") run long, Side is the narrowest since it is always 3-4 letters, and the two
+  // commission columns are narrow since their values ("0.80%", "£0.02") are always short -
+  // Date/Symbol/Price/P&L were each trimmed slightly to make room for them without the row
+  // growing unreadably dense.
   tradeTable: {
     marginTop: 4,
   },
@@ -359,19 +362,25 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tradeTableCellDate: {
-    flex: 1.5,
+    flex: 1.3,
   },
   tradeTableCellSymbol: {
-    flex: 1.7,
+    flex: 1.6,
   },
   tradeTableCellSide: {
-    flex: 0.9,
+    flex: 0.7,
   },
   tradeTableCellPrice: {
-    flex: 1.5,
+    flex: 1.3,
+  },
+  tradeTableCellCommissionPct: {
+    flex: 0.9,
+  },
+  tradeTableCellCommission: {
+    flex: 1.0,
   },
   tradeTableCellPnl: {
-    flex: 1.4,
+    flex: 1.2,
   },
   tradeTableCellText: {
     fontSize: 12,

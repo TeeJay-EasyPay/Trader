@@ -81,6 +81,8 @@ function TradeHistoryHeaderRow() {
       <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSymbol]}>Symbol</Text>
       <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSide]}>Side</Text>
       <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPrice, styles.tradeTableCellTextRight]}>Price</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommissionPct, styles.tradeTableCellTextRight]}>Comm %</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommission, styles.tradeTableCellTextRight]}>Comm</Text>
       <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPnl, styles.tradeTableCellTextRight]}>P&L</Text>
     </View>
   );
@@ -98,6 +100,8 @@ function TradeHistoryRow({ item, onCommand }) {
           <Text style={[styles.tradeTableCellText, styles.tradeTableCellSymbol]} numberOfLines={1} adjustsFontSizeToFit>{row.symbol}</Text>
           <Text style={[styles.tradeTableCellText, styles.tradeTableCellSide]}>{row.side}</Text>
           <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPrice]} numberOfLines={1} adjustsFontSizeToFit>{row.priceText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommissionPct]} numberOfLines={1} adjustsFontSizeToFit>{row.commissionPctText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommission]} numberOfLines={1} adjustsFontSizeToFit>{row.commissionText}</Text>
           <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPnl, pnlStyle]} numberOfLines={1} adjustsFontSizeToFit>{row.pnlText}</Text>
         </View>
         <Text style={styles.smallText}>{open ? 'Tap to collapse' : 'Tap for full detail'}</Text>

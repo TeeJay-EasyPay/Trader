@@ -271,6 +271,7 @@ function normalizeTradeRow(item) {
     stopLoss: firstNumber(item?.stop_loss, raw.stop_loss),
     currentPrice: firstNumber(item?.current_price, raw.current_price, raw.last_price),
     profitLoss: firstNumber(item?.profit_loss, item?.pnl, item?.realized_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
+    fee: firstNumber(item?.fee, raw.fee, raw.commission),
     openedAt,
     closedAt,
     eventTime,
@@ -405,22 +406,34 @@ function describeTransaction(item) {
 }
 
 // 2026-08-21 Founder request: Trade History rebuilt as a real column table (Date/Symbol/Side/
-// Price/P&L) instead of one dense sentence per trade - the sentence form (describeTransaction
-// above) stays as-is for BrokerPanel's single-line "latest confirmed trade", where prose still
-// reads naturally; a five-column table is what a list of many trades actually needs. An open/
-// still-held position shows its entry price and reads "Unsold" for P&L rather than a blank or a
-// fabricated zero, matching TradeDetail's existing convention for the same case.
+// Price/Commission %/Commission/P&L) instead of one dense sentence per trade - the sentence
+// form (describeTransaction above) stays as-is for BrokerPanel's single-line "latest confirmed
+// trade", where prose still reads naturally; a column table is what a list of many trades
+// actually needs. An open/still-held position shows its entry price and reads "Unsold" for P&L
+// rather than a blank or a fabricated zero, matching TradeDetail's existing convention for the
+// same case.
+//
+// Commission % uses the exact same per-leg formula the backend's own measured fee rate uses
+// (trade_scorecard.py's estimate_round_trip_fee_pct: fee / abs(quantity * price)) - one row here
+// is one leg (one fill), not a round trip, so this is that same ratio applied per-row rather
+// than aggregated. Never computed from a fabricated/assumed rate - only when this row's own
+// real fee, quantity and price are all present.
 function tradeTableRow(item) {
   const normalized = normalizeTradeRow(item);
   const isOpen = isOpenTrade(normalized);
   const priceValue = isOpen ? normalized.entryPrice : (normalized.exitPrice ?? normalized.price ?? normalized.entryPrice);
   const pnlValue = normalized.profitLoss;
   const hasPnl = !isOpen && pnlValue !== null && pnlValue !== undefined;
+  const hasFee = normalized.fee !== null && normalized.fee !== undefined;
+  const hasCommissionBasis = hasFee && normalized.quantity && priceValue;
+  const commissionPct = hasCommissionBasis ? (normalized.fee / Math.abs(normalized.quantity * priceValue)) * 100 : null;
   return {
     dateText: formatShortDateTime(normalized.eventTime) || notAvailable(null),
     symbol: normalized.symbol || notAvailable(null),
     side: normalized.side ? String(normalized.side).toUpperCase() : notAvailable(null),
     priceText: priceValue !== null && priceValue !== undefined ? historyMoneyOrText(normalized.broker, priceValue) : notAvailable(null),
+    commissionPctText: commissionPct !== null ? `${commissionPct.toFixed(2)}%` : notAvailable(null),
+    commissionText: hasFee ? historyMoneyOrText(normalized.broker, normalized.fee) : notAvailable(null),
     pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : notAvailable(null)),
     pnlSign: hasPnl ? (pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'neutral') : 'neutral',
   };

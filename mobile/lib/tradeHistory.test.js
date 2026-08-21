@@ -378,4 +378,40 @@ test('tradeTableRow: a bare broker_trade row with no symbol/side reports Not ava
   assert.ok(row.side.startsWith('Not available'));
 });
 
+// 2026-08-21 Founder request: two more columns - commission % and commission amount.
+// commissionPct uses the exact same per-leg formula as the backend's own measured fee rate
+// (trade_scorecard.py's estimate_round_trip_fee_pct: fee / abs(quantity * price)).
+
+test("tradeTableRow: commission % and commission amount are computed from the row's real fee, quantity, and price", () => {
+  const row = tradeTableRow({
+    broker: 'alpaca', symbol: 'AAPL', side: 'sell', status: 'closed',
+    quantity: 10, exit_price: 100, profit_loss: 45, fee: 8, closed_at: '2026-08-21T07:49:34Z',
+  });
+  assert.strictEqual(row.commissionPctText, '0.80%');
+  assert.strictEqual(row.commissionText, '$8');
+});
+
+test('tradeTableRow: a Kraken trade reports its commission amount in GBP, matching the price/P&L columns', () => {
+  const row = tradeTableRow({
+    broker: 'kraken', symbol: 'XETHZGBP', side: 'sell', status: 'closed',
+    quantity: 0.00119506, exit_price: 1741.54, profit_loss: 0.48, fee: 0.02, closed_at: '2026-08-21T07:49:34Z',
+  });
+  assert.strictEqual(row.commissionText, '£0.02');
+});
+
+test('tradeTableRow: a missing fee reports Not available for both commission columns rather than a fabricated zero', () => {
+  const row = tradeTableRow({
+    broker: 'alpaca', symbol: 'AAPL', side: 'sell', status: 'closed',
+    quantity: 10, exit_price: 100, profit_loss: 45, closed_at: '2026-08-21T07:49:34Z',
+  });
+  assert.ok(row.commissionPctText.startsWith('Not available'));
+  assert.ok(row.commissionText.startsWith('Not available'));
+});
+
+test('tradeTableRow: a real fee with no usable quantity/price still reports the fee amount but not a fabricated percentage', () => {
+  const row = tradeTableRow({ broker: 'kraken', status: 'closed', fee: 0.02, closed_at: '2026-08-21T07:56:00Z' });
+  assert.ok(row.commissionPctText.startsWith('Not available'));
+  assert.strictEqual(row.commissionText, '£0.02');
+});
+
 console.log(`\n${passed} passed`);
