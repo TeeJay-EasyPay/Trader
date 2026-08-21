@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+from unittest.mock import patch
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ai_trader.api import LocalApiService
 from ai_trader.cli import _due_worker_jobs, _run_named_job
 from ai_trader.config import Settings
-from ai_trader.market_intelligence_platform import latest_observation_time, record_market_observations
+from ai_trader.market_intelligence_platform import latest_observation_time, latest_observation_times_batch, record_market_observations
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, utc_now_iso
 
 
@@ -84,6 +85,67 @@ class LatestObservationTimeTests(unittest.TestCase):
             self.assertIsNone(latest_observation_time(db_path, provider="coingecko", normalized_symbol="BTC", timeframe="1d"))
 
 
+class LatestObservationTimesBatchTests(unittest.TestCase):
+    # 2026-08-21 Founder-directed egress audit: refresh_crypto_candle_history used to call
+    # the single-symbol latest_observation_time once per symbol in its loop -- with the
+    # universe cap removed (up to 30 symbols now, was 10), that meant up to 30 fresh
+    # remote-Postgres connections every hour just for watermark lookups. This batched
+    # version answers the same question for every symbol on one connection.
+
+    def test_empty_symbol_list_returns_empty_dict_without_touching_the_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            self.assertEqual(
+                latest_observation_times_batch(db_path, provider="kraken", normalized_symbols=[], timeframe="1d"),
+                {},
+            )
+
+    def test_returns_none_for_symbols_with_no_recorded_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            result = latest_observation_times_batch(db_path, provider="kraken", normalized_symbols=["BTC", "ETH"], timeframe="1d")
+            self.assertEqual(result, {"BTC": None, "ETH": None})
+
+    def test_matches_the_single_symbol_function_for_a_mix_of_known_and_unknown_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_market_observations(
+                db_path, provider="kraken", original_symbol="XXBTZGBP", normalized_symbol="BTC",
+                exchange="KRAKEN", asset_type="crypto", timeframe="1d",
+                candles=[_candle("2026-08-18T00:00:00+00:00", 40000.0), _candle("2026-08-19T00:00:00+00:00", 41000.0)],
+            )
+            record_market_observations(
+                db_path, provider="kraken", original_symbol="XETHZGBP", normalized_symbol="ETH",
+                exchange="KRAKEN", asset_type="crypto", timeframe="1d",
+                candles=[_candle("2026-08-17T00:00:00+00:00", 1600.0)],
+            )
+            result = latest_observation_times_batch(db_path, provider="kraken", normalized_symbols=["BTC", "ETH", "SOL"], timeframe="1d")
+            self.assertEqual(
+                result,
+                {
+                    "BTC": latest_observation_time(db_path, provider="kraken", normalized_symbol="BTC", timeframe="1d"),
+                    "ETH": latest_observation_time(db_path, provider="kraken", normalized_symbol="ETH", timeframe="1d"),
+                    "SOL": None,
+                },
+            )
+
+    def test_is_scoped_to_provider_and_timeframe_like_the_single_symbol_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_market_observations(
+                db_path, provider="kraken", original_symbol="XXBTZGBP", normalized_symbol="BTC",
+                exchange="KRAKEN", asset_type="crypto", timeframe="1d", candles=[_candle("2026-08-19T00:00:00+00:00", 41000.0)],
+            )
+            self.assertEqual(
+                latest_observation_times_batch(db_path, provider="kraken", normalized_symbols=["BTC"], timeframe="1h"),
+                {"BTC": None},
+            )
+            self.assertEqual(
+                latest_observation_times_batch(db_path, provider="coingecko", normalized_symbols=["BTC"], timeframe="1d"),
+                {"BTC": None},
+            )
+
+
 class RefreshCryptoCandleHistoryTests(unittest.TestCase):
     def test_writes_real_candles_for_the_kraken_universe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +166,32 @@ class RefreshCryptoCandleHistoryTests(unittest.TestCase):
             with closing(sqlite3.connect(settings.db_path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM MARKET_DATA_OBSERVATIONS WHERE provider = 'kraken'").fetchone()[0]
             self.assertEqual(count, 3)
+
+    def test_watermark_lookup_is_one_call_for_the_whole_universe_not_one_per_symbol(self):
+        # 2026-08-21 Founder-directed egress audit: pins the actual regression risk -- the
+        # call site, not just the batched function's own correctness (already covered by
+        # LatestObservationTimesBatchTests above). With the universe cap removed (up to 30
+        # symbols now, was 10), a per-symbol call here would have tripled this refresh's
+        # connection count for no benefit every single hour.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            adapter = FakeKrakenAdapter({
+                "XBTGBP": [_candle(utc_now_iso(), 41000.0)],
+                "ETHGBP": [_candle(utc_now_iso(), 1500.0)],
+                "SOLGBP": [_candle(utc_now_iso(), 60.0)],
+            })
+            service.orchestrator.adapters["kraken"] = adapter
+
+            with patch(
+                "ai_trader.application.research_service.latest_observation_times_batch",
+                wraps=latest_observation_times_batch,
+            ) as batched_lookup:
+                service.refresh_crypto_candle_history()
+
+            batched_lookup.assert_called_once()
+            _, kwargs = batched_lookup.call_args
+            self.assertEqual(set(kwargs["normalized_symbols"]), {"BTC", "ETH", "SOL"})
 
     def test_a_second_run_only_fetches_candles_newer_than_what_is_already_stored(self):
         with tempfile.TemporaryDirectory() as tmp:

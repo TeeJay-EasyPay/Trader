@@ -242,6 +242,36 @@ def latest_observation_time(db_path: Path, *, provider: str, normalized_symbol: 
     return str(row[0]) if row else None
 
 
+def latest_observation_times_batch(db_path: Path, *, provider: str, normalized_symbols: list[str], timeframe: str) -> dict[str, str | None]:
+    """Same as latest_observation_time, for many symbols on ONE connection.
+
+    2026-08-21 (Founder-directed egress audit, prompted by the crypto universe cap
+    being removed -- 10 symbols to up to 30): refresh_crypto_candle_history was calling
+    the single-symbol latest_observation_time once per symbol inside its loop, opening a
+    fresh remote-Postgres connection per symbol every hour just for a tiny watermark
+    SELECT -- the same "N fresh connections" cost class load_recent_observations_batch
+    was already built to avoid for the candle-history read path, just missed here on the
+    write-side "since" lookup. Tripling the universe size would have tripled this
+    per-cycle connection count for no benefit; this collapses it back to one connection
+    regardless of how many symbols are configured.
+    """
+    if not normalized_symbols:
+        return {}
+    initialize_market_intelligence_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT normalized_symbol, MAX(observation_time) AS latest
+            FROM MARKET_DATA_OBSERVATIONS
+            WHERE provider = ? AND timeframe = ? AND normalized_symbol IN ({','.join('?' for _ in normalized_symbols)})
+            GROUP BY normalized_symbol
+            """,
+            (provider, timeframe, *[symbol.upper() for symbol in normalized_symbols]),
+        ).fetchall()
+    latest_by_symbol = {str(row[0]): str(row[1]) for row in rows}
+    return {symbol: latest_by_symbol.get(symbol.upper()) for symbol in normalized_symbols}
+
+
 def load_recent_observations(db_path: Path, normalized_symbol: str, *, timeframe: str = "1d", limit: int = 120) -> list[dict[str, Any]]:
     """Real stored crypto candle history, oldest-first (matches analyze_price_series'
     expectation that candles[-1] is the latest close) -- the crypto equivalent of

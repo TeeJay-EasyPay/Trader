@@ -17,7 +17,7 @@ from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..forecasting import generate_market_forecast
-from ..market_intelligence_platform import latest_observation_time, record_market_observations
+from ..market_intelligence_platform import latest_observation_times_batch, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
     record_crypto_research_score,
@@ -348,9 +348,15 @@ class ResearchService:
         candles_written = 0
         symbols_with_history: list[str] = []
         quality_issues: list[dict[str, Any]] = []
+        # 2026-08-21 egress audit: one connection for every symbol's watermark instead of
+        # one fresh remote-Postgres connection per symbol per hourly cycle -- with the
+        # universe cap removed (up to 30 symbols now, was 10), the old per-symbol
+        # latest_observation_time() call here would have tripled this refresh's
+        # connection count for no benefit. See latest_observation_times_batch's docstring.
+        since_by_symbol = latest_observation_times_batch(self.settings.db_path, provider="kraken", normalized_symbols=symbols, timeframe="1d")
         for symbol in symbols:
             pair = _kraken_pair(symbol)
-            since_iso = latest_observation_time(self.settings.db_path, provider="kraken", normalized_symbol=symbol, timeframe="1d")
+            since_iso = since_by_symbol.get(symbol)
             if since_iso:
                 since_epoch = int(datetime.fromisoformat(since_iso).timestamp())
             else:
