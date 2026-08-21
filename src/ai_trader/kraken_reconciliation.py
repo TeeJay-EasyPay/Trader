@@ -542,7 +542,27 @@ def backfill_missing_managed_exits(db_path: Path, *, conn: Any = None) -> dict[s
                 """,
                 (logical_trade_id,),
             ).fetchone()
-            if entry_order is None:
+            entry_broker_order_id = entry_order["broker_order_id"] if entry_order else None
+            if not entry_broker_order_id:
+                # 2026-08-22 recurrence: BCH/XRP/ETH positions genuinely reconciled to
+                # 'holding' (real fills, real logical_trade_id/proposal_id from
+                # LOGICAL_TRADE_FILLS) still had no KRAKEN_AI_ORDER_OWNERSHIP entry-role row
+                # -- the same "crash/timeout mid-flow" failure class described above, just
+                # missing the ownership registration this time instead of the managed-exit
+                # record. LOGICAL_TRADE_FILLS.broker_order_id is populated directly from the
+                # fill itself, not a separate registration step, and a 'holding' status is
+                # only possible when a real entry fill row already exists for this exact
+                # logical_trade_id -- so it is available whenever the earlier lookup is not.
+                fallback_entry_fill = active.execute(
+                    """
+                    SELECT broker_order_id FROM LOGICAL_TRADE_FILLS
+                    WHERE logical_trade_id = ? AND fill_role = 'entry' AND broker_order_id IS NOT NULL
+                    ORDER BY filled_at ASC LIMIT 1
+                    """,
+                    (logical_trade_id,),
+                ).fetchone()
+                entry_broker_order_id = fallback_entry_fill["broker_order_id"] if fallback_entry_fill else None
+            if not entry_broker_order_id:
                 continue
             managed = record_managed_trade_exit(
                 db_path,
@@ -550,7 +570,7 @@ def backfill_missing_managed_exits(db_path: Path, *, conn: Any = None) -> dict[s
                 symbol=row["symbol"],
                 side=row["side"] or "buy",
                 quantity=float(quantity),
-                entry_order_id=str(entry_order["broker_order_id"]),
+                entry_order_id=str(entry_broker_order_id),
                 entry_price=float(entry_price),
                 stop_loss=float(stop),
                 take_profit=float(target),
@@ -563,7 +583,7 @@ def backfill_missing_managed_exits(db_path: Path, *, conn: Any = None) -> dict[s
             )
             register_kraken_order_ownership(
                 db_path,
-                broker_order_id=str(entry_order["broker_order_id"]),
+                broker_order_id=str(entry_broker_order_id),
                 logical_trade_id=logical_trade_id,
                 proposal_id=row["proposal_id"],
                 managed_exit_id=int(managed["managed_exit_id"]),

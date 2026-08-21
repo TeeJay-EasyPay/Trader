@@ -276,7 +276,14 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             except (TypeError, ValueError):
                 continue
             if qty:
-                positions.append({"symbol": symbol, "qty": qty, "asset_type": "crypto", "broker": self.name})
+                # 2026-08-22: Kraken's own balance keys use its legacy asset codes (XETH,
+                # XXRP, XXBT, ...) while every AI-side record (KRAKEN_RECONCILED_RESULTS,
+                # MANAGED_TRADE_EXITS, proposals) uses the plain symbol (ETH, XRP, BTC).
+                # Returning the raw code here meant the mobile app's AI-managed-position
+                # match (position.symbol vs. managed_exits[].symbol) could never succeed for
+                # any legacy-coded asset, no matter how completely the rest of the pipeline
+                # was fixed.
+                positions.append({"symbol": _kraken_asset_symbol(symbol), "qty": qty, "asset_type": "crypto", "broker": self.name})
         return positions
 
     def get_orders(self) -> list[dict[str, Any]]:

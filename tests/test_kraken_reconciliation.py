@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.canonical_trades import canonical_trade, register_execution_intent
+from ai_trader.canonical_trades import canonical_trade, initialize_canonical_trade_schema, register_execution_intent
 from ai_trader.kraken_reconciliation import (
     backfill_missing_managed_exits,
     initialize_kraken_reconciliation_schema,
@@ -338,6 +338,55 @@ class KrakenReconciliationTests(unittest.TestCase):
             second = backfill_missing_managed_exits(db_path)
             self.assertEqual(second["backfilled"], 0)
             self.assertEqual(len(open_managed_exits(db_path, "kraken")), 1)
+
+    def test_holding_position_with_no_ownership_row_still_backfills_from_the_fill_itself(self):
+        # 2026-08-22 recurrence: live production had 4 real 'holding' positions (BCH, 2x ETH,
+        # XRP -- real fills, real proposal_id/logical_trade_id, real stop/target) that the
+        # backfill above still could not recover, because its only source for the entry
+        # order id was a KRAKEN_AI_ORDER_OWNERSHIP row keyed on (logical_trade_id,
+        # order_role='entry') -- and that row was not there for these four. Whatever broke
+        # that specific row, LOGICAL_TRADE_FILLS.broker_order_id did not depend on it: it is
+        # written directly from the fill event itself, and a 'holding' status is only
+        # possible when a real entry fill row already exists for this logical_trade_id. This
+        # reproduces that exact shape directly against the tables (rather than through the
+        # full replay path, which itself requires a KRAKEN_AI_ORDER_OWNERSHIP row to classify
+        # a fill event as owned in the first place, and so cannot construct a case where one
+        # is truly absent by the time backfill runs).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_canonical_trade_schema(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO LOGICAL_TRADE_FILLS
+                            (logical_trade_id, broker, broker_fill_id, broker_order_id, fill_role,
+                             side, quantity, price, broker_fee, exchange_fee, filled_at, payload_json)
+                        VALUES (?, 'kraken', 'fill-orphan-1', 'orphan-entry-1', 'entry',
+                                'buy', 1.0, 1.0, 0.0, 0.0, '2026-08-01T00:00:00+00:00', '{}')
+                        """,
+                        ("orphan-trade-1",),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO KRAKEN_RECONCILED_RESULTS
+                            (logical_trade_id, proposal_id, symbol, side, status, quantity,
+                             actual_entry, original_stop, target_price, reconciliation_confidence,
+                             updated_at, payload_json)
+                        VALUES (?, ?, 'XRPGBP', 'buy', 'holding', 1.0, 1.0, 0.9, 1.2, 0.9, ?, '{}')
+                        """,
+                        ("orphan-trade-1", "orphan-trade-1", "2026-08-01T00:00:00+00:00"),
+                    )
+
+            # No KRAKEN_AI_ORDER_OWNERSHIP row exists for this trade at all.
+            result = backfill_missing_managed_exits(db_path)
+            self.assertEqual(result["backfilled"], 1)
+            managed = open_managed_exits(db_path, "kraken")
+            self.assertEqual(len(managed), 1)
+            self.assertEqual(managed[0]["symbol"], "XRPGBP")
+            self.assertEqual(managed[0]["entry_order_id"], "orphan-entry-1")
+            self.assertAlmostEqual(managed[0]["entry_price"], 1.0)
 
     def test_open_ai_owned_trade_reports_unrealized_separately(self):
         with tempfile.TemporaryDirectory() as tmp:
