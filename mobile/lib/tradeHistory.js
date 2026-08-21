@@ -8,6 +8,87 @@ const { brokerKey, historyMoneyOrText } = require('./money');
 const { dateMs, formatPercent } = require('./datetime');
 const { notAvailable } = require('./notAvailable');
 const { parseMaybeJson } = require('./json');
+const { brokerCurrency } = require('./portfolioPosition');
+
+// 2026-08-21 Founder-reported bug: one real trade was rendering as three separate rows in
+// Trade History - Kraken's BROKER_TRADE_HISTORY logs a "filled" order-fill row and a separate,
+// less complete "closed" position-tracking row for the same underlying event (no symbol/side,
+// just quantity/price - see multi_broker.py's record_broker_trade_history, which allows this by
+// design via its UNIQUE(broker, external_id, status, updated_at) constraint), and the reconciled
+// performance-attribution table adds a third, fuller record of the same fill. There is no shared
+// foreign key across these tables to key a dedup off directly (the same gap this codebase already
+// documents for recommendation-to-trade matching), so this is a best-effort match on broker +
+// quantity + price + a short time window - a heuristic, not a guaranteed link, same tradeoff
+// already accepted elsewhere in this file's history.
+const DEDUPABLE_EVENT_TYPES = new Set(['performance_attribution', 'broker_trade', 'broker_fill', 'broker_order']);
+const DEDUP_WINDOW_MS = 30 * 60 * 1000;
+const DEDUP_QUANTITY_TOLERANCE = 0.001;
+const DEDUP_PRICE_TOLERANCE = 0.005;
+
+// Reconciled performance-attribution outranks a raw broker row (it carries the authoritative
+// realised P&L); between two raw broker rows, the one with a real symbol outranks the bare
+// tracking row that has none.
+function transactionRank(item) {
+  if (item.event_type === 'performance_attribution') {
+    return 3;
+  }
+  return normalizeTradeRow(item).symbol ? 2 : 1;
+}
+
+function sameTrade(a, b) {
+  if (!DEDUPABLE_EVENT_TYPES.has(a.event_type) || !DEDUPABLE_EVENT_TYPES.has(b.event_type)) {
+    return false;
+  }
+  const na = normalizeTradeRow(a);
+  const nb = normalizeTradeRow(b);
+  if (na.broker !== nb.broker) {
+    return false;
+  }
+  // Never merge two genuinely different symbols just because quantity/price/timing happened
+  // to line up - only treat missing symbol (the bare tracking row) as compatible with anything.
+  if (na.symbol && nb.symbol && na.symbol !== nb.symbol) {
+    return false;
+  }
+  if (na.quantity === null || nb.quantity === null) {
+    return false;
+  }
+  const quantityDenominator = Math.max(Math.abs(na.quantity), Math.abs(nb.quantity), 1e-9);
+  if (Math.abs(na.quantity - nb.quantity) / quantityDenominator > DEDUP_QUANTITY_TOLERANCE) {
+    return false;
+  }
+  const priceA = na.exitPrice ?? na.price ?? na.entryPrice;
+  const priceB = nb.exitPrice ?? nb.price ?? nb.entryPrice;
+  if (priceA !== null && priceB !== null) {
+    const priceDenominator = Math.max(Math.abs(priceA), Math.abs(priceB), 1e-9);
+    if (Math.abs(priceA - priceB) / priceDenominator > DEDUP_PRICE_TOLERANCE) {
+      return false;
+    }
+  }
+  const timeA = dateMs(na.eventTime);
+  const timeB = dateMs(nb.eventTime);
+  if (!timeA || !timeB || Math.abs(timeA - timeB) > DEDUP_WINDOW_MS) {
+    return false;
+  }
+  return true;
+}
+
+// Collapses rows judged the same underlying trade into one, keeping the highest-ranked
+// (most complete/authoritative) version. Order-preserving on the first-seen slot so callers
+// that pre-sort newest-first keep that order for the surviving row.
+function dedupeTransactions(transactions) {
+  const kept = [];
+  (transactions || []).forEach((item) => {
+    const matchIndex = kept.findIndex((existing) => sameTrade(existing, item));
+    if (matchIndex === -1) {
+      kept.push(item);
+      return;
+    }
+    if (transactionRank(item) > transactionRank(kept[matchIndex])) {
+      kept[matchIndex] = item;
+    }
+  });
+  return kept;
+}
 
 function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
   const selected = brokerKey(selectedExchange);
@@ -63,10 +144,13 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
     raw: item,
   }));
   const alpacaRows = selected === 'all' || selected === 'alpaca' ? [...fills, ...orders] : [];
-  return [...managedExits, ...attribution, ...brokerTrades, ...auditRows, ...alpacaRows]
+  const merged = [...managedExits, ...attribution, ...brokerTrades, ...auditRows, ...alpacaRows]
     .filter((item) => item.created_at || item.symbol || item.event_type)
-    .sort((a, b) => dateMs(normalizeTradeRow(b).eventTime) - dateMs(normalizeTradeRow(a).eventTime))
-    .slice(0, limit);
+    .sort((a, b) => dateMs(normalizeTradeRow(b).eventTime) - dateMs(normalizeTradeRow(a).eventTime));
+  // Dedup runs on the FULL merged/sorted list, before the limit is applied - otherwise
+  // duplicate rows for recent trades could push a genuinely distinct older trade out of the
+  // returned window.
+  return dedupeTransactions(merged).slice(0, limit);
 }
 
 function describeLatestTrade(value) {
@@ -98,6 +182,12 @@ function titleCaseBroker(value) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+// AT-ED-017 (Founder-reported bug, 2026-08-21): "Daily P&L" was rendered with a plain $ sign
+// even while filtered to Kraken (GBP) - the same "one blended figure wearing the wrong symbol"
+// class of bug already fixed elsewhere on Current Position (lib/portfolioPosition.js's
+// *ByCurrency helpers). Grouped by real currency here too, per-broker via brokerCurrency, so a
+// Kraken-only view reads £ and an Alpaca-only view reads $, and an "All" view honestly shows
+// both real totals instead of summing GBP into a $ figure.
 function tradeHistorySummary(status, trades, selectedExchange) {
   const selected = brokerKey(selectedExchange);
   const brokerPanels = (status?.brokers || []).filter((broker) => (
@@ -105,20 +195,44 @@ function tradeHistorySummary(status, trades, selectedExchange) {
   ));
   const normalized = (trades || []).map(normalizeTradeRow);
   const todaysClosed = normalized.filter((item) => isToday(item.closedAt || item.eventTime) && terminalTradeStatus(item.status) && !isOpenTrade(item));
-  const realisedPnl = todaysClosed
-    .map((item) => numeric(item.profitLoss))
-    .filter((value) => value !== null)
-    .reduce((sum, value) => sum + value, 0);
-  const brokerDayPnl = brokerPanels
-    .map((broker) => numeric(broker.todays_pnl))
-    .filter((value) => value !== null)
-    .reduce((sum, value) => sum + value, 0);
+
+  const currenciesWithRealisedEvidence = new Set();
+  const realisedPnlByCurrency = {};
+  todaysClosed.forEach((item) => {
+    const value = numeric(item.profitLoss);
+    if (value === null) {
+      return;
+    }
+    const currency = brokerCurrency(item.broker);
+    currenciesWithRealisedEvidence.add(currency);
+    realisedPnlByCurrency[currency] = (realisedPnlByCurrency[currency] || 0) + value;
+  });
+  const brokerDayPnlByCurrency = {};
+  brokerPanels.forEach((broker) => {
+    const value = numeric(broker.todays_pnl);
+    if (value === null) {
+      return;
+    }
+    const currency = brokerCurrency(broker.broker || broker.label);
+    brokerDayPnlByCurrency[currency] = (brokerDayPnlByCurrency[currency] || 0) + value;
+  });
+  // Same per-currency fallback rule the original global boolean used, just applied
+  // independently per currency instead of gating the whole figure on one shared flag: a
+  // currency with real realised evidence today uses that sum, otherwise falls back to that
+  // currency's broker-reported day P&L.
+  const dailyPnlByCurrency = {};
+  new Set([...Object.keys(realisedPnlByCurrency), ...Object.keys(brokerDayPnlByCurrency)]).forEach((currency) => {
+    dailyPnlByCurrency[currency] = currenciesWithRealisedEvidence.has(currency)
+      ? realisedPnlByCurrency[currency]
+      : brokerDayPnlByCurrency[currency];
+  });
+
   const openPositions = brokerPanels
     .map((broker) => Number(broker.open_positions || 0))
     .filter(Number.isFinite)
     .reduce((sum, value) => sum + value, 0);
   return {
-    dailyPnl: todaysClosed.some((item) => numeric(item.profitLoss) !== null) ? realisedPnl : brokerDayPnl,
+    dailyPnlByCurrency,
     completedTradesToday: todaysClosed.length,
     openPositions,
   };
@@ -333,4 +447,7 @@ module.exports = {
   tradeHistorySummary,
   tradeKey,
   friendlyEvent,
+  dedupeTransactions,
+  sameTrade,
+  transactionRank,
 };

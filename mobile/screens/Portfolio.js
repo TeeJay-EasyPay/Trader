@@ -10,7 +10,7 @@ const { styles } = require('../styles');
 const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
 const { ReportPanel } = require('../components/ReportPanel');
-const { moneyOrText, historyMoneyOrText } = require('../lib/money');
+const { moneyOrText, historyMoneyOrText, formatByCurrency } = require('../lib/money');
 const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
 const { formatJsonText } = require('../lib/json');
@@ -179,7 +179,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
             <Button key={`history-${item}`} label={item} tone={selectedExchange === item ? 'primary' : 'neutral'} onPress={() => setSelectedExchange(item)} />
           ))}
         </View>
-        <Metric label="Daily P&L" value={moneyOrText(summary.dailyPnl)} />
+        <Metric label="Daily P&L" value={formatByCurrency(summary.dailyPnlByCurrency)} />
         <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
         {trades.slice(0, 20).map((item, index) => (
