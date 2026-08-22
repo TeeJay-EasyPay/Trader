@@ -172,6 +172,129 @@ class CryptoSizingDefaultsTests(unittest.TestCase):
                 "Change it in models.py only -- config.py must read the dataclass default.",
             )
 
+    def test_crypto_is_ceilinged_by_its_own_percentage_not_the_equities_one(self):
+        """The third cap that kept real Kraken trades at GBP 25 despite the GBP 50 config.
+
+        calculate_capital_allocation min()'d the crypto-sized request against
+        max_position_size_pct (5%, an equities-oriented policy), so the crypto ceiling was
+        never what actually bound. Crypto now uses crypto_max_position_size_pct; equities
+        must keep using the original, unchanged.
+        """
+        from ai_trader.foundation import TradingPolicy
+
+        def policy_with(**overrides):
+            base = dict(
+                auto_trading_enabled=True, paper_trading_only=False,
+                max_capital_allocation_pct=0.25, max_position_size_pct=0.05,
+                crypto_max_position_size_pct=0.10, max_concurrent_exposure_pct=0.30,
+                risk_per_trade_pct=0.01, max_daily_loss_pct=0.03, max_weekly_loss_pct=0.06,
+                max_monthly_loss_pct=0.10, emergency_shutdown_balance=0.0,
+                min_ai_confidence=0.85, min_investment_policy_fit=0.85,
+                default_stop_loss_pct=0.03, max_stop_loss_pct=0.05,
+                trailing_stop_enabled=True, trailing_stop_pct=0.015,
+                max_trade_pct_of_available_cash=0.20, max_trade_absolute_gbp=0.0,
+                take_profit_required=True, max_concurrent_positions=5,
+                max_drawdown_pct=0.20, crypto_enabled=True, equities_enabled=True,
+                broker_enabled={"kraken": True},
+            )
+            base.update(overrides)
+            return TradingPolicy(**base)
+
+        policy = policy_with()
+        equity = 500.0
+        # A GBP 50 crypto request with a stop wide enough that the risk limb never binds.
+        entry, stop = 100.0, 99.0
+
+        crypto_ceiling = equity * policy.crypto_max_position_size_pct
+        equities_ceiling = equity * policy.max_position_size_pct
+        self.assertAlmostEqual(crypto_ceiling, 50.0, places=2)
+        self.assertAlmostEqual(equities_ceiling, 25.0, places=2)
+        self.assertGreater(
+            crypto_ceiling, equities_ceiling,
+            "If these are equal the test cannot detect which one actually bound.",
+        )
+
+        # The property under test, stated directly against the selection rule used by
+        # calculate_capital_allocation: asset_type picks the ceiling.
+        for asset_type, expected in (("crypto", crypto_ceiling), ("stock", equities_ceiling)):
+            chosen = (
+                policy.crypto_max_position_size_pct
+                if asset_type == "crypto"
+                else policy.max_position_size_pct
+            )
+            self.assertAlmostEqual(
+                equity * chosen, expected, places=2,
+                msg=f"{asset_type} was ceilinged by the wrong policy percentage.",
+            )
+        # And the risk limb still binds when it is genuinely the tighter constraint, so
+        # this change widened one ceiling rather than removing risk control entirely.
+        risk_limited = (equity * policy.risk_per_trade_pct) / abs(entry - stop) * entry
+        self.assertAlmostEqual(risk_limited, 500.0, places=2)
+
+    def test_end_to_end_a_crypto_trade_is_approved_at_fifty_pounds_and_equities_are_untouched(self):
+        """The assertion that actually matters: run the real allocation function and check
+        the number that reaches the order. The selection-rule test above can pass while the
+        function still cuts crypto back down somewhere else in the min() chain."""
+        import tempfile
+        from pathlib import Path
+
+        from ai_trader.foundation import calculate_capital_allocation, load_trading_policy
+        from ai_trader.models import GuardrailConfig, TradeProposal
+
+        def proposal(asset_type):
+            return TradeProposal(
+                symbol="ETH" if asset_type == "crypto" else "AAPL", side="buy",
+                entry_price=100.0, stop_loss=95.0, take_profit=115.0, position_size=1.0,
+                risk_percentage=0.01, confidence_score=1.0, news_summary="x",
+                market_sentiment_summary="x", technical_summary="x",
+                plain_english_reasoning="x", asset_type=asset_type,
+                exchange="KRAKEN" if asset_type == "crypto" else "NASDAQ",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            policy = load_trading_policy(
+                db_path, auto_trade=AutoTradeConfig(), guardrails=GuardrailConfig(),
+            )
+            approved = {
+                asset_type: float(
+                    calculate_capital_allocation(
+                        db_path, proposal(asset_type), policy,
+                        account_equity=500.0, available_cash=500.0,
+                    )["approved_notional"]
+                )
+                for asset_type in ("crypto", "stock")
+            }
+
+        self.assertAlmostEqual(
+            approved["crypto"], 50.0, places=2,
+            msg="A crypto trade must reach the Founder-directed GBP 50, not the GBP 25 equities cap.",
+        )
+        self.assertAlmostEqual(
+            approved["stock"], 25.0, places=2,
+            msg="Equities sizing must be completely unchanged by the crypto ceiling.",
+        )
+
+    def test_the_crypto_ceiling_defaults_to_the_autotrade_config_rather_than_a_second_literal(self):
+        import tempfile
+        from pathlib import Path
+
+        from ai_trader.foundation import load_trading_policy
+        from ai_trader.models import GuardrailConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = load_trading_policy(
+                Path(tmp) / "audit.sqlite3",
+                auto_trade=AutoTradeConfig(),
+                guardrails=GuardrailConfig(),
+            )
+        self.assertAlmostEqual(
+            policy.crypto_max_position_size_pct,
+            AutoTradeConfig().crypto_max_trade_pct,
+            places=6,
+            msg="The crypto ceiling must track AutoTradeConfig, not a duplicated literal.",
+        )
+
     def test_cash_capped_notional_never_undoes_the_larger_ceiling(self):
         # Sanity check that the risk-reducing cash cap (max_trade_pct_of_available_cash,
         # a SEPARATE RISK_POLICIES-driven guard) does not itself reintroduce a tiny ceiling

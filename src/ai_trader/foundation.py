@@ -300,6 +300,11 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     "maximum_weekly_loss_pct": (0.06, "float", "Weekly loss shutdown threshold."),
     "maximum_monthly_loss_pct": (0.10, "float", "Monthly loss shutdown threshold."),
     "emergency_shutdown_balance": (0.0, "float", "Minimum equity before emergency shutdown."),
+    # 2026-08-22, Founder-directed: a percentage size guardrail per asset class, so crypto
+    # is not capped by the equities ceiling. Seeds at 10% (= GBP 50 on a GBP 500 Kraken
+    # allocation). Note this default only seeds a NEW row -- if it is ever changed here,
+    # an already-seeded deployment needs an explicit UPDATE via /admin/set-risk-policy.
+    "crypto_maximum_position_size_pct": (0.10, "float", "Maximum share of the crypto allocation in one crypto trade."),
     "default_stop_loss_pct": (0.03, "float", "Default stop loss distance."),
     "maximum_stop_loss_pct": (0.05, "float", "Maximum permitted stop loss distance."),
     # 2026-08-19: Founder approved native (Kraken-side) trailing stops so a stop-loss
@@ -349,6 +354,13 @@ class TradingPolicy:
     paper_trading_only: bool
     max_capital_allocation_pct: float
     max_position_size_pct: float
+    # 2026-08-22, Founder-directed: crypto gets its own percentage ceiling instead of
+    # sharing the equities one. max_position_size_pct (5%) was silently overriding the
+    # dedicated crypto sizing knob, capping every Kraken trade at GBP 25 no matter what
+    # crypto_max_trade_pct said -- the "limits must move together" trap again. Kept as a
+    # real RISK_POLICIES value (not a hardcoded constant) so it stays tunable live, exactly
+    # like the equities ceiling beside it.
+    crypto_max_position_size_pct: float
     max_concurrent_exposure_pct: float
     risk_per_trade_pct: float
     max_daily_loss_pct: float
@@ -376,6 +388,7 @@ class TradingPolicy:
             "paper_trading_only": self.paper_trading_only,
             "max_capital_allocation_pct": self.max_capital_allocation_pct,
             "max_position_size_pct": self.max_position_size_pct,
+            "crypto_max_position_size_pct": self.crypto_max_position_size_pct,
             "max_concurrent_exposure_pct": self.max_concurrent_exposure_pct,
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "max_daily_loss_pct": self.max_daily_loss_pct,
@@ -453,6 +466,15 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         paper_trading_only=bool(getattr(guardrails, "paper_trading_only", True)),
         max_capital_allocation_pct=float(risk.get("maximum_capital_allocation_pct", 0.25)),
         max_position_size_pct=float(risk.get("maximum_position_size_pct", 0.05)),
+        # Falls back to AutoTradeConfig.crypto_max_trade_pct so the crypto ceiling has ONE
+        # authority: set it in models.py and it flows here, rather than a second literal
+        # drifting out of step (the exact bug fixed in config.py on 2026-08-22).
+        crypto_max_position_size_pct=float(
+            risk.get(
+                "crypto_maximum_position_size_pct",
+                getattr(auto_trade, "crypto_max_trade_pct", 0.10),
+            )
+        ),
         max_concurrent_exposure_pct=float(risk.get("maximum_concurrent_exposure_pct", 0.30)),
         risk_per_trade_pct=float(risk.get("risk_per_trade_pct", getattr(guardrails, "max_risk_per_trade_pct", 0.01))),
         max_daily_loss_pct=float(risk.get("maximum_daily_loss_pct", getattr(guardrails, "max_daily_loss_pct", 0.03))),
@@ -751,7 +773,17 @@ def calculate_capital_allocation(
 ) -> dict[str, Any]:
     p = proposal.normalized()
     requested_notional = max(0.0, p.entry_price * p.position_size)
-    max_position_notional = max(0.0, account_equity * policy.max_position_size_pct)
+    # 2026-08-22, Founder-directed: crypto is ceilinged by its own percentage, equities by
+    # theirs. Previously both used max_position_size_pct, so the crypto path requested its
+    # properly-sized notional (crypto_max_trade_pct of allocation) and then had it cut
+    # straight back down here -- every Kraken trade pinned to GBP 25 while the crypto
+    # config said GBP 50, with nothing reporting the disagreement.
+    position_size_pct = (
+        policy.crypto_max_position_size_pct
+        if p.asset_type == "crypto"
+        else policy.max_position_size_pct
+    )
+    max_position_notional = max(0.0, account_equity * position_size_pct)
     max_risk_amount = max(0.0, account_equity * policy.risk_per_trade_pct)
     per_unit_risk = abs(p.entry_price - p.stop_loss)
     risk_limited_qty = max_risk_amount / per_unit_risk if per_unit_risk > 0 else 0.0
