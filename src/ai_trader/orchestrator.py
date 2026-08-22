@@ -424,7 +424,14 @@ class InvestmentOrchestrator:
                     message=notes,
                     payload=order,
                 )
-                if selected.name == "kraken":
+                # 2026-08-22, Founder-directed: Alpaca joins this block so equities also get
+                # a managed exit and a native trailing stop. Previously it was Kraken-only,
+                # so Alpaca positions had only the fixed bracket stop from entry and no
+                # trailing protection at all -- the risk control that has to exist before
+                # leverage is turned on there. register_kraken_order_ownership below stays
+                # Kraken-only: it writes KRAKEN_AI_ORDER_OWNERSHIP, which is Kraken's
+                # reconciliation ledger and has no meaning for an Alpaca order.
+                if selected.name in {"kraken", "alpaca"}:
                     managed = record_managed_trade_exit(
                         self.db_path,
                         broker=selected.name,
@@ -438,17 +445,18 @@ class InvestmentOrchestrator:
                         payload={**order, "proposal_id": p.proposal_id, "entry_reason": p.plain_english_reasoning},
                         trailing_stop_pct=policy.trailing_stop_pct if policy.trailing_stop_enabled else None,
                     )
-                    register_kraken_order_ownership(
-                        self.db_path,
-                        broker_order_id=order_id,
-                        logical_trade_id=logical_trade_id,
-                        proposal_id=p.proposal_id,
-                        managed_exit_id=int(managed["managed_exit_id"]),
-                        order_role="entry",
-                        symbol=p.symbol,
-                        side=p.side,
-                    )
-                    _attach_kraken_native_trailing_stop(
+                    if selected.name == "kraken":
+                        register_kraken_order_ownership(
+                            self.db_path,
+                            broker_order_id=order_id,
+                            logical_trade_id=logical_trade_id,
+                            proposal_id=p.proposal_id,
+                            managed_exit_id=int(managed["managed_exit_id"]),
+                            order_role="entry",
+                            symbol=p.symbol,
+                            side=p.side,
+                        )
+                    _attach_native_trailing_stop(
                         self.db_path,
                         adapter=selected,
                         policy=policy,
@@ -624,7 +632,7 @@ def _order_request(proposal: TradeProposal, approved_notional: float) -> OrderRe
     )
 
 
-def _attach_kraken_native_trailing_stop(
+def _attach_native_trailing_stop(
     db_path: Path,
     *,
     adapter: Any,
@@ -675,17 +683,20 @@ def _attach_kraken_native_trailing_stop(
     native_order_id = str(native_stop.get("id") or native_stop.get("order_id") or "")
     if native_stop.get("status") in {"accepted", "submitted"} and native_order_id:
         record_native_stop_order_id(db_path, managed_exit_id, native_order_id)
-        register_kraken_order_ownership(
-            db_path,
-            broker_order_id=native_order_id,
-            logical_trade_id=logical_trade_id,
-            proposal_id=proposal.proposal_id,
-            managed_exit_id=managed_exit_id,
-            order_role="exit",
-            symbol=proposal.symbol,
-            side=exit_side,
-            source="native_trailing_stop_entry",
-        )
+        # Kraken-only: KRAKEN_AI_ORDER_OWNERSHIP is Kraken's reconciliation ledger and an
+        # Alpaca order id in it would be a permanently unmatchable row.
+        if getattr(adapter, "name", "") == "kraken":
+            register_kraken_order_ownership(
+                db_path,
+                broker_order_id=native_order_id,
+                logical_trade_id=logical_trade_id,
+                proposal_id=proposal.proposal_id,
+                managed_exit_id=managed_exit_id,
+                order_role="exit",
+                symbol=proposal.symbol,
+                side=exit_side,
+                source="native_trailing_stop_entry",
+            )
     else:
         record_seatbelt_event(
             db_path,

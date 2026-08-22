@@ -25,7 +25,7 @@ from ai_trader.multi_broker import open_managed_exits, record_managed_trade_exit
 from ai_trader.orchestrator import (
     InvestmentOrchestrator,
     OrchestratorContext,
-    _attach_kraken_native_trailing_stop,
+    _attach_native_trailing_stop,
     _kraken_min_order_floor_notional,
     _order_request,
     _snapshot_equity_basis_matches_context,
@@ -732,7 +732,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
     entry, not just software polling, so the stop-loss keeps working even if AI Trader's
     process is briefly down or Kraken is unreachable during heavy traffic.
 
-    Exercises _attach_kraken_native_trailing_stop directly rather than the full
+    Exercises _attach_native_trailing_stop directly rather than the full
     evaluate_recommendation pipeline -- it was pulled out specifically so these tests don't
     need a from-scratch test database to clear every unrelated governance gate (due
     diligence, investment score, crypto policy, reconciliation hold) the way every other
@@ -775,7 +775,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
                 trailing_stop_pct=policy.trailing_stop_pct,
             )
 
-            result = _attach_kraken_native_trailing_stop(
+            result = _attach_native_trailing_stop(
                 db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
                 logical_trade_id="logical-1", order=order, order_request=order_request,
                 managed_exit_id=int(managed["managed_exit_id"]),
@@ -802,7 +802,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
                 take_profit=52_000.0, payload={"proposal_id": crypto_proposal.proposal_id},
             )
 
-            result = _attach_kraken_native_trailing_stop(
+            result = _attach_native_trailing_stop(
                 db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
                 logical_trade_id="logical-1", order=order, order_request=order_request,
                 managed_exit_id=int(managed["managed_exit_id"]),
@@ -825,7 +825,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
                 trailing_stop_pct=policy.trailing_stop_pct,
             )
 
-            result = _attach_kraken_native_trailing_stop(
+            result = _attach_native_trailing_stop(
                 db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
                 logical_trade_id="logical-1", order=order, order_request=order_request,
                 managed_exit_id=int(managed["managed_exit_id"]),
@@ -848,7 +848,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
                 trailing_stop_pct=policy.trailing_stop_pct,
             )
 
-            result = _attach_kraken_native_trailing_stop(
+            result = _attach_native_trailing_stop(
                 db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
                 logical_trade_id="logical-1", order=order, order_request=order_request,
                 managed_exit_id=int(managed["managed_exit_id"]),
@@ -871,7 +871,7 @@ class KrakenNativeTrailingStopEntryTests(unittest.TestCase):
                 trailing_stop_pct=policy.trailing_stop_pct,
             )
 
-            result = _attach_kraken_native_trailing_stop(
+            result = _attach_native_trailing_stop(
                 db_path, adapter=adapter, policy=policy, proposal=crypto_proposal,
                 logical_trade_id="logical-1", order=order, order_request=order_request,
                 managed_exit_id=int(managed["managed_exit_id"]),

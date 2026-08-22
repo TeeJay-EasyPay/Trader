@@ -115,6 +115,45 @@ class AlpacaBrokerAdapter:
             take_profit=order_request.take_profit,
         )
 
+    def place_trailing_stop_order(self, order_request: OrderRequest, trailing_pct: float) -> dict[str, Any]:
+        """Native Alpaca trailing stop, so the exit lives on Alpaca's book, not in our loop.
+
+        Founder-directed 2026-08-22, as the risk control that must exist BEFORE leverage is
+        enabled on this account. Same reasoning as the Kraken equivalent: a software-side
+        trailing stop in monitor_managed_exits can only act while this process is up and the
+        broker is reachable, which is exactly when a leveraged position most needs an exit.
+
+        Alpaca expresses this as type="trailing_stop" with trail_percent, and it must be
+        good-til-cancelled -- a "day" exit leg is the 2026-08-12 CSL incident, where both
+        protective legs expired at the close on the day they were placed and a real position
+        then sat unprotected for over a month.
+        """
+        if trailing_pct <= 0:
+            return {"status": "rejected", "broker": self.name, "reason": "trailing_pct_invalid"}
+        quantity = float(order_request.quantity or 0)
+        if quantity <= 0:
+            return {"status": "rejected", "broker": self.name, "reason": "quantity_invalid"}
+        payload = {
+            "symbol": order_request.symbol.upper(),
+            "qty": str(quantity),
+            "side": order_request.side.lower(),
+            "type": "trailing_stop",
+            # Alpaca takes a percentage, not a fraction: 0.015 -> "1.5".
+            "trail_percent": f"{trailing_pct * 100:g}",
+            "time_in_force": "gtc",
+        }
+        if order_request.client_order_id:
+            payload["client_order_id"] = str(order_request.client_order_id)
+        try:
+            result = self.client._request("POST", "/v2/orders", payload=payload)
+        except Exception as exc:  # noqa: BLE001 - must never lose an entry that already filled
+            return {"status": "attach_failed", "broker": self.name, "reason": str(exc)}
+        order_id = str((result or {}).get("id") or "")
+        if not order_id:
+            return {"status": "attach_failed", "broker": self.name, "reason": "no_order_id_returned", "raw": result}
+        # "accepted" is the status the orchestrator's attach hook checks for.
+        return {"status": "accepted", "broker": self.name, "id": order_id, "raw": result}
+
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         self.client._request("DELETE", f"/v2/orders/{order_id}")
         return {"id": order_id, "status": "cancel_requested"}
