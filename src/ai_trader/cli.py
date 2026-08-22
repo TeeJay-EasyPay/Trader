@@ -559,6 +559,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.dispatch_pending_push_notifications()
     if job_name == "strategy-lab-refresh":
         return service.refresh_strategy_lab()
+    if job_name == "crypto-universe-refresh":
+        return service.refresh_crypto_universe()
     if job_name == "crypto-candle-refresh":
         return service.refresh_crypto_candle_history()
     if job_name == "forecast-refresh":
@@ -946,6 +948,15 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     if not settings.worker_research_enabled:
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
+    # 2026-08-22: this job existed only as an IntervalWorker inside the API process, and
+    # hosted production runs the API with AI_TRADER_DISABLE_BACKGROUND_WORKERS set -- so it
+    # had never actually run anywhere. Without it CRYPTO_MASTER is never populated from the
+    # live public universe, and crypto-research silently falls back to the handful of pairs
+    # in KRAKEN_ALLOWED_PAIRS. Confirmed live: 33 of the last 50 notifications were that
+    # "approved-pair fallback", with research examining 9 symbols an hour and producing
+    # essentially zero ideas. Listed BEFORE crypto-research so that on any cycle where both
+    # are due, the shopping list is refreshed before research reads it.
+    due.append(("crypto-universe-refresh", _time_bucket(now, research_seconds)))
     due.append(("crypto-research", _time_bucket(now, research_seconds)))
     # Phase 1 of the CIO-level forecasting build (2026-08-20): real Kraken OHLC candle
     # ingestion. Crypto-only, hourly, on a plain UTC clock like crypto-research above

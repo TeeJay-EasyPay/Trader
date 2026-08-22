@@ -282,3 +282,43 @@ class RefreshCryptoCandleHistoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CryptoUniverseRefreshJobTests(unittest.TestCase):
+    """2026-08-22: the crypto universe refresh existed ONLY as an IntervalWorker inside the
+    API process, and hosted production runs the API with AI_TRADER_DISABLE_BACKGROUND_WORKERS
+    set -- so it had never actually run anywhere.
+
+    Without it CRYPTO_MASTER is never populated from the live public universe, and
+    crypto-research silently falls back to whatever is in KRAKEN_ALLOWED_PAIRS. Confirmed
+    live: 33 of the last 50 notifications were that "approved-pair fallback", with research
+    examining 9 symbols an hour and producing essentially zero trade ideas.
+    """
+
+    def test_run_named_job_dispatches_crypto_universe_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            # Never make a real CoinGecko call from a unit test.
+            with patch.object(service, "refresh_crypto_universe", return_value={"inserted": 7}) as fake:
+                result = _run_named_job(service, "crypto-universe-refresh", limit=0)
+            fake.assert_called_once()
+            self.assertEqual(result["inserted"], 7)
+
+    def test_the_worker_schedules_it_including_at_weekends(self):
+        """Crypto trades 24/7, so this must sit above the NYSE weekday gate like its
+        sibling crypto jobs -- a universe that only refreshes on weekdays would leave the
+        weekend running on a stale shopping list."""
+        settings = settings_for(tempfile.mkdtemp())
+        saturday = datetime(2026, 8, 22, 12, 0, tzinfo=ZoneInfo("UTC"))
+        due = _due_worker_jobs(settings, now=saturday)
+        self.assertIn("crypto-universe-refresh", [name for name, _ in due])
+
+    def test_it_is_scheduled_before_research_so_the_list_is_fresh_when_research_reads_it(self):
+        settings = settings_for(tempfile.mkdtemp())
+        saturday = datetime(2026, 8, 22, 12, 0, tzinfo=ZoneInfo("UTC"))
+        names = [name for name, _ in _due_worker_jobs(settings, now=saturday)]
+        self.assertLess(
+            names.index("crypto-universe-refresh"), names.index("crypto-research"),
+            "Research reads the universe the refresh writes, so on a cycle where both are "
+            "due the refresh has to go first or research reads yesterday's list.",
+        )
