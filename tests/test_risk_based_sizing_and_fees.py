@@ -186,7 +186,8 @@ class CryptoSizingDefaultsTests(unittest.TestCase):
             base = dict(
                 auto_trading_enabled=True, paper_trading_only=False,
                 max_capital_allocation_pct=0.25, max_position_size_pct=0.05,
-                crypto_max_position_size_pct=0.10, max_concurrent_exposure_pct=0.30,
+                crypto_max_position_size_pct=0.10, equities_leverage_multiplier=1.0,
+                max_concurrent_exposure_pct=0.30,
                 risk_per_trade_pct=0.01, max_daily_loss_pct=0.03, max_weekly_loss_pct=0.06,
                 max_monthly_loss_pct=0.10, emergency_shutdown_balance=0.0,
                 min_ai_confidence=0.85, min_investment_policy_fit=0.85,

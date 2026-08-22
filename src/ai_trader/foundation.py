@@ -305,6 +305,10 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     # allocation). Note this default only seeds a NEW row -- if it is ever changed here,
     # an already-seeded deployment needs an explicit UPDATE via /admin/set-risk-policy.
     "crypto_maximum_position_size_pct": (0.10, "float", "Maximum share of the crypto allocation in one crypto trade."),
+    # Seeds OFF at 1.0. Turning leverage on is a deliberate act via /admin/set-risk-policy,
+    # never something a deploy switches on quietly -- and it does nothing unless trailing
+    # stops are enabled, since the trailing stop is what bounds the loss it creates.
+    "equities_leverage_multiplier": (1.0, "float", "Leverage multiplier for equities. 1.0 is cash-only."),
     "default_stop_loss_pct": (0.03, "float", "Default stop loss distance."),
     "maximum_stop_loss_pct": (0.05, "float", "Maximum permitted stop loss distance."),
     # 2026-08-19: Founder approved native (Kraken-side) trailing stops so a stop-loss
@@ -361,6 +365,11 @@ class TradingPolicy:
     # real RISK_POLICIES value (not a hardcoded constant) so it stays tunable live, exactly
     # like the equities ceiling beside it.
     crypto_max_position_size_pct: float
+    # 2026-08-22, Founder-directed: leverage for the Alpaca equities track. 1.0 means off
+    # (cash-only), which is the default and what crypto always uses -- Kraken here is spot.
+    # Alpaca already reports ~4x buying power against equity, so this decides how much of
+    # that the AI is allowed to use, rather than granting anything new.
+    equities_leverage_multiplier: float
     max_concurrent_exposure_pct: float
     risk_per_trade_pct: float
     max_daily_loss_pct: float
@@ -389,6 +398,7 @@ class TradingPolicy:
             "max_capital_allocation_pct": self.max_capital_allocation_pct,
             "max_position_size_pct": self.max_position_size_pct,
             "crypto_max_position_size_pct": self.crypto_max_position_size_pct,
+            "equities_leverage_multiplier": self.equities_leverage_multiplier,
             "max_concurrent_exposure_pct": self.max_concurrent_exposure_pct,
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "max_daily_loss_pct": self.max_daily_loss_pct,
@@ -475,6 +485,7 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
                 getattr(auto_trade, "crypto_max_trade_pct", 0.10),
             )
         ),
+        equities_leverage_multiplier=float(risk.get("equities_leverage_multiplier", 1.0)),
         max_concurrent_exposure_pct=float(risk.get("maximum_concurrent_exposure_pct", 0.30)),
         risk_per_trade_pct=float(risk.get("risk_per_trade_pct", getattr(guardrails, "max_risk_per_trade_pct", 0.01))),
         max_daily_loss_pct=float(risk.get("maximum_daily_loss_pct", getattr(guardrails, "max_daily_loss_pct", 0.03))),
@@ -763,6 +774,35 @@ def _bool_env(key: str) -> bool:
     return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
+MAX_PERMITTED_LEVERAGE = 4.0
+
+
+def effective_leverage(policy: Any, asset_type: str) -> float:
+    """How much leverage this trade may actually use. 1.0 means cash-only.
+
+    Three deliberate refusals, Founder-directed 2026-08-22:
+
+    1. CRYPTO IS NEVER LEVERAGED. Kraken here is a spot account holding real money; the
+       leverage decision was made for the Alpaca equities learning track only.
+    2. NO LEVERAGE WITHOUT A TRAILING STOP. The Founder's own framing was leverage "capping
+       losses with active trailing stops" -- so the stop is a precondition, not a companion.
+       If trailing stops are off, leverage silently reverting to 1.0 is the safe failure.
+    3. HARD CEILING. Clamped to MAX_PERMITTED_LEVERAGE regardless of what the policy row
+       says, so a fat-fingered value cannot quietly authorise unlimited exposure.
+    """
+    if str(asset_type or "").lower() == "crypto":
+        return 1.0
+    if not getattr(policy, "trailing_stop_enabled", False):
+        return 1.0
+    try:
+        requested = float(getattr(policy, "equities_leverage_multiplier", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+    if requested <= 1.0:
+        return 1.0
+    return min(requested, MAX_PERMITTED_LEVERAGE)
+
+
 def calculate_capital_allocation(
     db_path: Path,
     proposal: TradeProposal,
@@ -783,7 +823,8 @@ def calculate_capital_allocation(
         if p.asset_type == "crypto"
         else policy.max_position_size_pct
     )
-    max_position_notional = max(0.0, account_equity * position_size_pct)
+    leverage = effective_leverage(policy, p.asset_type)
+    max_position_notional = max(0.0, account_equity * position_size_pct * leverage)
     max_risk_amount = max(0.0, account_equity * policy.risk_per_trade_pct)
     per_unit_risk = abs(p.entry_price - p.stop_loss)
     risk_limited_qty = max_risk_amount / per_unit_risk if per_unit_risk > 0 else 0.0
@@ -800,9 +841,13 @@ def calculate_capital_allocation(
     # recorded ceiling reflects the true policy limit. Strictly reducing -- it can only
     # lower an already-approved size. `available_cash` falls back to account_equity when a
     # caller has no separate cash figure, which reproduces today's behaviour exactly.
+    # The cash cap scales with leverage too, otherwise it would re-impose a cash-only
+    # ceiling and silently cancel the leverage granted above. This mirrors how a broker
+    # actually works: buying power IS cash x multiplier (Alpaca reports ~4x against this
+    # account's equity), so borrowing capacity is what the trade is sized against.
     approved_notional = cash_capped_notional(
         approved_notional=approved_notional,
-        available_cash=account_equity if available_cash is None else available_cash,
+        available_cash=(account_equity if available_cash is None else available_cash) * leverage,
         max_pct_of_available_cash=policy.max_trade_pct_of_available_cash,
         max_absolute_gbp=policy.max_trade_absolute_gbp,
     )
