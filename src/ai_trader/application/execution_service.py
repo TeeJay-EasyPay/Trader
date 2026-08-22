@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..broker_adapters import _kraken_last_price, _kraken_pair
 from ..config import Settings
+from ..guardrails import us_equity_market_hours_between
 from ..models import AccountContext, OrderRequest, TradeProposal, utc_now_iso
 from ..multi_broker import (
     acquire_order_intent_lock,
@@ -46,7 +47,7 @@ def _parse_datetime(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:
+def _recommendation_freshness(created_at: str | None, confidence: Any, broker: str | None = None) -> dict[str, Any]:
     if not created_at:
         return {"status": "Not available", "expires_at": None, "note": "Generated time is not available."}
     generated_at = _parse_datetime(created_at)
@@ -59,11 +60,23 @@ def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[s
         lifetime = timedelta(hours=12)
     else:
         lifetime = timedelta(hours=24)
-    expires_at = generated_at + lifetime
     now = datetime.now(timezone.utc)
-    if now > expires_at:
+    # 2026-08-22: equities age only while their market is OPEN. Wall-clock ageing meant a
+    # high-confidence idea (4h life -- the shortest, and the only band auto-trade accepts at
+    # min_confidence 0.85) generated late in a session or overnight was expired before the
+    # next open and could never be acted on. Confirmed live: all 40 equity recommendations
+    # read "Expired", with no Alpaca fill since 12 Aug. Crypto is unchanged: it trades
+    # continuously, so wall clock already IS its market time.
+    ages_only_when_market_open = str(broker or "").strip().lower() not in {"", "kraken"}
+    if ages_only_when_market_open:
+        elapsed = us_equity_market_hours_between(generated_at, now)
+        expires_at = generated_at + lifetime
+    else:
+        elapsed = now - generated_at
+        expires_at = generated_at + lifetime
+    if elapsed > lifetime:
         status = "Expired"
-    elif now > generated_at + (lifetime / 2):
+    elif elapsed > (lifetime / 2):
         status = "Stale"
     else:
         status = "Fresh"
@@ -167,7 +180,7 @@ class ExecutionService:
         if not proposal_id:
             return {"status": "rejected", "message": "proposal_id is required."}
         row = self._query_executor.row(
-            "SELECT payload_json, created_at, ai_confidence FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
+            "SELECT payload_json, created_at, ai_confidence, broker FROM trade_audit WHERE proposal_id = ? AND event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1",
             (str(proposal_id),),
         )
         if not row:
@@ -175,7 +188,7 @@ class ExecutionService:
             if symbol:
                 row = self._query_executor.row(
                     """
-                    SELECT payload_json, created_at, ai_confidence, proposal_id
+                    SELECT payload_json, created_at, ai_confidence, proposal_id, broker
                     FROM trade_audit
                     WHERE UPPER(symbol) = UPPER(?) AND event_type = 'agent_proposal'
                     ORDER BY created_at DESC, id DESC LIMIT 1
@@ -189,7 +202,7 @@ class ExecutionService:
                     "status": "rejected",
                     "message": "Proposal not found in the production database. Refresh recommendations, then try the latest card again.",
                 }
-        freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+        freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"], row["broker"])
         if freshness["status"] == "Expired":
             return {"status": "blocked", "message": "Recommendation has expired. Run analysis again before execution.", "freshness": freshness}
         payload = json.loads(row["payload_json"])
@@ -319,7 +332,7 @@ class ExecutionService:
             params.append(broker_filter)
         rows = self._query_executor.rows(
             f"""
-            SELECT ta.proposal_id, ta.created_at, ta.ai_confidence,
+            SELECT ta.proposal_id, ta.created_at, ta.ai_confidence, ta.broker,
                    execution_guardrails_passed, validation_result, symbol
             FROM trade_audit ta
             WHERE ta.event_type = 'agent_proposal' AND ta.created_at >= ? {broker_clause}
@@ -353,7 +366,7 @@ class ExecutionService:
             if proposal_id in seen:
                 continue
             seen.add(proposal_id)
-            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"], row["broker"])
             confidence = safe_score(row["ai_confidence"]) or 0.0
             if confidence < self.settings.auto_trade.min_confidence:
                 skipped.append({

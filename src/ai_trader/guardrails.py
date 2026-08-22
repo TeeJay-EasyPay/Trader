@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
@@ -79,6 +79,46 @@ def validate_trade_proposal(
         failures.append("outside_regular_trading_hours")
 
     return ValidationResult(passed=not failures, failures=failures)
+
+
+def us_equity_market_hours_between(start: datetime, end: datetime) -> timedelta:
+    """How much US equity TRADING time separates two instants.
+
+    2026-08-22: equity recommendations were expiring by wall clock. A high-confidence idea
+    gets a 4-hour life, but the US market is shut ~73% of the week, so anything generated
+    late in a session -- or at all overnight or at a weekend -- was dead before the next
+    open and could never be acted on. Confirmed live: all 40 equity recommendations read
+    "Expired. Run new analysis before execution." and Alpaca had not filled since 12 Aug.
+
+    Ageing an equity idea only while its market is actually open is the honest measure:
+    4 hours of life should mean 4 hours in which the trade could genuinely have been
+    placed. Crypto is unaffected -- it trades continuously, so wall clock IS market time.
+
+    Ignores exchange holidays (no holiday calendar exists in this codebase), which errs
+    toward keeping a recommendation alive very slightly longer -- never toward acting on a
+    stale one, since the trading-hours guardrail still blocks execution on a closed market.
+    """
+    if end <= start:
+        return timedelta(0)
+    # A span this long is expired under every lifetime the caller can supply; bounded so a
+    # far-future or corrupt timestamp cannot spin this loop.
+    if (end - start) > timedelta(days=30):
+        return timedelta(days=30)
+    eastern = ZoneInfo("America/New_York")
+    begin = start.astimezone(eastern)
+    finish = end.astimezone(eastern)
+    total = timedelta(0)
+    day = begin.date()
+    while day <= finish.date():
+        if day.weekday() < 5:
+            session_open = datetime.combine(day, time(9, 30), tzinfo=eastern)
+            session_close = datetime.combine(day, time(16, 0), tzinfo=eastern)
+            overlap_start = max(begin, session_open)
+            overlap_end = min(finish, session_close)
+            if overlap_end > overlap_start:
+                total += overlap_end - overlap_start
+        day += timedelta(days=1)
+    return total
 
 
 def is_us_equity_trading_hours(now: datetime | None = None) -> bool:

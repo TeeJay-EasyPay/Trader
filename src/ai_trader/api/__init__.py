@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 from ..application.administration_service import AdministrationService
+from ..guardrails import us_equity_market_hours_between
 from ..application.broker_service import BrokerService
 from ..application.execution_service import ExecutionService
 from ..application.founder_experience_service import FounderExperienceService
@@ -1047,7 +1048,7 @@ class LocalApiService:
             if row["proposal_id"] in seen:
                 continue
             seen.add(row["proposal_id"])
-            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"])
+            freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"], row["broker"])
             already_executed = row["proposal_id"] in already_executed_ids
             guardrails_passed = bool(row["execution_guardrails_passed"])
             guardrail_failures = _validation_failures(row["validation_result"])
@@ -2037,7 +2038,7 @@ def _kraken_trade_status_lines(context: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[str, Any]:
+def _recommendation_freshness(created_at: str | None, confidence: Any, broker: str | None = None) -> dict[str, Any]:
     if not created_at:
         return {"status": "Not available", "expires_at": None, "note": "Generated time is not available."}
     generated_at = _parse_datetime(created_at)
@@ -2050,11 +2051,23 @@ def _recommendation_freshness(created_at: str | None, confidence: Any) -> dict[s
         lifetime = timedelta(hours=12)
     else:
         lifetime = timedelta(hours=24)
-    expires_at = generated_at + lifetime
     now = datetime.now(timezone.utc)
-    if now > expires_at:
+    # 2026-08-22: equities age only while their market is OPEN. Wall-clock ageing meant a
+    # high-confidence idea (4h life -- the shortest, and the only band auto-trade accepts at
+    # min_confidence 0.85) generated late in a session or overnight was expired before the
+    # next open and could never be acted on. Confirmed live: all 40 equity recommendations
+    # read "Expired", with no Alpaca fill since 12 Aug. Crypto is unchanged: it trades
+    # continuously, so wall clock already IS its market time.
+    ages_only_when_market_open = str(broker or "").strip().lower() not in {"", "kraken"}
+    if ages_only_when_market_open:
+        elapsed = us_equity_market_hours_between(generated_at, now)
+        expires_at = generated_at + lifetime
+    else:
+        elapsed = now - generated_at
+        expires_at = generated_at + lifetime
+    if elapsed > lifetime:
         status = "Expired"
-    elif now > generated_at + (lifetime / 2):
+    elif elapsed > (lifetime / 2):
         status = "Stale"
     else:
         status = "Fresh"
