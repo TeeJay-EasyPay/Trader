@@ -1111,8 +1111,15 @@ def alpaca_inactivity_diagnosis(db_path: Path) -> dict[str, Any]:
     initialize_always_on_schema(db_path)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
+        # 2026-08-22: the LIKE pattern must be a bound parameter, not inlined in the SQL.
+        # Inlined, Postgres' driver reads the '%A' of '%Alpaca%' as a format placeholder and
+        # raises "only '%s', '%b', '%t' are allowed as placeholders, got '%A'" -- which made
+        # this endpoint a hard 500 on hosted production. It only ever worked on SQLite, so
+        # the one diagnostic built to explain why Alpaca is not trading was itself broken
+        # everywhere it actually mattered. Binding it keeps the '%' out of the statement.
         last_research = conn.execute(
-            "SELECT * FROM RESEARCH_RUNS WHERE markets_reviewed LIKE '%Alpaca%' ORDER BY research_run_id DESC LIMIT 1"
+            "SELECT * FROM RESEARCH_RUNS WHERE markets_reviewed LIKE ? ORDER BY research_run_id DESC LIMIT 1",
+            ("%Alpaca%",),
         ).fetchone()
         last_proposal = conn.execute(
             "SELECT created_at, proposal_id, symbol, ai_confidence, validation_result FROM trade_audit WHERE event_type = 'agent_proposal' ORDER BY id DESC LIMIT 1"

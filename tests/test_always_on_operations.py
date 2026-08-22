@@ -520,6 +520,31 @@ class BrokerJobGroupConcurrencyTests(unittest.TestCase):
             self.assertEqual(diagnosis["expected_or_fault"], "operational_fault")
             self.assertIn("No Alpaca research records", diagnosis["plain_english"])
 
+    def test_no_sql_statement_inlines_a_percent_like_pattern(self):
+        """Guards a bug class the SQLite-backed test above structurally cannot catch.
+
+        alpaca_inactivity_diagnosis inlined "LIKE '%Alpaca%'" into its SQL. That is fine on
+        SQLite and a hard 500 on Postgres, whose driver reads the '%A' as a format
+        placeholder ("only '%s', '%b', '%t' are allowed as placeholders, got '%A'") -- so
+        the endpoint passed its own unit test while being broken in the only environment
+        that matters. Every LIKE pattern must be a bound parameter instead. Static check, so
+        it needs no Postgres and covers the whole package rather than this one call site.
+        """
+        import re
+        from pathlib import Path
+
+        source_root = Path(__file__).resolve().parents[1] / "src" / "ai_trader"
+        offenders = []
+        for path in source_root.rglob("*.py"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if re.search(r"""LIKE\s+['"]%""", line, re.IGNORECASE):
+                    offenders.append(f"{path.relative_to(source_root)}:{number}")
+        self.assertEqual(
+            offenders, [],
+            "Inlined LIKE '%...' pattern(s) found -- these raise a placeholder error on "
+            f"Postgres. Bind the pattern as a ? parameter instead: {offenders}",
+        )
+
     def test_postgres_backend_requires_url_and_falls_back_to_sqlite_without_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous_backend = os.environ.get("AI_TRADER_DATABASE_BACKEND")
