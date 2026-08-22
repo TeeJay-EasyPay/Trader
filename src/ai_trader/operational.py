@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS CRYPTO_ASSET_MASTER (
 
 QUALITATIVE_SCORES = {
     "excellent": 0.95,
+    # 2026-08-22: "strong" was missing entirely, so safe_score() returned None for it and
+    # the caller fell through to 0.0 -- meaning the 19 companies rated "Strong", the BEST
+    # rating in INVESTMENT_WATCHLIST, scored ZERO for investment philosophy fit while the 28
+    # merely "Good" ones scored 0.75. Confirmed live: SCCO/FCX/MLM (Strong) came back 0.0
+    # and MSFT/LULU/ISRG (Good) came back 0.75, against a 0.85 auto-trade threshold that
+    # neither could ever reach. Every Alpaca recommendation was blocked on
+    # "Investment philosophy fit is below 85%" as a direct result. Placed above "high" since
+    # Strong is the top label this dataset actually uses (Strong > Good > Moderate).
+    "strong": 0.9,
     "very high": 0.9,
     "high": 0.85,
     "good": 0.75,
