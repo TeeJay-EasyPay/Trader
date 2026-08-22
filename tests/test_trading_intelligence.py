@@ -398,3 +398,132 @@ class TradingIntelligenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AssetScopedLearningTests(unittest.TestCase):
+    """Founder-directed 2026-08-22: crypto (Kraken) and equities (Alpaca) are two SEPARATE
+    learning tracks. Alpaca exists to build equities competence for future Asia/Middle East/
+    Africa exchanges and will run leverage that crypto does not, so their statistics must
+    never be averaged together. Previously PERFORMANCE_INTELLIGENCE aggregated by
+    strategy_id alone, so one strategy traded on both sides reported a single win rate
+    blended across two unrelated return distributions.
+    """
+
+    STRATEGY = "trend_following"
+
+    def _attribution(self, conn, proposal_id, asset_type, broker, profit_loss, symbol):
+        conn.execute(
+            """
+            INSERT INTO PERFORMANCE_ATTRIBUTION (
+                created_at, proposal_id, broker, symbol, asset_type, side,
+                entry_price, exit_price, quantity, profit_loss, opened_at,
+                closed_at, holding_period_seconds, entry_reason, exit_reason,
+                primary_factors_json
+            ) VALUES (?, ?, ?, ?, ?, 'buy', 100.0, ?, 1.0, ?, ?, ?, 3600, 'x', 'y', '{}')
+            """,
+            (
+                "2026-07-02T10:00:00+00:00", proposal_id, broker, symbol, asset_type,
+                100.0 + profit_loss, profit_loss,
+                "2026-07-02T09:00:00+00:00", "2026-07-02T10:00:00+00:00",
+            ),
+        )
+
+    def _seed_two_tracks(self, db_path):
+        """Same strategy, two asset classes, deliberately opposite outcomes: every crypto
+        trade wins, every equities trade loses. Any blending shows up immediately."""
+        from ai_trader.trading_intelligence import record_lifecycle_stage
+
+        cases = [
+            ("crypto", "kraken", "ETHGBP", [6.0, 4.0]),
+            ("stock", "alpaca", "AAPL", [-5.0, -3.0]),
+        ]
+        for asset_type, broker, symbol, pnls in cases:
+            for index, pnl in enumerate(pnls):
+                item = proposal(symbol=symbol, asset_type=asset_type)
+                record_lifecycle_stage(
+                    db_path, item, stage="closed", reason="Unit test closed trade.",
+                    broker=broker, strategy_id=self.STRATEGY,
+                )
+                with closing(sqlite3.connect(db_path)) as conn:
+                    with conn:
+                        self._attribution(conn, item.proposal_id, asset_type, broker, pnl, symbol)
+
+    def test_performance_metrics_are_reported_per_asset_class_not_blended(self):
+        from ai_trader.trading_intelligence import calculate_performance_metrics
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            initialize_multi_broker_schema(db_path)
+            initialize_trading_intelligence_schema(db_path)
+            self._seed_two_tracks(db_path)
+
+            crypto = calculate_performance_metrics(db_path, self.STRATEGY, "crypto")
+            equities = calculate_performance_metrics(db_path, self.STRATEGY, "stock")
+            blended = calculate_performance_metrics(db_path, self.STRATEGY)
+
+            self.assertEqual(crypto["sample_size"], 2)
+            self.assertEqual(equities["sample_size"], 2)
+            self.assertEqual(blended["sample_size"], 4, "Unscoped call must keep the old whole-strategy behaviour.")
+            self.assertEqual(crypto["win_rate"], 1.0, "Every crypto trade in this fixture won.")
+            self.assertEqual(equities["win_rate"], 0.0, "Every equities trade in this fixture lost.")
+            self.assertNotEqual(
+                crypto["win_rate"], blended["win_rate"],
+                "A blended figure is exactly what the two-track split exists to prevent.",
+            )
+
+    def test_a_refresh_writes_one_performance_row_per_asset_class(self):
+        from ai_trader.trading_intelligence import update_calibration_from_attribution
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            initialize_multi_broker_schema(db_path)
+            initialize_trading_intelligence_schema(db_path)
+            self._seed_two_tracks(db_path)
+
+            update_calibration_from_attribution(db_path)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT asset_type, sample_size, win_rate FROM PERFORMANCE_INTELLIGENCE "
+                    "WHERE strategy_id = ? ORDER BY asset_type",
+                    (self.STRATEGY,),
+                ).fetchall()
+
+            by_asset = {row[0]: row for row in rows}
+            self.assertIn("crypto", by_asset)
+            self.assertIn("stock", by_asset)
+            self.assertEqual(by_asset["crypto"][2], 1.0)
+            self.assertEqual(by_asset["stock"][2], 0.0)
+
+    def test_no_performance_row_is_invented_for_an_asset_the_strategy_never_traded(self):
+        from ai_trader.trading_intelligence import _strategy_asset_types
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            seed_due_diligence_context(db_path)
+            initialize_multi_broker_schema(db_path)
+            initialize_trading_intelligence_schema(db_path)
+
+            self.assertEqual(
+                _strategy_asset_types(db_path, self.STRATEGY), [],
+                "With no closed trades there must be no asset buckets, not a fabricated zero-sample row.",
+            )
+
+    def test_learning_proposals_carry_the_track_they_came_from(self):
+        from ai_trader.experience_engine import create_learning_proposal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            create_learning_proposal(
+                db_path, proposal_type="stop_distance", current_value=0.02,
+                proposed_value=0.015, evidence={"n": 40}, sample_size=40,
+                expected_impact="x", risks="y", rollback_plan="z", asset_type="crypto",
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                stored = conn.execute("SELECT asset_type FROM LEARNING_PROPOSALS").fetchone()
+            self.assertEqual(
+                stored[0], "crypto",
+                "A lesson from one track must not silently rewrite policy for the other.",
+            )

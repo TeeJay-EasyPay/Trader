@@ -256,12 +256,19 @@ class FounderExperienceService:
                 dict(row)
                 for row in self._query_executor.rows(
                     """
+                    -- 2026-08-22: grouped by strategy_id ALONE, which collapsed a
+                    -- strategy's crypto and equities rows into whichever was written last
+                    -- -- so one track's record could silently stand in for the other's.
+                    -- Grouping by (strategy_id, asset_type) keeps the two learning tracks
+                    -- as separate rows, which is what makes a cross-track comparison
+                    -- possible at all.
                     SELECT pi.*
                     FROM PERFORMANCE_INTELLIGENCE pi
                     JOIN (
-                        SELECT strategy_id, MAX(performance_id) AS performance_id
+                        SELECT strategy_id, COALESCE(asset_type, 'unknown') AS asset_type,
+                               MAX(performance_id) AS performance_id
                         FROM PERFORMANCE_INTELLIGENCE
-                        GROUP BY strategy_id
+                        GROUP BY strategy_id, COALESCE(asset_type, 'unknown')
                     ) latest ON latest.performance_id = pi.performance_id
                     ORDER BY COALESCE(pi.expectancy_r, pi.average_r, -999) DESC
                     LIMIT 12

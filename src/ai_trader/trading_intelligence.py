@@ -259,6 +259,17 @@ def initialize_trading_intelligence_schema(db_path: Path) -> None:
                 _ensure_column(conn, "TRADE_LIFECYCLE", "mae", "REAL")
                 _ensure_column(conn, "TRADE_LIFECYCLE", "mfe", "REAL")
                 _ensure_column(conn, "TRADE_LIFECYCLE", "holding_time_seconds", "REAL")
+                # 2026-08-22, Founder-directed: crypto (Kraken) and equities (Alpaca) are
+                # two SEPARATE learning tracks -- Alpaca exists to build equities competence
+                # for future Asia/Middle East/Africa exchanges, not to rehearse for crypto,
+                # and it will run leverage that crypto does not. Both tables aggregated by
+                # strategy_id alone, so any strategy used on both sides would blend two
+                # unrelated return distributions into one win rate. PERFORMANCE_ATTRIBUTION
+                # already records asset_type per trade; these carry it through so the
+                # aggregates stay per-track. A deliberate cross-track review can then
+                # compare them, which is impossible once they are pre-blended.
+                _ensure_column(conn, "PERFORMANCE_INTELLIGENCE", "asset_type", "TEXT")
+                _ensure_column(conn, "CONFIDENCE_CALIBRATION", "asset_type", "TEXT")
                 _seed_strategy_registry(conn)
         _INITIALIZED_SCHEMA_KEYS.add(key)
 
@@ -1258,6 +1269,30 @@ def _first_row_per_proposal(rows: list[Any]) -> dict[str, Any]:
     return result
 
 
+def _strategy_asset_types(db_path: Path, strategy_id: str) -> list[str]:
+    """Asset classes this strategy has REAL closed trades in, never a guess.
+
+    Returns [] when the strategy has no attribution rows at all, so no zero-sample
+    performance row is written for an asset it has never traded. Legacy rows written
+    before asset_type was populated group under 'unknown' rather than being dropped.
+    """
+    try:
+        with closing(connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT DISTINCT COALESCE(pa.asset_type, 'unknown') AS asset_type
+                FROM PERFORMANCE_ATTRIBUTION pa
+                LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
+                WHERE tl.strategy_id = ?
+                """,
+                (strategy_id,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return sorted(str(row["asset_type"]) for row in rows if row["asset_type"])
+
+
 def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
     initialize_trading_intelligence_schema(db_path)
     with closing(connect(db_path)) as conn:
@@ -1266,25 +1301,31 @@ def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
     refresh_rows = []
     for row in strategies:
         strategy_id = row["strategy_id"]
-        history = _strategy_history(db_path, strategy_id)
-        calibration = calculate_calibration_metrics(db_path, strategy_id)
-        perf = calculate_performance_metrics(db_path, strategy_id)
-        refresh_rows.append((strategy_id, history, calibration, perf))
+        # One row per asset class this strategy actually has closed trades in, so the
+        # crypto and equities tracks never share a win rate. Only asset classes with real
+        # attribution rows are emitted -- never a fabricated zero-sample row for an asset
+        # the strategy has never traded.
+        for asset_type in _strategy_asset_types(db_path, strategy_id):
+            history = _strategy_history(db_path, strategy_id, asset_type)
+            calibration = calculate_calibration_metrics(db_path, strategy_id)
+            perf = calculate_performance_metrics(db_path, strategy_id, asset_type)
+            refresh_rows.append((strategy_id, asset_type, history, calibration, perf))
     metrics_written = 0
     with closing(connect(db_path)) as conn:
         updated = 0
         with conn:
-            for strategy_id, history, calibration, perf in refresh_rows:
+            for strategy_id, asset_type, history, calibration, perf in refresh_rows:
                 conn.execute(
                     """
                     INSERT INTO CONFIDENCE_CALIBRATION (
-                        created_at, strategy_id, confidence_bucket, predicted_probability,
+                        created_at, strategy_id, asset_type, confidence_bucket, predicted_probability,
                         observed_win_rate, average_r, sample_size, calibration_note
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         utc_now_iso(),
                         strategy_id,
+                        asset_type,
                         "all",
                         calibration.get("mean_predicted_probability") or 0.0,
                         history.get("observed_win_rate"),
@@ -1296,15 +1337,16 @@ def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
                 conn.execute(
                     """
                     INSERT INTO PERFORMANCE_INTELLIGENCE (
-                        created_at, strategy_id, symbol, sample_size, win_rate,
+                        created_at, strategy_id, asset_type, symbol, sample_size, win_rate,
                         average_r, expectancy_r, profit_factor, max_drawdown_r,
                         average_holding_seconds, brier_score, calibration_error,
                         payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         utc_now_iso(),
                         strategy_id,
+                        asset_type,
                         None,
                         perf["sample_size"],
                         perf["win_rate"],
@@ -1638,20 +1680,42 @@ def calculate_calibration_metrics(db_path: Path, strategy_id: str) -> dict[str, 
     }
 
 
-def calculate_performance_metrics(db_path: Path, strategy_id: str) -> dict[str, Any]:
+def calculate_performance_metrics(db_path: Path, strategy_id: str, asset_type: str | None = None) -> dict[str, Any]:
+    """Performance for one strategy, optionally for ONE asset class only.
+
+    asset_type=None preserves the original blended behaviour for callers that genuinely
+    want a strategy's whole record. Passing an asset class keeps the crypto and equities
+    tracks separate (Founder-directed 2026-08-22) -- a strategy traded on both would
+    otherwise report one win rate averaged across two unrelated return distributions.
+    """
     try:
         with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT pa.*
-                FROM PERFORMANCE_ATTRIBUTION pa
-                LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
-                WHERE tl.strategy_id = ?
-                GROUP BY pa.attribution_id
-                """,
-                (strategy_id,),
-            ).fetchall()
+            if asset_type is None:
+                rows = conn.execute(
+                    """
+                    SELECT pa.*
+                    FROM PERFORMANCE_ATTRIBUTION pa
+                    LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
+                    WHERE tl.strategy_id = ?
+                    GROUP BY pa.attribution_id
+                    """,
+                    (strategy_id,),
+                ).fetchall()
+            else:
+                # COALESCE so pre-2026-08-22 rows, written before asset_type was populated,
+                # land in a visible 'unknown' bucket instead of silently vanishing from
+                # every per-asset aggregate.
+                rows = conn.execute(
+                    """
+                    SELECT pa.*
+                    FROM PERFORMANCE_ATTRIBUTION pa
+                    LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
+                    WHERE tl.strategy_id = ? AND COALESCE(pa.asset_type, 'unknown') = ?
+                    GROUP BY pa.attribution_id
+                    """,
+                    (strategy_id, asset_type),
+                ).fetchall()
     except sqlite3.OperationalError:
         rows = []
     pnls = [_float(row["profit_loss"]) or 0.0 for row in rows]
@@ -1730,20 +1794,33 @@ def _record_calibration_snapshot(conn: sqlite3.Connection, probability: dict[str
     )
 
 
-def _strategy_history(db_path: Path, strategy_id: str) -> dict[str, Any]:
+def _strategy_history(db_path: Path, strategy_id: str, asset_type: str | None = None) -> dict[str, Any]:
     try:
         with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT pa.profit_loss
-                FROM PERFORMANCE_ATTRIBUTION pa
-                LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
-                WHERE tl.strategy_id = ? OR ? = ''
-                GROUP BY pa.attribution_id
-                """,
-                (strategy_id, strategy_id),
-            ).fetchall()
+            if asset_type is None:
+                rows = conn.execute(
+                    """
+                    SELECT pa.profit_loss
+                    FROM PERFORMANCE_ATTRIBUTION pa
+                    LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
+                    WHERE tl.strategy_id = ? OR ? = ''
+                    GROUP BY pa.attribution_id
+                    """,
+                    (strategy_id, strategy_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT pa.profit_loss
+                    FROM PERFORMANCE_ATTRIBUTION pa
+                    LEFT JOIN TRADE_LIFECYCLE tl ON tl.proposal_id = pa.proposal_id
+                    WHERE (tl.strategy_id = ? OR ? = '')
+                      AND COALESCE(pa.asset_type, 'unknown') = ?
+                    GROUP BY pa.attribution_id
+                    """,
+                    (strategy_id, strategy_id, asset_type),
+                ).fetchall()
     except sqlite3.OperationalError:
         rows = []
     pnls = [_float(row["profit_loss"]) or 0.0 for row in rows]

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS LEARNING_PROPOSALS (
     proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
     proposal_type TEXT NOT NULL,
+    asset_type TEXT,
     current_value TEXT,
     proposed_value TEXT,
     evidence_json TEXT NOT NULL,
@@ -88,6 +89,12 @@ def initialize_experience_engine_schema(db_path: Path) -> None:
         with closing(connect(db_path)) as conn:
             with conn:
                 conn.executescript(EXPERIENCE_ENGINE_SCHEMA)
+                # 2026-08-22: added after LEARNING_PROPOSALS already existed in production,
+                # so it must be an ensure-column migration, not just a schema edit -- a
+                # CREATE TABLE IF NOT EXISTS never alters a table that is already there.
+                existing = {row[1] for row in conn.execute("PRAGMA table_info(LEARNING_PROPOSALS)")}
+                if "asset_type" not in existing:
+                    conn.execute("ALTER TABLE LEARNING_PROPOSALS ADD COLUMN asset_type TEXT")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_experience_symbol ON EXPERIENCE_RECORDS(symbol, strategy_id, regime_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_symbol ON POST_TRADE_REVIEWS(symbol, created_at)")
 
@@ -285,7 +292,15 @@ def create_learning_proposal(
     expected_impact: str,
     risks: str,
     rollback_plan: str,
+    asset_type: str | None = None,
 ) -> dict[str, Any]:
+    """asset_type scopes a proposal to one learning track (Founder-directed 2026-08-22).
+
+    Crypto (Kraken) and equities (Alpaca) learn separately -- Alpaca builds equities
+    competence for future Asia/Middle East/Africa exchanges and will run leverage that
+    crypto does not, so a lesson drawn from one must not silently rewrite policy for the
+    other. None means genuinely cross-cutting, not "unknown".
+    """
     initialize_experience_engine_schema(db_path)
     status = "Suggested"
     if sample_size < 30:
@@ -295,14 +310,15 @@ def create_learning_proposal(
             cursor = conn.execute(
                 """
                 INSERT INTO LEARNING_PROPOSALS (
-                    created_at, proposal_type, current_value, proposed_value,
+                    created_at, proposal_type, asset_type, current_value, proposed_value,
                     evidence_json, sample_size, expected_impact, risks,
                     rollback_plan, approval_status, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     utc_now_iso(),
                     proposal_type,
+                    asset_type,
                     str(current_value),
                     str(proposed_value),
                     json.dumps(evidence, sort_keys=True, default=str),
