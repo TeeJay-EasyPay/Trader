@@ -229,6 +229,44 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
     def __init__(self) -> None:
         super().__init__("kraken", ("KRAKEN_API_KEY",))
         self._pair_minimum_cache: dict[str, float | None] = {}
+        # Kraken's full pair list, fetched at most once per adapter instance. Pair listings
+        # do not change within a process lifetime, and this is only read by a diagnostic.
+        self._known_pairs_cache: set[str] | None = None
+
+    def unlistable_allowed_pairs(self) -> list[str] | None:
+        """Configured KRAKEN_ALLOWED_PAIRS entries that Kraken does not actually list.
+
+        2026-08-22: the Founder widened KRAKEN_ALLOWED_PAIRS from 3 pairs to 10, but four of
+        them -- BTCGBP (Kraken calls Bitcoin XBT), BNBGBP, TRXGBP, HBARGBP -- are not real
+        Kraken GBP pairs. Nothing anywhere said so, so 40% of the AI's search universe was
+        silently doing nothing and the widening delivered 6 tradeable coins instead of 10.
+
+        Returns [] when every configured pair is real, a list of the bad ones when not, and
+        None when the check itself could not run -- "could not check" must stay
+        distinguishable from "checked and everything is fine". Never raises: this is a
+        diagnostic, and it must not be able to break the broker panel it reports into.
+        """
+        allowed = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
+        if not allowed:
+            return []
+        if self._known_pairs_cache is None:
+            try:
+                data = self._public_request("/0/public/AssetPairs")
+                result = data.get("result") or {}
+                known: set[str] = set()
+                for key, info in result.items():
+                    if not isinstance(info, dict) or info.get("status") not in (None, "online"):
+                        continue
+                    known.add(str(key).upper())
+                    altname = info.get("altname")
+                    if altname:
+                        known.add(str(altname).upper())
+                self._known_pairs_cache = known or None
+            except Exception:  # noqa: BLE001 - a diagnostic must never break the panel
+                self._known_pairs_cache = None
+        if not self._known_pairs_cache:
+            return None
+        return sorted(pair for pair in allowed if pair.upper() not in self._known_pairs_cache)
 
     def pair_minimum_notional(self, pair: str, price: float) -> float | None:
         # 2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP is a single flat guess applied to

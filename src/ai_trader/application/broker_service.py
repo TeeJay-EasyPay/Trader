@@ -73,6 +73,21 @@ def _recent_unique_broker_events(
     return selected
 
 
+def _kraken_unlistable_allowed_pairs(adapter: Any) -> list[str] | None:
+    """Ask the adapter which configured pairs Kraken does not list, tolerating any adapter.
+
+    Kept defensive because broker_panels() runs against real and fake adapters alike, and a
+    diagnostic must never be the thing that breaks the panel it reports into.
+    """
+    checker = getattr(adapter, "unlistable_allowed_pairs", None)
+    if not callable(checker):
+        return None
+    try:
+        return checker()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _float_env(key: str, default: float) -> float:
     try:
         return float(os.getenv(key, str(default)))
@@ -682,6 +697,13 @@ class BrokerService:
                 "remaining_ai_trade_slots": max(0, max_open_trades - ai_managed_open_trades),
                 "buy_only_entries": buy_only_entries,
                 "allowed_pairs": allowed_pairs,
+                # 2026-08-22: four of ten configured pairs turned out not to exist on Kraken
+                # (BTCGBP/BNBGBP/TRXGBP/HBARGBP), silently costing 40% of the AI's search
+                # universe with nothing reporting it. None means the check could not run,
+                # which must stay distinguishable from an empty list meaning "all real".
+                "allowed_pairs_not_on_kraken": _kraken_unlistable_allowed_pairs(
+                    self.orchestrator.adapters.get("kraken")
+                ),
                 "notes": [
                     "New Kraken entries are capped by trading allocation, max order size, allowed pairs, and AI Trader-managed open-trade limit.",
                     "Existing Kraken holdings are reported separately and do not count against the AI Trader-managed open-trade limit.",
