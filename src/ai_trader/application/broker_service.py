@@ -8,7 +8,12 @@ from datetime import date
 from typing import Any, Callable
 
 from ..alpaca import AlpacaPaperClient
-from ..broker_adapters import _kraken_last_price, _kraken_pair
+from ..broker_adapters import (
+    _kraken_last_price,
+    _kraken_pair,
+    kraken_limit_entries_enabled,
+    kraken_max_order_pct_of_cash,
+)
 from ..config import Settings
 from ..database import selected_backend
 from ..multi_broker import (
@@ -657,12 +662,19 @@ class BrokerService:
                 # limit that is no longer the one being enforced. Both are surfaced: the
                 # percentage and the pounds it currently works out to, plus the flat value
                 # that applies only when the live balance cannot be read.
-                "max_order_pct_of_cash": _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05),
+                # Read through the shared accessor so the limit REPORTED here is by
+                # construction the same one _validate_live_order ENFORCES. These each had
+                # their own 0.05 literal while the enforced default moved to 0.10, so this
+                # panel was quietly understating the real ceiling by half.
+                "max_order_pct_of_cash": kraken_max_order_pct_of_cash(),
                 "max_order_gbp": round(
                     max(0.0, float((ledger or {}).get("available_cash_gbp") or 0.0))
-                    * _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.05),
+                    * kraken_max_order_pct_of_cash(),
                     2,
                 ),
+                # Verifiable rather than assumed: whether maker-fee limit entries are
+                # actually on, readable straight from live evidence.
+                "limit_entries_enabled": kraken_limit_entries_enabled(),
                 "max_order_gbp_fallback": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
                 "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
                 "max_open_trades": max_open_trades,

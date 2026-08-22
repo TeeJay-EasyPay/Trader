@@ -422,7 +422,20 @@ class DeveloperExperienceTests(unittest.TestCase):
                 permissions = kraken["trading_permissions"]
 
                 self.assertEqual(permissions["trading_allocation_gbp"], 100.0)
-                self.assertEqual(permissions["max_order_gbp"], 5.0)
+                # 2026-08-22: this asserted 5.0, which was the REPORTED figure back when
+                # broker_service kept its own 0.05 literal while _validate_live_order had
+                # moved to 0.10 -- i.e. the test was pinning the understatement in place.
+                # Assert the property that actually matters instead: the ceiling shown to
+                # the Founder is the one the broker layer will really enforce.
+                from ai_trader.broker_adapters import kraken_max_order_pct_of_cash
+
+                self.assertEqual(permissions["max_order_pct_of_cash"], kraken_max_order_pct_of_cash())
+                self.assertEqual(
+                    permissions["max_order_gbp"],
+                    round(100.0 * kraken_max_order_pct_of_cash(), 2),
+                    "Reported max order size must equal the enforced percentage of available cash.",
+                )
+                self.assertIn("limit_entries_enabled", permissions)
                 self.assertEqual(permissions["max_open_trades"], 1)
                 self.assertTrue(permissions["buy_only_entries"])
                 self.assertEqual(permissions["allowed_pairs"], ["XBTGBP", "ETHGBP", "SOLGBP"])

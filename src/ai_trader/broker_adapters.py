@@ -681,7 +681,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # would have rejected every trade the sizing change was meant to produce, the
         # exact "three limits must move together" trap already documented in this file's
         # history (see the 2026-08-20 GBP 100 ledger incident above).
-        max_order_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.10)
+        max_order_pct = kraken_max_order_pct_of_cash()
         if gbp_balance is not None and max_order_pct > 0:
             max_notional = max(0.0, gbp_balance) * max_order_pct
         else:
@@ -814,6 +814,29 @@ def _csv_env(name: str, default: str) -> set[str]:
     return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
+def kraken_max_order_pct_of_cash() -> float:
+    """The hard-rejection order ceiling, as a share of live GBP cash.
+
+    Public and shared on purpose. broker_service.py reports this limit to the Founder while
+    _validate_live_order enforces it; when each read the env var with its own default
+    literal they drifted (reported 5% while 10% was enforced) -- the same "report the cap
+    that is actually enforced" bug already fixed once in this codebase's history. One
+    accessor makes reported and enforced the same number by construction.
+    """
+    return _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.10)
+
+
+def kraken_limit_entries_enabled() -> bool:
+    """Whether patient (maker-fee) limit entries are actually switched on right now.
+
+    Surfaced through /activity/brokers trading_permissions so this can be VERIFIED rather
+    than assumed. On 2026-08-22 four separate switches were each believed active while
+    sitting off -- including this one, whose Render variable had been created under a
+    misspelled name and so silently did nothing.
+    """
+    return _bool_env("KRAKEN_LIMIT_ENTRIES_ENABLED", False)
+
+
 def _kraken_asset_symbol(asset: str) -> str:
     # Mirrors api/__init__.py's _kraken_asset_symbol (duplicated rather than imported
     # to avoid a circular import: api/__init__.py imports this module to build adapters).
@@ -889,7 +912,7 @@ def _limit_entry_price(order_request: Any) -> float | None:
     proposal's entry price to save a fee would be self-defeating -- the fee saved on this
     leg is 0.40%, so any slippage beyond that wipes out the whole point.
     """
-    if not _bool_env("KRAKEN_LIMIT_ENTRIES_ENABLED", False):
+    if not kraken_limit_entries_enabled():
         return None
     # OrderRequest carries no entry price of its own, but notional/quantity is exactly
     # that -- and it is the figure the proposal was actually sized against.
