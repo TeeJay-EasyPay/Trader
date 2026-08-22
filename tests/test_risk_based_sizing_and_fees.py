@@ -124,6 +124,54 @@ class CryptoSizingDefaultsTests(unittest.TestCase):
         broker_reject_pct = _float_env("KRAKEN_MAX_ORDER_PCT_OF_CASH", 0.10)
         self.assertAlmostEqual(config.crypto_max_trade_pct, broker_reject_pct, places=6)
 
+    def test_load_settings_actually_uses_the_dataclass_defaults_rather_than_stale_literals(self):
+        """The trap that made the GBP 50 sizing increase inert in production for a day.
+
+        models.py's AutoTradeConfig defaults were raised, but config.py's load_settings()
+        passed its own hardcoded literals (0.05 / 0.0015) for the same fields, so the
+        dataclass defaults were never consulted and live sizing never changed. This asserts
+        the two agree for EVERY field, not just the two that drifted -- any future default
+        changed in one place but not the other fails here instead of silently doing nothing.
+        """
+        import os
+        from dataclasses import fields
+        from unittest import mock
+
+        from ai_trader.config import load_settings
+
+        env_names = {
+            "min_confidence": "AUTO_TRADE_MIN_CONFIDENCE",
+            "min_philosophy_fit": "AUTO_TRADE_MIN_PHILOSOPHY_FIT",
+            "max_trade_amount": "MAX_AUTO_TRADE_AMOUNT",
+            "default_stop_loss_pct": "DEFAULT_STOP_LOSS_PCT",
+            "max_stop_loss_pct": "MAX_STOP_LOSS_PCT",
+            "crypto_max_trade_amount": "CRYPTO_MAX_AUTO_TRADE_AMOUNT",
+            "crypto_max_trade_pct": "CRYPTO_MAX_AUTO_TRADE_PCT",
+            "crypto_risk_per_trade_pct": "CRYPTO_RISK_PER_TRADE_PCT",
+            "crypto_min_net_reward_risk": "CRYPTO_MIN_NET_REWARD_RISK",
+            "crypto_default_stop_loss_pct": "CRYPTO_DEFAULT_STOP_LOSS_PCT",
+            "crypto_max_stop_loss_pct": "CRYPTO_MAX_STOP_LOSS_PCT",
+        }
+        # Clear every override so load_settings() must fall back to its own defaults, and
+        # neutralise .env so a developer's local file cannot mask a real drift.
+        cleared = {name: "" for name in env_names.values()}
+        with mock.patch.dict(os.environ, cleared, clear=False):
+            for name in env_names.values():
+                os.environ.pop(name, None)
+            with mock.patch("ai_trader.config.load_dotenv", lambda *a, **k: None):
+                live = load_settings().auto_trade
+
+        expected = AutoTradeConfig()
+        for field_def in fields(AutoTradeConfig):
+            if field_def.name not in env_names:
+                continue
+            self.assertEqual(
+                getattr(live, field_def.name),
+                getattr(expected, field_def.name),
+                f"{field_def.name}: load_settings() default disagrees with AutoTradeConfig's. "
+                "Change it in models.py only -- config.py must read the dataclass default.",
+            )
+
     def test_cash_capped_notional_never_undoes_the_larger_ceiling(self):
         # Sanity check that the risk-reducing cash cap (max_trade_pct_of_available_cash,
         # a SEPARATE RISK_POLICIES-driven guard) does not itself reintroduce a tiny ceiling

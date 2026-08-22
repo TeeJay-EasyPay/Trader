@@ -136,6 +136,12 @@ class Settings:
         return errors
 
 
+# The dataclass' own defaults, so load_settings() can use them as env-var fallbacks instead
+# of repeating each number as a literal (which silently pinned production to stale values --
+# see the crypto sizing comment in load_settings below).
+_AUTO_TRADE_DEFAULTS = AutoTradeConfig()
+
+
 def load_settings() -> Settings:
     load_dotenv()
     return Settings(
@@ -178,8 +184,17 @@ def load_settings() -> Settings:
             default_stop_loss_pct=_float_env("DEFAULT_STOP_LOSS_PCT", 0.03),
             max_stop_loss_pct=_float_env("MAX_STOP_LOSS_PCT", 0.05),
             crypto_max_trade_amount=_float_env("CRYPTO_MAX_AUTO_TRADE_AMOUNT", 10.0),
-            crypto_max_trade_pct=_float_env("CRYPTO_MAX_AUTO_TRADE_PCT", 0.05),
-            crypto_risk_per_trade_pct=_float_env("CRYPTO_RISK_PER_TRADE_PCT", 0.0015),
+            # 2026-08-22: these two read their fallback from AutoTradeConfig's own defaults
+            # rather than repeating the number here. Repeating it is what made the
+            # Founder-directed GBP 25 -> GBP 50 sizing increase completely inert in
+            # production: models.py's defaults were raised (0.05 -> 0.10, 0.0015 -> 0.005)
+            # but this call passed the OLD literals explicitly, so the dataclass defaults
+            # were never once consulted. Same failure class as trailing_stop_enabled sitting
+            # at false while the feature was believed active (see api/__init__.py's
+            # /admin/trading-policy comment). Sourcing the fallback from the dataclass makes
+            # the two physically incapable of drifting apart again.
+            crypto_max_trade_pct=_float_env("CRYPTO_MAX_AUTO_TRADE_PCT", _AUTO_TRADE_DEFAULTS.crypto_max_trade_pct),
+            crypto_risk_per_trade_pct=_float_env("CRYPTO_RISK_PER_TRADE_PCT", _AUTO_TRADE_DEFAULTS.crypto_risk_per_trade_pct),
             crypto_min_net_reward_risk=_float_env("CRYPTO_MIN_NET_REWARD_RISK", 1.0),
             crypto_default_stop_loss_pct=_float_env("CRYPTO_DEFAULT_STOP_LOSS_PCT", 0.015),
             crypto_max_stop_loss_pct=_float_env("CRYPTO_MAX_STOP_LOSS_PCT", 0.05),
