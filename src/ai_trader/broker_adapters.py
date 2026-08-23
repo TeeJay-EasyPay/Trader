@@ -506,7 +506,9 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             payload["ordertype"] = "limit"
             payload["price"] = _format_decimal(limit_price)
             payload["oflags"] = "post"
-            expire_seconds = max(30, int(_float_env("KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS", 120)))
+            # Kraken-side expiry must outlast our own poll budget, or Kraken cancels the
+            # order while we are still waiting for it and we fall back for no reason.
+            expire_seconds = max(30, int(_float_env("KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS", 420)))
             # Kraken cancels the order itself once this expires, so an unfilled patient
             # entry cannot sit on the book indefinitely holding cash against a stale idea.
             payload["expiretm"] = f"+{expire_seconds}"
@@ -587,8 +589,19 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         pair: str,
         limit_response: dict[str, Any],
     ) -> dict[str, Any]:
-        poll_interval = max(1.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS", 5.0))
-        poll_budget = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS", 20.0))
+        # 2026-08-23, measured: the 20s budget made the whole maker strategy inert. A
+        # post-only buy priced BELOW the market essentially never fills in 20 seconds, so
+        # every order took the market fallback and paid the 0.80% taker rate. Confirmed
+        # against three real trades -- LINK 1.606%, XLM 1.600%, LTC 1.592% round trip,
+        # indistinguishable from the ~1.63% every pre-maker trade paid.
+        #
+        # 20s -> 300s gives a resting order a real chance to fill. The interval moves 5s ->
+        # 30s DELIBERATELY and must not be lowered without thought: at 5s a 300s budget
+        # would be 60 QueryOrders calls per order instead of 4, a 15x rise in private API
+        # pressure against an account that hit "EGeneral:Temporary lockout" the same day.
+        # 30s over 300s is 10 calls -- more patience AND fewer calls per minute than before.
+        poll_interval = max(1.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS", 30.0))
+        poll_budget = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS", 300.0))
         deadline = time.monotonic() + poll_budget
         while time.monotonic() < deadline:
             time.sleep(poll_interval)

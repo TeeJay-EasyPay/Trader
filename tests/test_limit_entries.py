@@ -14,6 +14,7 @@ fallback (bounded poll for a fill, then cancel + market order) was built 2026-08
 what most of this file now tests.
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import ai_trader.broker_adapters as ba
 from ai_trader.broker_adapters import _limit_entry_price
 from ai_trader.models import OrderRequest
 
@@ -231,3 +233,62 @@ class LimitEntryFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MakerPatienceDefaultsTests(unittest.TestCase):
+    """2026-08-23, measured against three real trades: the maker strategy was inert.
+
+    LINK 1.606%, XLM 1.600%, LTC 1.592% round trip -- indistinguishable from the ~1.63%
+    every pre-maker trade paid, i.e. 2 x 0.80% taker on both legs. A post-only buy priced
+    BELOW the market essentially never fills inside a 20-second budget, so every order took
+    the market fallback and the 0.40% maker rate was never earned.
+
+    Raising patience alone would have made things worse: at a 5s poll interval a 300s budget
+    is 60 QueryOrders calls per order instead of 4, and this account hit
+    "EGeneral:Temporary lockout" the same day. The interval has to rise with the budget.
+    """
+
+    def _defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in (
+                "KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS",
+                "KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS",
+                "KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS",
+            ):
+                os.environ.pop(name, None)
+            return (
+                ba._float_env("KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS", 30.0),
+                ba._float_env("KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS", 300.0),
+                ba._float_env("KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS", 420),
+            )
+
+    def test_the_budget_is_long_enough_for_a_resting_order_to_realistically_fill(self):
+        _, budget, _ = self._defaults()
+        self.assertGreaterEqual(
+            budget, 300.0,
+            "20s was measured to produce zero maker fills across three real trades.",
+        )
+
+    def test_patience_does_not_come_at_the_cost_of_more_api_calls(self):
+        """The trap: a longer wait at the old 5s interval means 15x the private API calls,
+        against an account that hit a temporary lockout the same day."""
+        interval, budget, _ = self._defaults()
+        calls_per_order = budget / interval
+        self.assertLessEqual(
+            calls_per_order, 12,
+            f"{calls_per_order:.0f} status calls per order is too much API pressure.",
+        )
+        old_calls_per_minute = 60.0 / 5.0
+        self.assertLess(
+            60.0 / interval, old_calls_per_minute,
+            "Call RATE must not exceed the old 5s-interval behaviour.",
+        )
+
+    def test_krakens_own_expiry_outlasts_our_poll_budget(self):
+        """If Kraken cancels the order while we are still waiting, we fall back to a market
+        order for no reason and pay taker anyway."""
+        _, budget, expiry = self._defaults()
+        self.assertGreater(
+            expiry, budget,
+            "expiretm must outlast the poll budget or the wait is self-defeating.",
+        )
