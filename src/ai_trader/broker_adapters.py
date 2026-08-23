@@ -232,6 +232,7 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # Kraken's full pair list, fetched at most once per adapter instance. Pair listings
         # do not change within a process lifetime, and this is only read by a diagnostic.
         self._known_pairs_cache: set[str] | None = None
+        self._pair_decimals_cache: dict[str, int | None] = {}
 
     def unlistable_allowed_pairs(self) -> list[str] | None:
         """Configured KRAKEN_ALLOWED_PAIRS entries that Kraken does not actually list.
@@ -267,6 +268,35 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         if not self._known_pairs_cache:
             return None
         return sorted(pair for pair in allowed if pair.upper() not in self._known_pairs_cache)
+
+    def pair_price_decimals(self, pair: str) -> int | None:
+        """How many decimal places Kraken accepts in a PRICE for this pair.
+
+        2026-08-23 live incident: every Kraken buy was rejected with
+        "EOrder:Invalid price:ETH/GBP price can only be specified up to 2 decimals." from
+        the moment maker/limit entries were switched on. A market order carries no price,
+        so the fault could not appear until limit orders went live -- last accepted order
+        2026-08-21 23:43, first rejection 2026-08-22 18:41. The limit price is computed as
+        notional/quantity with an offset applied, which routinely produces 7+ decimals.
+
+        The allowance is per-pair and varies widely (ETHGBP 2, LINKGBP 3, XBTGBP 1,
+        ADAGBP 5), so a single fixed rounding would be wrong for most pairs. Read from
+        AssetPairs' pair_decimals and cached, since it cannot change within a process.
+        Returns None when unknown, which the caller treats as "do not risk a limit order".
+        """
+        if pair in self._pair_decimals_cache:
+            return self._pair_decimals_cache[pair]
+        decimals: int | None = None
+        try:
+            data = self._public_request(f"/0/public/AssetPairs?pair={pair}")
+            result = data.get("result") or {}
+            info = result.get(pair) or next(iter(result.values()), None)
+            if isinstance(info, dict) and info.get("pair_decimals") is not None:
+                decimals = int(info["pair_decimals"])
+        except Exception:  # noqa: BLE001 - never let a price lookup crash an order attempt
+            decimals = None
+        self._pair_decimals_cache[pair] = decimals
+        return decimals
 
     def pair_minimum_notional(self, pair: str, price: float) -> float | None:
         # 2026-08-10 hosted incident: KRAKEN_MIN_ORDER_GBP is a single flat guess applied to
@@ -454,6 +484,23 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # default until that fallback is wired.
         is_patient_limit_entry = False
         limit_price = _limit_entry_price(order_request)
+        # 2026-08-23: the price MUST be rounded to the pair's own allowed precision, or
+        # Kraken rejects the order outright ("price can only be specified up to N
+        # decimals") and the trade is lost -- which is exactly what happened to every buy
+        # for a day. Rounded DOWN for a buy: rounding up could place the bid above the
+        # price the proposal was sized against, and paying more to save a fee is
+        # self-defeating. If the precision is unknown we do not guess -- fall through to
+        # the market order that was already built, since a fee optimisation must never
+        # cost the trade itself.
+        if limit_price is not None and order_request.side.lower() == "buy":
+            decimals = self.pair_price_decimals(pair)
+            if decimals is None:
+                limit_price = None
+            else:
+                factor = 10 ** decimals
+                limit_price = math.floor(limit_price * factor) / factor
+                if limit_price <= 0:
+                    limit_price = None
         if limit_price is not None and order_request.side.lower() == "buy":
             is_patient_limit_entry = True
             payload["ordertype"] = "limit"
@@ -476,6 +523,35 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             # existing handling of a "rejected" order status already records this candidate
             # as one rejected proposal and completes its order-intent lock normally, instead
             # of letting the exception crash the whole auto-execution batch.
+            #
+            # 2026-08-23: if the PATIENT LIMIT version was rejected, retry once as the plain
+            # market order this would have been anyway. The existing fallback only covered a
+            # limit order that rested and failed to fill; a synchronous rejection killed the
+            # trade outright. That is how a price-precision bug in the fee optimisation
+            # silently blocked every Kraken buy for a day. The principle this restores: an
+            # attempt to save a fee must never be able to cost the trade.
+            if is_patient_limit_entry:
+                market_payload = dict(payload)
+                market_payload["ordertype"] = "market"
+                for field in ("price", "oflags", "expiretm"):
+                    market_payload.pop(field, None)
+                try:
+                    result = self._private_request("/0/private/AddOrder", market_payload)
+                except RuntimeError as market_exc:
+                    return {
+                        "status": "rejected", "broker": self.name,
+                        "reason": f"{exc}; market fallback also rejected: {market_exc}",
+                        "pair": pair,
+                    }
+                txids = result.get("result", {}).get("txid", [])
+                order_id = txids[0] if txids else None
+                return {
+                    "status": "accepted" if order_id else "submitted",
+                    "broker": self.name, "id": order_id, "order_id": order_id, "pair": pair,
+                    "side": order_request.side.lower(), "quantity": check["volume"],
+                    "notional": check["notional"],
+                    "fallback_from_rejected_limit_order": str(exc),
+                }
             return {"status": "rejected", "broker": self.name, "reason": str(exc), "pair": pair}
         txids = result.get("result", {}).get("txid", [])
         order_id = txids[0] if txids else None
