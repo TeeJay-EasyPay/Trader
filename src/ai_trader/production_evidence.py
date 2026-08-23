@@ -149,6 +149,23 @@ PRODUCTION_EVIDENCE_RETENTION_DAYS = {
     "PRODUCTION_RESEARCH_EVIDENCE": ("completed_at", 90),
     "PRODUCTION_RECOMMENDATION_EVIDENCE": ("created_at", 90),
     "PRODUCTION_LEARNING_EVIDENCE": ("completed_at", 365),
+    # 2026-08-23, Founder-directed: "make sure that with all these feeds and the news coming
+    # in the database doesnt suddenly expand too much and egress is not increased."
+    #
+    # These four are written by external-intelligence-refresh every hour and had NO retention
+    # at all -- they would have grown forever. They are also the highest row-rate tables in
+    # the system now: two crypto RSS feeds at up to 25 stories each, one row per tagged coin,
+    # plus Alpaca news across the watchlist, every hour.
+    #
+    # 30 days deliberately, far shorter than the evidence tables above. News is only ever
+    # read to judge a trade being considered NOW -- nothing looks up a month-old headline,
+    # unlike learning evidence which is genuinely revisited. This is the same 2026-08-08
+    # Supabase size lesson: the only way to shrink a high-volume log table is fewer live
+    # rows, so cap them before they grow rather than after.
+    "CRYPTO_NEWS": ("created_at", 30),
+    "NEWS_CATALYST_EVIDENCE": ("created_at", 30),
+    "MACRO_EVENT_EVIDENCE": ("created_at", 90),
+    "FUNDAMENTAL_EVIDENCE": ("created_at", 90),
 }
 
 # 2026-08-08 Supabase database-size emergency: /database-diagnostics showed these high-volume
@@ -1113,7 +1130,15 @@ def prune_production_evidence(
             cutoffs: dict[str, str] = {}
             for table, (timestamp_column, days) in PRODUCTION_EVIDENCE_RETENTION_DAYS.items():
                 cutoff = (now - timedelta(days=days)).isoformat()
-                conn.execute(f"DELETE FROM {table} WHERE {timestamp_column} < ?", (cutoff,))
+                try:
+                    conn.execute(f"DELETE FROM {table} WHERE {timestamp_column} < ?", (cutoff,))
+                except Exception:  # noqa: BLE001
+                    # 2026-08-23: the external-intelligence tables only exist once that job
+                    # has run, so a deployment that never enabled it has no CRYPTO_NEWS.
+                    # One absent table must not abort the whole prune and leave every OTHER
+                    # table growing -- which is the failure this retention exists to prevent.
+                    cutoffs[table] = "skipped_table_missing"
+                    continue
                 cutoffs[table] = cutoff
             conn.execute(
                 """INSERT INTO PRODUCTION_EVIDENCE_MAINTENANCE (task_name, last_run_at)
