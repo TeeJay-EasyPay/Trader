@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
+from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -41,6 +42,39 @@ from .models import utc_now_iso
 
 ALPACA_NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 CRYPTOPANIC_POSTS_URL = "https://cryptopanic.com/api/v1/posts/"
+
+# 2026-08-23, Founder-directed: "relying on one source creates a bottleneck and also risks
+# getting bad quality news". Crypto had exactly that problem, only worse -- CryptoPanic was
+# the ONLY crypto news source and it needs an API key that was never set, so the AI was
+# trading real money on Kraken with no news input at all. These two are public RSS: no key,
+# no account, no rate-limit tier, so they work immediately and keep working if CryptoPanic
+# is down, rate-limited, or publishing junk.
+CRYPTO_RSS_FEEDS = {
+    "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "CoinTelegraph": "https://cointelegraph.com/rss",
+}
+
+# Maps how humans write a coin in a headline to the symbol AI Trader trades it under.
+# Without this every RSS story would be filed under "MARKET" and no per-coin research could
+# ever find it. Only covers coins actually tradeable on this account (the Kraken GBP pairs).
+CRYPTO_NAME_TO_SYMBOL = {
+    "bitcoin": "BTC", "btc": "BTC", "xbt": "BTC",
+    "ethereum": "ETH", "ether": "ETH", "eth": "ETH",
+    "solana": "SOL", "sol": "SOL",
+    "ripple": "XRP", "xrp": "XRP",
+    "cardano": "ADA", "ada": "ADA",
+    "polkadot": "DOT", "dot": "DOT",
+    "chainlink": "LINK", "link": "LINK",
+    "litecoin": "LTC", "ltc": "LTC",
+    "bitcoin cash": "BCH", "bch": "BCH",
+    "stellar": "XLM", "xlm": "XLM",
+    "avalanche": "AVAX", "cosmos": "ATOM", "atom": "ATOM",
+    "algorand": "ALGO", "algo": "ALGO",
+    "filecoin": "FIL", "fil": "FIL",
+    "aave": "AAVE", "the graph": "GRT", "kusama": "KSM",
+    "mina": "MINA", "sandbox": "SAND", "sui": "SUI",
+    "dogecoin": "XDG", "doge": "XDG",
+}
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 SEC_EDGAR_FULLTEXT_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 
@@ -134,6 +168,67 @@ def fetch_alpaca_equities_news(settings: Settings, *, symbols: list[str] | None 
         return []
     articles = payload.get("news")
     return list(articles) if isinstance(articles, list) else []
+
+
+def _detect_crypto_symbols(text: str) -> list[dict[str, Any]]:
+    """Which tradeable coins a headline is about, in CryptoPanic's `currencies` shape.
+
+    Matched on word boundaries so "Cardano" does not also match inside another word, and
+    longest-name-first so "bitcoin cash" wins over "bitcoin". Returns [] when no tradeable
+    coin is named -- record_crypto_news then files it under MARKET as general news, which is
+    honest: it is real news, just not about a specific holding.
+    """
+    lowered = f" {str(text or '').lower()} "
+    found: list[str] = []
+    for name in sorted(CRYPTO_NAME_TO_SYMBOL, key=len, reverse=True):
+        symbol = CRYPTO_NAME_TO_SYMBOL[name]
+        if symbol in found:
+            continue
+        for boundary in (f" {name} ", f" {name},", f" {name}.", f" {name}'", f" {name}:", f"({name})"):
+            if boundary in lowered:
+                found.append(symbol)
+                # Consume the matched words so a shorter name cannot re-match them. Without
+                # this, "Bitcoin Cash surges" tagged BOTH BCH and BTC -- filing a story
+                # under a coin it is not about is exactly the bad-quality news the extra
+                # sources are meant to avoid.
+                lowered = lowered.replace(name, " ")
+                break
+    return [{"code": symbol} for symbol in found]
+
+
+def fetch_rss_crypto_news(url: str, *, limit: int = 20, timeout: int = 15) -> list[dict[str, Any]]:
+    """Read a public crypto-news RSS feed into the same shape as a CryptoPanic post.
+
+    Returning the existing shape means record_crypto_news stores these with no changes, and
+    its (symbol, url) dedup index makes the same article arriving from two feeds a no-op.
+
+    Never raises: a dead or malformed feed returns [] so the other sources still run, which
+    is the entire point of having more than one.
+    """
+    try:
+        request = Request(url, headers={"Accept": "application/rss+xml, application/xml, text/xml", "User-Agent": "AI-Trader/1.0"})
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+        root = ElementTree.fromstring(raw)
+    except Exception:  # noqa: BLE001 - one bad feed must never sink the refresh
+        return []
+    posts: list[dict[str, Any]] = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        summary = (item.findtext("description") or "").strip()
+        posts.append({
+            "title": title,
+            "url": link,
+            "published_at": (item.findtext("pubDate") or "").strip() or None,
+            "body": summary,
+            "currencies": _detect_crypto_symbols(f"{title} {summary}"),
+        })
+        if len(posts) >= max(1, int(limit)):
+            break
+    return posts
 
 
 def fetch_cryptopanic_news(settings: Settings, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -597,6 +692,18 @@ def run_external_intelligence_refresh(db_path: Path, settings: Settings) -> dict
         result["sources"]["cryptopanic"] = record_crypto_news(db_path, posts=posts)
     except Exception as exc:  # noqa: BLE001 - one source's failure must not sink the refresh
         result["sources"]["cryptopanic"] = {"status": "failed", "error": str(exc)}
+
+    # 2026-08-23, Founder-directed: more than one crypto news source, so a single feed being
+    # down, rate-limited or publishing junk cannot blind the AI. These need no API key, so
+    # unlike CryptoPanic they work the moment this job is enabled. Each feed is isolated in
+    # its own try/except for the same reason the sources above are.
+    for feed_name, feed_url in CRYPTO_RSS_FEEDS.items():
+        key = f"rss_{feed_name.lower()}"
+        try:
+            rss_posts = fetch_rss_crypto_news(feed_url, limit=25)
+            result["sources"][key] = record_crypto_news(db_path, posts=rss_posts, source=feed_name)
+        except Exception as exc:  # noqa: BLE001
+            result["sources"][key] = {"status": "failed", "error": str(exc)}
 
     try:
         articles = fetch_alpaca_equities_news(settings, symbols=equity_symbols, limit=30)
