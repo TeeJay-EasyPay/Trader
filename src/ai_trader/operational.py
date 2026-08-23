@@ -322,12 +322,64 @@ CRYPTO_CATEGORY_ENDPOINTS: dict[str, str] = {
 }
 
 
+def _float_env_hours(name: str, default: float) -> float:
+    import os
+
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _hours_since_last_universe_refresh(db_path: Path) -> float | None:
+    """Age in hours of the newest CRYPTO_ASSET_MASTER row, or None if there are none."""
+    try:
+        with closing(connect(db_path)) as conn:
+            row = conn.execute("SELECT MAX(last_updated) FROM CRYPTO_ASSET_MASTER").fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds() / 3600.0
+
+
 def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str, Any]:
     initialize_operational_schema(db_path)
     assets: list[dict[str, Any]] = []
     market_rows: list[dict[str, Any]] = []
     source = "Unavailable"
     notes = "Live public ranking fetch was not requested."
+    # 2026-08-23: this ran hourly and made three CoinGecko calls per run, which the free
+    # public API answered with "HTTP Error 429: Too Many Requests" on every attempt, and the
+    # retrying then burned the worker's whole 180s job budget -- confirmed live as a
+    # "Worker job timed out: crypto-universe-refresh" every hour. A starved worker loop is
+    # the documented cause of earlier production incidents, so the cost was not confined to
+    # this job. Market-cap rankings barely move within a day, so refreshing at most every
+    # CRYPTO_UNIVERSE_MIN_REFRESH_HOURS (default 12) keeps the data just as useful while
+    # taking the rate-limiting and the timeouts away.
+    if fetch_live:
+        min_interval = _float_env_hours("CRYPTO_UNIVERSE_MIN_REFRESH_HOURS", 12.0)
+        age_hours = _hours_since_last_universe_refresh(db_path)
+        if age_hours is not None and age_hours < min_interval:
+            return {
+                "inserted": 0,
+                "source": "Cached",
+                "skipped": True,
+                "notes": (
+                    f"Universe last refreshed {age_hours:.1f}h ago; minimum interval is "
+                    f"{min_interval:.0f}h. Skipped to avoid CoinGecko rate limiting."
+                ),
+            }
     if fetch_live:
         try:
             for category_label, url in CRYPTO_CATEGORY_ENDPOINTS.items():
