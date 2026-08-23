@@ -106,3 +106,36 @@ class RssFetchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalIntelligenceTimeoutTests(unittest.TestCase):
+    """2026-08-23 live: the 22:00 external-intelligence-refresh run TIMED OUT on the shared
+    180s worker budget, so the news it fetches never got stored.
+
+    The job makes many small sequential HTTP calls in one run -- SEC EDGAR per symbol,
+    Alpaca News across the watchlist, a FRED series each, plus the crypto RSS feeds -- which
+    is the same shape as forecast-refresh and benchmark-research-refresh, both already moved
+    off the shared budget meant for single-query work.
+    """
+
+    def test_the_news_job_gets_the_multi_call_budget_not_the_default(self):
+        import re
+
+        source = (Path(__file__).resolve().parents[1] / "src" / "ai_trader" / "cli.py").read_text(encoding="utf-8")
+        match = re.search(r"if job_name in \{([^}]*)\}", source)
+        self.assertIsNotNone(match, "Expected the research-timeout job set in cli.py")
+        self.assertIn(
+            "external-intelligence-refresh", match.group(1),
+            "Without this the job is killed mid-fetch every run and stores nothing.",
+        )
+
+    def test_that_budget_is_meaningfully_longer_than_the_shared_default(self):
+        from ai_trader.config import Settings
+
+        defaults = Settings.__dataclass_fields__
+        shared = defaults["worker_job_timeout_seconds"].default
+        research = defaults["research_job_timeout_seconds"].default
+        self.assertGreater(
+            research, shared,
+            f"research budget {research}s must exceed the shared {shared}s or the move achieves nothing.",
+        )

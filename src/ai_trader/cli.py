@@ -401,7 +401,15 @@ def main(argv: list[str] | None = None) -> int:
                                 service.settings.forecast_refresh_timeout_seconds
                                 if job_name == "forecast-refresh"
                                 else service.settings.research_job_timeout_seconds
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh"}
+                                # 2026-08-23: external-intelligence-refresh timed out on the
+                                # shared 180s budget. It makes many small sequential HTTP
+                                # calls in one run -- SEC EDGAR per symbol, Alpaca News
+                                # across the watchlist, a FRED series each, plus the crypto
+                                # RSS feeds -- so it belongs with the other multi-call jobs,
+                                # not on the default meant for single-query work. Same
+                                # reasoning that already moved forecast-refresh and
+                                # benchmark-research-refresh off the shared budget.
                                 else None
                             ),
                         )
