@@ -873,7 +873,7 @@ def _assemble_founder_evidence_payload(
     realized_pnl = sum(_number(row.get("realized_pnl")) or 0.0 for row in closed_trade_history)
     fees = sum(_number(row.get("fee")) or 0.0 for row in closed_trade_history)
     latest_activity = _latest_activity(research, trades, learning, jobs)
-    no_trade = _why_no_trade(funnels, jobs, trades)
+    no_trade = _why_no_trade(funnels, jobs, trades, accepted_orders=_accepted_order_count(db_path))
     broker_payload = []
     for row in snapshots:
         broker_row = _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
@@ -1698,8 +1698,47 @@ def _decision_counts(funnels: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _why_no_trade(funnels: list[dict[str, Any]], jobs: list[dict[str, Any]], trades: list[dict[str, Any]]) -> dict[str, Any]:
+def _accepted_order_count(db_path: Path | None) -> int:
+    """Real broker orders accepted recently, from ORDER_INTENT_LOCKS.
+
+    2026-08-23: the Founder's briefing said "An opportunity reached execution eligibility,
+    but no broker submission is recorded. This requires attention." on a day with THREE
+    accepted Kraken orders. _why_no_trade counted submissions only from period-scoped broker
+    trade rows, which lag and use broker-specific statuses -- while ORDER_INTENT_LOCKS
+    records every accepted order at the moment it is placed. A false "requires attention" on
+    the main screen is worse than none: it trains the Founder to ignore the one line that is
+    supposed to mean something.
+    """
+    if db_path is None:
+        return 0
+    try:
+        rows = _query(
+            db_path,
+            "SELECT COUNT(*) AS accepted FROM ORDER_INTENT_LOCKS WHERE status = {x}",
+            ("accepted",),
+            limit=1,
+        )
+    except Exception:  # noqa: BLE001 - evidence must never fail on a diagnostic count
+        return 0
+    if not rows:
+        return 0
+    value = rows[0].get("accepted") if isinstance(rows[0], dict) else None
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _why_no_trade(
+    funnels: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+    accepted_orders: int = 0,
+) -> dict[str, Any]:
     submitted = len([row for row in trades if row.get("status") in {"submitted", "accepted", "new", "filled", "partially_filled"}])
+    # An accepted order-intent lock IS a broker submission -- it is written the moment the
+    # broker accepts the order, before any fill or trade row exists.
+    submitted = submitted or accepted_orders
     assets = sum(int(row.get("symbols_examined") or 0) for row in funnels)
     candidates = sum(int(row.get("interesting_ideas") or 0) for row in funnels)
     eligible = sum(int(row.get("eligible_for_paper_execution") or 0) for row in funnels)
