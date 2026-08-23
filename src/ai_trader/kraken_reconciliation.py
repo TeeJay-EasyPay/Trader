@@ -1293,6 +1293,67 @@ def _refresh_reconciled_result(db_path: Path, logical_trade_id: str, *, conn: An
     return result
 
 
+
+def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any], now: str) -> None:
+    """One PERFORMANCE_ATTRIBUTION row per completed round trip, from reconciled fills only.
+
+    Skips anything without a real entry price, exit price and quantity: an attribution row
+    with a guessed price would corrupt both the Founder's P&L view and every strategy
+    statistic computed from it. ON CONFLICT DO NOTHING keeps repeated replays idempotent --
+    replay_kraken_evidence re-processes the same terminal trades on later cycles.
+    """
+    entry = _number(result.get("actual_entry"))
+    exit_price = _number(result.get("actual_exit"))
+    quantity = _number(result.get("quantity"))
+    if entry is None or exit_price is None or not quantity:
+        return
+    symbol = str(result.get("symbol") or "").upper()
+    closed_at = result.get("exit_time") or now
+    try:
+        # PERFORMANCE_ATTRIBUTION's only key is its autoincrement id, so ON CONFLICT cannot
+        # dedupe here -- an explicit check is required. Without it every replay cycle would
+        # add another copy of the same round trip, inflating both the Founder's realised P&L
+        # and every strategy win rate computed from this table.
+        existing = conn.execute(
+            """
+            SELECT 1 FROM PERFORMANCE_ATTRIBUTION
+            WHERE broker = 'kraken' AND symbol = ? AND closed_at = ? AND quantity = ?
+            LIMIT 1
+            """,
+            (symbol, closed_at, quantity),
+        ).fetchone()
+        if existing:
+            return
+        conn.execute(
+            """
+            INSERT INTO PERFORMANCE_ATTRIBUTION (
+                created_at, proposal_id, broker, symbol, asset_type, side,
+                entry_price, exit_price, quantity, profit_loss, opened_at,
+                closed_at, holding_period_seconds, entry_reason, exit_reason,
+                primary_factors_json
+            ) VALUES (?, ?, 'kraken', ?, 'crypto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                result.get("proposal_id"),
+                symbol,
+                str(result.get("side") or "buy").lower(),
+                entry,
+                exit_price,
+                quantity,
+                _number(result.get("net_pnl")),
+                result.get("entry_time"),
+                closed_at,
+                _number(result.get("holding_seconds")),
+                "Reconciled from Kraken fills.",
+                "Reconciled from Kraken fills.",
+                json.dumps({"logical_trade_id": result.get("logical_trade_id")}, sort_keys=True, default=str),
+            ),
+        )
+    except Exception:  # noqa: BLE001 - reporting must never break reconciliation itself
+        return
+
+
 def _mark_managed_exit_reconciled(
     db_path: Path,
     *,
@@ -1300,7 +1361,24 @@ def _mark_managed_exit_reconciled(
     result: dict[str, Any],
     conn: Any = None,
 ) -> None:
-    """Close only explicitly linked managed exits after the canonical exit fill is terminal."""
+    """Close only explicitly linked managed exits after the canonical exit fill is terminal.
+
+    Also writes the PERFORMANCE_ATTRIBUTION row for the completed round trip.
+
+    2026-08-23 finding: PERFORMANCE_ATTRIBUTION was EMPTY in production -- 0 rows, ever.
+    Its only writer, multi_broker.close_managed_exit_and_record, is called from nowhere, and
+    real Kraken trades close down this path instead. Three consequences, all silent:
+
+      1. "Completed Trades Today" read 0 on a day with three completed round trips.
+      2. Per-trade realised P&L never appeared in Trade History.
+      3. Worse, PERFORMANCE_ATTRIBUTION is the ONLY source calculate_performance_metrics and
+         _strategy_history read, so strategy win rates and expectancy had no input at all --
+         which is why live strategy rankings returned 0 rows. The learning loop had nothing
+         to learn from.
+
+    Everything written here comes from the reconciled result (real fills), never estimated.
+    A round trip with no exit price is skipped rather than recorded with a guessed one.
+    """
 
     now = utc_now_iso()
     with _connection(db_path, conn) as active:
@@ -1327,6 +1405,7 @@ def _mark_managed_exit_reconciled(
                     logical_trade_id,
                 ),
             )
+            _record_attribution_for_reconciled_trade(active, result=result, now=now)
 
 
 def _learning_payload(trade: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:

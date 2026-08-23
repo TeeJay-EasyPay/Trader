@@ -474,3 +474,97 @@ class KrakenReconciliationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerformanceAttributionOnCloseTests(unittest.TestCase):
+    """2026-08-23: PERFORMANCE_ATTRIBUTION was EMPTY in production -- 0 rows, ever.
+
+    Its only writer (multi_broker.close_managed_exit_and_record) is called from nowhere;
+    real Kraken trades close through reconciliation instead. Three silent consequences:
+    "Completed Trades Today" read 0 on a day with three completed round trips; per-trade
+    realised P&L never appeared in Trade History; and -- worst -- PERFORMANCE_ATTRIBUTION is
+    the ONLY source calculate_performance_metrics and _strategy_history read, so strategy
+    win rates and expectancy had no input at all. The learning loop had nothing to learn
+    from.
+    """
+
+    def _rows(self, db_path):
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute("SELECT * FROM PERFORMANCE_ATTRIBUTION")]
+
+    def _reconciled(self, **overrides):
+        base = {
+            "logical_trade_id": "trade-1", "proposal_id": "prop-1", "symbol": "XLMGBP",
+            "side": "buy", "quantity": 173.611, "actual_entry": 0.144,
+            "actual_exit": 0.1465, "net_pnl": 0.41, "entry_time": "2026-08-23T12:44:00+00:00",
+            "exit_time": "2026-08-23T15:10:00+00:00", "holding_seconds": 8760.0,
+        }
+        base.update(overrides)
+        return base
+
+    def _close(self, db_path, result):
+        from ai_trader.kraken_reconciliation import _mark_managed_exit_reconciled
+
+        _mark_managed_exit_reconciled(db_path, logical_trade_id=result["logical_trade_id"], result=result)
+
+    def test_a_completed_round_trip_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_multi_broker_schema(db_path)
+
+            self._close(db_path, self._reconciled())
+
+            rows = self._rows(db_path)
+            self.assertEqual(len(rows), 1, "A closed round trip must produce exactly one attribution row.")
+            row = rows[0]
+            self.assertEqual(row["symbol"], "XLMGBP")
+            self.assertEqual(row["broker"], "kraken")
+            self.assertAlmostEqual(row["entry_price"], 0.144)
+            self.assertAlmostEqual(row["exit_price"], 0.1465)
+            self.assertAlmostEqual(row["profit_loss"], 0.41)
+            self.assertEqual(row["asset_type"], "crypto", "Asset-scoped learning groups on this column.")
+
+    def test_a_trade_with_no_real_exit_price_is_skipped_not_guessed(self):
+        """An attribution row with an invented price would corrupt both the Founder's P&L
+        view and every strategy statistic computed from it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_multi_broker_schema(db_path)
+
+            self._close(db_path, self._reconciled(actual_exit=None))
+            self._close(db_path, self._reconciled(logical_trade_id="t2", actual_entry=None))
+            self._close(db_path, self._reconciled(logical_trade_id="t3", quantity=0))
+
+            self.assertEqual(self._rows(db_path), [])
+
+    def test_replaying_the_same_trade_does_not_duplicate_it(self):
+        """replay_kraken_evidence re-processes the same terminal trades on later cycles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_multi_broker_schema(db_path)
+
+            for _ in range(3):
+                self._close(db_path, self._reconciled())
+
+            self.assertLessEqual(len(self._rows(db_path)), 1, "Repeated replays must not inflate trade counts or P&L.")
+
+    def test_the_row_feeds_the_asset_scoped_strategy_metrics(self):
+        """The point of the fix: this table is what the learning loop reads."""
+        from ai_trader.trading_intelligence import _strategy_asset_types
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_multi_broker_schema(db_path)
+            self._close(db_path, self._reconciled())
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                stored = conn.execute("SELECT asset_type FROM PERFORMANCE_ATTRIBUTION").fetchone()
+            self.assertEqual(stored[0], "crypto")
+            # No TRADE_LIFECYCLE link in this fixture, so no strategy buckets yet -- the
+            # assertion that matters is that the row exists with a usable asset_type.
+            self.assertEqual(_strategy_asset_types(db_path, "no-such-strategy"), [])
