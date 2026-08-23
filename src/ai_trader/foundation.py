@@ -1074,3 +1074,41 @@ def _stringify(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def list_capital_allocations(db_path: Path, *, symbol: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
+    """Recent per-trade sizing decisions, so trade size can be INSPECTED not reverse-engineered.
+
+    2026-08-23: three Kraken trades landed at GBP 6.03, GBP 25.00 and GBP 3.86 within two
+    hours. CAPITAL_ALLOCATION_HISTORY already recorded the account_equity, requested_notional
+    and approved_notional behind each one -- but nothing exposed it, so explaining the
+    differences meant reconstructing the arithmetic from qty x entry_price and guessing at
+    which limb of the min() had bound. That is the same "cannot see the live value" problem
+    that hid four inert settings the day before.
+
+    policy_snapshot_json is decoded so the ceilings in force at the time are readable
+    alongside the numbers they produced.
+    """
+    initialize_foundation_schema(db_path)
+    sql = "SELECT * FROM CAPITAL_ALLOCATION_HISTORY"
+    params: tuple[Any, ...] = ()
+    if symbol:
+        sql += " WHERE UPPER(symbol) = UPPER(?)"
+        params = (symbol,)
+    sql += " ORDER BY allocation_id DESC LIMIT ?"
+    params = (*params, max(1, int(limit)))
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(row) for row in conn.execute(sql, params)]
+    for row in rows:
+        raw = row.pop("policy_snapshot_json", None)
+        try:
+            row["policy_snapshot"] = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            row["policy_snapshot"] = None
+        equity = row.get("account_equity") or 0.0
+        approved = row.get("approved_notional") or 0.0
+        # The single most useful derived figure: what share of the AI's capital this trade
+        # actually took, which is what the percentage ceilings are expressed in.
+        row["approved_pct_of_equity"] = round(approved / equity, 6) if equity else None
+    return rows

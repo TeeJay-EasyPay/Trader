@@ -56,6 +56,7 @@ from ..config import Settings, load_settings
 from ..foundation import (
     initialize_foundation_schema,
     latest_due_diligence_batch,
+    list_capital_allocations,
     latest_investment_score_batch,
     load_trading_policy,
     set_risk_policy_value,
@@ -521,6 +522,19 @@ class LocalApiService:
             return 200, self.phase5_status()
         if path == "/sprint6-status":
             return 200, self.sprint6_status()
+        if path == "/capital-allocations":
+            # 2026-08-23: exposes the per-trade sizing record (account_equity,
+            # requested_notional, approved_notional and the policy ceilings in force) so an
+            # unexpected trade size can be read rather than reverse-engineered from
+            # qty x entry_price. Three Kraken trades in two hours landed at GBP 6.03,
+            # GBP 25.00 and GBP 3.86 with no way to see which limit produced each.
+            return 200, {
+                "capital_allocations": list_capital_allocations(
+                    self.settings.db_path,
+                    symbol=_first(query, "symbol"),
+                    limit=_int_or_default(_first(query, "limit"), 25),
+                )
+            }
         if path == "/kraken-reconciliation":
             return 200, kraken_reconciliation_status(self.settings.db_path)
         if path == "/broker-decisions":
