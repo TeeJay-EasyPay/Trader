@@ -1018,6 +1018,55 @@ COMPANIES = [
 
 
 THEMES = [
+    # 2026-08-23: added Technology, Sports, Mining and Steel. MARKET_THEMES is what
+    # _macro_context_available (foundation.py) matches a company's sector/industry keywords
+    # against to decide whether macro context exists -- and with no theme covering a sector,
+    # those companies score a permanent 0 for macro_score, dragging overall_confidence below
+    # the 0.85 auto-trade gate no matter how good the trade is. Measured against the live
+    # COMPANY_MASTER before this change: 13 of 50 companies (26%) had no matching theme --
+    # Sports 6, Mining 4, Technology 2, Steel 1. Deliberately written as durable structural
+    # drivers, not price calls: this table decides whether macro context EXISTS, and a stale
+    # directional view would be worse than none.
+    {
+        "theme": "Technology",
+        "current_outlook": "Structurally supported, valuation sensitive",
+        "confidence": "Medium",
+        "summary": "Software, cloud and semiconductor demand is underpinned by AI infrastructure build-out and enterprise digitisation, but the sector carries high valuations and is unusually sensitive to interest-rate expectations.",
+        "key_drivers": "AI infrastructure spending; cloud migration; enterprise software budgets; semiconductor cycle; data-centre capacity.",
+        "key_risks": "Rate-driven valuation compression; AI capex digestion; export controls and supply chains; concentration in a few large names.",
+        "last_updated": SEED_DATE,
+        "source_urls": "https://www.itpro.com",
+    },
+    {
+        "theme": "Sports",
+        "current_outlook": "Resilient premium demand, mixed volumes",
+        "confidence": "Medium",
+        "summary": "Athletic apparel and sportswear demand is supported by health and leisure trends and by premium brand pricing power, while volume growth is tied to discretionary consumer spending.",
+        "key_drivers": "Consumer discretionary spending; brand strength and pricing power; health and leisure participation; direct-to-consumer channels; sports sponsorship cycles.",
+        "key_risks": "Discretionary spending squeeze; inventory and discounting cycles; freight and input costs; fashion risk and brand fatigue.",
+        "last_updated": SEED_DATE,
+        "source_urls": "https://www.theguardian.com",
+    },
+    {
+        "theme": "Mining",
+        "current_outlook": "Demand supported, supply constrained",
+        "confidence": "Medium",
+        "summary": "Diversified mining is supported by electrification and infrastructure demand for industrial metals, while new supply is limited by permitting timelines, grade decline and capital discipline.",
+        "key_drivers": "Electrification and grid demand; infrastructure spending; ore grades and permitting; capital discipline; China demand.",
+        "key_risks": "Global growth slowdown; cost inflation in energy and labour; resource nationalism and royalties; operational and safety disruption.",
+        "last_updated": SEED_DATE,
+        "source_urls": "https://www.sibanyestillwater.com",
+    },
+    {
+        "theme": "Steel",
+        "current_outlook": "Cyclical, policy sensitive",
+        "confidence": "Low",
+        "summary": "Steel demand tracks construction and infrastructure activity, with margins driven by the spread between input costs and prices and heavily influenced by trade policy and overcapacity.",
+        "key_drivers": "Infrastructure and construction spending; iron ore and coking coal costs; tariffs and trade policy; decarbonisation of production; China output.",
+        "key_risks": "Global overcapacity; construction slowdown; input cost spikes; carbon-cost transition and stranded assets.",
+        "last_updated": SEED_DATE,
+        "source_urls": "https://www.vulcanmaterials.com",
+    },
     {
         "theme": "Gold",
         "current_outlook": "Constructive but volatile",

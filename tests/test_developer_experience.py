@@ -16,6 +16,7 @@ from ai_trader.agent import AITradingAgent
 from ai_trader.alpaca import AlpacaCredentials, AlpacaError, AlpacaPaperClient
 from ai_trader.ai import _proposal_from_response_text
 from ai_trader.audit import AuditDatabase
+from ai_trader.intelligence_data import THEMES
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.config import Settings
 from ai_trader.db_browser import ReadOnlyDatabaseBrowser
@@ -57,7 +58,12 @@ class DeveloperExperienceTests(unittest.TestCase):
             # Shariah business-activity screened) companies added so Alpaca has genuinely
             # tradable candidates -- see intelligence_data.py's COMPANIES list.
             self.assertEqual(status["counts"]["watchlist"], 50)
-            self.assertEqual(status["counts"]["market_themes"], 10)
+            # 2026-08-23: 10 -> 14. Technology, Sports, Mining and Steel were added because
+            # 13 of the 50 watchlist companies had no MARKET_THEMES row matching their
+            # sector, and _macro_context_available scores those a permanent macro_score 0.
+            # Asserted against the seed list rather than a hardcoded number so adding a
+            # theme to close a coverage gap does not require editing this expectation again.
+            self.assertEqual(status["counts"]["market_themes"], len(THEMES))
             self.assertEqual(status["counts"]["benchmark_traders"], 4)
 
     def test_daily_learning_update_includes_trade_and_benchmark_lessons(self):
