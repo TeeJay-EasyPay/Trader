@@ -418,6 +418,15 @@ function describeTransaction(item) {
 // is one leg (one fill), not a round trip, so this is that same ratio applied per-row rather
 // than aggregated. Never computed from a fabricated/assumed rate - only when this row's own
 // real fee, quantity and price are all present.
+// 2026-08-23 Founder-reported: the numeric columns rendered notAvailable()'s full sentence
+// ("Not available - source data has not been recorded yet.") inside cells a few characters
+// wide, and adjustsFontSizeToFit shrank it until it was unreadable -- the Founder saw
+// "very small text instead of any values". A compact dash is used in the TABLE only; the
+// full honest explanation is still one tap away in TradeDetail (see unavailableReason),
+// so nothing is hidden, it is just not crushed into a 40px column. Text columns
+// (symbol/side) keep the sentence, since they are wide enough to read it.
+const MISSING_NUMERIC_CELL = '-';
+
 function tradeTableRow(item) {
   const normalized = normalizeTradeRow(item);
   const isOpen = isOpenTrade(normalized);
@@ -427,14 +436,22 @@ function tradeTableRow(item) {
   const hasFee = normalized.fee !== null && normalized.fee !== undefined;
   const hasCommissionBasis = hasFee && normalized.quantity && priceValue;
   const commissionPct = hasCommissionBasis ? (normalized.fee / Math.abs(normalized.quantity * priceValue)) * 100 : null;
+  // 2026-08-23 Founder request: "this table should also show the amount put forward to
+  // trade for each". Price alone never showed how much money was actually committed --
+  // the difference between a GBP 2 and a GBP 25 position was invisible here, which is
+  // exactly the sizing problem that took three separate fixes to find this weekend.
+  const hasAmount = normalized.quantity !== null && normalized.quantity !== undefined
+    && priceValue !== null && priceValue !== undefined;
+  const amountValue = hasAmount ? Math.abs(normalized.quantity * priceValue) : null;
   return {
     dateText: formatShortDateTime(normalized.eventTime) || notAvailable(null),
     symbol: normalized.symbol || notAvailable(null),
     side: normalized.side ? String(normalized.side).toUpperCase() : notAvailable(null),
-    priceText: priceValue !== null && priceValue !== undefined ? historyMoneyOrText(normalized.broker, priceValue) : notAvailable(null),
-    commissionPctText: commissionPct !== null ? `${commissionPct.toFixed(2)}%` : notAvailable(null),
-    commissionText: hasFee ? historyMoneyOrText(normalized.broker, normalized.fee) : notAvailable(null),
-    pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : notAvailable(null)),
+    priceText: priceValue !== null && priceValue !== undefined ? historyMoneyOrText(normalized.broker, priceValue) : MISSING_NUMERIC_CELL,
+    amountText: amountValue !== null ? historyMoneyOrText(normalized.broker, amountValue) : MISSING_NUMERIC_CELL,
+    commissionPctText: commissionPct !== null ? `${commissionPct.toFixed(2)}%` : MISSING_NUMERIC_CELL,
+    commissionText: hasFee ? historyMoneyOrText(normalized.broker, normalized.fee) : MISSING_NUMERIC_CELL,
+    pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : MISSING_NUMERIC_CELL),
     pnlSign: hasPnl ? (pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'neutral') : 'neutral',
   };
 }

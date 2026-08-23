@@ -399,18 +399,43 @@ test('tradeTableRow: a Kraken trade reports its commission amount in GBP, matchi
   assert.strictEqual(row.commissionText, '£0.02');
 });
 
-test('tradeTableRow: a missing fee reports Not available for both commission columns rather than a fabricated zero', () => {
+test('tradeTableRow: a missing fee shows a compact dash in both commission columns, never a fabricated zero', () => {
+  // 2026-08-23 Founder-reported: these previously carried notAvailable()'s full sentence,
+  // which React Native shrank to unreadable text inside a column a few characters wide
+  // ("very small text instead of any values"). The dash keeps the cell legible; the full
+  // explanation is still one tap away in TradeDetail. What must NOT happen is a 0 that
+  // reads as "this trade was free".
   const row = tradeTableRow({
     broker: 'alpaca', symbol: 'AAPL', side: 'sell', status: 'closed',
     quantity: 10, exit_price: 100, profit_loss: 45, closed_at: '2026-08-21T07:49:34Z',
   });
-  assert.ok(row.commissionPctText.startsWith('Not available'));
-  assert.ok(row.commissionText.startsWith('Not available'));
+  assert.strictEqual(row.commissionPctText, '-');
+  assert.strictEqual(row.commissionText, '-');
+  assert.ok(!row.commissionText.includes('0'), 'a missing fee must never render as a zero amount');
+  assert.ok(row.commissionPctText.length < 4, 'must stay short enough to render in a narrow column');
+});
+
+test('tradeTableRow: reports the amount actually committed to the trade', () => {
+  // 2026-08-23 Founder request: "this table should also show the amount put forward to
+  // trade for each". Price alone hid the difference between a GBP 2 and a GBP 25 position
+  // -- the exact sizing problem that took three separate fixes to find this weekend.
+  const row = tradeTableRow({
+    broker: 'kraken', symbol: 'LINK', side: 'buy', status: 'holding',
+    quantity: 2.96912, entry_price: 8.42, opened_at: '2026-08-23T17:51:00Z',
+  });
+  assert.strictEqual(row.amountText, '£25', "qty x price, in the broker currency");
+});
+
+test('tradeTableRow: an unknown amount is a dash, never a fabricated zero', () => {
+  const row = tradeTableRow({ broker: 'kraken', symbol: 'BCH', side: 'buy', status: 'holding' });
+  assert.strictEqual(row.amountText, '-');
 });
 
 test('tradeTableRow: a real fee with no usable quantity/price still reports the fee amount but not a fabricated percentage', () => {
   const row = tradeTableRow({ broker: 'kraken', status: 'closed', fee: 0.02, closed_at: '2026-08-21T07:56:00Z' });
-  assert.ok(row.commissionPctText.startsWith('Not available'));
+  // The dash replaced the long sentence here too (2026-08-23) -- the point of the test is
+  // unchanged: a real fee is still shown, and the percentage is NOT invented from nothing.
+  assert.strictEqual(row.commissionPctText, '-');
   assert.strictEqual(row.commissionText, '£0.02');
 });
 

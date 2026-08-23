@@ -362,22 +362,27 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tradeTableCellDate: {
-    flex: 1.3,
+    flex: 1.15,
   },
   tradeTableCellSymbol: {
-    flex: 1.6,
+    flex: 1.35,
   },
   tradeTableCellSide: {
     flex: 0.7,
   },
   tradeTableCellPrice: {
-    flex: 1.3,
+    flex: 1.2,
+  },
+  // 2026-08-23 Founder request: how much money was actually committed per trade. Given a
+  // little more room than Price because it is the column being read for sizing.
+  tradeTableCellAmount: {
+    flex: 1.2,
   },
   tradeTableCellCommissionPct: {
-    flex: 0.9,
+    flex: 0.85,
   },
   tradeTableCellCommission: {
-    flex: 1.0,
+    flex: 0.95,
   },
   tradeTableCellPnl: {
     flex: 1.2,
