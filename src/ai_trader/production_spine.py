@@ -668,7 +668,24 @@ def portfolio_manager_decision(
 ) -> dict[str, Any]:
     initialize_production_spine_schema(db_path)
     symbol = str(proposal.get("symbol") or "").upper()
-    proposed_notional = _float(proposal.get("position_size") or proposal.get("notional") or proposal.get("approved_notional")) or 0.0
+    # 2026-08-23 live incident: this read position_size FIRST, but on a TradeProposal
+    # position_size is the QUANTITY IN UNITS, not a notional in currency. The caller already
+    # supplies a correct "notional" (sprint6.pre_execution_decision_packet sets
+    # entry_price * position_size) -- it was simply never reached.
+    #
+    # The effect was silent and size-dependent, because a quantity only looks like a small
+    # number for HIGH-priced assets. Confirmed against live trades, all with the same
+    # GBP 500 allocation approving ~GBP 25:
+    #   XLM  25 / 0.144  = 173.6 units -> min(25, 173.6) = GBP 25.00  (correct by accident)
+    #   LTC  25 / 38.57  =  0.643      -> min(25, 0.643) = GBP 0.64
+    #                                  -> floored to LTC ordermin 0.1 = GBP 3.86
+    #   SOL  25 / ~70    =  0.417      -> floored to SOL ordermin 0.06 = GBP 4.20
+    # So cheap coins traded at full size and expensive ones collapsed to the exchange
+    # minimum, which looked like erratic sizing rather than a unit confusion.
+    #
+    # position_size is kept as the LAST fallback: some callers (and existing tests) pass a
+    # notional under that name, and dropping it would size those at zero.
+    proposed_notional = _float(proposal.get("notional") or proposal.get("approved_notional") or proposal.get("position_size")) or 0.0
     asset_class = str(proposal.get("asset_class") or proposal.get("asset_type") or "Unknown")
     exposure = calculate_portfolio_exposure(db_path, positions, broker=proposal.get("broker"))
     impact = proposed_trade_portfolio_impact(
