@@ -300,7 +300,22 @@ export const styles = StyleSheet.create({
   statusPillText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#ffffff',
+    // 2026-08-24 Founder-reported: this was white, which vanished against the pale pill
+    // backgrounds once the app went light. Each tone now carries its own dark ink so the
+    // pill still reads as green/amber/red at a glance AND the word is legible.
+    color: '#16324f',
+  },
+  pillGoodText: {
+    color: '#14532d',
+  },
+  pillWarnText: {
+    color: '#78350f',
+  },
+  pillDangerText: {
+    color: '#7f1d1d',
+  },
+  pillNeutralText: {
+    color: '#334155',
   },
   input: {
     minHeight: 42,
