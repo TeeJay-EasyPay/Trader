@@ -490,53 +490,125 @@ def all_broker_runtime(db_path: Path) -> list[dict[str, Any]]:
     ]
 
 
+_BROKER_HISTORY_INSERT_CHUNK = 500
+
+
 def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Persist broker orders/fills, in batches.
+
+    2026-08-24: /timing-diagnostics measured this at 39.09s for Kraken and 21.2s for
+    Alpaca in production -- by far the largest cost in either account path, and the
+    reason /portfolio, /status and Ask AI Trader all hit Render's hard 60s proxy
+    limit. Every broker call feeding it was under half a second; the brokers were
+    never the problem.
+
+    The cause was one conn.execute() per trade. Against a local SQLite file that is
+    free, but the hosted database is a network hop away, so each row cost a full
+    round trip and a few hundred rows cost most of a minute. The work is now a
+    single lookup of what already exists plus one multi-row INSERT per chunk --
+    two round trips instead of hundreds.
+    """
     initialize_multi_broker_schema(db_path)
-    newly_inserted: list[dict[str, Any]] = []
+    if not trades:
+        return []
+
+    broker_key = broker.lower()
+    prepared: list[tuple[tuple[Any, ...], dict[str, Any], str, tuple[Any, ...]]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in trades:
+        external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
+        status = str(item.get("status") or item.get("type") or "unknown")
+        event_timestamp = (
+            item.get("updated_at")
+            or item.get("transaction_time")
+            or item.get("filled_at")
+            or item.get("closed_at")
+            or item.get("closetm")
+            or item.get("created_at")
+            or item.get("opentm")
+            or item.get("time")
+            or "broker-event-without-timestamp"
+        )
+        identity = (external_id or None, status, event_timestamp)
+        # A single broker payload can carry the same event twice (an order and its
+        # own fill record). Row-at-a-time inserts let the second one be rejected by
+        # the unique index; a batch has to drop it here instead.
+        if identity in seen:
+            continue
+        seen.add(identity)
+        prepared.append((
+            identity,
+            item,
+            status,
+            (
+                broker_key,
+                external_id or None,
+                item.get("symbol") or item.get("pair"),
+                item.get("asset_type"),
+                item.get("side") or item.get("type"),
+                safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
+                safe_float(item.get("price")),
+                safe_float(item.get("notional")),
+                status,
+                item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
+                item.get("closed_at") or item.get("closetm"),
+                event_timestamp,
+                json.dumps(item, sort_keys=True, default=str),
+            ),
+        ))
+
+    if not prepared:
+        return []
+
+    columns = (
+        "broker, external_id, symbol, asset_type, side, quantity, "
+        "price, notional, status, opened_at, closed_at, updated_at, payload_json"
+    )
+    row_placeholder = "(" + ", ".join(["?"] * 13) + ")"
+
     with closing(connect(db_path)) as conn:
         with conn:
-            for item in trades:
-                external_id = str(item.get("id") or item.get("order_id") or item.get("txid") or item.get("trade_id") or "")
-                status = str(item.get("status") or item.get("type") or "unknown")
-                event_timestamp = (
-                    item.get("updated_at")
-                    or item.get("transaction_time")
-                    or item.get("filled_at")
-                    or item.get("closed_at")
-                    or item.get("closetm")
-                    or item.get("created_at")
-                    or item.get("opentm")
-                    or item.get("time")
-                    or "broker-event-without-timestamp"
+            existing = _existing_broker_history_keys(conn, broker_key, [row[0] for row in prepared])
+            new_rows = [row for row in prepared if row[0] not in existing]
+            for start in range(0, len(new_rows), _BROKER_HISTORY_INSERT_CHUNK):
+                chunk = new_rows[start:start + _BROKER_HISTORY_INSERT_CHUNK]
+                params: list[Any] = []
+                for _, _, _, values in chunk:
+                    params.extend(values)
+                conn.execute(
+                    f"INSERT INTO BROKER_TRADE_HISTORY ({columns}) VALUES "
+                    + ", ".join([row_placeholder] * len(chunk))
+                    + " ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING",
+                    params,
                 )
-                cursor = conn.execute(
-                    """
-                    INSERT INTO BROKER_TRADE_HISTORY (
-                        broker, external_id, symbol, asset_type, side, quantity,
-                        price, notional, status, opened_at, closed_at, updated_at,
-                        payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(broker, external_id, status, updated_at) DO NOTHING
-                    """,
-                    (
-                        broker.lower(),
-                        external_id or None,
-                        item.get("symbol") or item.get("pair"),
-                        item.get("asset_type"),
-                        item.get("side") or item.get("type"),
-                        safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
-                        safe_float(item.get("price")),
-                        safe_float(item.get("notional")),
-                        status,
-                        item.get("created_at") or item.get("transaction_time") or item.get("opentm") or item.get("time"),
-                        item.get("closed_at") or item.get("closetm"),
-                        event_timestamp,
-                        json.dumps(item, sort_keys=True, default=str),
-                    ),
-                )
-                if cursor.rowcount:
-                    newly_inserted.append({**item, "status": status})
-    return newly_inserted
+
+    # Reported from what the pre-insert lookup found rather than from rowcount. A row
+    # inserted by another process in between is counted as new here; that is a
+    # duplicate notification at worst, where the old code could equally miss one.
+    return [{**item, "status": status} for _, item, status, _ in new_rows]
+
+
+def _existing_broker_history_keys(conn: Any, broker: str, identities: list[tuple[Any, ...]]) -> set[tuple[Any, ...]]:
+    """Which of these (external_id, status, updated_at) keys this broker already has.
+
+    Narrowed by the batch's own timestamps so the read stays small on a table that
+    grows forever, then matched exactly in Python -- which also sidesteps SQL's
+    three-valued NULL comparison for events that arrive without an id.
+    """
+    timestamps = sorted({identity[2] for identity in identities if identity[2] is not None})
+    if not timestamps:
+        return set()
+    existing: set[tuple[Any, ...]] = set()
+    for start in range(0, len(timestamps), _BROKER_HISTORY_INSERT_CHUNK):
+        chunk = timestamps[start:start + _BROKER_HISTORY_INSERT_CHUNK]
+        rows = conn.execute(
+            "SELECT external_id, status, updated_at FROM BROKER_TRADE_HISTORY "
+            f"WHERE broker = ? AND updated_at IN ({', '.join(['?'] * len(chunk))})",
+            (broker, *chunk),
+        ).fetchall()
+        for row in rows:
+            existing.add((row[0], row[1], row[2]))
+    return existing
 
 
 def latest_broker_trades(db_path: Path, broker: str, limit: int = 20) -> list[dict[str, Any]]:

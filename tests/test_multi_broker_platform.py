@@ -32,6 +32,7 @@ from ai_trader.config import Settings
 from ai_trader.broker_adapters import KrakenAdapter
 from ai_trader.foundation import load_trading_policy
 from ai_trader.models import AccountContext, AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
+from ai_trader import multi_broker
 from ai_trader.multi_broker import (
     acquire_order_intent_lock,
     broker_auto_trading_enabled,
@@ -166,6 +167,90 @@ class MultiBrokerPlatformTests(unittest.TestCase):
 
             self.assertEqual(len(first), 1)
             self.assertEqual(second, [])
+
+    def test_broker_history_writes_in_batches_not_one_round_trip_per_trade(self):
+        """2026-08-24: /timing-diagnostics measured this at 39.09s (Kraken) and 21.2s
+        (Alpaca) in production -- the single largest cost in either account path, and
+        why /portfolio, /status and Ask AI Trader all hit Render's hard 60s proxy
+        limit. Every broker API call feeding it was under half a second.
+
+        It ran one conn.execute() per trade. Free against a local SQLite file, but the
+        hosted database is a network hop away, so each row cost a round trip. This
+        pins the round-trip count, because wall clock in this test would prove nothing
+        -- the cost only appears over a network."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            trades = [
+                {
+                    "id": f"kr-{index}", "symbol": "XBTGBP", "side": "buy", "status": "closed",
+                    "vol": "0.001", "price": "40000", "updated_at": f"2026-08-24T10:{index:02d}:00+00:00",
+                }
+                for index in range(60)
+            ]
+            record_broker_trade_history(db_path, "kraken", [])  # absorb schema setup
+
+            executed: list[str] = []
+            real_connect = multi_broker.connect
+
+            class CountingConnection:
+                """sqlite3.Connection.execute is read-only, so proxy rather than patch."""
+
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def execute(self, sql, params=()):
+                    executed.append(" ".join(str(sql).split())[:40])
+                    return self._inner.execute(sql, params)
+
+                def __getattr__(self, name):
+                    return getattr(self._inner, name)
+
+                def __enter__(self):
+                    self._inner.__enter__()
+                    return self
+
+                def __exit__(self, *exc):
+                    return self._inner.__exit__(*exc)
+
+                def close(self):
+                    self._inner.close()
+
+            def counting_connect(path, **kwargs):
+                return CountingConnection(real_connect(path, **kwargs))
+
+            with patch.object(multi_broker, "connect", counting_connect):
+                inserted = record_broker_trade_history(db_path, "kraken", trades)
+
+            self.assertEqual(len(inserted), 60)
+            self.assertLessEqual(
+                len(executed), 4,
+                f"60 trades should be a handful of statements, took {len(executed)}: {executed}",
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                stored = conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0]
+            self.assertEqual(stored, 60)
+
+            # Re-recording the same payload must still insert nothing and report nothing.
+            self.assertEqual(record_broker_trade_history(db_path, "kraken", trades), [])
+            with closing(sqlite3.connect(db_path)) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0], 60)
+
+    def test_broker_history_batch_drops_duplicates_inside_one_payload(self):
+        """A broker payload can carry the same event twice (an order plus its own fill
+        record). Row-at-a-time inserts let the unique index reject the second one; a
+        multi-row insert has to drop it before it reaches the database."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            event = {
+                "id": "kr-dup", "symbol": "ETHGBP", "side": "sell", "status": "closed",
+                "vol": "1", "price": "2000", "updated_at": "2026-08-24T11:00:00+00:00",
+            }
+
+            inserted = record_broker_trade_history(db_path, "kraken", [event, dict(event), dict(event)])
+
+            self.assertEqual(len(inserted), 1)
+            with closing(sqlite3.connect(db_path)) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0], 1)
 
     def test_recent_broker_events_are_deduplicated_bounded_and_orders_first(self):
         order = {"id": "order-1", "status": "filled", "qty": "1"}
