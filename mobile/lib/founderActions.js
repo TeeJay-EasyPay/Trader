@@ -14,9 +14,36 @@
 const { formatDateTime } = require('./datetime');
 const { wasRejectedByCommittee } = require('./principalOpportunities');
 
+// 2026-08-24 Founder-reported: this card rendered reason_for_recommendation in FULL. For KSM
+// that was a multi-paragraph essay on position-sizing theory, complete with literal
+// "**markdown**" asterisks and hard line breaks mid-sentence -- pages of general trading
+// theory in the one card that is supposed to say "here is what needs you, in a line".
+// Exactly the wall-of-text problem just removed from The View Ahead, reappearing here.
+//
+// Keeps the first couple of real sentences and drops the rest: enough to know WHY without
+// the essay. The full text is still on the recommendation itself for anyone who wants it.
+function summariseReason(text, maxChars = 220) {
+  const flat = String(text || '')
+    .replace(/\*\*/g, '')       // literal markdown bold that never renders
+    .replace(/[#`>]/g, '')
+    .replace(/\s+/g, ' ')        // hard line breaks mid-sentence
+    .trim();
+  if (!flat) {
+    return '';
+  }
+  if (flat.length <= maxChars) {
+    return flat;
+  }
+  const cut = flat.slice(0, maxChars);
+  const lastStop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+  // Prefer ending on a real sentence, but never return a uselessly short fragment.
+  return lastStop > maxChars * 0.4 ? cut.slice(0, lastStop + 1) : `${cut.trimEnd()}...`;
+}
+
 function recommendationAction(item) {
   const name = item.ticker || item.symbol || 'this recommendation';
-  const reason = item.reason_for_recommendation ? ` ${item.reason_for_recommendation}` : '';
+  const summarised = summariseReason(item.reason_for_recommendation);
+  const reason = summarised ? ` ${summarised}` : '';
   const byWhen = item.expires_at ? ` before ${formatDateTime(item.expires_at)}` : '';
   return {
     title: name,
@@ -56,6 +83,7 @@ function buildFounderActions({ recommendations, unresolvedIncidentCount = 0, max
 }
 
 module.exports = {
+  summariseReason,
   recommendationAction,
   incidentAction,
   buildFounderActions,

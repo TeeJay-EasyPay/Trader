@@ -5,7 +5,7 @@
 'use strict';
 
 const assert = require('assert');
-const { recommendationAction, incidentAction, buildFounderActions } = require('./founderActions');
+const { recommendationAction, incidentAction, buildFounderActions, summariseReason } = require('./founderActions');
 
 let passed = 0;
 function test(name, fn) {
@@ -65,3 +65,28 @@ console.log(`\n${passed} passed`);
 if (process.exitCode) {
   console.error('Some founderActions tests failed.');
 }
+
+test('summariseReason: strips the raw markdown that never renders', () => {
+  // 2026-08-24 Founder-reported: the KSM card showed literal "**Fixed-fractional risk...**"
+  // asterisks on screen, plus hard line breaks mid-sentence from the source text.
+  const out = summariseReason('**Fixed-fractional risk beats fixed-dollar risk.**\nA fixed-dollar approach\nignores growth.');
+  assert.ok(!out.includes('**'), 'asterisks must not reach the screen');
+  assert.ok(!out.includes('\n'), 'hard line breaks must be collapsed');
+});
+
+test('summariseReason: an essay is cut to something readable at a glance', () => {
+  const essay = 'First real point about the trade. ' + 'Then paragraphs of general trading theory. '.repeat(20);
+  const out = summariseReason(essay);
+  assert.ok(out.length <= 240, `still ${out.length} chars -- this card is meant to be one line`);
+  assert.ok(out.startsWith('First real point'), 'must keep the beginning, which is the useful part');
+});
+
+test('summariseReason: a short genuine reason passes through untouched', () => {
+  assert.strictEqual(summariseReason('Strong daily momentum with a tight stop.'), 'Strong daily momentum with a tight stop.');
+});
+
+test('summariseReason: no reason yields no text rather than a stray fragment', () => {
+  assert.strictEqual(summariseReason(''), '');
+  assert.strictEqual(summariseReason(null), '');
+  assert.strictEqual(summariseReason(undefined), '');
+});
