@@ -15,6 +15,7 @@ from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .operational import safe_score
 from .proposal_context import build_proposal_context
+from .symbol_track_record import symbol_track_record
 from .market_intelligence_platform import load_recent_observations_batch
 from .technical_discretion import (
     clears_fee_hurdle,
@@ -609,6 +610,34 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
+            # 2026-08-24, Founder-directed: this system's own realised record on this coin
+            # -- the one input no other trader has, and the only one here that isn't
+            # published for free to everyone. Placed before the proposal is built so a
+            # coin that has taken money off us repeatedly is stood aside from rather than
+            # argued into, and recorded as its own no-trade reason so the Founder can see
+            # it happen. See symbol_track_record.py for why this can only ever lower
+            # conviction, never raise it.
+            track_record = symbol_track_record(db_path, symbol)
+            if track_record.verdict == "avoid":
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={
+                        "symbol": symbol,
+                        "reason": "own_track_record_negative",
+                        "track_record": track_record.to_dict(),
+                    },
+                )
+                print(
+                    f"[crypto-research] symbol={symbol} stage=completed outcome=own_track_record_negative "
+                    f"record={track_record.wins}/{track_record.trades} net={track_record.net_profit_loss:.2f}",
+                    flush=True,
+                )
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
+            if track_record.confidence_penalty:
+                confidence = max(0.0, round(confidence - track_record.confidence_penalty, 4))
             quantity = sized_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0

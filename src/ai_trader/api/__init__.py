@@ -6,6 +6,7 @@ import os
 import sqlite3
 from ..application.administration_service import AdministrationService
 from ..guardrails import us_equity_market_hours_between
+from ..symbol_track_record import all_symbol_track_records
 from ..application.broker_service import BrokerService
 from ..application.execution_service import ExecutionService
 from ..application.founder_experience_service import FounderExperienceService
@@ -1124,6 +1125,9 @@ class LocalApiService:
         context["market_forecasts"] = self._ask_market_forecasts()
         context["crypto_research_scores"] = self._ask_crypto_research_scores()
         context["recent_crypto_news"] = self._ask_recent_crypto_news()
+        # The Founder's own realised record per coin -- the only evidence here that is
+        # not published free to every other trader. See symbol_track_record.py.
+        context["own_track_record_by_coin"] = all_symbol_track_records(self.settings.db_path)
         # Measured at ~25s in production. Worth having when there's room for it -- it is
         # what answers "is AI Trader getting better?" -- but never worth spending the
         # budget that the actual answer needs.

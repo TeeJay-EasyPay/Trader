@@ -335,7 +335,14 @@ class OpenAIReadOnlyExplainer:
                 "reasoning behind it, and what would invalidate it. Say plainly that a forecast is the "
                 "system's estimate rather than a certainty, and give the honest answer when the "
                 "confidence is low or the signals disagree -- but do not claim to have no view when a "
-                "forecast for that symbol is present."
+                "forecast for that symbol is present. "
+                # 2026-08-24, Founder-directed: every other signal here is published free to
+                # everyone. This one is not, and it is the one most worth saying out loud.
+                "own_track_record_by_coin is what this system's own money actually did on each coin, "
+                "at its own fees. When a coin is discussed, say what that record is -- including when "
+                "it is bad, and especially when it contradicts a positive technical signal. A losing "
+                "record on a handful of trades is weak evidence, not proof, so give the trade count "
+                "alongside it rather than treating a small sample as settled."
             ),
             "question": question,
             "context": context,
