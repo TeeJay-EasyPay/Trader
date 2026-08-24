@@ -144,7 +144,7 @@ _ASK_LEARNING_SECTION_MIN_SECONDS = 38.0
 # never builds them itself -- see cached_broker_panels() for why.
 _ASK_PANEL_MAX_AGE_SECONDS = 300.0
 # Forecast reasoning runs to several hundred words each, and there are ~25 live.
-_ASK_FORECAST_TEXT_LIMIT = 700
+_ASK_FORECAST_TEXT_LIMIT = 400
 
 # Kept from each recommendation for Ask. The full row is ~118KB, nearly all of it
 # trade_lifecycle/signals/committee internals that answer no founder question.
@@ -160,7 +160,12 @@ _ASK_RECOMMENDATION_FIELDS = (
     "reason_for_recommendation", "key_risks", "strongest_argument_for",
     "strongest_argument_against", "invalidation",
 )
-_ASK_RECOMMENDATION_TEXT_LIMIT = 600
+# 2026-08-24: recommendations were 50.8KB of a 102KB prompt -- half the context, mostly
+# US equity ideas, on questions that are usually about a coin or the account. Trimmed
+# once the research sections were added, because prompt size is what OpenAI charges time
+# for: the same question went 20.8s -> 45.0s against a 55s app timeout.
+_ASK_RECOMMENDATION_TEXT_LIMIT = 300
+_ASK_RECOMMENDATION_LIMIT = 10
 
 
 def _seconds_left(deadline: float | None) -> float:
@@ -1098,7 +1103,7 @@ class LocalApiService:
                 )
             ],
             "latest_recommendations": [
-                _slim_recommendation(row) for row in self.recommendations(limit=20)
+                _slim_recommendation(row) for row in self.recommendations(limit=_ASK_RECOMMENDATION_LIMIT)
             ],
             "latest_orchestrator_decisions": [
                 dict(row) for row in self._rows(
@@ -1681,7 +1686,7 @@ class LocalApiService:
                 SELECT symbol, title, source, published_at
                 FROM CRYPTO_NEWS
                 ORDER BY news_id DESC
-                LIMIT 40
+                LIMIT 20
                 """
             )
         except Exception:  # noqa: BLE001 - news is an extra; never fail an answer over it
