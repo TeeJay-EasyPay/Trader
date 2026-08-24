@@ -3,6 +3,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from dataclasses import replace
@@ -1467,6 +1469,43 @@ class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):
             self.assertEqual(len(rows), 1, "a pricing failure must not drop the row, only leave it unpriced")
             self.assertNotIn("current_price", rows[0])
             self.assertIn("current_price_error", rows[0])
+
+    def test_broker_panels_degrades_a_hanging_broker_instead_of_the_whole_response(self):
+        """2026-08-24 regression: Alpaca stopped answering and took /brokers, /status,
+        /portfolio and Ask AI Trader down with it. Fetching brokers concurrently wasn't
+        enough -- future.result() with no timeout still waits for the slowest one, so
+        every caller hit Render's hard 60s proxy timeout, which returns nothing at all.
+        One broker's bad day must cost that broker's panel, not the whole page."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            release = threading.Event()
+
+            def hanging_alpaca():
+                release.wait(30)  # far past the budget, like the real stuck account
+                return {"connection_status": "Connected", "source": "Alpaca"}
+
+            try:
+                with (
+                    patch("ai_trader.application.broker_service.selected_backend", return_value="postgres"),
+                    patch("ai_trader.application.broker_service._BROKER_PANEL_FETCH_BUDGET_SECONDS", 0.5),
+                    patch.object(service._broker_service, "_alpaca_panel_portfolio", side_effect=hanging_alpaca),
+                    patch.object(
+                        service._broker_service,
+                        "_exchange_portfolio",
+                        side_effect=lambda broker: {"connection_status": "Connected", "source": broker},
+                    ),
+                ):
+                    started = time.monotonic()
+                    panels = service.broker_panels()
+                    elapsed = time.monotonic() - started
+            finally:
+                release.set()
+
+            self.assertLess(elapsed, 20.0, "a hanging broker must not hold the response open")
+            alpaca_panel = next(p for p in panels if p["broker"] == "alpaca")
+            self.assertIn("did not respond in time", str(alpaca_panel["connection_status"]))
+            kraken_panel = next(p for p in panels if p["broker"] == "kraken")
+            self.assertEqual(kraken_panel["connection_status"], "Connected")
 
     def test_broker_panels_reuses_portfolio_price_hints_for_capital_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:

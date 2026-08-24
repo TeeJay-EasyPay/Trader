@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import date
 from typing import Any, Callable
 
@@ -34,6 +34,12 @@ from ..sprint6 import normalize_broker_events, upsert_incident
 from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _csv_env, _estimated_in_positions
 
 logger = logging.getLogger("ai_trader.api")
+
+# How long broker_panels() will wait for ALL live broker account fetches combined.
+# They run concurrently, so this is wall clock, not a per-broker allowance. Render's
+# proxy kills the request at a hard 60s and returns nothing at all, so this has to
+# leave room for the panel assembly and serialisation that follow.
+_BROKER_PANEL_FETCH_BUDGET_SECONDS = float(os.getenv("BROKER_PANEL_FETCH_BUDGET_SECONDS", "25"))
 
 
 def _recent_unique_broker_events(
@@ -503,14 +509,38 @@ class BrokerService:
         # concurrent writers to the same file can raise "database is locked".
         portfolios: dict[str, Any] = {}
         if selected_backend() == "postgres":
-            with ThreadPoolExecutor(max_workers=len(broker_names)) as pool:
+            # 2026-08-24: running the fetches concurrently was necessary but not
+            # sufficient -- future.result() with no timeout still waits for the slowest
+            # broker forever, so one sick account hung the whole response past Render's
+            # hard 60s proxy limit. Measured in production that day: Alpaca >60s (never
+            # returned), Kraken 50.5s. /brokers, /status, /portfolio and Ask AI Trader
+            # all died at the proxy, which returns *nothing* -- the Founder saw a blank
+            # screen or "timed out", not a slow answer. A single broker's bad day must
+            # cost that broker's panel, never the whole page.
+            deadline = time.monotonic() + _BROKER_PANEL_FETCH_BUDGET_SECONDS
+            pool = ThreadPoolExecutor(max_workers=len(broker_names))
+            try:
                 futures = {broker: pool.submit(fetch_portfolio, broker) for broker in broker_names}
                 for broker, future in futures.items():
                     try:
-                        portfolios[broker] = future.result()
+                        portfolios[broker] = future.result(timeout=max(0.0, deadline - time.monotonic()))
+                    except FuturesTimeoutError:
+                        logger.warning(
+                            "Broker panel portfolio fetch for %s exceeded the %.0fs budget; degrading this panel.",
+                            broker, _BROKER_PANEL_FETCH_BUDGET_SECONDS,
+                        )
+                        portfolios[broker] = {
+                            "connection_status": "Temporarily unavailable - the live account did not respond in time",
+                            "source": "Fetch timed out",
+                        }
                     except Exception as exc:  # noqa: BLE001 - degrade this broker's panel, not the whole response
                         logger.warning("Broker panel portfolio fetch failed for %s: %s", broker, exc)
                         portfolios[broker] = {"connection_status": f"Temporarily unavailable - {exc}", "source": "Fetch failed"}
+            finally:
+                # Deliberately not `with ThreadPoolExecutor(...)`: its __exit__ calls
+                # shutdown(wait=True), which would block on the very fetch we just timed
+                # out on and hand the hang straight back.
+                pool.shutdown(wait=False, cancel_futures=True)
         else:
             for broker in broker_names:
                 try:
