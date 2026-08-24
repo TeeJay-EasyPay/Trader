@@ -269,6 +269,29 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             return None
         return sorted(pair for pair in allowed if pair.upper() not in self._known_pairs_cache)
 
+    def best_bid(self, pair: str) -> float | None:
+        """The current best bid for a pair, or None if it cannot be read.
+
+        2026-08-24 finding: patient limit entries almost never filled, so nearly every buy
+        took the market fallback and paid the 0.80% taker rate anyway -- confirmed against
+        real orders, where only 1 of 4 overnight entries stayed a limit. The cause was the
+        price: _limit_entry_price works from the PROPOSAL's entry price, which is whatever
+        the market was doing when research ran, potentially an hour earlier. By the time the
+        order is placed the market has moved and the bid sits somewhere irrelevant.
+
+        Resting at the live best bid puts the order at the front of the queue, where it
+        fills as soon as any seller crosses -- the highest-probability maker fill available
+        without ever crossing the spread ourselves.
+        """
+        try:
+            payload = self._public_request(f"/0/public/Ticker?{parse.urlencode({'pair': pair})}")
+            info = (payload.get("result") or {}).get(pair) or next(iter((payload.get("result") or {}).values()), None)
+            bid = (info or {}).get("b")
+            value = float(bid[0]) if isinstance(bid, (list, tuple)) and bid else None
+            return value if value and value > 0 else None
+        except Exception:  # noqa: BLE001 - a pricing read must never break an order attempt
+            return None
+
     def pair_price_decimals(self, pair: str) -> int | None:
         """How many decimal places Kraken accepts in a PRICE for this pair.
 
@@ -493,6 +516,15 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         # the market order that was already built, since a fee optimisation must never
         # cost the trade itself.
         if limit_price is not None and order_request.side.lower() == "buy":
+            # Rest at the live best bid where possible. Capped by the proposal-derived price
+            # so we never bid MORE than the trade was sized against -- paying above that to
+            # save 0.40% is self-defeating. When the market has run above the proposal price
+            # the cap binds, the order sits below market and probably will not fill, and the
+            # market fallback takes it: that is the correct outcome, not a bug. We decline to
+            # chase, we do not decline to trade.
+            live_bid = self.best_bid(pair)
+            if live_bid is not None:
+                limit_price = min(live_bid, limit_price)
             decimals = self.pair_price_decimals(pair)
             if decimals is None:
                 limit_price = None
