@@ -24,6 +24,7 @@ from ai_trader.config import Settings
 from ai_trader.db_browser import ReadOnlyDatabaseBrowser
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.intelligence import InvestmentIntelligenceDatabase
+from ai_trader.market_intelligence_platform import initialize_market_intelligence_schema
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
 from ai_trader.multi_broker import set_broker_auto_trading
@@ -313,6 +314,83 @@ class DeveloperExperienceTests(unittest.TestCase):
             # Absent panels must be said out loud, not left as a silent empty list that
             # reads like "you have no brokers".
             self.assertIn("snapshots below", str(context["broker_panels"]))
+
+    def test_ask_ai_trader_context_includes_the_systems_own_research(self):
+        """2026-08-24, Founder: "it works but only using its own traded data". Asked how
+        XRP might do, Ask answered that it had no view -- while a 14-day XRP forecast
+        with full reasoning sat unread in the database. It could see what it had bought
+        and sold but none of the research it runs every hour."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            initialize_market_intelligence_schema(settings.db_path)
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO FORECAST_RECORDS (
+                            created_at, scope, symbol, asset_type, direction, horizon_days,
+                            confidence, reasoning, invalidation, evidence_json, generated_by, expires_at
+                        ) VALUES ('2026-08-24T06:33:16+00:00', 'symbol', 'XRP', 'crypto', 'uncertain', 14,
+                                  0.35, ?, 'A weekly close below the long moving average.', '{}', 'test',
+                                  '2099-01-01T00:00:00+00:00')
+                        """,
+                        ("Strong daily momentum against a weak weekly trend. " + "x" * 2000,),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO CRYPTO_RESEARCH_SCORES (created_at, symbol, technical_trend_score, momentum_score, rsi, reasoning_json)
+                        VALUES ('2026-08-24T10:00:00+00:00', 'XRP', 1.0, 1.0, 62.5, '{}')
+                        """
+                    )
+
+            context = service._ask_ai_context(deadline=time.monotonic() + 50.0)
+
+            forecast = next(row for row in context["market_forecasts"] if row["symbol"] == "XRP")
+            self.assertEqual(forecast["direction"], "uncertain")
+            self.assertEqual(forecast["horizon_days"], 14)
+            self.assertEqual(forecast["confidence"], 0.35)
+            self.assertIn("weak weekly trend", forecast["reasoning"])
+            self.assertIn("moving average", forecast["invalidation"])
+            # Reasoning is kept but capped: ~25 of these, several hundred words each.
+            self.assertTrue(forecast["reasoning"].endswith("..."))
+            self.assertLessEqual(len(forecast["reasoning"]), 720)
+
+            score = next(row for row in context["crypto_research_scores"] if row["symbol"] == "XRP")
+            self.assertEqual(score["momentum_score"], 1.0)
+            self.assertIn("recent_crypto_news", context)
+
+    def test_ask_ai_trader_forecasts_are_one_per_symbol_and_exclude_expired(self):
+        """Stale forecasts must not be read back as current, and the newest view of a
+        symbol is the one that counts -- otherwise a superseded call argues with itself."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+            initialize_market_intelligence_schema(settings.db_path)
+            rows = [
+                ("BTC", "up", "2099-01-01T00:00:00+00:00", "current view"),
+                ("BTC", "down", "2099-01-01T00:00:00+00:00", "superseded view"),
+                ("SOL", "up", "2020-01-01T00:00:00+00:00", "long expired"),
+            ]
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                with conn:
+                    for symbol, direction, expires_at, reasoning in reversed(rows):
+                        conn.execute(
+                            """
+                            INSERT INTO FORECAST_RECORDS (
+                                created_at, scope, symbol, asset_type, direction, horizon_days,
+                                confidence, reasoning, evidence_json, generated_by, expires_at
+                            ) VALUES ('2026-08-24T06:00:00+00:00', 'symbol', ?, 'crypto', ?, 7, 0.6, ?, '{}', 'test', ?)
+                            """,
+                            (symbol, direction, reasoning, expires_at),
+                        )
+
+            forecasts = service._ask_ai_context(deadline=time.monotonic() + 50.0)["market_forecasts"]
+
+            symbols = [row["symbol"] for row in forecasts]
+            self.assertEqual(symbols.count("BTC"), 1)
+            self.assertNotIn("SOL", symbols, "an expired forecast must not be presented as current")
+            self.assertEqual(next(row for row in forecasts if row["symbol"] == "BTC")["reasoning"], "current view")
 
     def test_ask_ai_trader_recommendations_are_slimmed_for_the_prompt(self):
         from ai_trader.api import _slim_recommendation

@@ -143,6 +143,8 @@ _ASK_LEARNING_SECTION_MIN_SECONDS = 38.0
 # Ask reuses live broker panels only if another caller built them this recently. It
 # never builds them itself -- see cached_broker_panels() for why.
 _ASK_PANEL_MAX_AGE_SECONDS = 300.0
+# Forecast reasoning runs to several hundred words each, and there are ~25 live.
+_ASK_FORECAST_TEXT_LIMIT = 700
 
 # Kept from each recommendation for Ask. The full row is ~118KB, nearly all of it
 # trade_lifecycle/signals/committee internals that answer no founder question.
@@ -1109,6 +1111,14 @@ class LocalApiService:
                 )
             ],
         }
+        # 2026-08-24, Founder: "it works but only using its own traded data". Ask could
+        # see what it had bought and sold, but none of the research it runs every hour --
+        # so asked how XRP might do, it answered that it had no view, while a 14-day XRP
+        # forecast with reasoning sat in the database unread. These are the three research
+        # products it was blind to. All are plain table reads.
+        context["market_forecasts"] = self._ask_market_forecasts()
+        context["crypto_research_scores"] = self._ask_crypto_research_scores()
+        context["recent_crypto_news"] = self._ask_recent_crypto_news()
         # Measured at ~25s in production. Worth having when there's room for it -- it is
         # what answers "is AI Trader getting better?" -- but never worth spending the
         # budget that the actual answer needs.
@@ -1610,6 +1620,73 @@ class LocalApiService:
         # Delegates to BrokerService (Phase 6a). Kept as a thin wrapper: status() calls
         # this externally.
         return self._broker_service._active_broker_names()
+
+    def _ask_market_forecasts(self) -> list[dict[str, Any]]:
+        """Unexpired directional forecasts, one row per symbol.
+
+        The reasoning field is the part a founder actually wants read back ("strong
+        daily momentum but a weak weekly trend"), so it is kept but capped -- these are
+        several hundred words each and there are ~25 of them.
+        """
+        rows = self._rows(
+            """
+            SELECT symbol, asset_type, direction, horizon_days, confidence,
+                   reasoning, invalidation, created_at, expires_at
+            FROM FORECAST_RECORDS
+            WHERE expires_at IS NULL OR expires_at >= ?
+            ORDER BY forecast_id DESC
+            LIMIT 30
+            """,
+            (utc_now_iso(),),
+        )
+        forecasts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            symbol = str(row["symbol"] or "").upper()
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            forecast = dict(row)
+            for field in ("reasoning", "invalidation"):
+                value = forecast.get(field)
+                if isinstance(value, str) and len(value) > _ASK_FORECAST_TEXT_LIMIT:
+                    forecast[field] = value[:_ASK_FORECAST_TEXT_LIMIT] + "..."
+            forecasts.append(forecast)
+        return forecasts
+
+    def _ask_crypto_research_scores(self) -> list[dict[str, Any]]:
+        """Latest hourly scan score per coin -- the numbers behind a forecast."""
+        rows = self._rows(
+            """
+            SELECT symbol, created_at, technical_trend_score, momentum_score, rsi,
+                   volatility, liquidity, sentiment, news_score
+            FROM CRYPTO_RESEARCH_SCORES
+            ORDER BY score_id DESC
+            LIMIT 60
+            """
+        )
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            symbol = str(row["symbol"] or "").upper()
+            if symbol not in latest:
+                latest[symbol] = dict(row)
+        return list(latest.values())
+
+    def _ask_recent_crypto_news(self) -> list[dict[str, Any]]:
+        """Recent symbol-tagged headlines. Titles and sources only -- enough to say what
+        is being reported and by whom, without pasting whole articles into the prompt."""
+        try:
+            rows = self._rows(
+                """
+                SELECT symbol, title, source, published_at
+                FROM CRYPTO_NEWS
+                ORDER BY news_id DESC
+                LIMIT 40
+                """
+            )
+        except Exception:  # noqa: BLE001 - news is an extra; never fail an answer over it
+            return []
+        return [dict(row) for row in rows]
 
     def timing_diagnostics(self, target: str = "alpaca") -> dict[str, Any]:
         """Stage-by-stage wall clock for the expensive account paths.
