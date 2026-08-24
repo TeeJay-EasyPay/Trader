@@ -14,7 +14,7 @@ const { Text, TextInput, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, Metric, Button } = require('../components/shared');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
-const { askRequestOptions } = require('../lib/askRequest');
+const { askRequestOptions, askErrorMessage } = require('../lib/askRequest');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -49,11 +49,7 @@ function AskAiTrader({ messages, setMessages, request }) {
       // Founder - only the timeout case gets a specific explanation (it has a genuine,
       // actionable business meaning: the backend is slow to wake up); anything else is
       // reported honestly but in plain English, with no exception text attached.
-      const message = String(error.message || error);
-      const friendly = message.includes('AbortError') || message.includes('aborted') || message.includes('timed out')
-        ? 'The Ask request timed out before the backend replied. Render or OpenAI may still be waking up. Try again in a moment, or ask a shorter question.'
-        : 'I could not answer that yet - something went wrong reaching AI Trader. Please try again in a moment.';
-      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(friendly) }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(askErrorMessage(error)) }]);
       setAskStatus('Ask failed or timed out.');
     } finally {
       setAskLoading(false);

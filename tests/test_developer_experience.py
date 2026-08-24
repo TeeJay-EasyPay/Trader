@@ -292,6 +292,28 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertNotIn("world_class_evidence", context)
             self.assertEqual(recommendations.call_count, 1, "recommendations should be gathered once, not twice")
 
+    def test_ask_ai_trader_never_triggers_a_live_broker_fetch(self):
+        """2026-08-24: Ask built the broker panels itself, which measured ~29s of its
+        50s budget in production -- a real question took 57.2s, the app hung up at 55s,
+        and the Founder saw an error for an answer the backend had produced. Ask
+        explains stored evidence; the portfolio snapshots in its context already carry
+        the same balances, so it may reuse panels someone else built but must never
+        pay to build them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            with patch.object(
+                LocalApiService, "broker_panels", side_effect=AssertionError("Ask must not build broker panels")
+            ), patch.object(
+                type(service._broker_service), "_build_broker_panels",
+                side_effect=AssertionError("Ask must not build broker panels"),
+            ):
+                context = service._ask_ai_context(deadline=time.monotonic() + 50.0)
+
+            # Absent panels must be said out loud, not left as a silent empty list that
+            # reads like "you have no brokers".
+            self.assertIn("snapshots below", str(context["broker_panels"]))
+
     def test_ask_ai_trader_recommendations_are_slimmed_for_the_prompt(self):
         from ai_trader.api import _slim_recommendation
 

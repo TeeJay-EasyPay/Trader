@@ -140,6 +140,9 @@ _ASK_TOTAL_BUDGET_SECONDS = 50.0
 _ASK_MIN_OPENAI_SECONDS = 12.0
 # The daily-learning section costs ~25s on its own; only gather it with room to spare.
 _ASK_LEARNING_SECTION_MIN_SECONDS = 38.0
+# Ask reuses live broker panels only if another caller built them this recently. It
+# never builds them itself -- see cached_broker_panels() for why.
+_ASK_PANEL_MAX_AGE_SECONDS = 300.0
 
 # Kept from each recommendation for Ask. The full row is ~118KB, nearly all of it
 # trade_lifecycle/signals/committee internals that answer no founder question.
@@ -1033,14 +1036,22 @@ class LocalApiService:
         "what did you buy and why" needs a recommendation's symbol and reason, not
         its full lifecycle. Slim context, one query, and heavy optional sections
         only while the clock allows."""
-        broker_panels = self.broker_panels()
+        # Live panels only if some other caller has already built them recently. Building
+        # them here cost ~29s of the 50s budget, which is why a real question took 57s in
+        # production and the app gave up before the answer arrived. Ask explains stored
+        # evidence; latest_portfolio_snapshots below carries the same balances.
+        broker_panels = self._broker_service.cached_broker_panels(
+            max_age_seconds=_ASK_PANEL_MAX_AGE_SECONDS
+        )
         context = {
             "generated_at": utc_now_iso(),
             "safety_boundary": "Read-only explanation. No trading, approvals, broker controls, or guardrail changes are available to this endpoint.",
             "openai_configured": bool(self.settings.openai_api_key),
             "trading_state": self._control_state(),
             "broker_auto_trading": broker_auto_settings(self.settings.db_path),
-            "broker_panels": broker_panels,
+            "broker_panels": broker_panels if broker_panels is not None else
+                "Live broker panels were not refreshed for this answer. The portfolio "
+                "snapshots below are the most recent stored balances.",
             "latest_portfolio_snapshots": [
                 dict(row) for row in self._rows(
                     """

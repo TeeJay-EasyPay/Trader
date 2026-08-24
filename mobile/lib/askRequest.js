@@ -36,10 +36,26 @@ function askRequestOptions(question) {
   };
 }
 
+const TIMEOUT_MARKERS = ['aborterror', 'abort', 'timed out', 'timeout', 'network request failed'];
+
+function askErrorMessage(error) {
+  // 2026-08-24: this test was case-sensitive and only looked for 'AbortError'/'aborted'.
+  // React Native reports an aborted fetch as "Aborted" (and sometimes "Network request
+  // failed"), so a genuine timeout fell through to the generic branch and told the
+  // Founder "something went wrong reaching AI Trader" -- pointing at the network when
+  // the truth was that the backend was still working. Wrong diagnosis, wrong next step.
+  const message = String((error && error.message) || error || '').toLowerCase();
+  if (TIMEOUT_MARKERS.some((marker) => message.includes(marker))) {
+    return 'AI Trader took too long to answer that one. It is still gathering evidence in the background - try again in a moment, or ask a shorter question.';
+  }
+  return 'I could not answer that yet - something went wrong reaching AI Trader. Please try again in a moment.';
+}
+
 module.exports = {
   ASK_REQUEST_TIMEOUT_MS,
   ASK_BACKEND_BUDGET_MS,
   DASHBOARD_REFRESH_TIMEOUT_MS,
   RENDER_PROXY_LIMIT_MS,
   askRequestOptions,
+  askErrorMessage,
 };

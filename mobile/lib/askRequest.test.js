@@ -7,6 +7,7 @@ const {
   DASHBOARD_REFRESH_TIMEOUT_MS,
   RENDER_PROXY_LIMIT_MS,
   askRequestOptions,
+  askErrorMessage,
 } = require('./askRequest');
 
 let passed = 0;
@@ -50,6 +51,39 @@ test('Ask gives up before Render kills the connection anyway', () => {
     ASK_REQUEST_TIMEOUT_MS < RENDER_PROXY_LIMIT_MS,
     `Ask timeout ${ASK_REQUEST_TIMEOUT_MS}ms must stay under Render's ${RENDER_PROXY_LIMIT_MS}ms proxy limit`
   );
+});
+
+test('a timeout is reported as a timeout whatever case the platform used', () => {
+  // React Native reports an aborted fetch as "Aborted", not "aborted" or "AbortError".
+  // The old check was case-sensitive, so a real timeout was described to the Founder as
+  // "something went wrong reaching AI Trader" -- blaming the network for a backend that
+  // was still working, which points at the wrong fix.
+  for (const raw of [
+    new Error('Aborted'),
+    new Error('AbortError: The user aborted a request.'),
+    new Error('aborted'),
+    new Error('Network request failed'),
+    new Error('Request timed out'),
+  ]) {
+    assert.ok(
+      askErrorMessage(raw).includes('took too long'),
+      `${raw.message} should be reported as a timeout, got: ${askErrorMessage(raw)}`
+    );
+  }
+});
+
+test('a genuine failure is not dressed up as a timeout', () => {
+  const message = askErrorMessage(new Error('Backend returned non-JSON data from /ask-ai-trader (500).'));
+  assert.ok(message.includes('something went wrong'), message);
+  assert.ok(!message.includes('took too long'), message);
+});
+
+test('a missing or empty error still produces a founder-safe message', () => {
+  for (const raw of [null, undefined, '', {}]) {
+    const message = askErrorMessage(raw);
+    assert.ok(message.length > 0);
+    assert.ok(!message.includes('undefined'), message);
+  }
 });
 
 console.log(`\n${passed} passed`);

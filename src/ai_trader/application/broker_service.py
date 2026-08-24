@@ -530,6 +530,20 @@ class BrokerService:
             self._panels_cache = (time.monotonic(), panels)
             return panels
 
+    def cached_broker_panels(self, *, max_age_seconds: float) -> list[dict[str, Any]] | None:
+        """Panels only if a recent build already exists -- never builds them.
+
+        For callers that would like live balances but must not pay to fetch them.
+        Ask AI Trader is the case this exists for: it is a read-only explainer over
+        stored evidence, and building panels cost it ~29s of a 50s budget, which is
+        why a real question took 57s and the app hung up before the answer landed.
+        The stored portfolio snapshots in its context already carry the same balances.
+        """
+        cached = self._panels_cache
+        if cached is not None and (time.monotonic() - cached[0]) < max_age_seconds:
+            return cached[1]
+        return None
+
     def _build_broker_panels(self) -> list[dict[str, Any]]:
         broker_names = ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]
         settings = broker_auto_settings(self.settings.db_path)
