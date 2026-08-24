@@ -15,6 +15,7 @@ from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .operational import safe_score
 from .proposal_context import build_proposal_context
+from .liquidity_map import liquidity_map_for_pair
 from .symbol_track_record import symbol_track_record
 from .market_intelligence_platform import load_recent_observations_batch
 from .technical_discretion import (
@@ -638,6 +639,33 @@ def propose_crypto_trades(
                 continue
             if track_record.confidence_penalty:
                 confidence = max(0.0, round(confidence - track_record.confidence_penalty, 4))
+            # 2026-08-24, Founder-directed: where the real money is actually resting, and
+            # which side is doing the hitting. Free from Kraken's public API and, like the
+            # track record above, not something every other trader is already looking at.
+            # Read after the fee hurdle so the two order-book calls only happen for
+            # candidates that have already survived everything cheaper.
+            liquidity = liquidity_map_for_pair(adapter, _kraken_pair(symbol)) if adapter is not None else None
+            if liquidity is not None:
+                if liquidity.verdict == "avoid":
+                    audit.record_execution_event(
+                        proposal_id=f"no-trade-crypto-{symbol}",
+                        event_type="agent_no_trade",
+                        payload={
+                            "symbol": symbol,
+                            "reason": "liquidity_structure_unfavourable",
+                            "liquidity_map": liquidity.to_dict(),
+                        },
+                    )
+                    print(
+                        f"[crypto-research] symbol={symbol} stage=completed outcome=liquidity_structure_unfavourable "
+                        f"detail={liquidity.summary}",
+                        flush=True,
+                    )
+                    if on_symbol_complete:
+                        on_symbol_complete(symbol, [])
+                    continue
+                if liquidity.confidence_penalty:
+                    confidence = max(0.0, round(confidence - liquidity.confidence_penalty, 4))
             quantity = sized_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0

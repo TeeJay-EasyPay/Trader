@@ -474,6 +474,51 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         query = parse.urlencode({"pair": ",".join(pairs)})
         return self._public_request(f"/0/public/Ticker?{query}").get("result", {})
 
+    def order_book(self, pair: str, *, count: int = 500) -> dict[str, list[list[str]]] | None:
+        """Live resting bids and asks for one pair.
+
+        2026-08-24, Founder-directed: the signals driving entries until now (trend,
+        momentum, RSI, moving averages) are published free to every trader alive, so none
+        of them can be an edge. This is the opposite -- real money committed at real
+        prices, free from Kraken's public API, and almost never read systematically by
+        retail. It answers where the buyers actually are, rather than where a drawn line
+        says support "should" be.
+
+        Returns None rather than raising: market structure is an extra input, and its
+        absence must never stop a trade being evaluated on everything else.
+        """
+        try:
+            result = self._public_request(f"/0/public/Depth?{parse.urlencode({'pair': pair, 'count': max(1, min(int(count), 500))})}").get("result", {})
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(result, dict) or not result:
+            return None
+        # Kraken answers under its canonical pair name (XBTGBP -> XXBTZGBP), so take the
+        # single payload rather than looking up the name we asked for. Same trap that
+        # made the batched Ticker read silently price nothing.
+        book = next(iter(result.values()), None)
+        if not isinstance(book, dict) or "bids" not in book or "asks" not in book:
+            return None
+        return {"bids": book.get("bids") or [], "asks": book.get("asks") or []}
+
+    def recent_trades(self, pair: str) -> list[list[Any]] | None:
+        """Recently executed trades: price, volume, timestamp, side.
+
+        The order book is intent and can be withdrawn; this is money that actually
+        changed hands. Read together they catch the case the book alone cannot -- a wall
+        that vanishes before anything trades through it.
+        """
+        try:
+            result = self._public_request(f"/0/public/Trades?{parse.urlencode({'pair': pair})}").get("result", {})
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(result, dict):
+            return None
+        for key, value in result.items():
+            if key != "last" and isinstance(value, list):
+                return value
+        return None
+
     def get_ohlc_candles(self, pair: str, *, interval_minutes: int = 1440, since: int | None = None) -> list[dict[str, Any]]:
         """Real multi-candle price history for one pair -- see kraken_market_data.py's
         module docstring for why this didn't exist anywhere in the codebase before
