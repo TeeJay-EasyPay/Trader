@@ -1444,6 +1444,46 @@ def _set_trade_evidence_realized_pnl(db_path: Path, trade_evidence_id: int, real
             )
 
 
+
+def _reconciled_pnl_by_exit_order(db_path: Path) -> dict[str, float]:
+    """Real net P&L per Kraken exit order, from reconciliation rather than FIFO guessing.
+
+    2026-08-24 Founder-reported: Trade History showed a +GBP 0.48 profit on a trade that
+    actually made GBP 0.057. Reconstructed, the FIFO matcher had priced the AI's ETH sell
+    against a buy at ~GBP 1,340 -- one of the Founder's OWN older ETH purchases sitting in
+    the same wallet -- instead of the AI's real GBP 1,666.50 entry.
+
+    That is unfixable in FIFO terms: on Kraken the AI trades inside a personal account, so
+    "the oldest buy of this symbol" is very often not the entry that this exit closes.
+    KRAKEN_RECONCILED_RESULTS already links each exit to its own entry by logical trade and
+    computes net_pnl from the real fills on both legs, fees included. Use that.
+
+    Overstating profit is the worst direction for this number to be wrong in -- it is what
+    the Founder reads when deciding how much capital to commit.
+    """
+    try:
+        rows = _query(
+            db_path,
+            """
+            SELECT o.broker_order_id AS broker_order_id, r.net_pnl AS net_pnl
+            FROM KRAKEN_AI_ORDER_OWNERSHIP o
+            JOIN KRAKEN_RECONCILED_RESULTS r ON r.logical_trade_id = o.logical_trade_id
+            WHERE o.order_role = {x} AND r.net_pnl IS NOT NULL
+            """,
+            ("exit",),
+            limit=500,
+        )
+    except Exception:  # noqa: BLE001 - a missing table must not break the poll
+        return {}
+    mapped: dict[str, float] = {}
+    for row in rows:
+        order_id = str(row.get("broker_order_id") or "")
+        value = _number(row.get("net_pnl"))
+        if order_id and value is not None:
+            mapped[order_id] = value
+    return mapped
+
+
 def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
     """Fills in realized_pnl for exits Alpaca (and any other broker) never reports it for.
 
@@ -1468,6 +1508,7 @@ def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
         db_path,
         """
         SELECT trade_evidence_id, symbol, side, quantity, average_fill_price, price, fee,
+               broker_order_id,
                COALESCE(closed_at, opened_at, observed_at) AS event_time, realized_pnl
         FROM PRODUCTION_TRADE_EVIDENCE
         WHERE broker = {x} AND status = 'filled' AND symbol IS NOT NULL
@@ -1483,6 +1524,22 @@ def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
         by_symbol.setdefault(str(row["symbol"]), []).append(row)
     updated = 0
     total_realized_pnl = 0.0
+    # Kraken trades inside the Founder's personal account, so FIFO over "this symbol's oldest
+    # buy" routinely matches an AI exit against one of HIS holdings and invents a profit.
+    # Reconciliation already links each exit to its own entry, so use it and never guess.
+    reconciled = _reconciled_pnl_by_exit_order(db_path) if broker.lower() == "kraken" else {}
+    if reconciled:
+        for fills in by_symbol.values():
+            for row in fills:
+                order_id = str(row.get("broker_order_id") or "")
+                if not order_id or order_id not in reconciled:
+                    continue
+                if row.get("realized_pnl") is not None:
+                    continue
+                _set_trade_evidence_realized_pnl(db_path, row["trade_evidence_id"], reconciled[order_id])
+                updated += 1
+                total_realized_pnl += reconciled[order_id]
+        return {"broker": broker.lower(), "updated": updated, "total_realized_pnl": total_realized_pnl, "source": "reconciliation"}
     for fills in by_symbol.values():
         already_known = {row["trade_evidence_id"] for row in fills if row.get("realized_pnl") is not None}
         for trade_evidence_id, realized_pnl in _fifo_matched_realized_pnl(fills).items():
