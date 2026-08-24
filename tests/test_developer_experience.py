@@ -1300,3 +1300,83 @@ class DeveloperExperienceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacroContextBackendShapeTests(unittest.TestCase):
+    """2026-08-24 hosted incident: _macro_context_available iterated a database row
+    directly. Under SQLite a row is a tuple and iterating yields the three VALUES, so
+    matching worked and every test passed. Under Postgres a row is HybridRow, a dict
+    subclass, so iterating yields the three KEYS -- the haystack became the literal
+    string "theme summary key_drivers", no company keyword could ever match, and every
+    equity scored macro_status insufficient_data with macro_score 0.
+
+    That single zero failed due diligence outright and dragged the seven-part investment
+    score to 0.7622, under its 0.85 minimum -- so Alpaca could not place a trade at all,
+    confirmed live on NVDA at 18:52 that day with correct sector data and a matching
+    Technology theme sitting right there in the database.
+    """
+
+    class _DictRowConnection:
+        """Rows shaped the way the Postgres adapter really returns them."""
+
+        def __init__(self, company, themes):
+            self._company = company
+            self._themes = themes
+
+        def execute(self, sql, params=()):
+            from ai_trader.database import HybridRow
+
+            if "COMPANY_MASTER" in sql:
+                rows = [HybridRow(self._company)] if self._company else []
+            else:
+                rows = [HybridRow(theme) for theme in self._themes]
+
+            class _Cursor:
+                def __init__(self, rows):
+                    self._rows = rows
+
+                def fetchone(self):
+                    return self._rows[0] if self._rows else None
+
+                def fetchall(self):
+                    return self._rows
+
+                def __iter__(self):
+                    return iter(self._rows)
+
+            return _Cursor(rows)
+
+    def test_macro_context_reads_theme_values_not_column_names(self):
+        from ai_trader.foundation import _macro_context_available
+
+        proposal = TradeProposal(
+            symbol="NVDA", side="buy", entry_price=100.0, stop_loss=95.0, take_profit=110.0,
+            position_size=10, risk_percentage=1.0, confidence_score=0.9,
+            news_summary="n", market_sentiment_summary="m", technical_summary="t",
+            plain_english_reasoning="r", asset_type="stock", exchange="NASDAQ",
+        ).normalized()
+        themes = [{
+            "theme": "Technology",
+            "summary": "Software, cloud and semiconductor demand is underpinned by AI infrastructure build-out.",
+            "key_drivers": "AI infrastructure spending; semiconductor cycle.",
+        }]
+        conn = self._DictRowConnection({"sector": "Technology", "industry": "Semiconductors"}, themes)
+
+        self.assertTrue(
+            _macro_context_available(conn, proposal),
+            "a Technology/Semiconductors company must match the Technology theme on either backend",
+        )
+
+    def test_macro_context_still_says_no_when_nothing_matches(self):
+        from ai_trader.foundation import _macro_context_available
+
+        proposal = TradeProposal(
+            symbol="ZZZZ", side="buy", entry_price=100.0, stop_loss=95.0, take_profit=110.0,
+            position_size=10, risk_percentage=1.0, confidence_score=0.9,
+            news_summary="n", market_sentiment_summary="m", technical_summary="t",
+            plain_english_reasoning="r", asset_type="stock", exchange="NASDAQ",
+        ).normalized()
+        themes = [{"theme": "Airlines", "summary": "Carrier demand.", "key_drivers": "Fuel prices."}]
+        conn = self._DictRowConnection({"sector": "Aquaculture", "industry": "Salmon farming"}, themes)
+
+        self.assertFalse(_macro_context_available(conn, proposal))

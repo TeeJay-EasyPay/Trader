@@ -563,7 +563,17 @@ def _macro_context_available(conn: sqlite3.Connection, proposal: TradeProposal) 
             return False
         themes = conn.execute("SELECT theme, summary, key_drivers FROM MARKET_THEMES").fetchall()
         for theme_row in themes:
-            haystack = " ".join(str(value or "") for value in theme_row).lower()
+            # 2026-08-24 hosted incident: this iterated the row directly. Under SQLite a
+            # row is a tuple, so that yields the three VALUES and matching works. Under
+            # Postgres a row is HybridRow, a dict subclass, so iterating yields the three
+            # KEYS -- the haystack became the literal string "theme summary key_drivers"
+            # and no company keyword could ever match it. Every equity therefore scored
+            # macro_status insufficient_data and macro_score 0, which failed due diligence
+            # outright AND dragged the seven-part investment score below its minimum, so
+            # Alpaca could not trade at all. Silent, backend-specific, and invisible to a
+            # test suite that only runs SQLite. Indexed by position because HybridRow
+            # deliberately preserves integer indexing, so this reads values on both.
+            haystack = " ".join(str(theme_row[index] or "") for index in range(3)).lower()
             if any(keyword in haystack for keyword in keywords):
                 return True
         return False
