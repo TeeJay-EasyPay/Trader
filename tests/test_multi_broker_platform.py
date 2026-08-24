@@ -1370,6 +1370,89 @@ class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):
     a single Kraken panel). These tests prove the fix: batched pricing calls and
     price-hint reuse, without changing what a successful panel returns."""
 
+    def test_wallet_valuation_prices_every_asset_in_one_batched_ticker_call(self):
+        """2026-08-24: _exchange_portfolio("kraken") measured 51.66s in production,
+        putting /portfolio, /brokers, /status and Ask AI Trader over Render's hard 60s
+        proxy limit. Pricing ran one asset at a time, and an asset with no direct GBP
+        pair cost up to seven sequential calls -- each bridge re-fetching the USD->GBP
+        rate every other asset had already looked up. adapter.current_prices() has
+        always accepted a list; it was just never called with more than one pair."""
+        calls: list[list[str]] = []
+
+        class BatchRecordingAdapter:
+            def current_prices(self, pairs):
+                calls.append(list(pairs))
+                book = {
+                    "XBTGBP": "40000", "ETHGBP": "2000",
+                    "SOLUSD": "150", "USDGBP": "0.8",
+                }
+                return {pair: {"c": [book[pair]]} for pair in pairs if pair in book}
+
+        balances = {"XXBT": "0.5", "XETH": "2", "SOL": "10", "ZGBP": "100"}
+
+        summary = _kraken_balance_summary(balances, BatchRecordingAdapter())
+
+        self.assertEqual(len(calls), 1, f"wallet valuation should need one batched call, made {len(calls)}: {calls}")
+        priced = {row["normalized_asset"]: row for row in summary["converted_assets"]}
+        # Prices and routes must be exactly what the per-asset version produced.
+        self.assertEqual(priced["BTC"]["price_gbp"], 40000.0)
+        self.assertEqual(priced["BTC"]["pricing_route"], "direct_gbp")
+        self.assertEqual(priced["ETH"]["value_gbp"], 4000.0)
+        # SOL has no GBP pair, so it must still resolve via the USD bridge.
+        self.assertEqual(priced["SOL"]["pricing_route"], "usd_bridge_to_gbp")
+        self.assertAlmostEqual(priced["SOL"]["price_gbp"], 120.0)
+        self.assertAlmostEqual(summary["total_estimated_gbp"], 100 + 20000 + 4000 + 1200, places=2)
+
+    def test_wallet_valuation_reads_krakens_canonical_pair_keys_not_the_names_it_asked_for(self):
+        """Verified against the live Kraken API 2026-08-24: a Ticker request for
+        XBTGBP comes back under the key XXBTZGBP, and USDGBP is not a listed pair at
+        all -- one unlisted name fails the whole batch with EQuery:Unknown asset pair.
+
+        Both failures are silent rather than loud: mismatched keys price nothing and
+        fall straight back to the one-call-per-asset path this replaced, so the
+        optimisation would look shipped while doing nothing at all."""
+        requested: list[list[str]] = []
+
+        class CanonicalKeyAdapter:
+            """Behaves like the real Kraken: canonical keys out, unlisted names rejected."""
+
+            def known_pair_map(self):
+                return {"XBTGBP": "XXBTZGBP", "XXBTZGBP": "XXBTZGBP", "ETHGBP": "XETHZGBP", "XETHZGBP": "XETHZGBP"}
+
+            def current_prices(self, pairs):
+                requested.append(list(pairs))
+                if any(pair in {"USDGBP", "GBPUSD"} for pair in pairs):
+                    raise RuntimeError("EQuery:Unknown asset pair")
+                prices = {"XXBTZGBP": "40000", "XETHZGBP": "2000"}
+                return {pair: {"c": [prices[pair]]} for pair in pairs if pair in prices}
+
+        summary = _kraken_balance_summary({"XXBT": "0.5", "XETH": "2"}, CanonicalKeyAdapter())
+
+        self.assertEqual(len(requested), 1, f"unlisted names must be filtered out, not batched: {requested}")
+        self.assertEqual(sorted(requested[0]), ["XETHZGBP", "XXBTZGBP"])
+        priced = {row["normalized_asset"]: row["price_gbp"] for row in summary["converted_assets"]}
+        self.assertEqual(priced, {"BTC": 40000.0, "ETH": 2000.0})
+        self.assertAlmostEqual(summary["total_estimated_gbp"], 24000.0, places=2)
+
+    def test_wallet_valuation_still_prices_when_a_batched_pair_is_rejected(self):
+        """Kraken rejects the entire Ticker request if any one pair is unknown, and our
+        candidates are speculative by design. An unknown pair must cost only itself."""
+        attempts: list[list[str]] = []
+
+        class RejectingAdapter:
+            def current_prices(self, pairs):
+                attempts.append(list(pairs))
+                if any(pair.startswith("MADEUP") for pair in pairs) and len(pairs) > 1:
+                    raise RuntimeError("EQuery:Unknown asset pair")
+                return {pair: {"c": ["40000"]} for pair in pairs if pair == "XBTGBP"}
+
+        summary = _kraken_balance_summary({"XXBT": "0.5", "MADEUP": "3"}, RejectingAdapter())
+
+        priced = {row["normalized_asset"]: row for row in summary["converted_assets"]}
+        self.assertEqual(priced["BTC"]["price_gbp"], 40000.0)
+        self.assertEqual([row["normalized_asset"] for row in summary["unpriced_assets"]], ["MADEUP"])
+        self.assertGreater(len(attempts), 1, "a rejected batch should be split, not abandoned")
+
     def test_broker_trade_rows_batches_pricing_into_one_call_not_one_per_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = LocalApiService(settings_for(tmp))

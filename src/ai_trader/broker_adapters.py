@@ -250,24 +250,44 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         allowed = _csv_env("KRAKEN_ALLOWED_PAIRS", "XBTGBP,ETHGBP,SOLGBP")
         if not allowed:
             return []
+        known = self.known_pair_map()
+        if not known:
+            return None
+        return sorted(pair for pair in allowed if pair.upper() not in known)
+
+    def known_pair_map(self) -> dict[str, str] | None:
+        """Every listed pair name -> the key Kraken actually returns it under, cached.
+
+        Both directions of this matter and neither is guessable:
+
+        - Kraken answers a Ticker request for XBTGBP under the key XXBTZGBP, so a
+          batched read that looks up the name it asked for finds nothing. Getting
+          this wrong doesn't fail loudly -- it silently prices nothing and falls
+          back to one-call-per-asset, which is the slow path it was meant to replace.
+        - Kraken rejects an ENTIRE Ticker request if any single pair in it is
+          unknown (EQuery:Unknown asset pair). Speculative names like USDGBP, which
+          isn't a real pair, would otherwise poison every batch they appear in.
+
+        Returns None when the lookup could not run, so callers can tell "unknown"
+        from "known to be empty". Never raises.
+        """
         if self._known_pairs_cache is None:
             try:
                 data = self._public_request("/0/public/AssetPairs")
                 result = data.get("result") or {}
-                known: set[str] = set()
+                known: dict[str, str] = {}
                 for key, info in result.items():
                     if not isinstance(info, dict) or info.get("status") not in (None, "online"):
                         continue
-                    known.add(str(key).upper())
+                    canonical = str(key)
+                    known[canonical.upper()] = canonical
                     altname = info.get("altname")
                     if altname:
-                        known.add(str(altname).upper())
+                        known[str(altname).upper()] = canonical
                 self._known_pairs_cache = known or None
             except Exception:  # noqa: BLE001 - a diagnostic must never break the panel
                 self._known_pairs_cache = None
-        if not self._known_pairs_cache:
-            return None
-        return sorted(pair for pair in allowed if pair.upper() not in self._known_pairs_cache)
+        return self._known_pairs_cache
 
     def best_bid(self, pair: str) -> float | None:
         """The current best bid for a pair, or None if it cannot be read.

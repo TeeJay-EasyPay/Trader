@@ -2423,6 +2423,12 @@ def _kraken_trading_allocation_gbp(balances: Any) -> float:
 
 def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
     raw = balances if isinstance(balances, dict) else {}
+    book = _KrakenPriceBook(adapter)
+    book.prefetch(_kraken_candidate_pairs([
+        _kraken_asset_symbol(asset)
+        for asset, value in raw.items()
+        if (safe_float(value) or 0) != 0 and _kraken_asset_symbol(asset) != "GBP"
+    ]))
     gbp_cash = _kraken_gbp_cash(raw)
     total = gbp_cash or 0.0
     raw_balance_rows: list[dict[str, Any]] = []
@@ -2436,7 +2442,7 @@ def _kraken_balance_summary(balances: Any, adapter: Any) -> dict[str, Any]:
         raw_balance_rows.append({"asset": asset, "normalized_asset": normalized, "quantity": qty})
         if normalized == "GBP":
             continue
-        price_result = _kraken_asset_gbp_price(adapter, normalized)
+        price_result = _kraken_asset_gbp_price(adapter, normalized, book)
         price = price_result.get("price_gbp")
         if price is None:
             unpriced_assets.append({
@@ -2489,33 +2495,34 @@ def _kraken_gbp_cash(balances: Any) -> float | None:
     return total if found else None
 
 
-def _kraken_asset_gbp_price(adapter: Any, normalized: str) -> dict[str, Any]:
+def _kraken_asset_gbp_price(adapter: Any, normalized: str, book: "_KrakenPriceBook | None" = None) -> dict[str, Any]:
+    book = book if book is not None else _KrakenPriceBook(adapter)
     normalized = str(normalized or "").upper()
     if normalized == "GBP":
         return {"price_gbp": 1.0, "pair": "GBP", "pricing_route": "cash"}
     pairs_tried: list[str] = []
     direct_pair = _kraken_pair(normalized, "GBP")
-    direct = _kraken_pair_price(adapter, direct_pair)
+    direct = book.price(direct_pair)
     pairs_tried.append(direct_pair)
     if direct is not None:
         return {"price_gbp": direct, "pair": direct_pair, "pricing_route": "direct_gbp", "pairs_tried": pairs_tried}
     if normalized in {"USD", "USDT", "USDC"}:
-        usd_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried)
+        usd_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried, book)
         if usd_to_gbp is not None:
             return {"price_gbp": usd_to_gbp, "pair": "USDGBP", "pricing_route": "usd_to_gbp", "pairs_tried": pairs_tried}
     if normalized == "EUR":
         eur_pair = _kraken_pair("EUR", "GBP")
-        eur_to_gbp = _kraken_pair_price(adapter, eur_pair)
+        eur_to_gbp = book.price(eur_pair)
         pairs_tried.append(eur_pair)
         if eur_to_gbp is not None:
             return {"price_gbp": eur_to_gbp, "pair": eur_pair, "pricing_route": "eur_to_gbp", "pairs_tried": pairs_tried}
     for quote in ["USD", "USDT", "USDC"]:
         asset_pair = _kraken_pair(normalized, quote)
-        asset_to_quote = _kraken_pair_price(adapter, asset_pair)
+        asset_to_quote = book.price(asset_pair)
         pairs_tried.append(asset_pair)
         if asset_to_quote is None:
             continue
-        quote_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried)
+        quote_to_gbp = _kraken_usd_to_gbp(adapter, pairs_tried, book)
         if quote_to_gbp is None:
             continue
         return {
@@ -2527,17 +2534,111 @@ def _kraken_asset_gbp_price(adapter: Any, normalized: str) -> dict[str, Any]:
     return {"price_gbp": None, "reason": "no_direct_or_bridge_gbp_price", "pairs_tried": pairs_tried}
 
 
-def _kraken_usd_to_gbp(adapter: Any, pairs_tried: list[str]) -> float | None:
+def _kraken_usd_to_gbp(adapter: Any, pairs_tried: list[str], book: "_KrakenPriceBook | None" = None) -> float | None:
+    book = book if book is not None else _KrakenPriceBook(adapter)
     for pair in ["USDGBP", "USDTGBP", "USDCGBP"]:
-        price = _kraken_pair_price(adapter, pair)
+        price = book.price(pair)
         pairs_tried.append(pair)
         if price is not None:
             return price
-    inverse = _kraken_pair_price(adapter, "GBPUSD")
+    inverse = book.price("GBPUSD")
     pairs_tried.append("GBPUSD")
     if inverse:
         return 1 / inverse
     return None
+
+
+class _KrakenPriceBook:
+    """One batched Kraken Ticker call for a whole wallet valuation, memoized.
+
+    2026-08-24: measured at 51.66s for a single _exchange_portfolio("kraken") in
+    production, which put /portfolio, /brokers, /status and Ask AI Trader over
+    Render's hard 60s proxy limit. The cause was request count, not Kraken being
+    slow: pricing ran one asset at a time, and an asset with no direct GBP pair
+    cost up to seven sequential calls (three bridge quotes, each re-fetching the
+    USD->GBP rate that every other asset had already looked up).
+
+    adapter.current_prices() has always taken a *list* of pairs and comma-joined
+    them into a single /0/public/Ticker request -- it was simply never called with
+    more than one. This asks for every candidate pair at once, then answers from
+    that result. Fewer requests is also gentler on Kraken's rate limits than
+    firing the same lookups concurrently would have been, which matters on a live
+    account that has been rate-locked before.
+
+    Correctness is unchanged: a pair the batch didn't return still falls back to
+    its own live lookup, so pricing routes resolve exactly as they did before.
+    """
+
+    def __init__(self, adapter: Any):
+        self._adapter = adapter
+        self._prices: dict[str, float | None] = {}
+
+    def _canonical_keys(self, wanted: list[str]) -> dict[str, str]:
+        """Requested name -> the key Kraken returns it under, dropping unlisted pairs.
+
+        Verified against the live API: XBTGBP comes back as XXBTZGBP, and USDGBP is
+        not a pair at all -- one unlisted name fails the whole batch.
+        """
+        lookup = getattr(self._adapter, "known_pair_map", None)
+        known = lookup() if callable(lookup) else None
+        if not known:
+            # No pair map (fake adapters in tests, or the lookup failed): ask for the
+            # names as given and read them back as given.
+            return {pair: pair for pair in wanted}
+        return {pair: known[pair.upper()] for pair in wanted if pair.upper() in known}
+
+    def prefetch(self, pairs: list[str]) -> None:
+        wanted = [pair for pair in dict.fromkeys(pairs) if pair and pair not in self._prices]
+        if not wanted:
+            return
+        keys = self._canonical_keys(wanted)
+        # A pair the map doesn't list has been asked about and answered: it does not
+        # exist. Recording that stops price() spending a live call to rediscover it.
+        for pair in wanted:
+            if pair not in keys:
+                self._prices[pair] = None
+        if not keys:
+            return
+        try:
+            result = self._adapter.current_prices(list(keys.values()))
+        except Exception:
+            # Belt and braces: the pair map should have removed anything unlisted, but
+            # a batch can still be rejected (a pair delisted since the map was cached).
+            # Halve and retry so one bad name costs its own branch, not the whole
+            # wallet -- price() still resolves anything left unpriced.
+            if len(wanted) > 1:
+                middle = len(wanted) // 2
+                self.prefetch(wanted[:middle])
+                self.prefetch(wanted[middle:])
+            return
+        if not isinstance(result, dict):
+            return
+        for pair, key in keys.items():
+            payload = result.get(key)
+            price = _kraken_last_price({key: payload}, key) if isinstance(payload, dict) else None
+            # None is recorded too: the batch asked and Kraken did not price it, so a
+            # follow-up single call would only buy the same answer more slowly.
+            self._prices[pair] = price
+
+    def price(self, pair: str) -> float | None:
+        if pair in self._prices:
+            return self._prices[pair]
+        try:
+            price = _kraken_last_price(self._adapter.current_prices([pair]), pair)
+        except Exception:
+            price = None
+        self._prices[pair] = price
+        return price
+
+
+def _kraken_candidate_pairs(assets: list[str]) -> list[str]:
+    """Every pair the GBP-pricing routes below might ask for, for a whole wallet."""
+    pairs: list[str] = ["USDGBP", "USDTGBP", "USDCGBP", "GBPUSD", _kraken_pair("EUR", "GBP")]
+    for asset in assets:
+        pairs.append(_kraken_pair(asset, "GBP"))
+        for quote in ("USD", "USDT", "USDC"):
+            pairs.append(_kraken_pair(asset, quote))
+    return [pair for pair in dict.fromkeys(pairs) if pair]
 
 
 def _kraken_pair_price(adapter: Any, pair: str) -> float | None:
