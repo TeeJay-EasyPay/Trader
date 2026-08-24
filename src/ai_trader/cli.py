@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
@@ -497,13 +498,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"job": completed, "result": result}, indent=2, sort_keys=True))
             return 0
         except Exception as exc:  # noqa: BLE001 - persist job failure before surfacing
-            failed = complete_scheduled_job(settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=str(exc))
+            # 2026-08-24: str(exc) alone loses where it happened -- an Alpaca 422 read as
+            # a bare message with no indication of which candidate or which call raised it.
+            # The traceback is what turns "the job failed" into a fix, and the child process
+            # is the only place that still has one.
+            detail = f"{exc}\n{traceback.format_exc()}"
+            failed = complete_scheduled_job(settings.db_path, int(claim["job_run_id"]), status="failed", result={}, failure_reason=detail[:4000])
             record_operations_incident(
                 settings.db_path,
                 severity="error",
                 component="scheduled-job",
                 title=f"Scheduled job failed: {args.job_name}",
-                message=str(exc),
+                message=detail[:4000],
                 payload=failed,
             )
             print(json.dumps({"job": failed, "error": str(exc)}, indent=2, sort_keys=True))
@@ -633,9 +639,18 @@ def _run_worker_cycle_job(
                 )
                 return {"status": "timed_out", "job_name": job_name, "reason": message}
             if process_result["status"] != "completed":
+                # 2026-08-24: the child already records the real failure (its own except
+                # branch writes failure_reason and an operations incident) -- and this
+                # message then overwrote it, so the job run read "exited with code 1" and
+                # nothing else. The actual cause that night was an Alpaca 422, "fractional
+                # orders must be DAY orders", recoverable only because the incident row
+                # survived alongside the clobbered job run. Prefer what the child said; it
+                # knows what happened and this frame does not.
+                child_run = get_scheduled_job_run(service.settings.db_path, int(claim["job_run_id"])) or {}
+                child_reason = child_run.get("failure_reason")
                 raise RuntimeError(
-                    f"{job_name}: isolated job process exited with code "
-                    f"{process_result.get('returncode')}."
+                    f"{job_name}: {child_reason}" if child_reason
+                    else f"{job_name}: isolated job process exited with code {process_result.get('returncode')}."
                 )
             completed = get_scheduled_job_run(service.settings.db_path, int(claim["job_run_id"]))
             if completed.get("status") == "failed":

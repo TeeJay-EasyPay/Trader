@@ -27,6 +27,21 @@ class AlpacaCredentials:
             raise AlpacaError("Refusing to use a non-paper Alpaca trading endpoint")
 
 
+def _whole_share_quantity(qty: float) -> int | None:
+    """Whole shares only, rounded down. None when there is not even one.
+
+    Returning None rather than silently submitting 0 or rounding up: a size below one
+    share is a real answer ("this account cannot take a protected position in this stock
+    at this risk level"), and the caller reports it instead of sending an order Alpaca
+    will reject or one larger than the risk budget allowed.
+    """
+    try:
+        shares = int(float(qty))
+    except (TypeError, ValueError):
+        return None
+    return shares if shares >= 1 else None
+
+
 class AlpacaPaperClient:
     def __init__(self, credentials: AlpacaCredentials):
         credentials.validate_paper()
@@ -148,11 +163,36 @@ class AlpacaPaperClient:
         stop_loss: float,
         take_profit: float,
     ) -> dict[str, Any]:
+        whole_qty = _whole_share_quantity(qty)
+        if whole_qty is None:
+            return {
+                "status": "rejected",
+                "reason": "below_one_whole_share",
+                "message": (
+                    f"A bracket order for {symbol} needs at least one whole share; the risk-based "
+                    f"size was {qty}. Alpaca allows fractional quantities only on plain day orders, "
+                    "which cannot carry the protective stop-loss and take-profit legs."
+                ),
+            }
         payload = {
             "symbol": symbol,
-            "qty": str(qty),
+            "qty": str(whole_qty),
             "side": side,
             "type": "market",
+            # 2026-08-24 hosted incident, the first equity order this system ever got as
+            # far as submitting: Alpaca rejected it outright with 422 "fractional orders
+            # must be DAY orders", and the exception took the whole auto-execution job
+            # down with it. Risk-based sizing produces fractional share counts naturally
+            # (5% of a $101k account in a ~$200 stock is 24.7 shares), and Alpaca supports
+            # fractional quantities only for plain DAY orders -- never for a bracket, and
+            # never good-til-cancelled.
+            #
+            # Rounding down to whole shares is the fix rather than switching to a DAY
+            # fractional order, because DAY would mean giving up the bracket, and the
+            # bracket is what the 2026-08-12 CSL incident bought: exits that survive the
+            # close instead of expiring the same day and leaving a real position
+            # unprotected for a month. A slightly smaller position is a trivial cost; an
+            # unprotected one is not. See _whole_share_quantity for the sub-one-share case.
             # 2026-08-12 hosted incident: "day" applies to every leg of a bracket order,
             # including the take_profit/stop_loss exit legs -- not just the market entry. A
             # real position (CSL, opened 2026-07-03) sat with a growing unrealized gain for

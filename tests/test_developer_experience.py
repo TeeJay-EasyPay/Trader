@@ -1380,3 +1380,57 @@ class MacroContextBackendShapeTests(unittest.TestCase):
         conn = self._DictRowConnection({"sector": "Aquaculture", "industry": "Salmon farming"}, themes)
 
         self.assertFalse(_macro_context_available(conn, proposal))
+
+
+class AlpacaFractionalShareTests(unittest.TestCase):
+    """2026-08-24: the first equity order this system ever got as far as submitting was
+    rejected by Alpaca with 422 "fractional orders must be DAY orders", and the raised
+    exception took the whole auto-execution job down with it -- FSLR had been approved
+    cleanly 12 seconds earlier.
+
+    Risk-based sizing produces fractional share counts naturally (5% of a $101k account
+    in a ~$200 stock is 24.7 shares). Alpaca allows fractional quantities only on plain
+    DAY orders: never with a bracket, never good-til-cancelled. Rounding down keeps the
+    bracket, which is what the 2026-08-12 CSL incident bought -- exits that survive the
+    close rather than expiring the same day and leaving a real position unprotected for
+    a month.
+    """
+
+    class _RecordingClient(AlpacaPaperClient):
+        def __init__(self):
+            super().__init__(AlpacaCredentials(api_key="k", secret_key="s"))
+            self.payloads = []
+
+        def _request(self, method, path, *, payload=None, data_api=False):
+            self.payloads.append(payload)
+            return {"id": "order-1", "status": "accepted"}
+
+    def test_a_fractional_size_is_rounded_down_to_whole_shares(self):
+        client = self._RecordingClient()
+
+        result = client.place_bracket_order(symbol="FSLR", side="buy", qty=24.73, stop_loss=180.0, take_profit=230.0)
+
+        self.assertEqual(result["status"], "accepted")
+        payload = client.payloads[0]
+        self.assertEqual(payload["qty"], "24", "a fractional quantity cannot carry a bracket on Alpaca")
+        self.assertEqual(payload["order_class"], "bracket")
+        # The protective legs must still outlive the session.
+        self.assertEqual(payload["time_in_force"], "gtc")
+
+    def test_a_whole_size_is_unchanged(self):
+        client = self._RecordingClient()
+
+        client.place_bracket_order(symbol="NEE", side="buy", qty=40, stop_loss=60.0, take_profit=80.0)
+
+        self.assertEqual(client.payloads[0]["qty"], "40")
+
+    def test_under_one_share_is_refused_rather_than_submitted(self):
+        """Rounding 0.6 shares up would exceed the risk budget; sending 0 would be
+        rejected by Alpaca. Saying so plainly is the honest third option."""
+        client = self._RecordingClient()
+
+        result = client.place_bracket_order(symbol="BRK.A", side="buy", qty=0.6, stop_loss=1.0, take_profit=2.0)
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["reason"], "below_one_whole_share")
+        self.assertEqual(client.payloads, [], "nothing should reach Alpaca")
