@@ -14,6 +14,7 @@ const { Text, TextInput, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, Metric, Button } = require('../components/shared');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
+const { askRequestOptions } = require('../lib/askRequest');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -29,24 +30,15 @@ function AskAiTrader({ messages, setMessages, request }) {
     setMessages((prev) => [...prev, { role: 'user', text: normalizeChatText(finalQuestion) }]);
     setAskLoading(true);
     setAskStatus('Thinking...');
-    const controller = new AbortController();
-    // 2026-08-24: was 25000, against a backend that answered a real question in 23.5s
-    // once its own timeouts were fixed -- 1.5s of margin, so a slightly heavier
-    // question gave the Founder "the request timed out" for an answer the backend had
-    // actually produced. Ask is not the 1-2s dashboard refresh the shared client is
-    // tuned for: it gathers evidence and calls OpenAI. The backend works to a 50s
-    // budget and always returns something by then (a real answer, or the stored
-    // evidence summary), so wait for that rather than hanging up just before it lands.
-    const timeoutMs = 55000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // The timeout has to travel as `timeoutMs` in the request options -- api/client.js
+    // applies its own AbortController and overrides any signal passed in, so a local
+    // controller here would be silently ignored (it was, until 2026-08-24). See
+    // lib/askRequest.js for the full reasoning and the tests that pin it.
+    const options = askRequestOptions(finalQuestion);
     try {
       const result = await withTimeout(
-        request('/ask-ai-trader', {
-          method: 'POST',
-          body: JSON.stringify({ question: finalQuestion }),
-          signal: controller.signal,
-        }),
-        timeoutMs + 2000
+        request('/ask-ai-trader', options),
+        options.timeoutMs + 2000
       );
       const answerText = normalizeChatText(result.answer);
       const note = result.note ? `\n\n${normalizeChatText(result.note)}` : '';
@@ -64,7 +56,6 @@ function AskAiTrader({ messages, setMessages, request }) {
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(friendly) }]);
       setAskStatus('Ask failed or timed out.');
     } finally {
-      clearTimeout(timeout);
       setAskLoading(false);
     }
   };
