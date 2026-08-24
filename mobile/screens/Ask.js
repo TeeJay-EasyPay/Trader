@@ -30,7 +30,14 @@ function AskAiTrader({ messages, setMessages, request }) {
     setAskLoading(true);
     setAskStatus('Thinking...');
     const controller = new AbortController();
-    const timeoutMs = 25000;
+    // 2026-08-24: was 25000, against a backend that answered a real question in 23.5s
+    // once its own timeouts were fixed -- 1.5s of margin, so a slightly heavier
+    // question gave the Founder "the request timed out" for an answer the backend had
+    // actually produced. Ask is not the 1-2s dashboard refresh the shared client is
+    // tuned for: it gathers evidence and calls OpenAI. The backend works to a 50s
+    // budget and always returns something by then (a real answer, or the stored
+    // evidence summary), so wait for that rather than hanging up just before it lands.
+    const timeoutMs = 55000;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const result = await withTimeout(

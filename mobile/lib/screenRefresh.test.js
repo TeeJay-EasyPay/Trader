@@ -169,7 +169,11 @@ test('ExecutiveBriefing refresh fetches its shared, founderBrief, and market sou
 
 test('repeated taps on the same screen do not change how many underlying sources are composed (dedup is each source\'s own responsibility, not re-implemented here)', async () => {
   const { registry, calls } = trackedRegistry();
-  await Promise.all([registry.Activity.refresh(), registry.Activity.refresh()]);
+  // Was registry.Activity, which stopped existing when the app was cut to three
+  // screens -- the test crashed on undefined rather than failing an assertion, so it
+  // read as a broken suite instead of a stale one. Portfolio is the shared-only screen
+  // this case is actually about.
+  await Promise.all([registry.Portfolio.refresh(), registry.Portfolio.refresh()]);
   // composeScreenRefresh itself calls the underlying source's refresh() once per call; the
   // underlying source (useFounderEvidence's own refreshInFlightRef, tested in
   // refreshLifecycle.test.js's shouldStartRefresh cases) is what collapses these into one
