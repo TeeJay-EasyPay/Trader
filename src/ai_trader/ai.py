@@ -305,9 +305,16 @@ class BenchmarkResearchAnalyzer:
 
 
 class OpenAIReadOnlyExplainer:
-    def __init__(self, api_key: str, model: str):
+    # 2026-08-24: the caller passes what's left of its own wall-clock budget. Render's
+    # proxy hangs up at 60s, so an OpenAI call that outlives the budget doesn't produce
+    # a late answer -- it produces no answer at all, and the Founder sees "timed out".
+    # Failing fast here lets the caller return the deterministic evidence answer instead.
+    DEFAULT_TIMEOUT_SECONDS = 35.0
+
+    def __init__(self, api_key: str, model: str, timeout_seconds: float | None = None):
         self.api_key = api_key
         self.model = model
+        self.timeout_seconds = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
 
     def answer(self, question: str, context: dict[str, Any]) -> str:
         prompt = {
@@ -335,7 +342,7 @@ class OpenAIReadOnlyExplainer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=35) as response:
+        with urlopen(request, timeout=self.timeout_seconds) as response:
             raw = json.loads(response.read().decode("utf-8"))
         return _extract_response_text(raw).strip()
 

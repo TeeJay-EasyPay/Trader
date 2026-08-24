@@ -1,7 +1,9 @@
+import json
 import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from dataclasses import replace
@@ -14,7 +16,7 @@ from ai_trader.api import LocalApiService
 from ai_trader.api import ApiHandler
 from ai_trader.agent import AITradingAgent
 from ai_trader.alpaca import AlpacaCredentials, AlpacaError, AlpacaPaperClient
-from ai_trader.ai import _proposal_from_response_text
+from ai_trader.ai import OpenAIReadOnlyExplainer, _proposal_from_response_text
 from ai_trader.audit import AuditDatabase
 from ai_trader.intelligence_data import THEMES
 from ai_trader.benchmark import BenchmarkIntelligenceDatabase
@@ -270,6 +272,70 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIn("OpenAI is configured", payload["answer"])
             self.assertNotIn("configure OPENAI_API_KEY", payload["answer"])
             self.assertIn("simulated timeout", payload["note"])
+
+    def test_ask_ai_trader_context_excludes_the_payloads_that_blew_the_proxy_timeout(self):
+        """2026-08-24 regression: every Ask request died at Render's hard 60s proxy
+        timeout. The context embedded world_class_evidence (>60s on its own in
+        production) plus two recommendations(limit=20) calls at ~118KB per row. The
+        Founder never saw an answer -- only "the request timed out"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            service = LocalApiService(settings)
+
+            with patch.object(
+                LocalApiService, "world_class_evidence", side_effect=AssertionError("world_class_evidence must not be built for Ask")
+            ), patch.object(
+                LocalApiService, "recommendations", wraps=service.recommendations
+            ) as recommendations:
+                context = service._ask_ai_context(deadline=time.monotonic() + 50.0)
+
+            self.assertNotIn("world_class_evidence", context)
+            self.assertEqual(recommendations.call_count, 1, "recommendations should be gathered once, not twice")
+
+    def test_ask_ai_trader_recommendations_are_slimmed_for_the_prompt(self):
+        from ai_trader.api import _slim_recommendation
+
+        fat = {
+            "symbol": "XRP",
+            "reason_for_recommendation": "x" * 5000,
+            "trade_lifecycle": {"stages": ["huge"] * 5000},
+            "signals": {"noise": "y" * 20000},
+            "committee": {"votes": ["z"] * 5000},
+        }
+
+        slim = _slim_recommendation(fat)
+
+        self.assertEqual(slim["symbol"], "XRP")
+        self.assertNotIn("trade_lifecycle", slim)
+        self.assertNotIn("signals", slim)
+        self.assertNotIn("committee", slim)
+        self.assertTrue(slim["reason_for_recommendation"].endswith("..."))
+        self.assertLess(len(json.dumps(slim)), 1000)
+
+    def test_ask_ai_trader_answers_from_evidence_when_the_budget_is_already_spent(self):
+        """A slow context must not then start an OpenAI call that outlives the proxy.
+        Late answers don't arrive -- the connection is already dead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = replace(settings_for(tmp), openai_api_key="test-key")
+            service = LocalApiService(settings)
+
+            def slow_context(*args, **kwargs):
+                return {"openai_configured": True, "latest_portfolio_snapshots": []}
+
+            with patch.object(LocalApiService, "_ask_ai_context", side_effect=slow_context), patch(
+                "ai_trader.api.time.monotonic", side_effect=[0.0, 49.0]
+            ), patch("ai_trader.api.OpenAIReadOnlyExplainer.answer", side_effect=AssertionError("must not call OpenAI without runway")):
+                status, payload = service.post("/ask-ai-trader", {"question": "How are we doing?"})
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["status"], "evidence_only")
+            self.assertTrue(payload["read_only"])
+            self.assertIn("time available", payload["note"])
+
+    def test_openai_explainer_timeout_is_bounded_by_the_callers_budget(self):
+        explainer = OpenAIReadOnlyExplainer("test-key", "gpt-test", timeout_seconds=18.5)
+        self.assertEqual(explainer.timeout_seconds, 18.5)
+        self.assertEqual(OpenAIReadOnlyExplainer("k", "m").timeout_seconds, OpenAIReadOnlyExplainer.DEFAULT_TIMEOUT_SECONDS)
 
     def test_crypto_rejections_explained_uses_local_digest_without_openai(self):
         with tempfile.TemporaryDirectory() as tmp:

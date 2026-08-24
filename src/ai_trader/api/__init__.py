@@ -128,6 +128,54 @@ from ..trading_intelligence import (
 
 logger = logging.getLogger("ai_trader.api")
 
+# Ask AI Trader time budget. Render's proxy hangs up at a hard 60s, and a request the
+# proxy kills returns nothing at all -- the Founder sees "the request timed out" rather
+# than a slightly-late answer. So Ask keeps its own budget well inside that ceiling and
+# always returns *something*: a real OpenAI answer when there's time, the deterministic
+# evidence summary when there isn't.
+_ASK_TOTAL_BUDGET_SECONDS = 50.0
+# Below this there isn't enough runway for an OpenAI round trip to be worth starting.
+_ASK_MIN_OPENAI_SECONDS = 12.0
+# The daily-learning section costs ~25s on its own; only gather it with room to spare.
+_ASK_LEARNING_SECTION_MIN_SECONDS = 38.0
+
+# Kept from each recommendation for Ask. The full row is ~118KB, nearly all of it
+# trade_lifecycle/signals/committee internals that answer no founder question.
+_ASK_RECOMMENDATION_FIELDS = (
+    "proposal_id", "symbol", "company", "sector", "country", "confidence",
+    "suggested_broker", "exchange", "asset_type", "market_open", "asset_available",
+    "strategy_name", "market_regime", "created_at", "expires_at",
+    "freshness_status", "freshness_note", "already_executed", "guardrails_passed",
+    "guardrail_summary", "guardrail_failures", "auto_trade_eligible", "auto_trade_reason",
+    "orchestrator_decision", "orchestrator_rejection_reason", "due_diligence_status",
+    "investment_philosophy_fit", "probability_of_success", "expected_return_r",
+    "recommended_position_size", "suggested_stop_loss", "suggested_take_profit",
+    "reason_for_recommendation", "key_risks", "strongest_argument_for",
+    "strongest_argument_against", "invalidation",
+)
+_ASK_RECOMMENDATION_TEXT_LIMIT = 600
+
+
+def _seconds_left(deadline: float | None) -> float:
+    """Remaining wall clock, or effectively unlimited when no deadline was set."""
+    if deadline is None:
+        return float("inf")
+    return deadline - time.monotonic()
+
+
+def _slim_recommendation(row: dict[str, Any]) -> dict[str, Any]:
+    slim: dict[str, Any] = {}
+    for key in _ASK_RECOMMENDATION_FIELDS:
+        if key not in row:
+            continue
+        value = row[key]
+        # The narrative fields are the useful ones, but an unbounded essay in any of
+        # them puts the whole prompt back where it started.
+        if isinstance(value, str) and len(value) > _ASK_RECOMMENDATION_TEXT_LIMIT:
+            value = value[:_ASK_RECOMMENDATION_TEXT_LIMIT] + "..."
+        slim[key] = value
+    return slim
+
 
 def configure_logging(output_dir: Path) -> None:
     root = logging.getLogger()
@@ -870,7 +918,8 @@ class LocalApiService:
                 "answer": "Ask me a question about AI Trader's balances, trades, reports, recommendations, or learning.",
                 "read_only": True,
             }
-        context = self._ask_ai_context()
+        deadline = time.monotonic() + _ASK_TOTAL_BUDGET_SECONDS
+        context = self._ask_ai_context(deadline=deadline)
         if not self.settings.openai_api_key:
             return {
                 "status": "openai_not_configured",
@@ -880,7 +929,20 @@ class LocalApiService:
                 "note": "OPENAI_API_KEY is not configured for this AI Trader deployment, so this answer used the local evidence summary only.",
                 "evidence": context,
             }
-        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_model)
+        remaining = _seconds_left(deadline)
+        if remaining < _ASK_MIN_OPENAI_SECONDS:
+            logger.warning("Ask AI Trader context build left only %.1fs; answering from evidence instead.", remaining)
+            return {
+                "status": "evidence_only",
+                "answer": _deterministic_ai_trader_answer(question, context),
+                "read_only": True,
+                "model": None,
+                "note": "Gathering the evidence used up the time available for this question, so this answer came from the stored evidence directly. Ask again for a fuller answer.",
+                "evidence": context,
+            }
+        explainer = OpenAIReadOnlyExplainer(
+            self.settings.openai_api_key, self.settings.openai_model, timeout_seconds=remaining
+        )
         try:
             answer = explainer.answer(question, context)
         except Exception as exc:
@@ -951,9 +1013,24 @@ class LocalApiService:
             "note": "Read-only. Cannot place trades, approve trades, change guardrails, or change broker settings.",
         }
 
-    def _ask_ai_context(self) -> dict[str, Any]:
+    def _ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
+        """Evidence for one Ask question, built to a wall-clock deadline.
+
+        2026-08-24: this used to embed world_class_evidence and two separate
+        recommendations(limit=20) calls. Measured against production that was
+        unanswerable, not merely slow: /world-class-evidence on its own exceeds
+        Render's hard 60s proxy timeout, and each recommendation row carries ~118KB
+        of trade_lifecycle/signals/committee detail, so the two calls alone built
+        ~3.4MB of context that then had to be JSON-encoded into an OpenAI prompt.
+        Every Ask request died at the proxy before OpenAI ever replied.
+
+        None of that bulk was answering questions -- world_class_evidence is the
+        self-audit panel the briefing screen already renders, and a founder asking
+        "what did you buy and why" needs a recommendation's symbol and reason, not
+        its full lifecycle. Slim context, one query, and heavy optional sections
+        only while the clock allows."""
         broker_panels = self.broker_panels()
-        return {
+        context = {
             "generated_at": utc_now_iso(),
             "safety_boundary": "Read-only explanation. No trading, approvals, broker controls, or guardrail changes are available to this endpoint.",
             "openai_configured": bool(self.settings.openai_api_key),
@@ -1003,7 +1080,9 @@ class LocalApiService:
                     """
                 )
             ],
-            "latest_recommendations": self.recommendations(limit=20),
+            "latest_recommendations": [
+                _slim_recommendation(row) for row in self.recommendations(limit=20)
+            ],
             "latest_orchestrator_decisions": [
                 dict(row) for row in self._rows(
                     """
@@ -1014,9 +1093,17 @@ class LocalApiService:
                     """
                 )
             ],
-            "daily_learning": self.daily_learning_update(date.today().isoformat()),
-            "world_class_evidence": self.world_class_evidence(brokers=broker_panels, recommendations=self.recommendations(limit=20)),
         }
+        # Measured at ~25s in production. Worth having when there's room for it -- it is
+        # what answers "is AI Trader getting better?" -- but never worth spending the
+        # budget that the actual answer needs.
+        if _seconds_left(deadline) > _ASK_LEARNING_SECTION_MIN_SECONDS:
+            context["daily_learning"] = self.daily_learning_update(date.today().isoformat())
+        else:
+            context["daily_learning"] = {
+                "skipped": "Omitted to keep this answer inside the request time budget."
+            }
+        return context
 
     def trading_report(self, *, report_date: str | None, broker: str = "all", report_type: str = "daily", persist: bool = False) -> dict[str, Any]:
         return self._reporting_service.trading_report(report_date=report_date, broker=broker, report_type=report_type, persist=persist)
