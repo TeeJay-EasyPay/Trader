@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..agent import AITradingAgent, propose_crypto_trades
 from ..always_on import (
@@ -76,6 +76,7 @@ from ..multi_broker import (
     latest_recommendation_set,
     list_performance_attribution,
     open_managed_exits,
+    record_broker_trade_history,
     record_crypto_research_score,
     record_notification,
     record_recommendation_set,
@@ -570,6 +571,8 @@ class LocalApiService:
             return 200, self.phase5_status()
         if path == "/sprint6-status":
             return 200, self.sprint6_status()
+        if path == "/timing-diagnostics":
+            return 200, self.timing_diagnostics(_first(query, "target") or "alpaca")
         if path == "/capital-allocations":
             # 2026-08-23: exposes the per-trade sizing record (account_equity,
             # requested_notional, approved_notional and the policy ceilings in force) so an
@@ -1595,6 +1598,69 @@ class LocalApiService:
         # Delegates to BrokerService (Phase 6a). Kept as a thin wrapper: status() calls
         # this externally.
         return self._broker_service._active_broker_names()
+
+    def timing_diagnostics(self, target: str = "alpaca") -> dict[str, Any]:
+        """Stage-by-stage wall clock for the expensive account paths.
+
+        2026-08-24: /portfolio, /status and Ask were all dying at Render's 60s proxy,
+        and from outside the box every guess about *which* stage was to blame cost a
+        full redeploy to test. Alpaca's own API measured 0.3-0.6s directly, so the
+        cost was somewhere in our own pipeline -- this says where, in one request.
+        Runs to a budget and reports what it skipped rather than timing out itself.
+        """
+        broker_service = self._broker_service
+        stages: list[dict[str, Any]] = []
+        deadline = time.monotonic() + 40.0
+
+        def stage(name: str, fn: Callable[[], Any]) -> Any:
+            if time.monotonic() >= deadline:
+                stages.append({"stage": name, "seconds": None, "skipped": "time budget exhausted"})
+                return None
+            started = time.monotonic()
+            try:
+                value = fn()
+            except Exception as exc:  # noqa: BLE001 - a failing stage is a result, not a crash
+                stages.append({"stage": name, "seconds": round(time.monotonic() - started, 2), "ok": False, "detail": str(exc)[:200]})
+                return None
+            stages.append({
+                "stage": name,
+                "seconds": round(time.monotonic() - started, 2),
+                "ok": True,
+                "size": len(value) if isinstance(value, (list, dict)) else None,
+            })
+            return value
+
+        target = (target or "alpaca").lower()
+        if target == "alpaca":
+            broker = broker_service._broker_factory()
+            account = stage("alpaca.get_account", broker.get_account)
+            positions = stage("alpaca.get_positions", broker.get_positions)
+            orders = stage("alpaca.get_orders", lambda: broker.get_orders(status="all", limit=10))
+            activities = stage("alpaca.get_activities", lambda: broker.get_activities("FILL"))
+            stage(
+                "alpaca.record_broker_trade_history",
+                lambda: record_broker_trade_history(self.settings.db_path, "alpaca", list(orders or []) + list(activities or [])),
+            )
+            stage(
+                "alpaca.record_portfolio_snapshot",
+                lambda: record_portfolio_snapshot(
+                    self.settings.db_path, broker="alpaca", exchange="Alpaca",
+                    account=account or {}, positions=positions or [], notes="Timing diagnostic.",
+                ),
+            )
+            stage("executive_summary", self.executive_summary)
+        elif target == "kraken":
+            stage("kraken._exchange_portfolio", lambda: broker_service._exchange_portfolio("kraken"))
+            stage("kraken._kraken_ai_capital_ledger", self._kraken_ai_capital_ledger)
+        else:
+            return {"error": f"Unknown target '{target}'. Use alpaca or kraken."}
+
+        return {
+            "target": target,
+            "total_seconds": round(sum(row["seconds"] or 0.0 for row in stages), 2),
+            "stages": stages,
+            "note": "Wall-clock timings for one pass. Render's proxy kills any request at 60s.",
+        }
 
     def executive_summary(self, panels: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         # Delegates to FounderExperienceService (Phase 4, architecture/AI_TRADER_
