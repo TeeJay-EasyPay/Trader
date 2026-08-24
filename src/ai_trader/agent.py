@@ -13,6 +13,7 @@ from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
+from .operational import safe_score
 from .proposal_context import build_proposal_context
 from .market_intelligence_platform import load_recent_observations_batch
 from .technical_discretion import (
@@ -140,6 +141,9 @@ class AITradingAgent:
                         real_exchange = self._known_exchange_for_symbol(symbol)
                         if real_exchange:
                             proposal = replace(proposal, exchange=real_exchange)
+                        philosophy_fit = self._watchlist_philosophy_fit(symbol)
+                        if philosophy_fit is not None:
+                            proposal = replace(proposal, philosophy_fit=philosophy_fit)
                 else:
                     proposal = self._no_trade_probe(symbol, market, news)
                 if proposal is None:
@@ -214,6 +218,54 @@ class AITradingAgent:
         except Exception:  # noqa: BLE001 - a lookup failure must fall back to the existing default, never block a proposal
             return None
         return str(row[0]).strip().upper() if row and row[0] else None
+
+    def _watchlist_philosophy_fit(self, symbol: str) -> float | None:
+        """This system's own recorded view of how well a company fits the investment
+        philosophy, from INVESTMENT_WATCHLIST.
+
+        2026-08-24 hosted finding: exactly the same class of bug as
+        _known_exchange_for_symbol above. ai.py's prompt never asks the model for
+        philosophy_fit, TradeProposal.from_dict only keeps fields the model returned, and
+        the field defaults to 0.0 -- so every equity proposal this system has ever
+        generated carried philosophy_fit 0.0, while the crypto path sets it explicitly
+        (agent.py's crypto branch). Zero fails three separate gates at once:
+        philosophy_fit_below_auto_trade_minimum, investment_policy_score_below_minimum,
+        and investment_policy_status -> due_diligence_incomplete.
+
+        Confirmed live that day: Alpaca produced 14 fresh, guardrail-passing equity
+        recommendations at confidence 0.85-0.87 and every one was rejected with those
+        three reasons, with the account sitting 100% in cash. The values were in the
+        database the whole time (FSLR 0.9, NEE 0.9, MLM 0.9, NVDA 0.75, AAPL 0.75) and
+        the display layer already joined them for the app -- only the proposal that gets
+        judged never carried one.
+
+        Deliberately NOT the model's confidence score: that is already checked separately
+        as min_ai_confidence, and reusing it here would make this gate a duplicate of
+        that one rather than the independent business-fit check it exists to be. Returns
+        None when this system holds no assessment, leaving the existing default so a
+        company it has never assessed cannot auto-trade on an invented score.
+        """
+        if self.db_path is None:
+            return None
+        try:
+            with closing(connect(self.db_path)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT iw.current_investment_philosophy_fit
+                    FROM INVESTMENT_WATCHLIST iw
+                    JOIN COMPANY_MASTER cm ON cm.id = iw.company_id
+                    WHERE UPPER(cm.ticker) = UPPER(?)
+                    ORDER BY iw.id DESC LIMIT 1
+                    """,
+                    (symbol,),
+                ).fetchone()
+        except Exception:  # noqa: BLE001 - a lookup failure must fall back to the existing default, never block a proposal
+            return None
+        # Stored qualitatively ("Strong", "Moderate") as often as numerically, which is
+        # why every reader of this column goes through safe_score -- float() raises on the
+        # real seed data. QUALITATIVE_SCORES maps the words to the same 0-1 scale the
+        # gates compare against.
+        return safe_score(row[0]) if row else None
 
     def _demo_proposal(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal:
         price = _latest_close(symbol, market) or 100.0

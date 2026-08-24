@@ -28,6 +28,7 @@ from ai_trader.market_intelligence_platform import initialize_market_intelligenc
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
 from ai_trader.multi_broker import set_broker_auto_trading
+from ai_trader.operational import safe_score
 from ai_trader.scheduler import IntervalWorker, ResearchScheduler
 
 
@@ -1178,6 +1179,51 @@ class DeveloperExperienceTests(unittest.TestCase):
             # No COMPANY_MASTER row at all -- caller keeps TradeProposal's existing default,
             # unchanged behaviour for symbols this system has no exchange metadata for.
             self.assertIsNone(agent._known_exchange_for_symbol("ZZZNOTREAL"))
+
+    def test_watchlist_philosophy_fit_is_read_from_the_watchlist_not_left_at_zero(self):
+        # 2026-08-24 hosted finding, same class of bug as the exchange default above:
+        # ai.py's prompt never asks the model for philosophy_fit, from_dict only keeps
+        # fields the model returned, and the field defaults to 0.0 -- so every equity
+        # proposal carried 0.0 while the crypto path sets it explicitly. Zero fails three
+        # gates at once (philosophy_fit_below_auto_trade_minimum,
+        # investment_policy_score_below_minimum, and investment_policy_status ->
+        # due_diligence_incomplete), so Alpaca could never trade regardless of the idea.
+        # Confirmed live: 14 fresh guardrail-passing equity recommendations at confidence
+        # 0.85-0.87, all rejected for exactly those reasons, account 100% in cash -- while
+        # the values sat in INVESTMENT_WATCHLIST and the app's own display layer already
+        # joined them.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            InvestmentIntelligenceDatabase(settings.db_path).seed_initial_data()
+            audit = AuditDatabase(settings.db_path, settings.trading_log_path)
+            agent = AITradingAgent(
+                market_data=None,
+                audit=audit,
+                guardrails=settings.guardrails,
+                db_path=settings.db_path,
+            )
+            with closing(sqlite3.connect(settings.db_path)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT cm.ticker, iw.current_investment_philosophy_fit
+                    FROM INVESTMENT_WATCHLIST iw
+                    JOIN COMPANY_MASTER cm ON cm.id = iw.company_id
+                    WHERE iw.current_investment_philosophy_fit IS NOT NULL
+                    LIMIT 1
+                    """
+                ).fetchone()
+            self.assertIsNotNone(row, "seed data should carry at least one assessed company")
+            ticker, expected = row
+
+            # Stored qualitatively ("Strong") as often as numerically, which is why every
+            # reader of this column goes through safe_score -- float() raises on real seed data.
+            expected_score = safe_score(expected)
+            self.assertIsNotNone(expected_score)
+            self.assertAlmostEqual(agent._watchlist_philosophy_fit(ticker), expected_score)
+            self.assertAlmostEqual(agent._watchlist_philosophy_fit(str(ticker).lower()), expected_score)
+            # A company this system has never assessed must not auto-trade on an invented
+            # score: None leaves TradeProposal's existing default in place.
+            self.assertIsNone(agent._watchlist_philosophy_fit("ZZZNOTREAL"))
 
     def test_alpaca_missing_asset_returns_empty_market_data(self):
         class MissingAssetClient(AlpacaPaperClient):
