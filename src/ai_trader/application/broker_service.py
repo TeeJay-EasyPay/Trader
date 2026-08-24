@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import date
@@ -40,6 +41,11 @@ logger = logging.getLogger("ai_trader.api")
 # proxy kills the request at a hard 60s and returns nothing at all, so this has to
 # leave room for the panel assembly and serialisation that follow.
 _BROKER_PANEL_FETCH_BUDGET_SECONDS = float(os.getenv("BROKER_PANEL_FETCH_BUDGET_SECONDS", "25"))
+
+# How long one broker_panels() build is reused before the next caller rebuilds it.
+# Deliberately short: long enough to collapse the repeated builds within a single
+# request, far shorter than the app's own refresh interval.
+_BROKER_PANEL_CACHE_SECONDS = float(os.getenv("BROKER_PANELS_CACHE_SECONDS", "15"))
 
 
 def _recent_unique_broker_events(
@@ -248,6 +254,8 @@ class BrokerService:
         self._query_executor = query_executor
         self._broker_factory = broker_factory
         self._kraken_balance_summary_lookup = kraken_balance_summary_lookup
+        self._panels_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self._panels_lock = threading.Lock()
 
     def poll_broker_activity(self, broker_filter: str | None = None) -> dict[str, Any]:
         """Continuously reconciles broker-reported order/trade status into SQLite and
@@ -492,7 +500,37 @@ class BrokerService:
         print(f"[evidence-snapshot] stage=total status=completed elapsed={time.monotonic() - stage_start:.1f}s", flush=True)
         return results
 
-    def broker_panels(self) -> list[dict[str, Any]]:
+    def broker_panels(self, *, max_age_seconds: float | None = None) -> list[dict[str, Any]]:
+        """Live account panels for every broker, reused briefly between callers.
+
+        2026-08-24: three independent call sites each rebuilt this from scratch --
+        operations_service.status(), founder_experience_service.executive_summary()
+        and the /brokers route -- so a single /portfolio request fetched Alpaca, then
+        fetched all five brokers again (Alpaca included) to build its summary.
+        /timing-diagnostics measured that second rebuild at 31.69s inside
+        executive_summary alone.
+
+        These are display panels: the app polls them, and every value in them is a
+        broker balance that the next poll refreshes anyway. Reusing one build for a
+        few seconds removes the duplicate fetches without changing what any caller
+        sees. Pass max_age_seconds=0 to force a rebuild.
+        """
+        ttl = _BROKER_PANEL_CACHE_SECONDS if max_age_seconds is None else max_age_seconds
+        if ttl > 0:
+            cached = self._panels_cache
+            if cached is not None and (time.monotonic() - cached[0]) < ttl:
+                return cached[1]
+        with self._panels_lock:
+            # Another caller may have rebuilt it while this one waited for the lock;
+            # without this the stampede the cache exists to prevent just serialises.
+            cached = self._panels_cache
+            if ttl > 0 and cached is not None and (time.monotonic() - cached[0]) < ttl:
+                return cached[1]
+            panels = self._build_broker_panels()
+            self._panels_cache = (time.monotonic(), panels)
+            return panels
+
+    def _build_broker_panels(self) -> list[dict[str, Any]]:
         broker_names = ["alpaca", "kraken", "coinbase", "binance", "interactive_brokers"]
         settings = broker_auto_settings(self.settings.db_path)
 

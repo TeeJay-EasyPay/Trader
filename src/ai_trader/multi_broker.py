@@ -529,6 +529,12 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
             or item.get("time")
             or "broker-event-without-timestamp"
         )
+        # Kraken reports times as epoch floats (opentm/closetm), Alpaca as ISO strings.
+        # updated_at is a text column, and Postgres has no text = double precision
+        # operator -- passing a float through the batch's IN (...) lookup fails the
+        # whole write. Row-at-a-time inserts never hit this: an INSERT parameter gets
+        # an assignment cast to the column type, a WHERE comparison does not.
+        event_timestamp = str(event_timestamp)
         identity = (external_id or None, status, event_timestamp)
         # A single broker payload can carry the same event twice (an order and its
         # own fill record). Row-at-a-time inserts let the second one be rejected by

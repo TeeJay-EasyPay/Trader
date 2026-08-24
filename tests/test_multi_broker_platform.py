@@ -235,6 +235,34 @@ class MultiBrokerPlatformTests(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM BROKER_TRADE_HISTORY").fetchone()[0], 60)
 
+    def test_broker_history_handles_krakens_numeric_epoch_timestamps(self):
+        """Kraken reports times as epoch floats (opentm/closetm), Alpaca as ISO
+        strings. Postgres rejected the batch lookup outright -- "operator does not
+        exist: text = double precision" -- and Kraken history silently stopped being
+        recorded. Row-at-a-time inserts never hit this, because an INSERT parameter
+        gets an assignment cast to the column type where a WHERE comparison does not.
+        SQLite's flexible typing hides the difference, so this pins the behaviour."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            trades = [
+                {"id": "kr-epoch-1", "pair": "XBTGBP", "type": "buy", "status": "closed",
+                 "vol": "0.001", "price": "40000", "opentm": 1756032000.1234, "closetm": 1756032060.5678},
+                {"id": "kr-epoch-2", "pair": "ETHGBP", "type": "sell", "status": "closed",
+                 "vol": "1", "price": "2000", "opentm": 1756032100.0, "closetm": 1756032160.0},
+            ]
+
+            inserted = record_broker_trade_history(db_path, "kraken", trades)
+
+            self.assertEqual(len(inserted), 2)
+            with closing(sqlite3.connect(db_path)) as conn:
+                stored = conn.execute(
+                    "SELECT updated_at FROM BROKER_TRADE_HISTORY ORDER BY external_id"
+                ).fetchall()
+            # Stored as text, so the idempotency lookup compares text against text.
+            self.assertTrue(all(isinstance(row[0], str) for row in stored), stored)
+            # And re-recording the identical payload must still be a no-op.
+            self.assertEqual(record_broker_trade_history(db_path, "kraken", trades), [])
+
     def test_broker_history_batch_drops_duplicates_inside_one_payload(self):
         """A broker payload can carry the same event twice (an order plus its own fill
         record). Row-at-a-time inserts let the unique index reject the second one; a
@@ -1637,6 +1665,36 @@ class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):
             self.assertEqual(len(rows), 1, "a pricing failure must not drop the row, only leave it unpriced")
             self.assertNotIn("current_price", rows[0])
             self.assertIn("current_price_error", rows[0])
+
+    def test_broker_panels_are_reused_briefly_so_one_request_does_not_rebuild_them(self):
+        """2026-08-24: three call sites each rebuilt the panels from scratch, so one
+        /portfolio request fetched Alpaca and then fetched all five brokers again to
+        build its summary. /timing-diagnostics measured that second rebuild at 31.69s
+        inside executive_summary alone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+            builds = {"count": 0}
+
+            def counting_fetch(broker):
+                builds["count"] += 1
+                return {"connection_status": "Connected", "source": broker}
+
+            with (
+                patch.object(service._broker_service, "_exchange_portfolio", side_effect=counting_fetch),
+                patch.object(service._broker_service, "_alpaca_panel_portfolio", side_effect=lambda: counting_fetch("alpaca")),
+            ):
+                service.broker_panels()
+                after_first = builds["count"]
+                service.broker_panels()
+                service.broker_panels()
+                after_repeats = builds["count"]
+                # An explicit zero max age must still force real work.
+                service.broker_panels(max_age_seconds=0)
+                after_forced = builds["count"]
+
+            self.assertGreater(after_first, 0)
+            self.assertEqual(after_repeats, after_first, "repeat calls should reuse the first build")
+            self.assertGreater(after_forced, after_repeats, "max_age_seconds=0 must rebuild")
 
     def test_broker_panels_degrades_a_hanging_broker_instead_of_the_whole_response(self):
         """2026-08-24 regression: Alpaca stopped answering and took /brokers, /status,

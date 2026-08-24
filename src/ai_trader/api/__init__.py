@@ -1564,12 +1564,12 @@ class LocalApiService:
         # calls this externally (`capture_production_broker_snapshots()`).
         return self._broker_service.capture_production_broker_snapshots()
 
-    def broker_panels(self) -> list[dict[str, Any]]:
+    def broker_panels(self, *, max_age_seconds: float | None = None) -> list[dict[str, Any]]:
         # Delegates to BrokerService (Phase 6a, architecture/AI_TRADER_MODULARISATION_
         # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- get(), status(),
         # _ask_ai_context() all call this externally, and the GET/POST route dispatch
         # table needed zero changes.
-        return self._broker_service.broker_panels()
+        return self._broker_service.broker_panels(max_age_seconds=max_age_seconds)
 
     def _kraken_ai_capital_ledger(
         self,
