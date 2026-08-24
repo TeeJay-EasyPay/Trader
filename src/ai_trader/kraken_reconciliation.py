@@ -1314,13 +1314,19 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
         # dedupe here -- an explicit check is required. Without it every replay cycle would
         # add another copy of the same round trip, inflating both the Founder's realised P&L
         # and every strategy win rate computed from this table.
+        # Deliberately does NOT compare quantity. Postgres stores it as REAL (4-byte) while
+        # the bound parameter is an 8-byte float, so 0.1 = 0.1 is FALSE and the guard never
+        # matched -- confirmed live, LTC/XLM/LINK each recorded twice an hour apart with
+        # byte-identical symbol, closed_at and quantity. broker + symbol + exit timestamp is
+        # already unique for a round trip: the same coin cannot close twice at the same
+        # instant on the same broker.
         existing = conn.execute(
             """
             SELECT 1 FROM PERFORMANCE_ATTRIBUTION
-            WHERE broker = 'kraken' AND symbol = ? AND closed_at = ? AND quantity = ?
+            WHERE broker = 'kraken' AND symbol = ? AND closed_at = ?
             LIMIT 1
             """,
-            (symbol, closed_at, quantity),
+            (symbol, closed_at),
         ).fetchone()
         if existing:
             return

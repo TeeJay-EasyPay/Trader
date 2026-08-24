@@ -540,6 +540,24 @@ class PerformanceAttributionOnCloseTests(unittest.TestCase):
 
             self.assertEqual(self._rows(db_path), [])
 
+    def test_a_differing_quantity_does_not_defeat_the_duplicate_check(self):
+        """2026-08-23 live: the guard compared quantity, and Postgres stores it as REAL
+        (4-byte) while the bound parameter is an 8-byte float -- so 0.1 = 0.1 was FALSE and
+        LTC/XLM/LINK were each recorded twice, inflating realised P&L and every win rate
+        computed from this table. Same coin, same exit instant, same broker IS the same
+        round trip regardless of how the quantity floats compare."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            initialize_multi_broker_schema(db_path)
+
+            self._close(db_path, self._reconciled())
+            # Same trade, quantity re-read with a hair of float drift, as a REAL round trip
+            # would be after a Postgres round trip.
+            self._close(db_path, self._reconciled(quantity=173.61100000000002))
+
+            self.assertEqual(len(self._rows(db_path)), 1)
+
     def test_replaying_the_same_trade_does_not_duplicate_it(self):
         """replay_kraken_evidence re-processes the same terminal trades on later cycles."""
         with tempfile.TemporaryDirectory() as tmp:
