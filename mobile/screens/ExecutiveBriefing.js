@@ -46,7 +46,7 @@ const { deriveConviction } = require('../lib/forecasting');
 // normalizeClosedTradesFromAttribution/tradeStatistics remain -- they feed the Investment
 // Thesis factors below.
 const { normalizeClosedTradesFromAttribution, tradeStatistics } = require('../lib/forecastEngine');
-const { marketForecastCards } = require('../lib/marketForecast');
+const { marketForecastCards, forecastHeadline } = require('../lib/marketForecast');
 const { tradeScorecardCard } = require('../lib/tradeScorecard');
 const { declineReasonsCard } = require('../lib/declineReasons');
 const { evaluateFactors } = require('../lib/forecastFactors');
@@ -403,7 +403,10 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
     // 2026-08-21 Founder feedback: happy with the length given the per-asset detail, but wants
     // it collapsible since it is the longest of the 6 sections - defaultExpanded keeps today's
     // first-read content identical, this only adds the ability to collapse it on repeat visits.
-    <CollapsibleSection title="The View Ahead" defaultExpanded={true}>
+    // 2026-08-24, Founder-directed: this section was ~80% of the Briefing and most of it
+    // was technical jargon concluding "Unclear". Now collapsed by default with a one-line
+    // summary at the top -- the detail is one tap away for when it is actually wanted.
+    <CollapsibleSection title="The View Ahead" subtitle={forecastHeadline(forecastCards)} defaultExpanded={false}>
       <Text style={styles.metricLabel}>Market assessment</Text>
       <Text style={styles.bodyText}>{marketOutlookText(marketCentre)}</Text>
 
@@ -423,8 +426,16 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
       <StatusPill label={conviction.level} tone={convictionTone(conviction.level)} />
       <Text style={styles.bodyText}>{conviction.reason}</Text>
 
-      <Text style={styles.metricLabel}>Forecast Centre - built from real price history and technical analysis, not from my own past trade results</Text>
-      {forecastCards.map((forecast) => <MarketForecastCard key={forecast.horizonKey} forecast={forecast} />)}
+      {/* Nested and collapsed: 19 per-asset cards of trend/momentum/ATR detail is analyst
+          material, not founder material. It stays reachable rather than deleted, because
+          when a trade goes wrong this is where the reasoning lives. */}
+      <CollapsibleSection
+        title="Per-asset forecasts"
+        subtitle="Built from real price history and technical analysis, not from my own past trade results."
+        defaultExpanded={false}
+      >
+        {forecastCards.map((forecast) => <MarketForecastCard key={forecast.horizonKey} forecast={forecast} />)}
+      </CollapsibleSection>
 
       <Text style={styles.metricLabel}>Principal risks</Text>
       {risks.length ? risks.map((risk, index) => <RiskCard key={`${risk.title}-${index}`} risk={risk} />) : <Text style={styles.bodyText}>Nothing stands out as a principal risk right now.</Text>}
@@ -480,7 +491,7 @@ function FounderActionCard({ action }) {
   );
 }
 
-function FounderActionsSection({ recommendations, unresolvedIncidentCount, connectionReadiness, onRefresh }) {
+function FounderActionsSection({ recommendations, unresolvedIncidentCount, connectionReadiness, onRefresh, onCommand }) {
   const actions = buildFounderActions({ recommendations, unresolvedIncidentCount });
   const outstanding = (recommendations || []).filter((item) => item.freshness_status !== 'Expired').length;
   const noActionReason = cioNoActionReason({
@@ -496,8 +507,13 @@ function FounderActionsSection({ recommendations, unresolvedIncidentCount, conne
       ) : (
         <Text style={styles.bodyText}>{noActionReason}</Text>
       )}
+      {/* 2026-08-24: Operations was cut as a screen. Its only genuinely Founder-facing
+          controls move here -- the rest was developer diagnostics. Emergency Stop in
+          particular must never be more than one screen away. */}
       <View style={styles.buttonGrid}>
         <Button label="Refresh" tone="neutral" onPress={onRefresh} />
+        {onCommand ? <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 10 })} /> : null}
+        {onCommand ? <Button label="Emergency Stop All" tone="danger" onPress={() => onCommand('/stop-trading')} /> : null}
       </View>
     </Section>
   );
@@ -535,6 +551,7 @@ function ExecutiveBriefing({
   tradeScorecard,
   declineReasons,
   onRefresh,
+  onCommand,
 }) {
   const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const confidence = cioAverageConfidence(recommendations);
@@ -582,7 +599,7 @@ function ExecutiveBriefing({
         portfolio={portfolio}
       />
       <DeclineReasonsCard declineReasons={declineReasons} />
-      <FounderActionsSection recommendations={recommendations} unresolvedIncidentCount={unresolvedIncidentCount} connectionReadiness={connectionReadiness} onRefresh={onRefresh} />
+      <FounderActionsSection recommendations={recommendations} unresolvedIncidentCount={unresolvedIncidentCount} connectionReadiness={connectionReadiness} onRefresh={onRefresh} onCommand={onCommand} />
       <ExecutiveMessagesCard status={status} />
     </View>
   );

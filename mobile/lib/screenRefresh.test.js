@@ -106,11 +106,19 @@ test('composeScreenRefresh: one failing source does not stop the composed refres
 // APP SIMPLIFICATION (2026-08-21): Recommendations and Market were deleted as dedicated
 // screens; Market's 'market' (themes) source moved onto ExecutiveBriefing instead of being
 // dropped entirely, since the Briefing still genuinely needs it.
-test('SCREEN_DATA_SOURCES: exactly the five navigable screens are registered', () => {
+test('SCREEN_DATA_SOURCES: exactly the three navigable screens are registered', () => {
+  // 2026-08-24 simplification: five screens -> three. Operations was developer tooling,
+  // Activity a notification list scrolled past, and Learning duplicated the Trade Scorecard.
   assert.deepStrictEqual(
     Object.keys(SCREEN_DATA_SOURCES).sort(),
-    ['Activity', 'ExecutiveBriefing', 'Learning', 'Operations', 'Portfolio']
+    ['Ask', 'ExecutiveBriefing', 'Portfolio']
   );
+});
+
+test('SCREEN_DATA_SOURCES: Ask has no evidence source of its own', () => {
+  // It asks the backend a question on demand rather than rendering a snapshot, so
+  // pull-to-refresh there has nothing to refresh.
+  assert.deepStrictEqual(SCREEN_DATA_SOURCES.Ask, []);
 });
 
 test('buildScreenRefreshRegistry: ExecutiveBriefing composes shared + founderBrief + market while other shared screens stay shared-only', () => {
@@ -119,38 +127,13 @@ test('buildScreenRefreshRegistry: ExecutiveBriefing composes shared + founderBri
   const founderBrief = source({ lastRefreshedAt: '2026-08-03T10:01:00.000Z' });
   const registry = buildScreenRefreshRegistry({ shared, market, founderBrief });
 
-  ['Activity', 'Portfolio', 'Learning'].forEach((screen) => {
+  ['Portfolio'].forEach((screen) => {
     assert.strictEqual(registry[screen].lastRefreshedAt, shared.lastRefreshedAt, `${screen} should mirror the shared source`);
   });
   assert.strictEqual(registry.ExecutiveBriefing.lastRefreshedAt, market.lastRefreshedAt);
 });
 
-test('buildScreenRefreshRegistry: Learning never fetches Founder Brief or market', async () => {
-  const sharedCalls = [];
-  const marketCalls = [];
-  const founderBriefCalls = [];
-  const registry = buildScreenRefreshRegistry({
-    shared: source({ refresh: async () => { sharedCalls.push(1); } }),
-    market: source({ refresh: async () => { marketCalls.push(1); } }),
-    founderBrief: source({ refresh: async () => { founderBriefCalls.push(1); } }),
-  });
 
-  await registry.Learning.refresh();
-  assert.strictEqual(sharedCalls.length, 1);
-  assert.strictEqual(founderBriefCalls.length, 0);
-  assert.strictEqual(marketCalls.length, 0);
-});
-
-test('buildScreenRefreshRegistry: Operations composes shared + founderBrief only, never market', async () => {
-  const marketCalls = [];
-  const registry = buildScreenRefreshRegistry({
-    shared: source(),
-    market: source({ refresh: async () => { marketCalls.push(1); } }),
-    founderBrief: source(),
-  });
-  await registry.Operations.refresh();
-  assert.strictEqual(marketCalls.length, 0);
-});
 
 // --- AT-ED-011.5 required-test checklist: one explicit test per named requirement -----------
 // (largely re-proving what the tests above already establish structurally, but named to match
@@ -166,12 +149,6 @@ function trackedRegistry() {
   return { registry, calls };
 }
 
-test('Activity refresh does not fetch market-exclusive endpoints', async () => {
-  const { registry, calls } = trackedRegistry();
-  await registry.Activity.refresh();
-  assert.strictEqual(calls.market, 0);
-  assert.strictEqual(calls.shared, 1);
-});
 
 test('Portfolio refresh does not fetch market-exclusive endpoints', async () => {
   const { registry, calls } = trackedRegistry();
@@ -180,12 +157,6 @@ test('Portfolio refresh does not fetch market-exclusive endpoints', async () => 
   assert.strictEqual(calls.shared, 1);
 });
 
-test('Learning refresh does not fetch Founder Brief', async () => {
-  const { registry, calls } = trackedRegistry();
-  await registry.Learning.refresh();
-  assert.strictEqual(calls.founderBrief, 0);
-  assert.strictEqual(calls.shared, 1);
-});
 
 test('ExecutiveBriefing refresh fetches its shared, founderBrief, and market sources exactly once each', async () => {
   const { registry, calls } = trackedRegistry();
@@ -195,13 +166,6 @@ test('ExecutiveBriefing refresh fetches its shared, founderBrief, and market sou
   assert.strictEqual(calls.market, 1);
 });
 
-test('Operations refresh fetches only its required shared and exclusive (founderBrief) sources', async () => {
-  const { registry, calls } = trackedRegistry();
-  await registry.Operations.refresh();
-  assert.strictEqual(calls.shared, 1);
-  assert.strictEqual(calls.founderBrief, 1);
-  assert.strictEqual(calls.market, 0);
-});
 
 test('repeated taps on the same screen do not change how many underlying sources are composed (dedup is each source\'s own responsibility, not re-implemented here)', async () => {
   const { registry, calls } = trackedRegistry();

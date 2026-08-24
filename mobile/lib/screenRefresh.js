@@ -29,12 +29,14 @@
 // Thesis/Opportunities content), so the 'market' source moved here rather than being dropped -
 // pulling to refresh the Briefing now also refreshes themes, since there is no longer a
 // separate screen whose own pull-to-refresh could do it.
+// APP SIMPLIFICATION (2026-08-24): five screens -> three. Operations, Activity and Learning
+// were removed. founderBrief moved onto the Briefing with the Founder Actions it belongs to;
+// Ask has no evidence source of its own -- it asks the backend a question on demand rather
+// than rendering a snapshot, so pull-to-refresh there has nothing to refresh.
 const SCREEN_DATA_SOURCES = Object.freeze({
   ExecutiveBriefing: ['shared', 'founderBrief', 'market'],
-  Operations: ['shared', 'founderBrief'],
-  Activity: ['shared'],
   Portfolio: ['shared'],
-  Learning: ['shared'],
+  Ask: [],
 });
 
 // A screen's own "is it currently loading" state is the OR of only the sources it actually

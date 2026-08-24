@@ -1,16 +1,28 @@
+// PALETTE (2026-08-24, Founder-directed): "I like the combination of a lighter blue,
+// yellow, red and white... it feels too serious right now."
+//
+// Light blue and white do ALL the mood work. Green, red and amber are deliberately NOT used
+// as decoration anywhere in here -- in a trading app they already carry meaning (money up,
+// money down, needs your attention). Spending them on styling would cost the one signal
+// that has to be unmissable: that you are losing money.
+//
+// Aiming for calm and confident rather than cheerful. At 2am with a trade going against
+// you, a happy-looking app reads as mocking.
+//
+// Previous dark palette preserved at styles.js.darkbackup for an easy revert.
 import { StyleSheet } from 'react-native';
 
 export const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#eef4fb',
   },
   header: {
     paddingHorizontal: 18,
     paddingTop: 10,
     paddingBottom: 8,
-    backgroundColor: '#0b1220',
-    borderBottomColor: '#1f2937',
+    backgroundColor: '#eef4fb',
+    borderBottomColor: '#cfe0f2',
     borderBottomWidth: 1,
   },
   headerTopRow: {
@@ -21,12 +33,12 @@ export const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: '#123a63',
   },
   subtitle: {
     marginTop: 2,
     fontSize: 13,
-    color: '#94a3b8',
+    color: '#5a7897',
   },
   cacheBanner: {
     marginTop: 8,
@@ -49,7 +61,7 @@ export const styles = StyleSheet.create({
   cacheBannerRetry: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#1f6feb',
+    color: '#3d8bfd',
     marginTop: 6,
   },
   tabs: {
@@ -57,7 +69,7 @@ export const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     padding: 10,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#eef4fb',
   },
   tab: {
     flexGrow: 1,
@@ -65,20 +77,20 @@ export const styles = StyleSheet.create({
     minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#334155',
-    backgroundColor: '#111827',
+    borderColor: '#c3d9f0',
+    backgroundColor: '#ffffff',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 6,
   },
   activeTab: {
-    backgroundColor: '#1f6feb',
-    borderColor: '#1f6feb',
+    backgroundColor: '#3d8bfd',
+    borderColor: '#3d8bfd',
   },
   tabText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#cbd5e1',
+    color: '#1f4c78',
     textAlign: 'center',
   },
   activeTabText: {
@@ -91,20 +103,20 @@ export const styles = StyleSheet.create({
     minHeight: 56,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#1f6feb',
-    backgroundColor: '#13294b',
+    borderColor: '#3d8bfd',
+    backgroundColor: '#dceafc',
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 10,
     marginTop: 10,
   },
   primaryTabActive: {
-    backgroundColor: '#1f6feb',
+    backgroundColor: '#3d8bfd',
   },
   primaryTabText: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#e2e8f0',
+    color: '#123a63',
     letterSpacing: 0.3,
   },
   primaryTabTextActive: {
@@ -127,13 +139,13 @@ export const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#d9e2ec',
+    borderColor: '#cfe0f2',
     padding: 12,
   },
   sectionTitle: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#17202a',
+    color: '#16324f',
     marginBottom: 8,
   },
   collapsibleHeader: {
@@ -147,7 +159,7 @@ export const styles = StyleSheet.create({
   },
   collapsibleChevron: {
     fontSize: 13,
-    color: '#667085',
+    color: '#5a7897',
     marginLeft: 6,
   },
   collapsibleBody: {
@@ -157,7 +169,7 @@ export const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#d9e2ec',
+    borderColor: '#cfe0f2',
     padding: 14,
     marginBottom: 14,
   },
@@ -166,49 +178,49 @@ export const styles = StyleSheet.create({
     marginBottom: 10,
     fontSize: 14,
     lineHeight: 20,
-    color: '#243142',
+    color: '#1f4c78',
   },
   metric: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 12,
     paddingVertical: 7,
-    borderBottomColor: '#e6e9ee',
+    borderBottomColor: '#dce8f5',
     borderBottomWidth: 1,
   },
   metricLabel: {
     flex: 1,
     fontSize: 13,
-    color: '#667085',
+    color: '#5a7897',
     fontWeight: '700',
   },
   metricValue: {
     flex: 1,
     fontSize: 13,
-    color: '#17202a',
+    color: '#16324f',
     textAlign: 'right',
   },
   bodyText: {
     fontSize: 13,
     lineHeight: 19,
-    color: '#243142',
+    color: '#1f4c78',
   },
   linkText: {
-    color: '#1f6feb',
+    color: '#3d8bfd',
     fontWeight: '800',
   },
   textBlock: {
     marginTop: 8,
   },
   compactRow: {
-    borderBottomColor: '#e6e9ee',
+    borderBottomColor: '#dce8f5',
     borderBottomWidth: 1,
     paddingVertical: 8,
   },
   recommendationHeader: {
     backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#dde1e7',
+    borderColor: '#cfe0f2',
     borderRadius: 8,
     padding: 12,
     marginBottom: 8,
@@ -217,7 +229,7 @@ export const styles = StyleSheet.create({
     marginTop: 3,
     fontSize: 12,
     lineHeight: 17,
-    color: '#667085',
+    color: '#5a7897',
   },
   buttonGrid: {
     flexDirection: 'row',
@@ -233,7 +245,7 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primary: {
-    backgroundColor: '#1f6feb',
+    backgroundColor: '#3d8bfd',
   },
   warn: {
     backgroundColor: '#9a6700',
@@ -256,14 +268,14 @@ export const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#dde1e7',
+    borderColor: '#cfe0f2',
     padding: 12,
     marginBottom: 12,
   },
   cardTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#17202a',
+    color: '#16324f',
     marginBottom: 8,
   },
   statusPill: {
@@ -288,7 +300,7 @@ export const styles = StyleSheet.create({
   statusPillText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#111827',
+    color: '#ffffff',
   },
   input: {
     minHeight: 42,
@@ -321,7 +333,7 @@ export const styles = StyleSheet.create({
   },
   chatAssistant: {
     backgroundColor: '#ffffff',
-    borderColor: '#dde1e7',
+    borderColor: '#cfe0f2',
   },
   // Trade History table (2026-08-21 Founder request - real aligned columns instead of a
   // sentence per trade; Commission %/Commission columns added same day). Column flex ratios
@@ -343,13 +355,13 @@ export const styles = StyleSheet.create({
   tradeTableHeaderText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#667085',
+    color: '#5a7897',
     textTransform: 'uppercase',
   },
   tradeTableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderBottomColor: '#e6e9ee',
+    borderBottomColor: '#dce8f5',
     borderBottomWidth: 1,
     paddingVertical: 9,
   },
@@ -389,11 +401,11 @@ export const styles = StyleSheet.create({
   },
   tradeTableCellText: {
     fontSize: 12,
-    color: '#17202a',
+    color: '#16324f',
   },
   tradeTableCellTextRight: {
     fontSize: 12,
-    color: '#17202a',
+    color: '#16324f',
     textAlign: 'right',
   },
   tradeTablePnlPositive: {

@@ -168,7 +168,40 @@ function marketForecastCards(response) {
   return cards.length ? cards : [NO_FORECAST_CARD];
 }
 
+
+// 2026-08-24, Founder-directed: the Executive Briefing carried 19 separate coin forecasts,
+// each a wall of technical jargon (trend_score, momentum_score, ATR_pct, "higher_bias price
+// structure"), and most concluded "Unclear" with Low confidence. That was roughly 80% of the
+// screen telling the Founder nothing. This is the one line that replaces it; the full cards
+// stay available behind a tap for when he actually wants them.
+//
+// Only counts a directional call the model is at least Medium confident about. An "Upward,
+// Low confidence" call is not something to act on, and presenting it as one would be exactly
+// the false precision the rest of this file avoids.
+function forecastHeadline(cards) {
+  const usable = (cards || []).filter((card) => card && card.available);
+  if (!usable.length) {
+    return 'I have no price forecasts yet.';
+  }
+  const confident = usable.filter((card) => card.confidence === 'High' || card.confidence === 'Medium');
+  const up = confident.filter((card) => card.direction === 'up').length;
+  const down = confident.filter((card) => card.direction === 'down').length;
+  const unclear = usable.length - up - down;
+  if (!up && !down) {
+    return `Of ${usable.length} assets I follow, none has a clear enough direction to act on.`;
+  }
+  const parts = [];
+  if (up) {
+    parts.push(`${up} looking up`);
+  }
+  if (down) {
+    parts.push(`${down} looking down`);
+  }
+  return `Of ${usable.length} assets I follow: ${parts.join(', ')}, ${unclear} unclear.`;
+}
+
 module.exports = {
+  forecastHeadline,
   NO_FORECAST_CARD,
   confidenceLabel,
   directionLabel,

@@ -13,10 +13,8 @@ import { styles } from './styles';
 import { StatusPill } from './components/shared';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
-import { OperationsCentre } from './screens/Operations';
-import { AutonomousActivity } from './screens/Activity';
 import { PortfolioCommandCentre } from './screens/Portfolio';
-import { LearningStrategyLab } from './screens/Learning';
+import { AskAiTrader } from './screens/Ask';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
 import { useFounderBrief } from './hooks/useFounderBrief';
@@ -40,8 +38,15 @@ const { shortApiBase, apiRequest } = require('./api/client');
 // traders) were not worth a whole tab. Market's "Today's Learning, In Brief" content moved into
 // Learning; its themes data still feeds the Executive Briefing's Investment Thesis/Opportunities
 // content directly (see the 'market' screen-data-source now owned by ExecutiveBriefing below).
-const SCREENS = ['ExecutiveBriefing', 'Operations', 'Activity', 'Portfolio', 'Learning'];
-const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing' };
+// APP SIMPLIFICATION (2026-08-24, Founder-directed): five screens -> three.
+// Operations was developer tooling (Run Analysis, Emergency Stop) -- its actions moved onto
+// the Briefing, the rest was diagnostics the Founder does not act on. Activity was a
+// notification list scrolled past. Learning's numbers duplicated the Trade Scorecard, so its
+// one unique line (the latest lesson) moved there and Ask became its own screen.
+// What is left answers the only three questions the Founder actually has: how am I doing,
+// what do I hold, and let me ask something.
+const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'Ask'];
+const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', Ask: 'Ask AI Trader' };
 
 export default function App() {
   const [screen, setScreen] = useState('ExecutiveBriefing');
@@ -149,42 +154,10 @@ export default function App() {
             marketForecast={marketForecast}
             tradeScorecard={tradeScorecard}
             declineReasons={declineReasons}
+            onCommand={command}
             onRefresh={screenRefresh.ExecutiveBriefing.refresh}
           />
         </ErrorBoundary>
-      );
-    }
-    if (screen === 'Operations') {
-      return (
-        <OperationsCentre
-          status={status}
-          recommendations={recommendations}
-          brief={founderBrief.brief}
-          briefLoading={founderBrief.loading}
-          briefError={founderBrief.lastRefreshError}
-          latestReport={latestReport}
-          onRefresh={screenRefresh.Operations.refresh}
-          onCommand={command}
-          onReport={reportCommand}
-          activity={activity}
-          onOpenActivity={() => setScreen('Activity')}
-        />
-      );
-    }
-    if (screen === 'Activity') {
-      return (
-        <AutonomousActivity
-          activity={activity}
-          founderStatus={status}
-          portfolio={portfolio}
-          performanceAttribution={performanceAttribution}
-          recommendations={recommendations}
-          period={activityPeriod}
-          setPeriod={setActivityPeriod}
-          onRefresh={screenRefresh.Activity.refresh}
-          notifications={notifications}
-          onCommand={command}
-        />
       );
     }
     if (screen === 'Portfolio') {
@@ -203,9 +176,7 @@ export default function App() {
       );
     }
     return (
-      <LearningStrategyLab
-        status={status}
-        dailyLearning={dailyLearning}
+      <AskAiTrader
         messages={askMessages}
         setMessages={setAskMessages}
         request={apiRequest}
