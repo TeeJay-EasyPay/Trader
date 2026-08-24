@@ -25,6 +25,7 @@ from http.server import ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from ..agent import AITradingAgent, propose_crypto_trades
 from ..always_on import (
@@ -1612,13 +1613,23 @@ class LocalApiService:
         stages: list[dict[str, Any]] = []
         deadline = time.monotonic() + 40.0
 
+        pool = ThreadPoolExecutor(max_workers=1)
+
         def stage(name: str, fn: Callable[[], Any]) -> Any:
-            if time.monotonic() >= deadline:
+            """Time one stage, bounded, so a stage slower than the whole request
+            budget still reports a number instead of taking the diagnostic down with
+            it -- which is exactly what the Alpaca path did on 2026-08-24."""
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 stages.append({"stage": name, "seconds": None, "skipped": "time budget exhausted"})
                 return None
             started = time.monotonic()
+            future = pool.submit(fn)
             try:
-                value = fn()
+                value = future.result(timeout=remaining)
+            except FuturesTimeoutError:
+                stages.append({"stage": name, "seconds": round(time.monotonic() - started, 2), "ok": False, "detail": f"still running after {remaining:.1f}s"})
+                return None
             except Exception as exc:  # noqa: BLE001 - a failing stage is a result, not a crash
                 stages.append({"stage": name, "seconds": round(time.monotonic() - started, 2), "ok": False, "detail": str(exc)[:200]})
                 return None
@@ -1632,7 +1643,7 @@ class LocalApiService:
 
         target = (target or "alpaca").lower()
         if target == "alpaca":
-            broker = broker_service._broker_factory()
+            broker = stage("alpaca._broker_factory", broker_service._broker_factory)
             account = stage("alpaca.get_account", broker.get_account)
             positions = stage("alpaca.get_positions", broker.get_positions)
             orders = stage("alpaca.get_orders", lambda: broker.get_orders(status="all", limit=10))
@@ -1650,11 +1661,29 @@ class LocalApiService:
             )
             stage("executive_summary", self.executive_summary)
         elif target == "kraken":
-            stage("kraken._exchange_portfolio", lambda: broker_service._exchange_portfolio("kraken"))
+            # Step-for-step mirror of _exchange_portfolio("kraken"): batching the price
+            # lookups only took it 51.66s -> 45.6s, so the bulk of the cost is one of
+            # the calls below and guessing which has already been wrong once.
+            adapter = broker_service.orchestrator.adapters.get("kraken")
+            if adapter is None:
+                return {"error": "No Kraken adapter configured."}
+            account = stage("kraken.get_account", adapter.get_account)
+            stage("kraken.get_positions", lambda: adapter.get_positions(account))
+            orders = stage("kraken.get_orders", adapter.get_orders) or []
+            history = stage("kraken.get_trade_history", adapter.get_trade_history) or []
+            stage(
+                "kraken.record_broker_trade_history",
+                lambda: record_broker_trade_history(self.settings.db_path, "kraken", list(orders) + list(history)),
+            )
+            stage(
+                "kraken.balance_summary(prices)",
+                lambda: _kraken_balance_summary(account.get("balances") if isinstance(account, dict) else None, adapter),
+            )
             stage("kraken._kraken_ai_capital_ledger", self._kraken_ai_capital_ledger)
         else:
             return {"error": f"Unknown target '{target}'. Use alpaca or kraken."}
 
+        pool.shutdown(wait=False, cancel_futures=True)
         return {
             "target": target,
             "total_seconds": round(sum(row["seconds"] or 0.0 for row in stages), 2),

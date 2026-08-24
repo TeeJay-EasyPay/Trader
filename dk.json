@@ -1,0 +1,1 @@
+{"target": "kraken", "total_seconds": 45.6, "stages": [{"stage": "kraken._exchange_portfolio", "seconds": 45.6, "ok": true, "size": 17}, {"stage": "kraken._kraken_ai_capital_ledger", "seconds": null, "skipped": "time budget exhausted"}], "note": "Wall-clock timings for one pass. Render's proxy kills any request at 60s."}
