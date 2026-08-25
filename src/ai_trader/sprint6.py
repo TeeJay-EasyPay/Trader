@@ -359,6 +359,25 @@ def record_operational_event(
     return {"event_id": event_id, "correlation_id": correlation, "status": "recorded"}
 
 
+def _ai_managed_symbols(db_path: Path, broker: str) -> set[str]:
+    """Symbols this system currently runs its own open trade in, for one broker.
+
+    Never raises: an unreadable managed-exit table must fall back to the caller's existing
+    behaviour rather than block trading, so this returns an empty set and the wallet-based
+    check applies as before.
+    """
+    try:
+        from .multi_broker import open_managed_exits
+
+        return {
+            str(row.get("symbol") or "").upper()
+            for row in open_managed_exits(db_path, broker)
+            if row.get("symbol")
+        }
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def pre_execution_decision_packet(
     db_path: Path,
     *,
@@ -388,7 +407,14 @@ def pre_execution_decision_packet(
         account_equity=account.equity,
     )
     risk_validation = (
-        validate_trade_proposal(proposal, account, guardrails, now=now)
+        validate_trade_proposal(
+            proposal, account, guardrails, now=now,
+            # 2026-08-25: judge a duplicate BUY by this system's own open trades, not by
+            # what the wallet happens to hold. The Founder's 11 personal Kraken holdings
+            # are not this system's positions and must not veto its entries. See
+            # guardrails.validate_trade_proposal.
+            ai_managed_symbols=_ai_managed_symbols(db_path, broker),
+        )
         if guardrails is not None
         else None
     )

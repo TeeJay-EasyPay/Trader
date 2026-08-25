@@ -16,6 +16,7 @@ from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .operational import safe_score
 from .proposal_context import build_proposal_context
 from .liquidity_map import liquidity_map_for_pair
+from .sprint6 import _ai_managed_symbols
 from .symbol_track_record import symbol_track_record
 from .market_intelligence_platform import load_recent_observations_batch
 from .technical_discretion import (
@@ -712,7 +713,13 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
-            validation = validate_trade_proposal(proposal, account, guardrails, now=now)
+            validation = validate_trade_proposal(
+                proposal, account, guardrails, now=now,
+                # 2026-08-25: a coin the Founder holds personally is not a position this
+                # system opened, and must not block it from entering. See
+                # guardrails.validate_trade_proposal for the measured effect.
+                ai_managed_symbols=_ai_managed_symbols(db_path, "kraken"),
+            )
             proposal = replace(
                 proposal,
                 ai_guardrails_passed=validation.passed,

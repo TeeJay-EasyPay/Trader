@@ -12,6 +12,7 @@ def validate_trade_proposal(
     config: GuardrailConfig,
     *,
     now: datetime | None = None,
+    ai_managed_symbols: set[str] | list[str] | None = None,
 ) -> ValidationResult:
     p = proposal.normalized()
     failures: list[str] = []
@@ -59,7 +60,28 @@ def validate_trade_proposal(
 
     existing_symbols = {position.symbol.upper() for position in account.open_positions}
     has_existing_position = p.symbol in existing_symbols
-    if p.side == "buy" and has_existing_position:
+    # 2026-08-25, Founder-directed. "Duplicate" for a BUY means this system already runs
+    # its own open trade in the symbol -- not merely that the wallet contains the coin.
+    #
+    # Measured that morning: the Kraken wallet held 14 coins, of which only 3 were
+    # AI-managed trades (BCH, GRT, AAVE). The other 11 are the Founder's own pre-existing
+    # holdings, which this system did not open, does not manage and must not sell. Judging
+    # duplicates by wallet contents therefore banned the AI from 14 of its 19 allowed
+    # pairs, leaving it shopping in 5 -- which is why GRT was proposed and rejected seven
+    # times in one night, and why two trades were placed in a full day. It was not short
+    # of ideas; it had almost nowhere to put them.
+    #
+    # Passing ai_managed_symbols is opt-in: callers that do not know which trades are
+    # AI-managed keep the old wallet-based behaviour exactly. The genuine risk controls
+    # are untouched -- max_open_positions above, and the per-broker AI open-trade cap
+    # upstream -- so this widens where the AI may look, not how much it may hold.
+    #
+    # SELLS deliberately still use the wallet: you can only sell what is actually there,
+    # and that check has nothing to do with which system opened the position.
+    duplicate_scope = existing_symbols if ai_managed_symbols is None else {
+        str(symbol).upper() for symbol in ai_managed_symbols
+    }
+    if p.side == "buy" and p.symbol in duplicate_scope:
         failures.append("duplicate_open_position")
     if p.side == "sell" and not has_existing_position and not config.allow_short_selling:
         failures.append("short_selling_disabled")
