@@ -15,12 +15,85 @@ const { styles } = require('../styles');
 const { Section, Metric, Button } = require('../components/shared');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
 const { askRequestOptions, askErrorMessage } = require('../lib/askRequest');
+const { Audio } = require('expo-av');
+const FileSystem = require('expo-file-system');
+const { micButtonLabel, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
   const [question, setQuestion] = useState('');
   const [askLoading, setAskLoading] = useState(false);
   const [askStatus, setAskStatus] = useState('Ready');
+  // 2026-08-25, Founder-directed microphone. The decisions about what each state means and what
+  // to say when it fails live in lib/voiceQuestion.js, where they are tested; this holds only
+  // the recorder itself, which cannot be.
+  const [voiceState, setVoiceState] = useState('idle');
+  const recordingRef = React.useRef(null);
+
+  const stopRecording = async () => {
+    const recording = recordingRef.current;
+    recordingRef.current = null;
+    if (!recording) {
+      setVoiceState('idle');
+      return;
+    }
+    setVoiceState('transcribing');
+    setAskStatus(voiceStatusText('transcribing'));
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      const audio = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      const payload = await request('/transcribe-question', {
+        method: 'POST',
+        body: JSON.stringify({ audio_base64: audio, filename: 'question.m4a' }),
+        timeoutMs: 60000,
+      });
+      const result = resolveTranscription(payload);
+      if (result.ok) {
+        setVoiceState('idle');
+        setAskStatus('Ready');
+        // Sent straight through: the Founder asked to "press it and just ask the app
+        // something verbally and submit it", so speaking IS the submission.
+        await ask(result.text);
+        return;
+      }
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(result.message) }]);
+      setAskStatus('Voice question failed.');
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('failed')) }]);
+      setAskStatus('Voice question failed.');
+    } finally {
+      setVoiceState('idle');
+    }
+  };
+
+  const startRecording = async () => {
+    setVoiceState('requesting');
+    setAskStatus(voiceStatusText('requesting'));
+    try {
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('permission_denied')) }]);
+        setAskStatus('Microphone not available.');
+        setVoiceState('idle');
+        return;
+      }
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      recordingRef.current = recording;
+      setVoiceState('recording');
+      setAskStatus(voiceStatusText('recording'));
+      // A phone left recording in a pocket must not upload something huge, so this stops
+      // itself rather than relying on the Founder remembering to press stop.
+      setTimeout(() => { if (recordingRef.current === recording) stopRecording(); }, MAX_RECORDING_SECONDS * 1000);
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('failed')) }]);
+      setAskStatus('Voice question failed.');
+      setVoiceState('idle');
+    }
+  };
+
+  const toggleVoice = () => (voiceState === 'recording' ? stopRecording() : startRecording());
   const ask = async (text) => {
     const finalQuestion = String(text || question || '').trim();
     if (!finalQuestion || askLoading) {
@@ -81,7 +154,15 @@ function AskAiTrader({ messages, setMessages, request }) {
           value={question}
           onChangeText={setQuestion}
         />
-        <Button label={askLoading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={askLoading || !question.trim()} />
+        <View style={styles.buttonGrid}>
+          <Button label={askLoading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={askLoading || !question.trim()} />
+          <Button
+            label={micButtonLabel(voiceState)}
+            tone={voiceState === 'recording' ? 'warn' : 'neutral'}
+            onPress={toggleVoice}
+            disabled={askLoading || voiceState === 'transcribing' || voiceState === 'requesting'}
+          />
+        </View>
       </Section>
       <Section title="Conversation">
         {messages.length ? (

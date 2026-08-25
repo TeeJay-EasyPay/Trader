@@ -20,7 +20,13 @@
       "**/*"
     ],
     "plugins": [
-      "./plugins/with-cleartext-traffic"
+      "./plugins/with-cleartext-traffic",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "AI Trader uses the microphone so you can ask a question out loud instead of typing it."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": false
@@ -31,7 +37,10 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#020611"
-      }
+      },
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
     },
     "extra": {
       "eas": {

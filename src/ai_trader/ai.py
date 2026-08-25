@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -530,3 +531,51 @@ def _proposal_from_response_text(text: str) -> TradeProposal | None:
     if not isinstance(data, dict) or not data.get("symbol"):
         return None
     return TradeProposal.from_dict(data)
+
+
+# 2026-08-25, Founder-directed: a microphone button on Ask AI Trader, "so I don't need to type
+# stuff, I can just press it and ask the app something verbally".
+#
+# Transcription happens here rather than on the phone deliberately. On-device speech recognition
+# would mean a second native dependency and a second permission prompt, and would still differ
+# between Android and iOS; the recording itself is the only thing that genuinely has to happen on
+# the device. This keeps the phone's job to "record audio, send bytes" and leaves the words to the
+# same OpenAI account the rest of the app already uses.
+MAX_TRANSCRIPTION_BYTES = 20 * 1024 * 1024
+
+
+class OpenAITranscriber:
+    """Speech to text for one recorded question. Never raises for a bad recording."""
+
+    def __init__(self, api_key: str, model: str = "whisper-1", timeout_seconds: float = 45.0):
+        self.api_key = api_key
+        self.model = model
+        self.timeout_seconds = float(timeout_seconds)
+
+    def transcribe(self, audio: bytes, *, filename: str = "question.m4a") -> str:
+        if not audio:
+            return ""
+        # multipart/form-data by hand: this codebase deliberately has no HTTP client
+        # dependency, and one endpoint does not justify adding one.
+        boundary = "----aitrader" + hashlib.sha256(audio[:64] + filename.encode()).hexdigest()[:24]
+        parts: list[bytes] = []
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{self.model}\r\n".encode())
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n".encode()
+        )
+        parts.append(audio)
+        parts.append(f"\r\n--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+        request = Request(
+            "https://api.openai.com/v1/audio/transcriptions",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return str(payload.get("text") or "").strip()

@@ -6,6 +6,8 @@ import os
 import sqlite3
 from ..application.administration_service import AdministrationService
 from ..guardrails import us_equity_market_hours_between
+import base64
+import binascii
 from ..symbol_track_record import all_symbol_track_records
 from ..application.broker_service import BrokerService
 from ..application.execution_service import ExecutionService
@@ -48,7 +50,7 @@ from ..autonomous_activity import (
     founder_attention,
     why_no_trade_funnel,
 )
-from ..ai import OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer
+from ..ai import MAX_TRANSCRIPTION_BYTES, OpenAIProposalAnalyzer, OpenAIReadOnlyExplainer, OpenAITranscriber
 from ..alpaca import AlpacaCredentials, AlpacaPaperClient
 from ..audit import AuditDatabase
 from ..benchmark import BenchmarkIntelligenceDatabase
@@ -771,6 +773,8 @@ class LocalApiService:
             )
         if path == "/ask-ai-trader":
             return 200, self.ask_ai_trader(body)
+        if path == "/transcribe-question":
+            return 200, self.transcribe_question(body)
         if path == "/admin/set-risk-policy":
             key = str(body.get("key") or "").strip()
             if not key:
@@ -978,6 +982,59 @@ class LocalApiService:
             "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
             "evidence": context,
         }
+
+    def transcribe_question(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Turn a recorded question into text for Ask AI Trader.
+
+        2026-08-25, Founder-directed: a microphone button "so I don't need to type stuff".
+        The phone records and sends bytes; the words are worked out here, using the same
+        OpenAI account the rest of the app already uses, so the app needs no second native
+        dependency and no second permission prompt.
+
+        Returns a status and a reason rather than raising: a failed transcription must
+        leave the Founder able to type the question instead, never staring at an error.
+        """
+        encoded = str(body.get("audio_base64") or "")
+        if not encoded:
+            return {"status": "no_audio", "text": "", "message": "No recording was received."}
+        try:
+            audio = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return {"status": "invalid_audio", "text": "", "message": "That recording could not be read."}
+        if len(audio) > MAX_TRANSCRIPTION_BYTES:
+            return {
+                "status": "too_large",
+                "text": "",
+                "message": "That recording is too long. Ask a shorter question, or type it instead.",
+            }
+        if not self.settings.openai_api_key:
+            return {
+                "status": "not_configured",
+                "text": "",
+                "message": "Voice questions need OPENAI_API_KEY set on this deployment. Type the question instead.",
+            }
+        try:
+            text = OpenAITranscriber(self.settings.openai_api_key).transcribe(
+                audio, filename=str(body.get("filename") or "question.m4a")
+            )
+            # Stripped here as well as in the transcriber: a whitespace-only result would
+            # otherwise be sent to Ask as an empty question, which reads as the system
+            # ignoring the Founder rather than as "I could not hear that".
+            text = str(text or "").strip()
+        except Exception:  # noqa: BLE001 - the Founder can always type; never surface a stack trace
+            logger.exception("Voice transcription failed")
+            return {
+                "status": "failed",
+                "text": "",
+                "message": "I could not make out that recording. Try again, or type the question.",
+            }
+        if not text:
+            return {
+                "status": "empty",
+                "text": "",
+                "message": "I could not hear a question in that recording.",
+            }
+        return {"status": "transcribed", "text": text}
 
     def crypto_rejection_digest(self, *, hours: int = 48) -> dict[str, Any]:
         # Deterministic, no OpenAI call -- see recent_crypto_rejection_digest's own
