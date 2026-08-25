@@ -949,9 +949,13 @@ def _assemble_founder_evidence_payload(
             },
             "decisions": _decision_counts(funnels),
             "execution": {
-                "orders_submitted": len([row for row in trades if row.get("status") in {"submitted", "accepted", "new"}]),
-                "orders_rejected": len([row for row in trades if row.get("status") in {"rejected", "cancelled", "canceled"}]),
-                "orders_filled": len([row for row in trades if "filled" in str(row.get("status") or "")]),
+                # BROKER_TRADE_HISTORY holds one row per order EVENT, so an order and its
+                # own fill are two rows for one order. Counted by external_id here for the
+                # same reason as autonomous_activity._distinct_orders: a Founder reading
+                # "42 orders submitted" on a two-trade day stops trusting the screen.
+                "orders_submitted": _distinct_order_rows(trades, {"submitted", "accepted", "new"}),
+                "orders_rejected": _distinct_order_rows(trades, {"rejected", "cancelled", "canceled"}),
+                "orders_filled": _distinct_order_rows(trades, contains="filled"),
                 "trades_closed": len([row for row in trades if row.get("status") in {"closed", "target_exit", "stop_exit", "manual_exit"}]),
             },
             "operations": {
@@ -1751,6 +1755,25 @@ def _latest_job_time_any(jobs: list[dict[str, Any]], job_names: tuple[str, ...])
     times = [_latest_job_time(jobs, name) for name in job_names]
     times = [value for value in times if value]
     return max(times) if times else None
+
+
+def _distinct_order_rows(rows: list[dict[str, Any]], statuses: set[str] | None = None, *, contains: str | None = None) -> int:
+    """Distinct orders represented by these event rows, keyed on external_id."""
+    seen: set[str] = set()
+    loose = 0
+    for row in rows:
+        status = str(row.get("status") or "").lower()
+        if contains is not None:
+            if contains not in status:
+                continue
+        elif statuses is not None and status not in statuses:
+            continue
+        identity = str(row.get("external_id") or "").strip()
+        if identity:
+            seen.add(identity)
+        else:
+            loose += 1
+    return len(seen) + loose
 
 
 def _latest_report_time(jobs: list[dict[str, Any]]) -> str | None:

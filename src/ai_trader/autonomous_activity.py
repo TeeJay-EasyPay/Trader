@@ -142,8 +142,22 @@ def activity_summary(db_path: Path, *, period: str = "24h") -> dict[str, Any]:
     risk_rejections = _count_decisions(decisions, "risk", {"rejected", "blocked"})
     portfolio_rejections = _count_portfolio(pm_decisions, {"reject", "rejected", "wait", "manual_review"})
     portfolio_approvals = _count_portfolio(pm_decisions, {"approve", "approved", "approve_smaller"})
-    submitted = _sum_int(jobs, "paper_orders_submitted") + len([row for row in broker_trades if _lower(row.get("status")) in {"submitted", "accepted", "new"}])
-    filled = _sum_int(jobs, "paper_orders_filled") + len([row for row in broker_trades if "filled" in _lower(row.get("status"))])
+    # 2026-08-25 Founder-reported: the briefing read "42 orders were actually submitted"
+    # on a day the AI placed two trades. Two compounding errors, both here.
+    #
+    # First, BROKER_TRADE_HISTORY stores one row per order EVENT, not per order -- an
+    # order and its own fill are separate rows, and so is every status update. Counting
+    # rows counts the same order several times, and counts the Founder's own manual
+    # Kraken activity alongside the AI's.
+    #
+    # Second, the two sources overlap: paper_orders_submitted is the job's own count of
+    # what it submitted, and those same orders then appear in BROKER_TRADE_HISTORY.
+    # Adding them together double counts every order that both sources saw. They are two
+    # measurements of one quantity, so the honest combination is the larger, never the sum.
+    submitted = max(_sum_int(jobs, "paper_orders_submitted"),
+                    _distinct_orders(broker_trades, {"submitted", "accepted", "new"}))
+    filled = max(_sum_int(jobs, "paper_orders_filled"),
+                 _distinct_orders(broker_trades, contains="filled"))
     closed = len([row for row in broker_trades if _lower(row.get("status")) in {"closed", "target_exit", "stop_exit", "manual_exit"}])
     incidents_opened = len([row for row in incidents if _lower(row.get("status")) not in {"resolved", "closed"}])
     incidents_resolved = len([row for row in incidents if _lower(row.get("status")) in {"resolved", "closed"}])
@@ -221,6 +235,30 @@ def activity_timeline(
     if include_all_events:
         payload["all_events"] = events
     return payload
+
+
+def _distinct_orders(rows: list[dict[str, Any]], statuses: set[str] | None = None, *, contains: str | None = None) -> int:
+    """How many distinct ORDERS these event rows represent.
+
+    BROKER_TRADE_HISTORY records one row per order event, so an order plus its fill is two
+    rows for one order. Counted by external_id; a row without one is counted individually
+    rather than dropped, since it is still evidence of something having happened.
+    """
+    seen: set[str] = set()
+    loose = 0
+    for row in rows:
+        status = _lower(row.get("status"))
+        if contains is not None:
+            if contains not in status:
+                continue
+        elif statuses is not None and status not in statuses:
+            continue
+        identity = str(row.get("external_id") or "").strip()
+        if identity:
+            seen.add(identity)
+        else:
+            loose += 1
+    return len(seen) + loose
 
 
 def why_no_trade_funnel(db_path: Path, *, period: str = "24h") -> dict[str, Any]:
@@ -315,7 +353,10 @@ def broker_activity(
             "last_successful_poll": _latest_completed_job_time(broker_jobs),
             "polling_freshness": _freshness_label(_latest_completed_job_time(broker_jobs), minutes=10),
             "autonomous_execution": "Enabled" if panel.get("auto_trading_enabled") else "Disabled",
-            "orders_submitted": len([row for row in rows if _lower(row.get("status")) in {"submitted", "accepted", "new"}]) + _sum_int(broker_jobs, "paper_orders_submitted"),
+            # Same double-count and per-event counting as the summary above -- see
+            # _distinct_orders. Two measurements of one quantity: take the larger.
+            "orders_submitted": max(_distinct_orders(rows, {"submitted", "accepted", "new"}),
+                                    _sum_int(broker_jobs, "paper_orders_submitted")),
             "fills_received": len([row for row in rows if "filled" in _lower(row.get("status"))]) + _sum_int(broker_jobs, "paper_orders_filled"),
             "open_positions": panel.get("open_positions"),
             "reconciliation_status": panel.get("reconciliation_status") or "Not available - no broker reconciliation summary was returned for this broker.",
