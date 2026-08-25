@@ -26,12 +26,34 @@ const { askRequestOptions, askErrorMessage } = require('../lib/askRequest');
 // needs the newer version; everything else on the screen, including typing a question, is
 // untouched. A convenience must never be able to break the screen it sits on.
 function loadAudioModules() {
+  // 2026-08-25, second attempt. The first wrapped require('expo-av') in try/catch, which was
+  // NOT enough -- verified by pressing the button on a real emulator running the older build:
+  //
+  //   com.facebook.react.common.JavascriptException:
+  //     Error: Cannot find native module 'ExponentAV'
+  //       requireNativeModule ... loadAudioModules ... startRecording ... toggleVoice
+  //
+  // The app went to the home screen. Expo's native-module lookup throws out through the
+  // module registry rather than as an ordinary exception the caller can catch, so the only
+  // safe approach is never to reach the require unless the native side is actually
+  // registered. requireOptionalNativeModule answers exactly that question and returns null
+  // instead of throwing.
+  //
+  // This matters more than a missing microphone: Ask is mounted on the Executive Briefing, so
+  // this crash took out the Founder's main screen. A convenience must never be able to break
+  // the screen it sits on -- and I should have proven that on a device before saying it was
+  // safe, rather than reasoning that it must be.
   try {
+    const { requireOptionalNativeModule } = require('expo-modules-core');
+    if (!requireOptionalNativeModule || !requireOptionalNativeModule('ExponentAV')) {
+      return null;
+    }
     return { Audio: require('expo-av').Audio, FileSystem: require('expo-file-system') };
   } catch (error) {
     return null;
   }
 }
+
 const { micButtonLabel, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 
 
@@ -85,7 +107,12 @@ function AskAiTrader({ messages, setMessages, request }) {
   };
 
   const startRecording = async () => {
-    const native = loadAudioModules();
+    let native = null;
+    try {
+      native = loadAudioModules();
+    } catch (error) {
+      native = null;
+    }
     if (!native) {
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('unsupported')) }]);
       setAskStatus('Voice not available in this app version.');
