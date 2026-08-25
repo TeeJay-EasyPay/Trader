@@ -339,6 +339,11 @@ class OpenAIReadOnlyExplainer:
                 "forecast for that symbol is present. "
                 # 2026-08-24, Founder-directed: every other signal here is published free to
                 # everyone. This one is not, and it is the one most worth saying out loud.
+                # 2026-08-25: see the currencies block in the context.
+                "Every figure in this context is either pounds or dollars depending on which broker it "
+                "belongs to: Kraken is GBP (£), Alpaca is USD ($). Always state the correct symbol, never "
+                "default to $, and never add a Kraken figure to an Alpaca one or convert between them -- "
+                "they are two separate accounts. "
                 "own_track_record_by_coin is what this system's own money actually did on each coin, "
                 "at its own fees. When a coin is discussed, say what that record is -- including when "
                 "it is bad, and especially when it contradicts a positive technical signal. A losing "

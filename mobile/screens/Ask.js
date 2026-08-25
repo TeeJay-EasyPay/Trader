@@ -54,7 +54,7 @@ function loadAudioModules() {
   }
 }
 
-const { micButtonLabel, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
+const { micButtonLabel, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -67,8 +67,15 @@ function AskAiTrader({ messages, setMessages, request }) {
   const [voiceState, setVoiceState] = useState('idle');
   const recordingRef = React.useRef(null);
   const audioRef = React.useRef(null);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const tickRef = React.useRef(null);
 
   const stopRecording = async () => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+    setRecordingSeconds(0);
     const recording = recordingRef.current;
     recordingRef.current = null;
     if (!recording) {
@@ -135,7 +142,17 @@ function AskAiTrader({ messages, setMessages, request }) {
       const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       recordingRef.current = recording;
       setVoiceState('recording');
-      setAskStatus(voiceStatusText('recording'));
+      // The ticking count IS the feedback -- see recordingIndicator. Cleared in
+      // stopRecording so it can never keep counting after the recorder has gone.
+      setRecordingSeconds(0);
+      setAskStatus(recordingIndicator(0));
+      tickRef.current = setInterval(() => {
+        setRecordingSeconds((seconds) => {
+          const next = seconds + 1;
+          setAskStatus(recordingIndicator(next));
+          return next;
+        });
+      }, 1000);
       // A phone left recording in a pocket must not upload something huge, so this stops
       // itself rather than relying on the Founder remembering to press stop.
       setTimeout(() => { if (recordingRef.current === recording) stopRecording(); }, MAX_RECORDING_SECONDS * 1000);

@@ -60,3 +60,22 @@ test('the status line is always a real sentence', () => {
 });
 
 console.log(`\n${passed} passed`);
+
+test('recording shows a live, moving indicator (2026-08-25)', () => {
+  // Founder-reported: "when I click on speak there is no icon moving or showing my voice is
+  // being recorded, like in other apps." The only feedback was a status word further up the
+  // card. Without movement there is no way to tell "recording" from "frozen", so the natural
+  // response is to press again and lose the question.
+  const { recordingIndicator } = require('./voiceQuestion');
+  const first = recordingIndicator(0);
+  const second = recordingIndicator(1);
+  assert.notStrictEqual(first, second, 'the indicator must visibly change each second');
+  assert.ok(first.includes('Recording'), first);
+  assert.ok(second.includes('1s'), second);
+});
+
+test('the indicator warns as the limit approaches', () => {
+  const { recordingIndicator } = require('./voiceQuestion');
+  assert.ok(recordingIndicator(55).includes('stopping in 5s'), recordingIndicator(55));
+  assert.ok(recordingIndicator(10).includes('press Stop'), recordingIndicator(10));
+});

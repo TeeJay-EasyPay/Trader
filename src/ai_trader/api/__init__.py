@@ -138,7 +138,13 @@ logger = logging.getLogger("ai_trader.api")
 # than a slightly-late answer. So Ask keeps its own budget well inside that ceiling and
 # always returns *something*: a real OpenAI answer when there's time, the deterministic
 # evidence summary when there isn't.
-_ASK_TOTAL_BUDGET_SECONDS = 50.0
+# 2026-08-25 Founder-reported: a longer question still timed out on the phone. Measured
+# repeatedly, the same endpoint answers in 20s, 31s, 37s and once 57s -- the variance comes
+# from how warm the broker panels and database are, not from the question. 50s left too
+# little margin under the app's 55s wait, so an unlucky run reached the Founder as "took too
+# long" instead of an answer. Answering from stored evidence at 40s is worth far more to him
+# than a perfect answer he never sees.
+_ASK_TOTAL_BUDGET_SECONDS = 40.0
 # Below this there isn't enough runway for an OpenAI round trip to be worth starting.
 _ASK_MIN_OPENAI_SECONDS = 12.0
 # The daily-learning section costs ~25s on its own; only gather it with room to spare.
@@ -1111,6 +1117,17 @@ class LocalApiService:
         context = {
             "generated_at": utc_now_iso(),
             "safety_boundary": "Read-only explanation. No trading, approvals, broker controls, or guardrail changes are available to this endpoint.",
+            # 2026-08-25 Founder-reported: Ask answered "On Kraken (crypto), your portfolio
+            # value is about $4,440" -- Kraken is a GBP account. Nothing in this context
+            # carried a currency at all: every figure arrived as a bare number next to a
+            # broker name, so the model guessed, and guessed dollars. Telling him he holds
+            # dollars in a pounds account is a factual error about his own money, not a
+            # presentation nit.
+            "currencies": {
+                "kraken": "GBP (£) - all Kraken figures in this context are pounds sterling",
+                "alpaca": "USD ($) - all Alpaca figures in this context are US dollars",
+                "note": "These are two separate accounts in two currencies. Never convert between them and never add them together.",
+            },
             "openai_configured": bool(self.settings.openai_api_key),
             "trading_state": self._control_state(),
             "broker_auto_trading": broker_auto_settings(self.settings.db_path),

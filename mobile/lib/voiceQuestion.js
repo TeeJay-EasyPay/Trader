@@ -27,6 +27,27 @@ function voiceStatusText(state) {
   return VOICE_STATES[state] || VOICE_STATES.idle;
 }
 
+// 2026-08-25 Founder-reported: "when I click on speak there is no icon moving or showing my
+// voice is being recorded, like in other apps." He was right -- the only feedback was a status
+// word changing further up the card, which is easy to miss and says nothing about whether the
+// microphone is actually picking anything up. Without it there is no way to tell "recording"
+// from "frozen", so the natural thing to do is press again and lose the question.
+//
+// A live elapsed count is the honest version of a moving waveform: it is real information
+// (the recording is running, and this is how long it has), it needs no animation library, and
+// it doubles as a warning as the 60-second limit approaches.
+function recordingIndicator(elapsedSeconds, maxSeconds = MAX_RECORDING_SECONDS) {
+  const elapsed = Math.max(0, Math.floor(Number(elapsedSeconds) || 0));
+  const remaining = Math.max(0, maxSeconds - elapsed);
+  // A pulsing dot built from text, so the movement the Founder asked for needs no extra
+  // dependency: the filled circle alternates each second.
+  const pulse = elapsed % 2 === 0 ? '●' : '○';
+  if (remaining <= 10) {
+    return `${pulse} Recording ${elapsed}s - stopping in ${remaining}s`;
+  }
+  return `${pulse} Recording ${elapsed}s - press Stop when finished`;
+}
+
 function micButtonLabel(state) {
   if (state === 'recording') return 'Stop';
   if (state === 'transcribing') return 'Working...';
@@ -78,6 +99,7 @@ module.exports = {
   VOICE_STATES,
   MAX_RECORDING_SECONDS,
   voiceStatusText,
+  recordingIndicator,
   micButtonLabel,
   voiceErrorMessage,
   resolveTranscription,
