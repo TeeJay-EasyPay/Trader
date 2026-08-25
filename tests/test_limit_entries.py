@@ -47,11 +47,20 @@ class LimitEntryPriceTests(unittest.TestCase):
         self.assertLessEqual(price, 100.0, "Bidding above the proposal price to save 0.40% is self-defeating.")
         self.assertGreater(price, 99.0, "The concession should be small, not a lowball that never fills.")
 
-    def test_a_larger_offset_is_honoured(self):
+    def test_the_price_is_the_proposal_ceiling_with_no_concession_subtracted(self):
+        """2026-08-25: the offset used to be subtracted here, unconditionally, before the
+        caller capped the result at the live best bid. Measured against the real book that
+        morning the XRPGBP spread was 0.011%, so subtracting 0.05% put the order ~0.04%
+        BELOW the best bid -- where it fills only if the market ticks down. Every buy
+        rested, failed to fill, took the market fallback and paid 0.80%: eight consecutive
+        buys at the taker rate with the maker switch verified ON throughout.
+
+        This function now returns the ceiling only. The caller rests at the live bid, and
+        applies the offset solely when there is no bid to aim at."""
         with mock.patch.dict("os.environ", {
             "KRAKEN_LIMIT_ENTRIES_ENABLED": "true", "KRAKEN_LIMIT_ENTRY_OFFSET_PCT": "0.01",
         }):
-            self.assertAlmostEqual(_limit_entry_price(request(entry_price=100.0)), 99.0, places=6)
+            self.assertAlmostEqual(_limit_entry_price(request(entry_price=100.0)), 100.0, places=6)
 
     def test_a_missing_or_invalid_entry_price_falls_back_to_a_market_order(self):
         with mock.patch.dict("os.environ", {"KRAKEN_LIMIT_ENTRIES_ENABLED": "true"}):
@@ -148,6 +157,44 @@ class LimitEntryPayloadTests(unittest.TestCase):
                          "Without post-only a crossing limit order is charged as a taker - saving nothing.")
         self.assertTrue(str(limit_payload.get("expiretm", "")).startswith("+"),
                         "An unfilled patient entry must expire rather than rest indefinitely.")
+
+    def test_the_order_rests_at_the_best_bid_not_below_it(self):
+        """2026-08-25, the bug that made this whole feature earn nothing.
+
+        The price was the proposal price minus a 0.05% concession, then capped at the live
+        bid. Measured against the real book that morning the XRPGBP spread was 0.011%, so
+        subtracting 0.05% placed the order roughly 0.04% BELOW the best bid -- a price that
+        fills only if the market ticks down. Every buy rested, failed to fill, took the
+        market fallback and paid 0.80%. Eight consecutive buys at the taker rate, with
+        limit_entries_enabled verified true in production the entire time: the feature was
+        switched on, doing exactly what it was told, and saving nothing.
+
+        The best bid IS the maker-optimal price. Resting there is not paying above the
+        market, and it is first in the queue when a seller crosses."""
+        fake = FakeKraken(statuses=["closed"])
+        adapter = ba.KrakenAdapter()
+        best_bid = 99.99  # a tight spread: proposal price 100.0, bid just under it
+        with mock.patch.dict("os.environ", _base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true")),              mock.patch.object(adapter, "_private_request", side_effect=fake),              mock.patch.object(ba.time, "sleep", return_value=None),              mock.patch.object(adapter, "best_bid", return_value=best_bid),              mock.patch.object(adapter, "pair_price_decimals", return_value=2),              mock.patch.object(adapter, "_validate_live_order", return_value={"passed": True, "pair": "XBTGBP", "volume": 0.1, "notional": 10.0, "failures": []}):
+            adapter.place_order(request())
+
+        limit_payload = fake.add_order_calls()[0]
+        self.assertEqual(limit_payload.get("ordertype"), "limit")
+        self.assertAlmostEqual(
+            float(limit_payload["price"]), best_bid, places=2,
+            msg="Resting below the best bid is what stopped every order filling.",
+        )
+
+    def test_the_proposal_price_still_caps_a_bid_that_has_run_above_it(self):
+        """Resting at the bid must never mean chasing. If the market has run above the
+        price the trade was sized against, the cap binds and the order sits below -- it
+        probably will not fill, the market fallback takes it, and that is correct. We
+        decline to chase; we do not decline to trade."""
+        fake = FakeKraken(statuses=["closed"])
+        adapter = ba.KrakenAdapter()
+        with mock.patch.dict("os.environ", _base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true")),              mock.patch.object(adapter, "_private_request", side_effect=fake),              mock.patch.object(ba.time, "sleep", return_value=None),              mock.patch.object(adapter, "best_bid", return_value=140.0),              mock.patch.object(adapter, "pair_price_decimals", return_value=2),              mock.patch.object(adapter, "_validate_live_order", return_value={"passed": True, "pair": "XBTGBP", "volume": 0.1, "notional": 10.0, "failures": []}):
+            adapter.place_order(request(entry_price=100.0))
+
+        self.assertLessEqual(float(fake.add_order_calls()[0]["price"]), 100.0)
 
     def test_sells_are_never_converted_to_limit_orders(self):
         fake = FakeKraken()

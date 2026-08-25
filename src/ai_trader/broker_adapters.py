@@ -589,7 +589,15 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             # chase, we do not decline to trade.
             live_bid = self.best_bid(pair)
             if live_bid is not None:
+                # Rest AT the best bid, capped by the proposal price so we never bid above
+                # what the trade was sized against. No extra concession: the bid already is
+                # the maker-optimal price, and going below it only removes the fill.
                 limit_price = min(live_bid, limit_price)
+            else:
+                # No live bid to aim at, so step back from the proposal price rather than
+                # sitting exactly on it and risking a taker fill if the market has moved.
+                offset = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_OFFSET_PCT", 0.0005))
+                limit_price = limit_price * (1.0 - offset)
             decimals = self.pair_price_decimals(pair)
             if decimals is None:
                 limit_price = None
@@ -1186,11 +1194,22 @@ def _limit_entry_price(order_request: Any) -> float | None:
         return None
     if notional <= 0 or quantity <= 0:
         return None
-    price = notional / quantity
-    # A small inside-the-spread concession makes resting far more likely to fill without
-    # ever bidding above the price the proposal was built on.
-    offset = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_OFFSET_PCT", 0.0005))
-    return round(price * (1.0 - offset), 10)
+    # The ceiling only: the price the proposal was actually sized against. The caller
+    # applies the offset ONLY when it has no live bid to rest at.
+    #
+    # 2026-08-25: this used to subtract the offset here, unconditionally, before the
+    # caller capped the result at the live best bid. Measured against the real book that
+    # morning, the spread on XRPGBP was 0.011% -- so subtracting 0.05% put the order
+    # roughly 0.04% BELOW the best bid, where it fills only if the market ticks down.
+    # Every buy therefore rested, failed to fill, took the market fallback and paid the
+    # 0.80% taker rate: eight consecutive buys at 0.800%, with the maker switch verified
+    # ON the whole time. The offset was making the order less likely to fill, which is
+    # the opposite of what it was added to do.
+    #
+    # The best bid IS the maker-optimal price -- resting there is by definition not
+    # paying above the market, and it is first in the queue for any seller who crosses.
+    # An offset only helps where there is no live bid to aim at.
+    return round(notional / quantity, 10)
 
 def _userref(client_order_id: str | None) -> int | None:
     if not client_order_id:
