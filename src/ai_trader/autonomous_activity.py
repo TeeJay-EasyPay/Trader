@@ -253,7 +253,10 @@ def _distinct_orders(rows: list[dict[str, Any]], statuses: set[str] | None = Non
                 continue
         elif statuses is not None and status not in statuses:
             continue
-        identity = str(row.get("external_id") or "").strip()
+        # BROKER_TRADE_HISTORY names this external_id; PRODUCTION_TRADE_EVIDENCE names the
+        # same identity broker_order_id. Checking only one meant seven rows of a single FSLR
+        # purchase counted as seven orders (2026-08-25).
+        identity = str(row.get("external_id") or row.get("broker_order_id") or "").strip()
         if identity:
             seen.add(identity)
         else:

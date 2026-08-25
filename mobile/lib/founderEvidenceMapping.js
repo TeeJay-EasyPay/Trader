@@ -123,11 +123,41 @@ function brokerResearchStatus(rows, broker) {
 // evidence.brokers[] instead (each row's own real `day_pnl` and `broker` name), giving one real
 // sentence per broker in its own currency - never a blended figure with the wrong symbol on part
 // of it.
+// 2026-08-25 Founder-reported: the briefing said "7 broker order or fill event(s) are visible
+// in this period" while the Trade History table showed 5 rows, 3 of them the same FSLR trade.
+//
+// All seven rows were ONE purchase of 13 FSLR shares, plus its two protective bracket legs:
+//
+//   14:59:18  sell  held           13   bracket leg placed
+//   14:59:19  buy   partial_fill   10   the order filling in pieces
+//   14:59:20  buy   partial_fill    1
+//   14:59:20  buy   partial_fill    1
+//   14:59:21  buy   fill            1
+//   14:59:21  buy   filled         13   order complete
+//   14:59:21  sell  new            13   bracket leg live
+//
+// Seven rows, three real orders (broker_order_id f3c36ff1 / d87e75ca / 74d8b6d5). Counting
+// rows meant a single trade read as a flurry of activity, and disagreed with the table
+// beneath it. Counted by broker_order_id now, which is what the table already groups by.
+function countDistinctOrders(trades) {
+  const seen = new Set();
+  let withoutId = 0;
+  (trades || []).forEach((trade) => {
+    // external_id is checked first for rows that came from BROKER_TRADE_HISTORY; evidence
+    // trades carry the same identity as broker_order_id. A row with neither is counted on
+    // its own rather than dropped -- undercounting is as dishonest as overcounting.
+    const id = String(trade?.external_id || trade?.broker_order_id || '').trim();
+    if (id) seen.add(id);
+    else withoutId += 1;
+  });
+  return seen.size + withoutId;
+}
+
 function founderHeadline(evidence) {
-  const tradeCount = evidence?.trades?.length || 0;
+  const tradeCount = countDistinctOrders(evidence?.trades);
   const state = evidence?.status?.state || 'STATUS UNKNOWN';
   const pnlText = brokerMoneySentence(evidence?.brokers, 'day_pnl') || 'Daily P&L is awaiting comparable broker evidence.';
-  return `${state}. ${pnlText} ${tradeCount} broker order or fill event(s) are visible in this period.`;
+  return `${state}. ${pnlText} ${tradeCount} broker order${tradeCount === 1 ? '' : 's'} in this period.`;
 }
 
 // AT-ED-011.7: evidence.status.database_status is a raw backend identifier ("postgres" /
@@ -471,6 +501,7 @@ module.exports = {
   activityFromFounderEvidence,
   productionTradeForMobile,
   brokerResearchStatus,
+  countDistinctOrders,
   founderHeadline,
   founderAction,
   founderLearningForMobile,

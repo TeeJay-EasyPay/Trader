@@ -11,6 +11,7 @@ const {
   activityFromFounderEvidence,
   productionTradeForMobile,
   brokerResearchStatus,
+  countDistinctOrders,
   founderHeadline,
   founderAction,
   founderLearningForMobile,
@@ -224,3 +225,28 @@ test('sortByConfidence: sorts descending by confidence, breaking ties by newest 
 });
 
 console.log(`\n${passed} passed`);
+
+test('the briefing counts orders, not the events that make one up (2026-08-25)', () => {
+  // Founder-reported: the briefing said "7 broker order or fill event(s)" while the Trade
+  // History table beneath it showed 3 FSLR rows. All seven rows were ONE purchase of 13
+  // FSLR shares filled in four pieces, plus its two protective bracket legs -- three real
+  // orders. Counting rows made a single trade read as a flurry and disagreed with the table.
+  const trades = [
+    { broker_order_id: 'f3c36ff1', side: 'sell', status: 'held' },
+    { broker_order_id: 'f3c36ff1', side: 'buy', status: 'partial_fill' },
+    { broker_order_id: 'f3c36ff1', side: 'buy', status: 'partial_fill' },
+    { broker_order_id: 'f3c36ff1', side: 'buy', status: 'filled' },
+    { broker_order_id: 'd87e75ca', side: 'sell', status: 'new' },
+    { broker_order_id: '74d8b6d5', side: 'sell', status: 'held' },
+  ];
+  assert.strictEqual(countDistinctOrders(trades), 3);
+});
+
+test('rows carrying no identifier at all are still counted', () => {
+  // Undercounting is as dishonest as overcounting.
+  assert.strictEqual(countDistinctOrders([{}, {}, { broker_order_id: 'a' }]), 3);
+});
+
+test('external_id is honoured for rows that carry it instead', () => {
+  assert.strictEqual(countDistinctOrders([{ external_id: 'kr-1' }, { external_id: 'kr-1' }]), 1);
+});

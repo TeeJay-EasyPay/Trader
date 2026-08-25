@@ -52,3 +52,32 @@ class DistinctOrderCountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrokerOrderIdKeyTests(unittest.TestCase):
+    """2026-08-25 Founder-reported: the briefing said "7 broker order or fill event(s)" while
+    the Trade History table beneath showed 3 FSLR rows. All seven were one purchase of 13 FSLR
+    shares, filled in four pieces, plus its two protective bracket legs -- three real orders.
+
+    The identity was there the whole time: BROKER_TRADE_HISTORY calls it external_id,
+    PRODUCTION_TRADE_EVIDENCE calls the same thing broker_order_id. Checking only one name
+    meant every evidence row looked like its own separate order.
+    """
+
+    def test_evidence_rows_are_grouped_by_broker_order_id(self):
+        rows = [
+            {"broker_order_id": "f3c36ff1", "status": "accepted"},
+            {"broker_order_id": "f3c36ff1", "status": "new"},
+            {"broker_order_id": "d87e75ca", "status": "accepted"},
+        ]
+
+        self.assertEqual(_distinct_orders(rows, {"submitted", "accepted", "new"}), 2)
+
+    def test_either_name_for_the_same_identity_works(self):
+        rows = [
+            {"external_id": "kr-1", "status": "accepted"},
+            {"broker_order_id": "al-1", "status": "accepted"},
+            {"broker_order_id": "al-1", "status": "new"},
+        ]
+
+        self.assertEqual(_distinct_orders(rows, {"submitted", "accepted", "new"}), 2)
