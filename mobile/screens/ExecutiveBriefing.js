@@ -23,7 +23,7 @@ const React = require('react');
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
-const { money, gbp, formatByCurrency, brokerMoney } = require('../lib/money');
+const { money, gbp, brokerMoney } = require('../lib/money');
 const { formatList } = require('../lib/lists');
 const { riskTone, krakenWholeAccountNote } = require('../lib/founderPresentation');
 const {
@@ -62,6 +62,7 @@ const {
   openPositionsCountByCurrency,
   realizedPnlByCurrencyThisMonth,
 } = require('../lib/portfolioPosition');
+const { brokerStandingBlocks } = require('../lib/brokerStanding');
 const { useForecastHistory } = require('../hooks/useForecastHistory');
 
 function marketOutlookText(marketCentre) {
@@ -170,6 +171,30 @@ function currencyBreakdownText({ performanceAttribution, openPositions }) {
   return sentences.join('\n\n');
 }
 
+// Renders one broker's block. All of the selecting and summing lives in
+// lib/brokerStanding.js, where it is tested -- this only turns it into rows on screen.
+function BrokerStandingBlock({ block, broker }) {
+  return (
+    <View style={styles.brokerStandingBlock}>
+      <Text style={styles.cardTitle}>{block.label}</Text>
+      {block.rows
+        .filter((row) => row.amount !== null && row.amount !== undefined)
+        .map((row) => (
+          <PositionLine key={row.label} label={row.label} value={brokerMoney(broker, row.amount)} />
+        ))}
+      <PositionLine label="Open positions" value={block.openPositions || null} />
+      <PositionLine
+        label="Best performer (unrealised)"
+        value={block.winner ? `${block.winner.symbol}, up ${brokerMoney(broker, block.winner.unrealizedPl)}` : null}
+      />
+      <PositionLine
+        label="Worst performer (unrealised)"
+        value={block.loser ? `${block.loser.symbol}, down ${brokerMoney(broker, Math.abs(block.loser.unrealizedPl))}` : null}
+      />
+    </View>
+  );
+}
+
 // Section title "Where We Stand" (renamed from "Current Position") - this card is the facts
 // half of the merged Section 1, directly beneath ExecutiveSummaryCard's narrative half.
 function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
@@ -200,29 +225,26 @@ function CurrentPositionCard({ portfolio, status, performanceAttribution }) {
           <Text> siblings (only styles.bodyText's own lineHeight applies within one block). */}
       {leadingPositionText ? <Text style={styles.bodyText}>{leadingPositionText}</Text> : null}
       {wholeAccountNote ? <Text style={styles.smallText}>{wholeAccountNote}</Text> : null}
-      <PositionLine label="Portfolio value" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
-      {/* 2026-08-18 Founder request: labels made explicit after real confusion between "This
-          month" and "Realised this month" - both used to just say "This week"/"This month"
-          with no indication that one blends unrealised swings with real profit and the other
-          doesn't. "(total change)" vs "(closed trades only)" makes the difference readable
-          without needing to already know the AT-ED-017 history behind the two figures. */}
-      <PositionLine label="This week (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'week_pnl'))} />
-      <PositionLine label="This month (total change)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'month_pnl'))} />
-      {/* 2026-08-19 Founder request: "Realised this month" existed but there was no daily
-          equivalent - the leading prose sentence above states today's realised/unrealised
-          split in words, but nothing put a real number next to it the same way the monthly
-          figure gets one. Same real data (realizedPnlByCurrencyToday, already computed for
-          the prose sentence), just also surfaced as its own line. */}
-      <PositionLine label="Realised today (closed trades only)" value={formatByCurrency(realizedPnlByCurrencyToday(performanceAttribution))} />
-      {/* AT-ED-017 (Founder request, 2026-08-05): "This month" above is a portfolio-value delta
-          (realised + unrealised mixed, like "Today"), not specifically realised gains - a
-          distinct line so the Founder can watch realised profit accumulate through the month
-          without it being obscured by day-to-day unrealised swings. */}
-      <PositionLine label="Realised this month (closed trades only)" value={formatByCurrency(realizedPnlByCurrencyThisMonth(performanceAttribution, status?.brokers))} />
-      <PositionLine label="Open positions" value={openPositions.length || null} />
-      <PositionLine label="Cash available" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
-      <PositionLine label="Best performer (unrealised)" value={winner ? `${winner.symbol}, up ${brokerMoney({ broker: winner.broker }, winner.unrealizedPl)}` : null} />
-      <PositionLine label="Worst performer (unrealised)" value={loser ? `${loser.symbol}, down ${brokerMoney({ broker: loser.broker }, Math.abs(loser.unrealizedPl))}` : null} />
+      {/* 2026-08-25 Founder-directed: "I don't like explanations combining Alpaca and Kraken
+          together. I want to know what happened today with Alpaca, and then separately what
+          happened today with Kraken."
+
+          Every figure here used to be summed across both brokers and rendered by
+          formatByCurrency, which joins currencies with a plus sign -- so the card read
+          "Portfolio value: $101,833.56 + £4,546.72" and "This week: -$30.44 + £637.92". Two
+          unrelated accounts, in two currencies, added together in one line. It is not a number
+          anyone can act on, and it made the Founder open the app and then come and ask what it
+          meant, which is the exact behaviour this screen exists to prevent.
+
+          One block per broker, each entirely in its own currency. Nothing is added across
+          brokers anywhere in this card. */}
+      {brokerStandingBlocks(status?.brokers, { openPositions, trades: performanceAttribution }).map((block) => (
+        <BrokerStandingBlock
+          key={`standing-${block.broker}`}
+          block={block}
+          broker={(status?.brokers || []).find((row) => String(row?.broker || '').toLowerCase() === block.broker)}
+        />
+      ))}
     </Section>
   );
 }

@@ -272,6 +272,7 @@ export const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
   },
+  brokerStandingBlock: { marginTop: 14 },
   cardTitle: {
     fontSize: 16,
     fontWeight: '800',
