@@ -15,8 +15,23 @@ const { styles } = require('../styles');
 const { Section, Metric, Button } = require('../components/shared');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
 const { askRequestOptions, askErrorMessage } = require('../lib/askRequest');
-const { Audio } = require('expo-av');
-const FileSystem = require('expo-file-system');
+// 2026-08-25: expo-av and expo-file-system are NATIVE modules, and this app's
+// runtimeVersion policy is "appVersion" -- so the build WITHOUT them and the build WITH
+// them share runtime 1.0.3, and one over-the-air update is delivered to both. Requiring
+// them at module load would therefore run this import inside an installed app whose binary
+// has no such native code, and this component is now mounted on the Executive Briefing, so
+// a throw here would take down the Founder's main screen rather than just the microphone.
+//
+// Loaded on demand instead, inside the press handler. An older app simply reports that voice
+// needs the newer version; everything else on the screen, including typing a question, is
+// untouched. A convenience must never be able to break the screen it sits on.
+function loadAudioModules() {
+  try {
+    return { Audio: require('expo-av').Audio, FileSystem: require('expo-file-system') };
+  } catch (error) {
+    return null;
+  }
+}
 const { micButtonLabel, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 
 
@@ -29,6 +44,7 @@ function AskAiTrader({ messages, setMessages, request }) {
   // the recorder itself, which cannot be.
   const [voiceState, setVoiceState] = useState('idle');
   const recordingRef = React.useRef(null);
+  const audioRef = React.useRef(null);
 
   const stopRecording = async () => {
     const recording = recordingRef.current;
@@ -42,6 +58,7 @@ function AskAiTrader({ messages, setMessages, request }) {
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
+      const { FileSystem } = audioRef.current || {};
       const audio = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
       const payload = await request('/transcribe-question', {
         method: 'POST',
@@ -68,6 +85,15 @@ function AskAiTrader({ messages, setMessages, request }) {
   };
 
   const startRecording = async () => {
+    const native = loadAudioModules();
+    if (!native) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('unsupported')) }]);
+      setAskStatus('Voice not available in this app version.');
+      setVoiceState('idle');
+      return;
+    }
+    const { Audio } = native;
+    audioRef.current = native;
     setVoiceState('requesting');
     setAskStatus(voiceStatusText('requesting'));
     try {

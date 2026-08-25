@@ -38,6 +38,11 @@ function voiceErrorMessage(kind) {
   switch (kind) {
     case 'permission_denied':
       return 'AI Trader needs microphone access to take a spoken question. You can enable it in your phone settings, or type the question instead.';
+    case 'unsupported':
+      // The installed app predates the microphone. runtimeVersion is "appVersion", so one
+      // over-the-air update reaches builds with and without the native audio module; the
+      // older one must say so plainly rather than appear broken.
+      return 'Speaking needs the newest version of AI Trader. Type your question here for now, and use voice once the new app is installed.';
     case 'not_configured':
       return 'Voice questions are not switched on for this deployment yet. Type the question instead.';
     case 'too_large':

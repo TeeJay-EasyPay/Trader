@@ -33,6 +33,14 @@ test("the backend's own explanation is preferred when it has one", () => {
   assert.ok(result.message.includes('too long'), result.message);
 });
 
+test('an app without the microphone module says so instead of breaking', () => {
+  // runtimeVersion is "appVersion", so one OTA update reaches the build that has the native
+  // audio module and the build that does not. The older one must degrade to a sentence.
+  const message = voiceErrorMessage('unsupported');
+  assert.ok(message.includes('newest version'), message);
+  assert.ok(/type/i.test(message), message);
+});
+
 test('a permission refusal points at the phone settings, not at an error', () => {
   const message = voiceErrorMessage('permission_denied');
   assert.ok(message.includes('microphone access'), message);
