@@ -218,7 +218,9 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
           ))}
         </View>
         <Metric label="Daily P&L" value={formatByCurrency(summary.dailyPnlByCurrency)} />
-        <Metric label="Completed Trades Today" value={summary.completedTradesToday} />
+        {/* Calendar day since midnight, deliberately distinct from the Trade Scorecard's
+            rolling 24-hour window on the briefing -- see lib/tradeScorecard.js. */}
+        <Metric label="Completed today (since midnight)" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
         {trades.length ? (
           <View style={styles.tradeTable}>

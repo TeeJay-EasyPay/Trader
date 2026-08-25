@@ -156,6 +156,9 @@ export default function App() {
             declineReasons={declineReasons}
             onCommand={command}
             onRefresh={screenRefresh.ExecutiveBriefing.refresh}
+            askMessages={askMessages}
+            setAskMessages={setAskMessages}
+            request={apiRequest}
           />
         </ErrorBoundary>
       );

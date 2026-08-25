@@ -70,3 +70,36 @@ test('a non-Alpaca plan adds no shares-only caveat', () => {
 });
 
 console.log(`${passed} passed`);
+
+test('the headline says what happened, not what was planned', () => {
+  // 2026-08-25: on a day the AI bought FSLR and NEE, the card read "Standing aside on
+  // shares today" with "Planned to stand aside, but 2 trade(s) were recorded today --
+  // worth reviewing" directly underneath. A headline contradicted by its own next line.
+  //
+  // The cause is ordinary, not a fault: the plan is written pre-market, when every
+  // candidate is correctly rejected for market_closed, and then the market opens. Right
+  // when written, stale by lunchtime.
+  const card = describeDailyPlan({ status: 'generated', decision: 'stand_aside', trades_today: 2 });
+  assert.strictEqual(card.decisionLabel, '2 share trades placed today');
+  assert.strictEqual(card.decisionTone, 'good');
+});
+
+test('one trade reads as one trade', () => {
+  const card = describeDailyPlan({ status: 'generated', decision: 'stand_aside', trades_today: 1 });
+  assert.strictEqual(card.decisionLabel, '1 share trade placed today');
+});
+
+test('a genuinely quiet day still says so', () => {
+  // Standing aside is a real decision and must keep reading as one.
+  const card = describeDailyPlan({ status: 'generated', decision: 'stand_aside', trades_today: 0 });
+  assert.strictEqual(card.decisionLabel, 'Standing aside on shares today');
+  assert.strictEqual(card.decisionTone, 'neutral');
+});
+
+test('the morning reasoning is kept as context, not as the claim', () => {
+  const card = describeDailyPlan({
+    status: 'generated', decision: 'stand_aside', trades_today: 2,
+    reasoning: 'No candidate cleared due diligence before the open.',
+  });
+  assert.strictEqual(card.reasoning, 'No candidate cleared due diligence before the open.');
+});

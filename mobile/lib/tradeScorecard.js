@@ -12,10 +12,21 @@
 //   - The lessons line is kept short. The briefing already suffers from long generated
 //     text burying the short high-value sections.
 
+// 2026-08-25 Founder-reported: the briefing said "Today: 0 worked / 1 didn't" while the
+// Portfolio card on the same refresh said "Completed Trades Today: 0". Neither number was
+// wrong -- they answer different questions while wearing the same word. These buckets are
+// ROLLING windows (see summarize_trade_outcomes: last 24h / 7d / 30d, deliberately rolling so
+// the card is not near-empty just after a calendar month turns over), whereas the Portfolio
+// card counts the calendar day since midnight. At 2pm the rolling window still contains
+// yesterday afternoon, so the two legitimately disagree.
+//
+// Labelling them honestly is the fix, not forcing them to match: a founder who reads "Last 24
+// hours" and "Completed today" can hold both in his head at once, where "Today" and "Today"
+// showing different numbers just means the app cannot be trusted.
 const PERIOD_LABELS = [
-  ['day', 'Today'],
-  ['week', 'This week'],
-  ['month', 'This month'],
+  ['day', 'Last 24 hours'],
+  ['week', 'Last 7 days'],
+  ['month', 'Last 30 days'],
 ];
 
 const NO_SCORECARD_ROWS = [];

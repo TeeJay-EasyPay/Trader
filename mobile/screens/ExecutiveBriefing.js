@@ -63,6 +63,7 @@ const {
   realizedPnlByCurrencyThisMonth,
 } = require('../lib/portfolioPosition');
 const { brokerStandingBlocks } = require('../lib/brokerStanding');
+const { AskAiTrader } = require('./Ask');
 const { useForecastHistory } = require('../hooks/useForecastHistory');
 
 function marketOutlookText(marketCentre) {
@@ -574,6 +575,9 @@ function ExecutiveBriefing({
   declineReasons,
   onRefresh,
   onCommand,
+  askMessages,
+  setAskMessages,
+  request,
 }) {
   const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const confidence = cioAverageConfidence(recommendations);
@@ -608,6 +612,17 @@ function ExecutiveBriefing({
   return (
     <View>
       <ExecutiveSummaryCard status={status} activity={activity} marketCentre={marketCentre} />
+      {/* 2026-08-25, Founder-directed: "can't we just have a text box saying ask trader in the
+          executive briefing screen -- that way I don't need to go to a separate screen, I can
+          just look at the executive briefing and quickly ask something."
+
+          The same component the Ask tab renders, mounted here and sharing one conversation
+          state, so a question asked from either place appears in both. Placed directly under
+          the summary because the questions worth asking are almost always about the sentence
+          just read. The microphone lives inside it, so speaking works here too. */}
+      {request ? (
+        <AskAiTrader messages={askMessages || []} setMessages={setAskMessages} request={request} />
+      ) : null}
       <CurrentPositionCard portfolio={portfolio} status={status} performanceAttribution={performanceAttribution} />
       <WhatIDidCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
       <TradeScorecardCard tradeScorecard={tradeScorecard} forecastAccountability={forecastAccountabilitySummary} />

@@ -83,7 +83,10 @@ test('net shows a sign and two decimals, and is hidden when flat', () => {
 
 test('rows cover exactly the three periods the Founder asked for', () => {
   const rows = scorecardRows({ day: bucket(), week: bucket(), month: bucket() });
-  assert.deepStrictEqual(rows.map((row) => row.label), ['Today', 'This week', 'This month']);
+  // 2026-08-25: these are ROLLING windows, and calling the first one "Today" put it in
+  // direct contradiction with the Portfolio card's calendar-day "Completed Trades Today".
+  // Both numbers were right; only the labels were lying.
+  assert.deepStrictEqual(rows.map((row) => row.label), ['Last 24 hours', 'Last 7 days', 'Last 30 days']);
 });
 
 test('a null scorecard yields no rows and an honest message', () => {
