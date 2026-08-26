@@ -1165,31 +1165,26 @@ class ResearchService:
                         """,
                         (symbol, _crypto_display_name(symbol), "Founder approved Kraken pairs", "KRAKEN_ALLOWED_PAIRS", now, now),
                     )
-        for symbol in symbols:
-            record_crypto_research_score(
-                self.settings.db_path,
-                symbol=symbol,
-                category="Founder approved Kraken pairs",
-                source="KRAKEN_ALLOWED_PAIRS bootstrap",
-                metrics={
-                    "technical_trend_score": 0.62,
-                    "momentum_score": 0.6,
-                    "risk_score": 0.72,
-                    "sentiment": 0.55,
-                    "liquidity": 0.75,
-                    "overall_due_diligence_score": max(self.settings.auto_trade.min_confidence, 0.85),
-                    "confidence_score": max(self.settings.auto_trade.min_confidence, 0.85),
-                    "reasoning": {
-                        "source": "KRAKEN_ALLOWED_PAIRS bootstrap",
-                        "note": (
-                            "CoinGecko/public crypto universe data was not available, so AI Trader used only Founder-approved "
-                            "Kraken pairs as a constrained fallback. Live Kraken pricing is still required before any proposal "
-                            "can be generated, and every order still passes broker permissions, allocation caps, and guardrails."
-                        ),
-                        "allowed_pairs": allowed_pairs,
-                    },
-                },
-            )
+        # 2026-08-26 audit finding. This helper's job is to seed the UNIVERSE -- which coins
+        # are worth looking at -- and CRYPTO_MASTER above is where that belongs. It was also
+        # writing a research score per symbol, and that was actively harmful for two reasons.
+        #
+        # First, the scores were invented and identical: trend 0.62, momentum 0.6, risk 0.72
+        # for every coin, unchanged hour after hour. Measured on production, 1,074 such rows
+        # against 31 real ones -- 97% of the day's research -- and 32 distinct score
+        # combinations across 32 symbols. That is exactly why the funnel reported "19 assets
+        # examined, 0 interesting ideas" every hour: no coin could look different from any
+        # other, because the numbers were the same numbers.
+        #
+        # Second, and worse, this is not an emergency path. It is the DEFAULT symbol source
+        # for every scheduled cycle, so these rows were written hourly while genuine CoinGecko
+        # scores arrived roughly twice a day -- and every reader takes the newest row per
+        # symbol. The placeholders permanently shadowed the real market data underneath them.
+        #
+        # Writing None instead of numbers would not have fixed that: a None-valued newest row
+        # still hides the real one. So no score row is written here at all. The universe is
+        # seeded, and the newest score for a coin is now the last real measurement of it --
+        # or nothing, which is the honest answer for a coin never actually measured.
         record_notification(
             self.settings.db_path,
             event_type="research_completed",

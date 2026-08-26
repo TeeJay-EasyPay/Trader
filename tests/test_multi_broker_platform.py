@@ -340,12 +340,23 @@ class MultiBrokerPlatformTests(unittest.TestCase):
 
                 self.assertEqual(result["status"], "completed")
                 self.assertEqual(result["symbols"], ["BTC", "ETH"])
-                self.assertGreaterEqual(len(result["proposals"]), 1)
+                # 2026-08-26 audit finding: this used to assert that bootstrapping produced
+                # PROPOSALS and a research score per symbol -- which meant it was asserting
+                # that the fabrication worked. The bootstrap invented identical scores for
+                # every coin (trend 0.62, momentum 0.6) with confidence pinned at exactly the
+                # auto-trade threshold, so a coin with no data at all was tradeable. Measured
+                # on production, 1,074 such rows against 31 real ones in a single day.
+                #
+                # Seeding the universe now means exactly that: the coins are known, and
+                # nothing is claimed about them until real market data is measured. No data,
+                # no score, no proposal -- which is the honest outcome, not a regression.
+                self.assertEqual(len(result["proposals"]), 0,
+                                 "no proposal may be generated from a coin that has never been measured")
                 with closing(sqlite3.connect(service.settings.db_path)) as conn:
                     master_count = conn.execute("SELECT COUNT(*) FROM CRYPTO_MASTER").fetchone()[0]
                     score_count = conn.execute("SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES").fetchone()[0]
-                self.assertEqual(master_count, 2)
-                self.assertEqual(score_count, 2)
+                self.assertEqual(master_count, 2, "the universe is still seeded")
+                self.assertEqual(score_count, 0, "seeding the universe must not invent research about it")
         finally:
             restore_env(previous)
 
