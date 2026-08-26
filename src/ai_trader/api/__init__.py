@@ -1137,9 +1137,21 @@ class LocalApiService:
             "openai_configured": bool(self.settings.openai_api_key),
             "trading_state": self._control_state(),
             "broker_auto_trading": broker_auto_settings(self.settings.db_path),
-            "broker_panels": broker_panels if broker_panels is not None else
+            # 2026-08-26: this used to put an explanatory STRING here when no cached panels
+            # existed. Every consumer iterates broker_panels expecting broker dicts, so a
+            # string was iterated character by character and "L".get() raised
+            # AttributeError -- a 500 from /ask-ai-trader, which the app reports to the
+            # Founder as "something went wrong reaching AI Trader". Confirmed as the cause
+            # of exactly that message appearing twice in a row.
+            #
+            # The honesty was right, the type was not. The list stays a list, and the
+            # explanation moves to its own field where nothing will try to iterate it.
+            "broker_panels": broker_panels if broker_panels is not None else [],
+            "broker_panels_note": (
+                None if broker_panels is not None else
                 "Live broker panels were not refreshed for this answer. The portfolio "
-                "snapshots below are the most recent stored balances.",
+                "snapshots below are the most recent stored balances."
+            ),
             "latest_portfolio_snapshots": [
                 dict(row) for row in self._rows(
                     """

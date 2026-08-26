@@ -312,9 +312,11 @@ class DeveloperExperienceTests(unittest.TestCase):
             ):
                 context = service._ask_ai_context(deadline=time.monotonic() + 50.0)
 
-            # Absent panels must be said out loud, not left as a silent empty list that
-            # reads like "you have no brokers".
-            self.assertIn("snapshots below", str(context["broker_panels"]))
+            # Absent panels are still said out loud, not left silent -- but in their own
+            # field, because putting the sentence in broker_panels made a list-shaped field
+            # hold a string and 500'd the endpoint (see AskWithoutCachedPanelsTests).
+            self.assertEqual(context["broker_panels"], [])
+            self.assertIn("snapshots below", str(context["broker_panels_note"]))
 
     def test_ask_ai_trader_context_includes_the_systems_own_research(self):
         """2026-08-24, Founder: "it works but only using its own traded data". Asked how
@@ -1465,3 +1467,36 @@ class AskEvidencePayloadTests(unittest.TestCase):
 
             self.assertIn("evidence", payload)
             self.assertIn("latest_portfolio_snapshots", payload["evidence"])
+
+
+class AskWithoutCachedPanelsTests(unittest.TestCase):
+    """2026-08-26 Founder-reported: Ask replied "something went wrong reaching AI Trader"
+    twice in a row while the backend answered the same question fine from a terminal.
+
+    Cause: when no cached broker panels existed, the context put an explanatory STRING in
+    broker_panels. Every consumer iterates that field expecting broker dicts, so the string
+    was iterated character by character and "L".get(...) raised AttributeError -- a 500 from
+    the endpoint, surfaced to the Founder as a vague network-sounding failure.
+
+    The honesty was right and the type was wrong. Panels stay a list; the explanation lives
+    in its own field where nothing will iterate it.
+    """
+
+    def test_asking_without_cached_panels_still_answers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            status, payload = service.post("/ask-ai-trader", {"question": "Why no Kraken trades today?"})
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("answer"))
+
+    def test_broker_panels_is_always_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            context = service._ask_ai_context(deadline=time.monotonic() + 40.0)
+
+            self.assertIsInstance(context["broker_panels"], list)
+            # Absent panels are still said out loud -- just somewhere type-safe.
+            self.assertIn("were not refreshed", str(context["broker_panels_note"]))
