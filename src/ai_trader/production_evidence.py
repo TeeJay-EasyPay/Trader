@@ -1488,6 +1488,60 @@ def _reconciled_pnl_by_exit_order(db_path: Path) -> dict[str, float]:
     return mapped
 
 
+def backfill_missing_trade_evidence(db_path: Path, *, broker: str, limit: int = 500) -> int:
+    """Write evidence rows for broker history that never got one.
+
+    2026-08-26 audit finding, measured on production: Kraken had 270 history rows against
+    68 evidence rows, Alpaca 118 against 80 -- 240 fills missing between them, including
+    the LTCGBP maker buy that is the only proof the maker-fee fix works. The fee data was
+    sitting in BROKER_TRADE_HISTORY the whole time; the table every cost analysis reads had
+    never received it, which is why the round-trip cost still showed 1.56% when the buy leg
+    had already halved to 0.400%.
+
+    Cause is structural rather than a single bug: evidence is written only for rows the
+    change detector calls "new", so anything it misses -- a poll that dies mid-cycle, an
+    idempotency key that shifts, a row inserted by another path -- is missed permanently.
+    A detector that must be perfect forever is the wrong shape for this.
+
+    So this reconciles the two tables directly instead, exactly as backfill_realized_pnl
+    already does for its own field: it runs every cycle regardless of what the poll found,
+    touches only history rows with no matching evidence, and is safe to run repeatedly.
+    """
+    _ensure_local_production_evidence_schema(db_path)
+    written = 0
+    try:
+        with closing(connect(db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT h.payload_json
+                FROM BROKER_TRADE_HISTORY h
+                WHERE h.broker = ?
+                  AND h.external_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM PRODUCTION_TRADE_EVIDENCE e
+                      WHERE e.broker = h.broker
+                        AND (e.broker_order_id = h.external_id OR e.broker_trade_id = h.external_id)
+                  )
+                ORDER BY h.trade_history_id DESC
+                LIMIT ?
+                """,
+                (broker.lower(), max(1, int(limit))),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a backfill must never break the poll it runs inside
+        return 0
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+    if events:
+        written = record_trade_evidence_batch(db_path, broker=broker, events=events)
+    return written
+
+
 def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
     """Fills in realized_pnl for exits Alpaca (and any other broker) never reports it for.
 

@@ -31,7 +31,7 @@ from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliatio
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
 from ..persistence.query_executor import QueryExecutor
-from ..production_evidence import backfill_broker_evidence_timestamps, backfill_realized_pnl, record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
+from ..production_evidence import backfill_missing_trade_evidence, backfill_broker_evidence_timestamps, backfill_realized_pnl, record_broker_snapshot, record_trade_evidence_batch, refresh_founder_evidence_snapshots
 from ..sprint6 import normalize_broker_events, upsert_incident
 from .shared_helpers import _broker_label, _broker_trade_payload, _broker_trade_symbol, _csv_env, _estimated_in_positions
 
@@ -318,6 +318,12 @@ class BrokerService:
             # broker or whether this poll found new rows: it only ever touches existing
             # PRODUCTION_TRADE_EVIDENCE rows where realized_pnl IS NULL, so it both backfills
             # already-stored history and keeps up with new exits going forward.
+            # 2026-08-26: evidence used to be written only for rows the change detector
+            # called "new", so anything it missed was missed permanently -- 240 fills across
+            # both brokers, including the one maker buy that proves the fee fix. Reconciles
+            # the two tables directly every cycle, same self-healing shape as the realised-
+            # P&L backfill on the next line.
+            evidence_written += backfill_missing_trade_evidence(self.settings.db_path, broker=broker_name)
             backfill_realized_pnl(self.settings.db_path, broker=broker_name)
             # 2026-08-19 hosted finding: a raw-epoch observed_at already sitting in
             # PRODUCTION_TRADE_EVIDENCE does NOT self-heal through ordinary polling the way
