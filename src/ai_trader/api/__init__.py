@@ -966,7 +966,7 @@ class LocalApiService:
                 "evidence": context,
             }
         explainer = OpenAIReadOnlyExplainer(
-            self.settings.openai_api_key, self.settings.openai_model, timeout_seconds=remaining
+            self.settings.openai_api_key, self.settings.openai_reasoning_model, timeout_seconds=remaining
         )
         try:
             answer = explainer.answer(question, context)
@@ -976,7 +976,7 @@ class LocalApiService:
                 "status": "openai_failed",
                 "answer": _deterministic_ai_trader_answer(question, context),
                 "read_only": True,
-                "model": self.settings.openai_model,
+                "model": self.settings.openai_reasoning_model,
                 "note": f"OpenAI explanation failed, so this answer used the local evidence summary only. Reason: {exc}",
                 "evidence": context,
             }
@@ -984,7 +984,7 @@ class LocalApiService:
             "status": "answered",
             "answer": answer or _deterministic_ai_trader_answer(question, context),
             "read_only": True,
-            "model": self.settings.openai_model,
+            "model": self.settings.openai_reasoning_model,
             "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
             "evidence": context,
         }
@@ -1069,7 +1069,7 @@ class LocalApiService:
                 "model": None,
                 "note": "OPENAI_API_KEY is not configured for this AI Trader deployment, so this used the local digest summary only.",
             }
-        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_model)
+        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_reasoning_model)
         try:
             synthesis = explainer.answer(question, {"crypto_rejection_digest": digest})
         except Exception as exc:
@@ -1079,7 +1079,7 @@ class LocalApiService:
                 "digest": digest,
                 "learned_synthesis": deterministic_learned_synthesis(digest),
                 "read_only": True,
-                "model": self.settings.openai_model,
+                "model": self.settings.openai_reasoning_model,
                 "note": f"OpenAI synthesis failed, so this used the local digest summary only. Reason: {exc}",
             }
         return {
@@ -1087,7 +1087,7 @@ class LocalApiService:
             "digest": digest,
             "learned_synthesis": synthesis or deterministic_learned_synthesis(digest),
             "read_only": True,
-            "model": self.settings.openai_model,
+            "model": self.settings.openai_reasoning_model,
             "note": "Read-only. Cannot place trades, approve trades, change guardrails, or change broker settings.",
         }
 

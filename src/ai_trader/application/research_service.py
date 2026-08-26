@@ -441,7 +441,7 @@ class ResearchService:
                 success=False,
             )
             return result
-        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_reasoning_model)
         targets: list[tuple[str, str]] = []
         try:
             targets.extend((symbol, "crypto") for symbol in self._bootstrap_crypto_universe_from_kraken_permissions(limit=30))
@@ -489,7 +489,7 @@ class ResearchService:
         """
         if not self.settings.openai_api_key:
             return {"status": "not_available", "message": "OPENAI_API_KEY is required for market forecasting."}
-        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_model)
+        analyzer = MarketForecastAnalyzer(self.settings.openai_api_key, self.settings.openai_reasoning_model)
         return generate_market_forecast(
             self.settings.db_path,
             analyzer=analyzer,

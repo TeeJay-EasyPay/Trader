@@ -51,6 +51,10 @@ class Settings:
     output_dir: Path
     trading_log_path: Path
     guardrails: GuardrailConfig
+    # 2026-08-26, Founder-directed: the model used for judgement rather than for the
+    # high-frequency scan. Defaulted rather than required so nothing that builds Settings
+    # has to know about it; see load_settings for why the two are separate.
+    openai_reasoning_model: str = "gpt-4.1"
     database_backend: str = "sqlite"
     database_url: str | None = None
     render_api_key: str | None = None
@@ -151,6 +155,19 @@ def load_settings() -> Settings:
         alpaca_data_base_url=os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        # 2026-08-26, Founder-directed: one setting used to drive three very different jobs.
+        #
+        #   - the hourly scan of 19 coins, which is mostly arithmetic filtering and runs
+        #     constantly, so a large model there multiplies cost for little gain
+        #   - Ask AI Trader, a handful of questions a day, where reasoning quality is the
+        #     entire product
+        #   - market forecasts, ~25 a day, likewise judgement rather than arithmetic
+        #
+        # Sharing one model meant the valuable low-volume calls could not be upgraded without
+        # also upgrading the high-frequency one. Split so each can be set on its own; both
+        # still default sensibly, and setting only OPENAI_MODEL keeps the previous behaviour
+        # for the scan while the reasoning calls get the stronger default.
+        openai_reasoning_model=os.getenv("OPENAI_REASONING_MODEL", "gpt-4.1"),
         db_path=Path(os.getenv("AI_TRADER_DB_PATH", "data/audit.sqlite3")),
         database_backend=os.getenv(
             "AI_TRADER_DATABASE_BACKEND",
