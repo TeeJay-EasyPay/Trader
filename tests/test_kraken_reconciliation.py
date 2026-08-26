@@ -519,7 +519,14 @@ class PerformanceAttributionOnCloseTests(unittest.TestCase):
             rows = self._rows(db_path)
             self.assertEqual(len(rows), 1, "A closed round trip must produce exactly one attribution row.")
             row = rows[0]
-            self.assertEqual(row["symbol"], "XLMGBP")
+            # 2026-08-26 audit finding: this used to store the traded PAIR (XLMGBP) while
+            # other writers stored the bare coin, so PERFORMANCE_ATTRIBUTION held both XRP
+            # and XRPGBP, and both SOL and SOLGBP, for the same coin. Anything grouping by
+            # symbol split one coin's record in two -- SOL's real 0-from-5 read as 0-from-4
+            # and 0-from-1, and that per-coin history is exactly what the entry gates now
+            # consult. Normalised on the way in, so the stored record is right rather than
+            # merely corrected by whichever reader remembers to.
+            self.assertEqual(row["symbol"], "XLM")
             self.assertEqual(row["broker"], "kraken")
             self.assertAlmostEqual(row["entry_price"], 0.144)
             self.assertAlmostEqual(row["exit_price"], 0.1465)

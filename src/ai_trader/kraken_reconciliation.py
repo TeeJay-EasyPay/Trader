@@ -17,6 +17,7 @@ from .canonical_trades import (
 )
 from .database import connect, selected_backend
 from .models import utc_now_iso
+from .symbol_track_record import normalize_symbol
 from .multi_broker import initialize_multi_broker_schema, record_managed_trade_exit
 from .sprint6 import enqueue_learning_workflow, initialize_sprint6_schema
 
@@ -1307,7 +1308,13 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
     quantity = _number(result.get("quantity"))
     if entry is None or exit_price is None or not quantity:
         return
-    symbol = str(result.get("symbol") or "").upper()
+    # 2026-08-26 audit finding: PERFORMANCE_ATTRIBUTION held both XRP and XRPGBP, and both
+    # SOL and SOLGBP, for the same coin -- Kraken reports the traded PAIR here while other
+    # writers use the bare coin. Anything grouping by symbol therefore split one coin's
+    # record in two: SOL's real 0-from-5 read as 0-from-4 and 0-from-1, which is exactly the
+    # per-coin history the entry gates now consult. Normalised on the way in so the stored
+    # record is right, not merely corrected by whichever reader remembers to.
+    symbol = normalize_symbol(result.get("symbol"))
     closed_at = result.get("exit_time") or now
     try:
         # PERFORMANCE_ATTRIBUTION's only key is its autoincrement id, so ON CONFLICT cannot

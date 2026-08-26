@@ -26,6 +26,7 @@ from ..multi_broker import (
     today_runtime_counts,
     update_broker_runtime,
 )
+from ..order_lock_reconciliation import reconcile_order_intent_locks
 from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliation_control, replay_kraken_evidence
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
@@ -382,6 +383,29 @@ class BrokerService:
                 f"new_records={len(new_rows)} evidence_rows_written={evidence_written}",
                 flush=True,
             )
+        # 2026-08-26 audit finding: 16 order-intent locks sat unsettled, the oldest from
+        # 10 August, and a stranded lock permanently blocks its proposal from ever being
+        # retried. The poll is the right home for this -- it already holds live adapters
+        # and already exists to reconcile broker state into the database. Never releases on
+        # doubt; see order_lock_reconciliation for the rule.
+        try:
+            adapters = {
+                name: adapter for name, adapter in self.orchestrator.adapters.items()
+                if not broker_filter or name == broker_filter
+            }
+            lock_result = reconcile_order_intent_locks(self.settings.db_path, adapters)
+            if lock_result.get("checked"):
+                print(
+                    f"[broker-poll] order locks checked={lock_result['checked']} "
+                    f"settled={lock_result['settled']} released={lock_result['released']} "
+                    f"still_working={lock_result['still_working']} unreachable={lock_result['unreachable']}",
+                    flush=True,
+                )
+                results["order_intent_locks"] = {
+                    key: lock_result[key] for key in ("checked", "settled", "released", "still_working", "unreachable")
+                }
+        except Exception as exc:  # noqa: BLE001 - housekeeping must never break the poll
+            logger.warning("Order-intent lock reconciliation failed: %s", exc)
         return results
 
     def poll_broker_activity_alpaca(self) -> dict[str, Any]:

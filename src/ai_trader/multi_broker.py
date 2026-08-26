@@ -261,6 +261,7 @@ def initialize_multi_broker_schema(db_path: Path) -> None:
                     },
                 )
                 _ensure_columns(conn, "NOTIFICATION_EVENTS", {"push_sent_at": "TEXT"})
+                _backfill_epoch_timestamps(conn)
                 now = utc_now_iso()
                 for broker in DEFAULT_BROKERS:
                     conn.execute(
@@ -493,6 +494,84 @@ def all_broker_runtime(db_path: Path) -> list[dict[str, Any]]:
 _BROKER_HISTORY_INSERT_CHUNK = 500
 
 
+def _backfill_epoch_timestamps(conn: Any) -> int:
+    """Convert the epoch-number timestamps already stored by earlier Kraken writes.
+
+    One-time and idempotent, in the same place and for the same reason as audit.py's
+    _backfill_missing_broker: rows written before _iso_timestamp existed still hold Unix
+    epoch numbers, so they stay invisible to every date-filtered query until converted.
+    Measured on production 2026-08-26: 270 Kraken rows across updated_at, opened_at and
+    closed_at.
+
+    Runs inside the existing once-per-process schema init, so it costs nothing after the
+    first call, and never raises: a failed backfill must not stop the app from starting.
+    """
+    converted = 0
+    try:
+        for column in ("updated_at", "opened_at", "closed_at"):
+            rows = conn.execute(
+                f"SELECT trade_history_id, {column} FROM BROKER_TRADE_HISTORY "
+                f"WHERE {column} IS NOT NULL AND {column} != ''"
+            ).fetchall()
+            for row in rows:
+                row_id, raw = row[0], row[1]
+                text = str(raw).strip()
+                # Only touch values that are bare numbers; anything already ISO is left alone.
+                if not text or text[0] not in "0123456789" or "-" in text or ":" in text:
+                    continue
+                converted_value = _iso_timestamp(text)
+                if converted_value != text:
+                    conn.execute(
+                        f"UPDATE BROKER_TRADE_HISTORY SET {column} = ? WHERE trade_history_id = ?",
+                        (converted_value, row_id),
+                    )
+                    converted += 1
+    except Exception:  # noqa: BLE001 - a backfill must never stop the app starting
+        return converted
+    return converted
+
+
+def _iso_timestamp(value: Any) -> str:
+    """One timestamp format for every broker.
+
+    2026-08-26 audit finding, measured on the production database: BROKER_TRADE_HISTORY
+    held two incompatible formats in the same columns --
+
+        kraken: 270 rows, 100% Unix epoch numbers ("1787702509.30039")
+        alpaca: 118 rows, 100% ISO dates    ("2026-08-26T16:08:18")
+
+    -- across updated_at, opened_at and closed_at alike, because Kraken reports opentm/
+    closetm as epoch floats and Alpaca reports ISO strings, and both were simply stringified.
+    The column is text, so "1787..." sorts before "2026...", and EVERY date-filtered query on
+    this table silently returned Alpaca-only results. Nothing errored; Kraken activity just
+    quietly vanished from any period-scoped view, which is why a "Kraken trades since 25 Aug"
+    query returned nothing while the trades plainly existed.
+
+    Epoch values are converted; anything already ISO is left exactly as it is; anything
+    unrecognisable is passed through unchanged rather than discarded, since a preserved odd
+    value can be investigated and a dropped one cannot.
+    """
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        epoch = float(text)
+    except (TypeError, ValueError):
+        return text
+    # Anything this large is milliseconds, not seconds; below the floor it is not a
+    # timestamp at all (a quantity or a price that reached the wrong field).
+    if epoch > 1e12:
+        epoch /= 1000.0
+    if epoch < 1e8:
+        return text
+    try:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return text
+
+
 def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Persist broker orders/fills, in batches.
 
@@ -534,7 +613,7 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
         # operator -- passing a float through the batch's IN (...) lookup fails the
         # whole write. Row-at-a-time inserts never hit this: an INSERT parameter gets
         # an assignment cast to the column type, a WHERE comparison does not.
-        event_timestamp = str(event_timestamp)
+        event_timestamp = _iso_timestamp(event_timestamp)
         identity = (external_id or None, status, event_timestamp)
         # A single broker payload can carry the same event twice (an order and its
         # own fill record). Row-at-a-time inserts let the second one be rejected by
