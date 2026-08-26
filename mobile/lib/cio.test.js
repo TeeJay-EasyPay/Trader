@@ -318,3 +318,26 @@ console.log(`\n${passed} passed`);
 if (process.exitCode) {
   console.error('Some cio tests failed.');
 }
+
+test('a missing governance count is left out, never rendered as zero (2026-08-26)', () => {
+  // Founder-reported: this read "0 were rejected by governance" while the Trades I Turned
+  // Down card on the same screen listed DOT, ALGO and SAND. why_no_trade.counts carries no
+  // `rejected` key, so Number(undefined) || 0 asserted that nothing was turned down.
+  // "None" and "not counted here" are different answers and must not look alike.
+  const text = cioActivityFunnel({ eligible_for_paper_execution: 67, orders_submitted: 2 });
+  assert.ok(!/rejected by governance/.test(text), text);
+  assert.ok(text.includes('67 opportunities cleared every gate'), text);
+  assert.ok(text.includes('2 orders were actually submitted'), text);
+});
+
+test('a real governance count is still reported', () => {
+  const text = cioActivityFunnel({ eligible_for_paper_execution: 5, rejected: 3, orders_submitted: 1 });
+  assert.ok(text.includes('3 were rejected by governance'), text);
+});
+
+test('a real zero is still a real answer', () => {
+  // Zero rejections IS worth saying when it was actually counted -- the fault was inventing
+  // the number, not reporting it.
+  const text = cioActivityFunnel({ eligible_for_paper_execution: 4, rejected: 0, orders_submitted: 4 });
+  assert.ok(text.includes('0 were rejected by governance'), text);
+});

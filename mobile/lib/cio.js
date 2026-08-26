@@ -140,13 +140,37 @@ function cioActivityFunnel(counts) {
   if (!counts) {
     return null;
   }
+  // 2026-08-26 Founder-reported: this read "67 opportunities cleared every gate, 0 were
+  // rejected by governance, and 2 orders were actually submitted" while the Trades I Turned
+  // Down card on the SAME screen listed real rejections (DOT, ALGO, SAND). Two faults:
+  //
+  //   - "0 were rejected by governance" was a fabricated zero. why_no_trade.counts carries no
+  //     `rejected` key at all, so Number(undefined) || 0 asserted that nothing was turned
+  //     down. Saying "none" when the answer is "not counted here" is the worst of the three
+  //     possible answers, and it directly contradicted the card below it.
+  //   - "67 cleared every gate" next to "2 submitted" invites the obvious question of what
+  //     happened to the other 65. They are crypto candidates counted across the whole period,
+  //     not stock opportunities waiting to be executed, so the two numbers were never
+  //     comparable in the first place.
+  //
+  // A missing figure is now simply left out. The same rule the rest of this screen already
+  // follows: never fabricate a zero, and never put two numbers in one sentence unless they
+  // are measuring the same thing.
   const eligible = Number(counts.eligible_for_paper_execution) || 0;
-  const rejected = Number(counts.rejected) || 0;
   const submitted = Number(counts.orders_submitted) || 0;
+  const rejectedRaw = counts.rejected;
+  const rejected = rejectedRaw === null || rejectedRaw === undefined || !Number.isFinite(Number(rejectedRaw))
+    ? null
+    : Number(rejectedRaw);
   if (!eligible && !rejected && !submitted) {
     return null;
   }
-  return `Of what I reviewed, ${eligible} opportunit${eligible === 1 ? 'y' : 'ies'} cleared every gate, ${rejected} ${rejected === 1 ? 'was' : 'were'} rejected by governance, and ${submitted} order${submitted === 1 ? '' : 's'} ${submitted === 1 ? 'was' : 'were'} actually submitted.`;
+  const parts = [`${eligible} opportunit${eligible === 1 ? 'y' : 'ies'} cleared every gate`];
+  if (rejected !== null) {
+    parts.push(`${rejected} ${rejected === 1 ? 'was' : 'were'} rejected by governance`);
+  }
+  parts.push(`${submitted} order${submitted === 1 ? '' : 's'} ${submitted === 1 ? 'was' : 'were'} actually submitted`);
+  return `Of what I reviewed, ${parts.join(', ')}.`;
 }
 
 // AT-ED-013 Section 7: turns the Market Intelligence Centre's already-computed fields into one
