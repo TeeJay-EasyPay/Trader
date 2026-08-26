@@ -943,6 +943,12 @@ class LocalApiService:
                 "answer": "Ask me a question about AI Trader's balances, trades, reports, recommendations, or learning.",
                 "read_only": True,
             }
+        # 2026-08-26: every answer shipped the whole evidence context to the phone --
+        # measured live, 73,100 bytes of evidence attached to a 1,594-byte answer, on every
+        # question, over mobile data. The app has never read a byte of it: Ask.js uses
+        # answer, note and model only. It is genuinely useful when diagnosing an answer from
+        # a terminal, so it stays available on request rather than being deleted.
+        include_evidence = bool(body.get("include_evidence"))
         deadline = time.monotonic() + _ASK_TOTAL_BUDGET_SECONDS
         context = self._ask_ai_context(deadline=deadline)
         if not self.settings.openai_api_key:
@@ -952,7 +958,7 @@ class LocalApiService:
                 "read_only": True,
                 "model": None,
                 "note": "OPENAI_API_KEY is not configured for this AI Trader deployment, so this answer used the local evidence summary only.",
-                "evidence": context,
+                **({"evidence": context} if include_evidence else {}),
             }
         remaining = _seconds_left(deadline)
         if remaining < _ASK_MIN_OPENAI_SECONDS:
@@ -963,7 +969,7 @@ class LocalApiService:
                 "read_only": True,
                 "model": None,
                 "note": "Gathering the evidence used up the time available for this question, so this answer came from the stored evidence directly. Ask again for a fuller answer.",
-                "evidence": context,
+                **({"evidence": context} if include_evidence else {}),
             }
         explainer = OpenAIReadOnlyExplainer(
             self.settings.openai_api_key, self.settings.openai_reasoning_model, timeout_seconds=remaining
@@ -978,7 +984,7 @@ class LocalApiService:
                 "read_only": True,
                 "model": self.settings.openai_reasoning_model,
                 "note": f"OpenAI explanation failed, so this answer used the local evidence summary only. Reason: {exc}",
-                "evidence": context,
+                **({"evidence": context} if include_evidence else {}),
             }
         return {
             "status": "answered",
@@ -986,7 +992,7 @@ class LocalApiService:
             "read_only": True,
             "model": self.settings.openai_reasoning_model,
             "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
-            "evidence": context,
+            **({"evidence": context} if include_evidence else {}),
         }
 
     def transcribe_question(self, body: dict[str, Any]) -> dict[str, Any]:

@@ -1434,3 +1434,34 @@ class AlpacaFractionalShareTests(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertEqual(result["reason"], "below_one_whole_share")
         self.assertEqual(client.payloads, [], "nothing should reach Alpaca")
+
+
+class AskEvidencePayloadTests(unittest.TestCase):
+    """2026-08-26: every answer shipped the whole evidence context to the phone. Measured
+    live, 73,100 bytes of evidence attached to a 1,594-byte answer -- 98% of the response,
+    on every question, over mobile data, and Ask.js has never read a byte of it (it uses
+    answer, note and model only).
+
+    Kept available on request because it is genuinely useful when diagnosing an answer from
+    a terminal; the fault was sending it to a phone that ignores it.
+    """
+
+    def test_the_evidence_blob_is_not_sent_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            _, payload = service.post("/ask-ai-trader", {"question": "How are we doing?"})
+
+            self.assertNotIn("evidence", payload)
+            self.assertIn("answer", payload, "the answer itself must always be present")
+
+    def test_the_evidence_blob_is_returned_when_explicitly_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalApiService(settings_for(tmp))
+
+            _, payload = service.post(
+                "/ask-ai-trader", {"question": "How are we doing?", "include_evidence": True}
+            )
+
+            self.assertIn("evidence", payload)
+            self.assertIn("latest_portfolio_snapshots", payload["evidence"])
