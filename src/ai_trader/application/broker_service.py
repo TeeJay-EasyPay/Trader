@@ -772,6 +772,20 @@ class BrokerService:
                 # Verifiable rather than assumed: whether maker-fee limit entries are
                 # actually on, readable straight from live evidence.
                 "limit_entries_enabled": kraken_limit_entries_enabled(),
+                # 2026-08-26: the Founder set CRYPTO_RISK_PER_TRADE_PCT on Render and neither
+                # of us could confirm it had taken effect -- the value drove every crypto
+                # position size and was exposed by no endpoint at all. That is precisely the
+                # trap this codebase keeps falling into: a setting believed active while
+                # sitting at its default. Surfaced here for the same reason
+                # limit_entries_enabled is, alongside the size it actually produces, so a
+                # sizing surprise can be read rather than reverse-engineered from a fill.
+                "crypto_risk_per_trade_pct": self.settings.auto_trade.crypto_risk_per_trade_pct,
+                "crypto_max_trade_pct": self.settings.auto_trade.crypto_max_trade_pct,
+                "risk_budget_gbp": round(
+                    max(0.0, float((ledger or {}).get("allocation_gbp") or 0.0))
+                    * float(self.settings.auto_trade.crypto_risk_per_trade_pct or 0.0),
+                    2,
+                ),
                 "max_order_gbp_fallback": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
                 "min_order_gbp": _float_env("KRAKEN_MIN_ORDER_GBP", 1.0),
                 "max_open_trades": max_open_trades,
