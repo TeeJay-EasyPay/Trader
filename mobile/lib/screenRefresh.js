@@ -31,12 +31,13 @@
 // separate screen whose own pull-to-refresh could do it.
 // APP SIMPLIFICATION (2026-08-24): five screens -> three. Operations, Activity and Learning
 // were removed. founderBrief moved onto the Briefing with the Founder Actions it belongs to;
-// Ask has no evidence source of its own -- it asks the backend a question on demand rather
-// than rendering a snapshot, so pull-to-refresh there has nothing to refresh.
+// 2026-08-26: three screens -> two. The Ask tab was removed at the Founder's request once
+// the same component was mounted on the Executive Briefing itself -- it never had an evidence
+// source of its own (it asks the backend a question on demand rather than rendering a
+// snapshot), so nothing about refreshing changes by dropping it.
 const SCREEN_DATA_SOURCES = Object.freeze({
   ExecutiveBriefing: ['shared', 'founderBrief', 'market'],
   Portfolio: ['shared'],
-  Ask: [],
 });
 
 // A screen's own "is it currently loading" state is the OR of only the sources it actually

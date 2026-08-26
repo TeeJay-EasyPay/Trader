@@ -106,19 +106,21 @@ test('composeScreenRefresh: one failing source does not stop the composed refres
 // APP SIMPLIFICATION (2026-08-21): Recommendations and Market were deleted as dedicated
 // screens; Market's 'market' (themes) source moved onto ExecutiveBriefing instead of being
 // dropped entirely, since the Briefing still genuinely needs it.
-test('SCREEN_DATA_SOURCES: exactly the three navigable screens are registered', () => {
-  // 2026-08-24 simplification: five screens -> three. Operations was developer tooling,
-  // Activity a notification list scrolled past, and Learning duplicated the Trade Scorecard.
+test('SCREEN_DATA_SOURCES: exactly the two navigable screens are registered', () => {
+  // 2026-08-24: five screens -> three (Operations was developer tooling, Activity a
+  // notification list scrolled past, Learning duplicated the Trade Scorecard).
+  // 2026-08-26: three -> two. Ask moved onto the Briefing itself, so the tab was a
+  // navigation step to reach content already on the screen before it.
   assert.deepStrictEqual(
     Object.keys(SCREEN_DATA_SOURCES).sort(),
-    ['Ask', 'ExecutiveBriefing', 'Portfolio']
+    ['ExecutiveBriefing', 'Portfolio']
   );
 });
 
-test('SCREEN_DATA_SOURCES: Ask has no evidence source of its own', () => {
-  // It asks the backend a question on demand rather than rendering a snapshot, so
-  // pull-to-refresh there has nothing to refresh.
-  assert.deepStrictEqual(SCREEN_DATA_SOURCES.Ask, []);
+test('SCREEN_DATA_SOURCES: the removed Ask tab is no longer registered (2026-08-26)', () => {
+  // Ask never had an evidence source of its own -- it asks the backend a question on demand
+  // rather than rendering a snapshot -- so removing the tab changes nothing about refreshing.
+  assert.strictEqual(SCREEN_DATA_SOURCES.Ask, undefined);
 });
 
 test('buildScreenRefreshRegistry: ExecutiveBriefing composes shared + founderBrief + market while other shared screens stay shared-only', () => {

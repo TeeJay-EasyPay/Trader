@@ -45,8 +45,13 @@ const { shortApiBase, apiRequest } = require('./api/client');
 // one unique line (the latest lesson) moved there and Ask became its own screen.
 // What is left answers the only three questions the Founder actually has: how am I doing,
 // what do I hold, and let me ask something.
-const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'Ask'];
-const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', Ask: 'Ask AI Trader' };
+// 2026-08-26, Founder-directed: "I think we can now remove the Ask Trader screen." Three
+// screens -> two. Ask is not gone, it moved: the same component now sits on the Executive
+// Briefing directly under the summary, sharing one conversation, which is where the questions
+// get asked anyway ("that way I don't need to go to a separate screen"). A tab whose only
+// content already appears on the screen before it is a navigation step that buys nothing.
+const SCREENS = ['ExecutiveBriefing', 'Portfolio'];
+const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing' };
 
 export default function App() {
   const [screen, setScreen] = useState('ExecutiveBriefing');
@@ -163,26 +168,19 @@ export default function App() {
         </ErrorBoundary>
       );
     }
-    if (screen === 'Portfolio') {
-      return (
-        <PortfolioCommandCentre
-          status={status}
-          portfolio={portfolio}
-          recommendations={recommendations}
-          performanceAttribution={performanceAttribution}
-          latestReport={latestReport}
-          selectedExchange={selectedExchange}
-          setSelectedExchange={setSelectedExchange}
-          onCommand={command}
-          onReport={reportCommand}
-        />
-      );
-    }
+    // Portfolio is the only remaining alternative to the Briefing, so it is the fallback
+    // rather than a branch with an unreachable Ask screen behind it.
     return (
-      <AskAiTrader
-        messages={askMessages}
-        setMessages={setAskMessages}
-        request={apiRequest}
+      <PortfolioCommandCentre
+        status={status}
+        portfolio={portfolio}
+        recommendations={recommendations}
+        performanceAttribution={performanceAttribution}
+        latestReport={latestReport}
+        selectedExchange={selectedExchange}
+        setSelectedExchange={setSelectedExchange}
+        onCommand={command}
+        onReport={reportCommand}
       />
     );
   }, [
