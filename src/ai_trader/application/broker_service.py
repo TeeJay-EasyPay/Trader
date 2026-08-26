@@ -171,6 +171,20 @@ def _broker_block_reason(broker: str, auto_enabled: bool, permissions: dict[str,
     return "Blocked by broker trading permissions."
 
 
+def _crypto_sizing_setting(settings: Any, name: str) -> float | None:
+    """One crypto sizing figure, or None when this settings object has no auto_trade block.
+
+    None means "not available here", never a fabricated 0.0 -- a zero would read as "risk
+    nothing per trade", which is a completely different and alarming claim.
+    """
+    auto_trade = getattr(settings, "auto_trade", None)
+    value = getattr(auto_trade, name, None) if auto_trade is not None else None
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _kraken_price_hints_from_panel(panel: dict[str, Any]) -> dict[str, float]:
     """Extract a symbol->GBP-price map from a Kraken portfolio panel's wallet balance
     conversion, already computed during this same broker-snapshot cycle by
@@ -779,11 +793,15 @@ class BrokerService:
                 # sitting at its default. Surfaced here for the same reason
                 # limit_entries_enabled is, alongside the size it actually produces, so a
                 # sizing surprise can be read rather than reverse-engineered from a fill.
-                "crypto_risk_per_trade_pct": self.settings.auto_trade.crypto_risk_per_trade_pct,
-                "crypto_max_trade_pct": self.settings.auto_trade.crypto_max_trade_pct,
+                # Read defensively: capture_production_broker_snapshots reaches this with a
+                # lightweight settings stand-in that carries no auto_trade block, and a
+                # reporting field must never be the thing that breaks the panel it reports
+                # into -- the same rule _kraken_unlistable_allowed_pairs follows above.
+                "crypto_risk_per_trade_pct": _crypto_sizing_setting(self.settings, "crypto_risk_per_trade_pct"),
+                "crypto_max_trade_pct": _crypto_sizing_setting(self.settings, "crypto_max_trade_pct"),
                 "risk_budget_gbp": round(
                     max(0.0, float((ledger or {}).get("allocation_gbp") or 0.0))
-                    * float(self.settings.auto_trade.crypto_risk_per_trade_pct or 0.0),
+                    * float(_crypto_sizing_setting(self.settings, "crypto_risk_per_trade_pct") or 0.0),
                     2,
                 ),
                 "max_order_gbp_fallback": _float_env("KRAKEN_MAX_ORDER_GBP", 5.0),
