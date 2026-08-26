@@ -105,8 +105,20 @@ class AssetMetadataRefreshTests(unittest.TestCase):
                 kraken_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="kraken")
                 self.assertFalse(any("is a large position" in warning for warning in kraken_exposure["warnings"]))
 
-                # Unaffected brokers (no cap env var) keep the original concentration signal.
-                other_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="alpaca")
+                # 2026-08-26: Alpaca was one of these "unaffected brokers", and that was the
+                # bug rather than the design. It hit the identical closed loop live -- two
+                # positions (FSLR 48.7%, NEE 51.3%) on a sleeve nowhere near capacity, with
+                # $96k of cash unused, and every diversifying candidate demoted to
+                # portfolio_manager_manual_review. It now reads its own capacity
+                # (MAX_OPEN_POSITIONS, the same variable the guardrails use) and behaves like
+                # Kraken here.
+                os.environ["MAX_OPEN_POSITIONS"] = "3"
+                alpaca_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="alpaca")
+                self.assertFalse(any("is a large position" in warning for warning in alpaca_exposure["warnings"]))
+
+                # A broker whose capacity genuinely is unknown keeps the conservative
+                # always-on check rather than silently losing a safety signal.
+                other_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker="coinbase")
                 self.assertTrue(any("is a large position" in warning for warning in other_broker_exposure["warnings"]))
                 no_broker_exposure = calculate_portfolio_exposure(settings.db_path, positions, broker=None)
                 self.assertTrue(any("is a large position" in warning for warning in no_broker_exposure["warnings"]))

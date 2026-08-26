@@ -337,16 +337,29 @@ def _bucket_percentages(values: dict[str, float], total: float) -> dict[str, dic
 
 
 def _broker_managed_position_cap(broker: str | None) -> int | None:
-    """The broker's own configured concurrent-managed-position limit, if it has one.
+    """The broker's own concurrent-managed-position limit.
 
-    Only Kraken's AI-managed sleeve has an explicit cap today (KRAKEN_MAX_OPEN_TRADES); other
-    brokers have no equivalent env var and are unaffected (returns None, preserving the prior
-    always-on concentration check for them).
+    2026-08-26: this returned None for every broker except Kraken, and None makes the
+    concentration check above fire unconditionally -- so the closed loop that was diagnosed
+    and fixed for Kraken was still live on Alpaca the whole time.
+
+    Confirmed on the live account that day: two positions, FSLR at 48.7% and NEE at 51.3%,
+    on a sleeve nowhere near its capacity and with $96k of cash unused. With only two
+    holdings one of them is over 25% by arithmetic, so NEE tripped the warning and every new
+    candidate was demoted to portfolio_manager_manual_review -- including the ones that would
+    have diluted the concentration. The rule written to prevent over-concentration was the
+    thing preventing diversification.
+
+    Alpaca's equivalent capacity is GuardrailConfig.max_open_positions (3 by default), read
+    from the same env var the guardrails themselves use so the two cannot disagree.
     """
-    if (broker or "").strip().lower() != "kraken":
+    key = (broker or "").strip().lower()
+    env_name = {"kraken": "KRAKEN_MAX_OPEN_TRADES", "alpaca": "MAX_OPEN_POSITIONS"}.get(key)
+    if env_name is None:
         return None
+    default = "1" if key == "kraken" else "3"
     try:
-        return int(os.getenv("KRAKEN_MAX_OPEN_TRADES", "1"))
+        return int(os.getenv(env_name, default))
     except (TypeError, ValueError):
         return None
 
