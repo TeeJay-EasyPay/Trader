@@ -415,6 +415,37 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
                     )
     if assets:
         _populate_crypto_master_and_scores(db_path, assets, market_rows)
+        return {"inserted": len(assets), "source": source, "notes": notes}
+    if fetch_live:
+        # CoinGecko was asked and did not answer (outage, or the HTTP 429 rate-limiting this
+        # free API already returns in production). Before this fallback existed that ended the
+        # function with zero scores written and no signal that crypto research had stopped --
+        # the universe just kept trading on whatever scores it last had, however stale. Kraken's
+        # own stored candles cover the price behaviour, so score from those instead.
+        # Deferred import: sprint6 imports this module, so a module-level import is circular.
+        from .sprint6 import record_operational_event
+
+        fallback = record_crypto_scores_from_kraken_candles(db_path)
+        record_operational_event(
+            db_path,
+            component="crypto_universe",
+            event_type="crypto_universe_scored_from_kraken_fallback",
+            broker="kraken",
+            severity="warning",
+            summary=(
+                f"CoinGecko was unavailable, so {fallback['scored']} crypto symbols were scored "
+                f"from stored Kraken candles instead. Market-cap ranking is not refreshed and "
+                f"liquidity is carried forward from the last CoinGecko reading."
+            ),
+            details={"coingecko_error": notes, **fallback},
+            success=fallback["scored"] > 0,
+        )
+        return {
+            "inserted": 0,
+            "source": KRAKEN_CANDLE_SOURCE if fallback["scored"] else source,
+            "notes": f"{notes} Fell back to Kraken candles: {fallback['notes']}",
+            "fallback": fallback,
+        }
     return {"inserted": len(assets), "source": source, "notes": notes}
 
 
@@ -536,6 +567,195 @@ def _pct_to_unit_score(pct: float | None) -> float | None:
     if pct is None:
         return None
     return round(max(0.0, min(1.0, 0.5 + (pct / 100.0))), 4)
+
+
+# --- Second price source: Kraken's own candles -------------------------------------------
+#
+# 2026-08-27 audit finding. Every crypto research score in this codebase was derived from
+# one place -- CoinGecko's free public markets API -- and seed_crypto_universe only reaches
+# _populate_crypto_master_and_scores when that fetch succeeds. So a CoinGecko outage, or the
+# HTTP 429 rate-limiting this API already returns in production, does not degrade crypto
+# research: it stops it, and the universe silently keeps whatever scores it last had.
+#
+# The fix is not a third-party CoinGecko clone. refresh_crypto_candle_history already
+# ingests real daily OHLC candles straight from Kraken -- the venue we actually trade on --
+# into MARKET_DATA_OBSERVATIONS, and as of this audit that table holds 4,415 candles across
+# 19 symbols going back two years. Price behaviour was already being collected from a second
+# independent source; nothing read it for scoring. This does.
+#
+# The formulas below are deliberately IDENTICAL to _crypto_metrics_from_market_row's, just
+# fed from candles instead of CoinGecko fields. That matters more than sophistication: if
+# the two sources produced differently-scaled scores, failing over would quietly change
+# trading behaviour at the worst possible moment. Same scale in, same decisions out.
+#
+# The one metric candles genuinely cannot produce is liquidity, which CoinGecko computes as
+# 24h volume / market cap -- there is no market cap in an OHLC bar, and inventing a
+# substitute would put a fabricated number into a live sizing decision. record_crypto_
+# research_score averages over five metrics and treats a missing one as 0.0, so simply
+# leaving it None would drag every Kraken-sourced score ~20% below its CoinGecko equivalent
+# and make failover look like a market-wide downgrade. Instead it carries forward the last
+# real CoinGecko liquidity for that symbol -- turnover ratios move slowly, the value is
+# genuinely measured rather than guessed, and the reasoning payload says plainly that it is
+# carried forward and how old it is.
+#
+# A coin CoinGecko has never covered (its fetch is top-20 by market cap plus two categories;
+# BCH, KSM and MINA all trade on Kraken and are absent from it) therefore has no liquidity to
+# carry forward and scores ~20% lower than an equivalent covered coin. That bias is left in
+# deliberately: it errs towards not trading the least-covered assets, which is the safe
+# direction, and removing it would mean scoring Kraken-sourced coins on a more generous scale
+# than CoinGecko-sourced ones.
+
+KRAKEN_CANDLE_SOURCE = "Kraken OHLC candles"
+
+# Below this many daily candles a 30-day change cannot be computed honestly.
+_MIN_CANDLES_FOR_SCORING = 31
+
+
+def _close_change_pct(candles: list[dict[str, Any]], days_back: int) -> float | None:
+    """Percent change between the newest close and the one `days_back` bars earlier.
+
+    Candles arrive oldest-first (see _recent_observations_query's ORDER BY), so the newest
+    bar is the last element and the comparison bar is indexed from the end.
+    """
+    if len(candles) <= days_back:
+        return None
+    latest = safe_float(candles[-1].get("close"))
+    earlier = safe_float(candles[-1 - days_back].get("close"))
+    if latest is None or earlier is None or earlier <= 0:
+        return None
+    return ((latest - earlier) / earlier) * 100.0
+
+
+def _last_coingecko_liquidity(db_path: Path, symbol: str) -> tuple[float | None, str | None]:
+    """The most recent liquidity CoinGecko actually measured for this symbol, and when.
+
+    Returns (None, None) when CoinGecko has never scored it, so the caller leaves liquidity
+    unset rather than substituting a number nobody measured.
+    """
+    try:
+        with closing(connect(db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT liquidity, created_at FROM CRYPTO_RESEARCH_SCORES
+                WHERE symbol = ? AND source = ? AND liquidity IS NOT NULL
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (symbol.upper(), "CoinGecko public markets API"),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None, None
+    if not row:
+        return None, None
+    return safe_float(row[0]), (str(row[1]) if row[1] is not None else None)
+
+
+def _crypto_metrics_from_kraken_candles(
+    candles: list[dict[str, Any]], *, db_path: Path, symbol: str
+) -> dict[str, Any] | None:
+    """The same five research metrics as the CoinGecko path, computed from Kraken candles.
+
+    Returns None when there is not enough real history to compute them, so a thin symbol is
+    left unscored instead of scored on guesses.
+    """
+    if len(candles) < _MIN_CANDLES_FOR_SCORING:
+        return None
+    change_24h = _close_change_pct(candles, 1)
+    change_7d = _close_change_pct(candles, 7)
+    change_30d = _close_change_pct(candles, 30)
+    if change_24h is None and change_7d is None:
+        return None
+    volatility = min(1.0, abs(change_30d) / 100) if change_30d is not None else None
+    risk_score = round(1.0 - volatility, 4) if volatility is not None else None
+    liquidity, liquidity_as_of = _last_coingecko_liquidity(db_path, symbol)
+    newest = str(candles[-1].get("observation_time") or "")
+    return {
+        "technical_trend_score": _pct_to_unit_score(change_7d),
+        "momentum_score": _pct_to_unit_score(change_24h),
+        "volatility": volatility,
+        "liquidity": liquidity,
+        "risk_score": risk_score,
+        "sentiment": None,
+        "news_score": _recent_crypto_news_coverage_score(db_path, symbol),
+        "onchain_activity": None,
+        "reasoning": {
+            "source": KRAKEN_CANDLE_SOURCE,
+            "note": (
+                "technical/momentum/volatility are computed from real daily OHLC candles fetched "
+                "from Kraken, the venue these trades actually execute on, using the same formulas "
+                "as the CoinGecko path so the scores stay directly comparable. Liquidity cannot be "
+                "derived from an OHLC bar (it needs market cap) and is carried forward from the "
+                "last CoinGecko measurement rather than invented. Sentiment and on-chain activity "
+                "have no wired data source and stay blank."
+            ),
+            "candles_used": len(candles),
+            "newest_candle": newest,
+            "liquidity_carried_forward_from": liquidity_as_of,
+            "price_change_pct_24h": change_24h,
+            "price_change_pct_7d": change_7d,
+            "price_change_pct_30d": change_30d,
+        },
+    }
+
+
+def record_crypto_scores_from_kraken_candles(
+    db_path: Path, *, symbols: list[str] | None = None, limit: int = 40
+) -> dict[str, Any]:
+    """Score the crypto universe from stored Kraken candles instead of CoinGecko.
+
+    Used as the fallback when the CoinGecko fetch fails or is rate-limited, so losing that
+    provider degrades crypto research (no market-cap ranking, carried-forward liquidity)
+    instead of stopping it.
+    """
+    from .market_intelligence_platform import load_recent_observations_batch
+    from .multi_broker import record_crypto_research_score
+
+    targets = [str(symbol).upper() for symbol in (symbols or _active_crypto_symbols(db_path, limit=limit))]
+    if not targets:
+        return {"scored": 0, "skipped": 0, "source": KRAKEN_CANDLE_SOURCE, "notes": "No active crypto symbols to score."}
+
+    candles_by_symbol = load_recent_observations_batch(db_path, targets, timeframe="1d", limit=120)
+    scored: list[str] = []
+    skipped: list[str] = []
+    for symbol in targets:
+        metrics = _crypto_metrics_from_kraken_candles(
+            candles_by_symbol.get(symbol) or [], db_path=db_path, symbol=symbol
+        )
+        if metrics is None:
+            skipped.append(symbol)
+            continue
+        record_crypto_research_score(
+            db_path, symbol=symbol, category=None, metrics=metrics, source=KRAKEN_CANDLE_SOURCE
+        )
+        scored.append(symbol)
+    return {
+        "scored": len(scored),
+        "skipped": len(skipped),
+        "source": KRAKEN_CANDLE_SOURCE,
+        "symbols_scored": scored,
+        "symbols_skipped_insufficient_history": skipped,
+        "notes": (
+            f"Scored {len(scored)} symbols from stored Kraken daily candles; {len(skipped)} had "
+            f"fewer than {_MIN_CANDLES_FOR_SCORING} candles and were left unscored."
+        ),
+    }
+
+
+def _active_crypto_symbols(db_path: Path, *, limit: int = 40) -> list[str]:
+    """Symbols that actually have stored Kraken candles, newest history first."""
+    try:
+        with closing(connect(db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT normalized_symbol FROM MARKET_DATA_OBSERVATIONS
+                WHERE provider = ? AND timeframe = ? AND asset_type = ?
+                GROUP BY normalized_symbol
+                ORDER BY count(*) DESC LIMIT ?
+                """,
+                ("kraken", "1d", "crypto", max(1, int(limit))),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [str(row[0]).upper() for row in rows if row and row[0]]
 
 
 def _crypto_row(row: dict[str, Any], category: str, source: str) -> dict[str, Any]:
