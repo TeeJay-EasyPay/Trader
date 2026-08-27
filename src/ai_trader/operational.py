@@ -805,7 +805,17 @@ def _last_coingecko_liquidity(db_path: Path, symbol: str) -> tuple[float | None,
     turnover = safe_float(reasoning.get("liquidity_turnover"))
     if turnover is not None:
         return liquidity_score(turnover, 1.0), stamp
-    return safe_float(row[0]), stamp
+    # No turnover recorded means this row predates the 2026-08-27 rescale, so its liquidity
+    # column holds a raw ratio on a scale that no longer means anything here. Returning it
+    # would be worse than returning nothing, and this was confirmed live: SOL carried the
+    # strongest signals in the universe (trend 0.89, momentum 0.88, sentiment 0.80) and scored
+    # LOWEST at 0.659, because a stale 0.11 was averaged in as though it were a quality score.
+    # Coins with no CoinGecko coverage at all scored HIGHER, which is perverse -- having data
+    # made a coin look worse than having none.
+    #
+    # Unmeasurable, so unmeasured. Real liquidity returns within one CoinGecko cycle (12h),
+    # and until then these coins are scored on the signals that are trustworthy.
+    return None, None
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:

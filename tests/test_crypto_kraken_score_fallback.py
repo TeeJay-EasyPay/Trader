@@ -130,21 +130,37 @@ class KrakenCandleMetricsTests(unittest.TestCase):
         self.assertIsNone(metrics["liquidity"])
         self.assertIsNone(metrics["reasoning"]["liquidity_carried_forward_from"])
 
-    def test_liquidity_carries_forward_the_last_real_coingecko_measurement(self):
+    def carry_forward_row(self, reasoning_json, liquidity=0.0191):
         with closing(connect(self.db_path)) as conn:
             with conn:
                 conn.execute(
                     "INSERT INTO CRYPTO_RESEARCH_SCORES (created_at, symbol, liquidity, source, reasoning_json)"
                     " VALUES (?, ?, ?, ?, ?)",
-                    ("2026-08-20T00:00:00+00:00", "BTC", 0.0191, "CoinGecko public markets API", "{}"),
+                    ("2026-08-20T00:00:00+00:00", "BTC", liquidity, "CoinGecko public markets API", reasoning_json),
                 )
-        metrics = _crypto_metrics_from_kraken_candles(
+        return _crypto_metrics_from_kraken_candles(
             candle_series([100.0 + index for index in range(40)]), db_path=self.db_path, symbol="BTC"
         )
+
+    def test_liquidity_carries_forward_from_the_recorded_turnover(self):
+        """Carried forward from the RAW turnover and rescaled here, not from the stored score.
+        2026-08-27: the stored column changed meaning when liquidity was rescaled, so turnover
+        is what gets recorded and what gets read."""
+        metrics = self.carry_forward_row('{"liquidity_turnover": 0.0414}')
         assert metrics is not None
-        self.assertAlmostEqual(metrics["liquidity"], 0.0191, places=4)
+        self.assertGreater(metrics["liquidity"], 0.7)  # ETH-grade turnover is deep liquidity
         # Provenance must be visible, not silently presented as a fresh reading.
         self.assertEqual(metrics["reasoning"]["liquidity_carried_forward_from"], "2026-08-20T00:00:00+00:00")
+
+    def test_a_row_predating_the_rescale_is_refused_rather_than_misread(self):
+        """A row with no turnover recorded holds a raw ratio on a scale that no longer means
+        anything here. Using it was confirmed harmful live: SOL carried the strongest signals
+        in the universe and scored LOWEST, because a stale 0.11 was averaged in as if it were a
+        quality score -- so coins with NO liquidity data outranked coins that had some."""
+        metrics = self.carry_forward_row("{}", liquidity=0.0642)
+        assert metrics is not None
+        self.assertIsNone(metrics["liquidity"])
+        self.assertIsNone(metrics["reasoning"]["liquidity_carried_forward_from"])
 
     def test_a_kraken_sourced_score_never_claims_to_be_coingecko(self):
         metrics = _crypto_metrics_from_kraken_candles(
