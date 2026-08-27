@@ -459,9 +459,9 @@ def run_closed_loop_learning(
         proposal_id=attribution.get("proposal_id"),
         broker=broker,
         symbol=symbol,
-        intended_entry_price=_float(decision_context.get("intended_entry_price") or decision_context.get("entry_price")),
+        intended_entry_price=_float(_context_value(decision_context, "intended_entry_price") or _context_value(decision_context, "entry_price")),
         actual_average_entry_price=_float(attribution.get("actual_average_entry_price") or attribution.get("entry_price")),
-        intended_exit_price=_float(decision_context.get("intended_exit_price") or decision_context.get("take_profit")),
+        intended_exit_price=_float(_context_value(decision_context, "intended_exit_price") or _context_value(decision_context, "take_profit")),
         actual_average_exit_price=_float(attribution.get("actual_average_exit_price") or attribution.get("exit_price")),
         quantity=_float(attribution.get("quantity")),
         broker_fee=_float(attribution.get("broker_fee")),
@@ -479,8 +479,8 @@ def run_closed_loop_learning(
         filled_quantity=_required_float(attribution, "quantity", "filled_quantity"),
         gross_realized_pnl=_float(attribution.get("profit_loss") or attribution.get("gross_realized_pnl")) or 0.0,
         total_cost=costs.get("total_trading_cost"),
-        expected_r=_float(decision_context.get("expected_r")),
-        planned_take_profit=_float(decision_context.get("take_profit")),
+        expected_r=_float(_context_value(decision_context, "expected_r")),
+        planned_take_profit=_float(_context_value(decision_context, "take_profit")),
         payload={"logical_trade_id": logical_trade_id},
     )
     excursions = calculate_mae_mfe(
@@ -488,12 +488,12 @@ def run_closed_loop_learning(
         proposal_id=attribution.get("proposal_id"),
         broker=broker,
         symbol=symbol,
-        side=str(attribution.get("side") or decision_context.get("side") or "buy"),
+        side=str(attribution.get("side") or _context_value(decision_context, "side") or "buy"),
         entry_price=_required_float(decision_context, "intended_entry_price", "entry_price"),
         quantity=_required_float(attribution, "quantity", "filled_quantity"),
         original_stop=_required_float(decision_context, "original_stop", "stop_loss"),
         observations=observations or [],
-        data_granularity=str(decision_context.get("data_granularity") or "unknown"),
+        data_granularity=str(_context_value(decision_context, "data_granularity") or "unknown"),
         payload={"logical_trade_id": logical_trade_id},
     )
     experience = record_experience(
@@ -501,9 +501,9 @@ def run_closed_loop_learning(
         symbol=symbol,
         proposal_id=attribution.get("proposal_id"),
         broker=broker,
-        asset_type=decision_context.get("asset_type"),
-        strategy_id=decision_context.get("strategy_id"),
-        regime_id=decision_context.get("regime_id"),
+        asset_type=_context_value(decision_context, "asset_type"),
+        strategy_id=_context_value(decision_context, "strategy_id"),
+        regime_id=_context_value(decision_context, "regime_id"),
         decision_context=decision_context,
         execution_context={"costs": costs, "r_multiple": r_multiple, "excursions": excursions},
         result_context=attribution,
@@ -515,7 +515,7 @@ def run_closed_loop_learning(
     )
     analogues = find_historical_analogues(
         db_path,
-        {"symbol": symbol, "strategy_id": decision_context.get("strategy_id"), "regime_id": decision_context.get("regime_id")},
+        {"symbol": symbol, "strategy_id": _context_value(decision_context, "strategy_id"), "regime_id": _context_value(decision_context, "regime_id")},
     )
     learning_proposal = create_learning_proposal(
         db_path,
@@ -1021,9 +1021,34 @@ def _reconciliation_confidence(rows: list[dict[str, Any]], manual_review: int) -
     return max(0.0, min(1.0, score))
 
 
+# Nested blocks inside a decision context that carry the trade's own parameters. The context
+# is a record of the whole decision -- account equity, guardrails, allocation, intelligence --
+# and the entry price, stop and target live in its "proposal" block, not at the top level.
+_CONTEXT_DETAIL_BLOCKS = ("proposal", "allocation", "order", "sizing")
+
+
+def _context_value(payload: dict[str, Any], key: str) -> Any:
+    """A field from a decision context, looked up at the top level then one level in.
+
+    2026-08-27 audit finding: every one of the 20 closed-loop learning workflows ever
+    enqueued failed with "Required numeric value missing: intended_entry_price/entry_price",
+    exhausted its 3 retries, and died -- which is why POST_TRADE_REVIEWS and
+    LEARNING_PROPOSALS had never held a single row and the app could not review its own
+    trades. The price was not missing. It was in context["proposal"]["entry_price"] and this
+    reader only ever looked at context["entry_price"].
+    """
+    if key in payload and payload[key] not in (None, ""):
+        return payload[key]
+    for block in _CONTEXT_DETAIL_BLOCKS:
+        nested = payload.get(block)
+        if isinstance(nested, dict) and nested.get(key) not in (None, ""):
+            return nested[key]
+    return None
+
+
 def _required_float(payload: dict[str, Any], *keys: str) -> float:
     for key in keys:
-        value = _float(payload.get(key))
+        value = _float(_context_value(payload, key))
         if value is not None:
             return value
     raise ValueError(f"Required numeric value missing: {'/'.join(keys)}")
@@ -1077,3 +1102,54 @@ def _strategy_evidence_gates(evidence: dict[str, Any], proposed_stage: str) -> l
         {"gate": "drawdown", "passed": max_drawdown is not None and max_drawdown <= 0.15, "reason": "Maximum drawdown must be 15% or lower."},
         {"gate": "calibration", "passed": calibration_error is not None and calibration_error <= 0.10, "reason": "Calibration error must be 10% or lower."},
     ]
+
+
+def requeue_failed_learning_workflows(
+    db_path: Path, *, error_contains: str | None = None, limit: int = 200
+) -> dict[str, Any]:
+    """Put permanently-failed learning workflows back in the queue after a code fix.
+
+    A workflow that exhausts its 3 attempts is parked at status 'failed', and the processor's
+    claim query only looks at 'pending' and 'retry' -- correctly, since retrying a genuinely
+    broken payload forever would be a hot loop. But it means a workflow killed by a BUG stays
+    dead after the bug is fixed, with no way back.
+
+    That is exactly what happened here: all 20 closed-loop learning workflows ever enqueued
+    failed on "Required numeric value missing: intended_entry_price/entry_price", retired
+    themselves, and left POST_TRADE_REVIEWS and LEARNING_PROPOSALS permanently empty. The
+    price was never missing -- the reader was looking one level too high in the payload.
+
+    error_contains scopes the requeue to the specific failure a fix addresses, so this cannot
+    be used to blanket-revive unrelated failures that are still genuinely broken.
+    """
+    from .sprint6 import _ensure_sprint6_schema
+
+    _ensure_sprint6_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        sql = (
+            "SELECT workflow_id, last_error FROM SPRINT6_WORKFLOW_OUTBOX "
+            "WHERE workflow_type = 'closed_loop_learning' AND status = 'failed'"
+        )
+        params: list[Any] = []
+        if error_contains:
+            sql += " AND last_error LIKE ?"
+            params.append(f"%{error_contains}%")
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, int(limit)))
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        workflow_ids = [str(row[0]) for row in rows]
+        if not workflow_ids:
+            return {"requeued": 0, "workflow_ids": []}
+        # attempts is reset so the requeued workflow gets a full set of retries against the
+        # fixed code, rather than one attempt before being parked again.
+        placeholders = ",".join(["?"] * len(workflow_ids))
+        with conn:
+            conn.execute(
+                f"""
+                UPDATE SPRINT6_WORKFLOW_OUTBOX
+                SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+                WHERE workflow_id IN ({placeholders})
+                """,
+                tuple(workflow_ids),
+            )
+    return {"requeued": len(workflow_ids), "workflow_ids": workflow_ids}
