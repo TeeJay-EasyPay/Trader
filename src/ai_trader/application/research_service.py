@@ -27,7 +27,14 @@ from ..multi_broker import (
     record_recommendation_set,
     update_broker_runtime,
 )
-from ..operational import latest_pnl_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
+from ..operational import (
+    latest_pnl_snapshot,
+    record_crypto_scores_from_kraken_candles,
+    record_research_run,
+    safe_float,
+    safe_score,
+    seed_crypto_universe,
+)
 from ..orchestrator import InvestmentOrchestrator, next_research_run
 from ..persistence.query_executor import QueryExecutor
 from ..portfolio_intelligence import upsert_asset_metadata
@@ -400,19 +407,38 @@ class ResearchService:
             symbols_with_history.append(symbol)
             if quality["severity"] != "pass":
                 quality_issues.append({"symbol": symbol, "pair": pair, "quality": quality["severity"], "plain_english": quality["plain_english"]})
+        # 2026-08-27: score straight off the candles this job just ingested.
+        #
+        # Removing the fabricated bootstrap scores (9b651623) left crypto research refreshing
+        # only every CRYPTO_UNIVERSE_MIN_REFRESH_HOURS (default 12) via CoinGecko, because
+        # that was the sole path that wrote a score. Confirmed live: this job ran at 00:36 and
+        # wrote no scores at all. Meanwhile it had just fetched real daily candles from the
+        # venue the trades actually execute on and then done nothing with them for scoring.
+        #
+        # So the hourly job now scores from what it collected. Kraken becomes the primary
+        # source for price behaviour, refreshed hourly, and CoinGecko stays the source for
+        # market-cap ranking and liquidity, refreshed every 12h -- losing either one degrades
+        # the picture rather than stopping it. The reasoning payload records which produced
+        # each score, so the two are never confused for one another.
+        scoring = record_crypto_scores_from_kraken_candles(self.settings.db_path)
         result = {
             "status": "completed",
             "symbols_requested": symbols,
             "symbols_with_history": symbols_with_history,
             "candles_written": candles_written,
             "quality_issues": quality_issues,
+            "scoring": scoring,
         }
         record_operational_event(
             self.settings.db_path,
             component="crypto_candle_history",
             event_type="crypto_candle_refresh_completed",
             broker="kraken",
-            summary=f"Crypto candle refresh: {candles_written} new candle(s) across {len(symbols_with_history)} symbol(s); {len(quality_issues)} issue(s).",
+            summary=(
+                f"Crypto candle refresh: {candles_written} new candle(s) across "
+                f"{len(symbols_with_history)} symbol(s); {len(quality_issues)} issue(s); "
+                f"{scoring['scored']} symbol(s) scored from Kraken candles."
+            ),
             details=result,
         )
         return result
