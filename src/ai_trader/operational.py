@@ -486,12 +486,28 @@ def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any
                         json.dumps(raw_row, default=str),
                     ),
                 )
+    # Indicators come from candles regardless of which provider supplied the price changes,
+    # so the CoinGecko path gets them too -- otherwise rsi/macd/volume_trend would only ever
+    # be populated on the fallback path, and the primary path would keep writing the empty
+    # columns this audit found. Loaded in ONE batched query rather than per symbol inside the
+    # loop, the remote-Postgres cost class already fixed repeatedly in this codebase.
+    from .market_intelligence_platform import load_recent_observations_batch
+
+    symbols = [asset["symbol"] for asset in assets]
+    try:
+        candles_by_symbol = load_recent_observations_batch(db_path, symbols, timeframe="1d", limit=120)
+    except Exception:  # noqa: BLE001 - missing candles must not stop the scores being written
+        candles_by_symbol = {}
     for asset, raw_row in zip(assets, market_rows):
+        metrics = _crypto_metrics_from_market_row(raw_row, db_path=db_path, symbol=asset["symbol"])
+        candles = candles_by_symbol.get(asset["symbol"]) or []
+        if candles:
+            metrics = {**metrics, **_technical_indicators(candles)}
         record_crypto_research_score(
             db_path,
             symbol=asset["symbol"],
             category=asset["category"],
-            metrics=_crypto_metrics_from_market_row(raw_row, db_path=db_path, symbol=asset["symbol"]),
+            metrics=metrics,
             source=asset["source"],
         )
 
@@ -649,6 +665,40 @@ def _last_coingecko_liquidity(db_path: Path, symbol: str) -> tuple[float | None,
     return safe_float(row[0]), (str(row[1]) if row[1] is not None else None)
 
 
+# CRYPTO_RESEARCH_SCORES has always carried rsi, macd, moving_average_position, volume_trend
+# and market_structure columns. As of the 2026-08-27 audit, 0 of 12,474 rows had a value in
+# any of them -- five empty columns that every reader treated as "insufficient data".
+#
+# Nothing new had to be invented to fill them. trading_intelligence.analyze_price_series
+# already computes moving-average position, volume trend and price structure from candles and
+# is used on the equity path; it was simply never pointed at the crypto candles. RSI and MACD
+# were the only genuinely missing pieces and are now computed there too, so the equity callers
+# gain them as well.
+#
+# The two classifications it returns are strings, and these columns are numeric, so they are
+# mapped onto a 0-1 scale here rather than stored as text. The mapping reuses the function's
+# own classification instead of re-deriving one, so there is exactly one definition of what
+# "above the moving averages" means.
+_MOVING_AVERAGE_POSITION_SCORES = {"above_short_and_long": 1.0, "mixed_or_below": 0.0}
+_MARKET_STRUCTURE_SCORES = {"higher_bias": 1.0, "balanced": 0.5, "lower_bias": 0.0}
+
+
+def _technical_indicators(candles: list[dict[str, Any]]) -> dict[str, Any]:
+    """RSI, MACD, moving-average position, volume trend and market structure from candles."""
+    from .trading_intelligence import analyze_price_series
+
+    metrics = analyze_price_series(candles)
+    return {
+        "rsi": safe_float(metrics.get("rsi")),
+        "macd": safe_float(metrics.get("macd")),
+        "volume_trend": safe_float(metrics.get("volume_trend")),
+        "moving_average_position": _MOVING_AVERAGE_POSITION_SCORES.get(
+            str(metrics.get("moving_average_position") or "")
+        ),
+        "market_structure": _MARKET_STRUCTURE_SCORES.get(str(metrics.get("price_structure") or "")),
+    }
+
+
 def _crypto_metrics_from_kraken_candles(
     candles: list[dict[str, Any]], *, db_path: Path, symbol: str
 ) -> dict[str, Any] | None:
@@ -668,7 +718,9 @@ def _crypto_metrics_from_kraken_candles(
     risk_score = round(1.0 - volatility, 4) if volatility is not None else None
     liquidity, liquidity_as_of = _last_coingecko_liquidity(db_path, symbol)
     newest = str(candles[-1].get("observation_time") or "")
+    indicators = _technical_indicators(candles)
     return {
+        **indicators,
         "technical_trend_score": _pct_to_unit_score(change_7d),
         "momentum_score": _pct_to_unit_score(change_24h),
         "volatility": volatility,

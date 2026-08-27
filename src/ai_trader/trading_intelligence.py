@@ -593,6 +593,8 @@ def analyze_price_series(candles: list[dict[str, Any]]) -> dict[str, Any]:
             "atr_pct": None,
             "relative_strength": None,
             "volume_trend": None,
+            "rsi": None,
+            "macd": None,
             "price_structure": "unknown",
             "breakout": "unknown",
             "mean_reversion": "unknown",
@@ -636,6 +638,11 @@ def analyze_price_series(candles: list[dict[str, Any]]) -> dict[str, Any]:
         "atr_pct": round((atr / latest), 6) if atr is not None and latest else None,
         "relative_strength": round(_pct_to_score(momentum), 4),
         "volume_trend": round(volume_trend, 4) if volume_trend is not None else None,
+        # Both were columns that existed on every score row and were never once populated,
+        # because nothing in the codebase computed them. Returned here rather than in a
+        # crypto-only helper so the equity callers of this function get them too.
+        "rsi": _rsi(closes),
+        "macd": _macd_line_pct(closes),
         "price_structure": price_structure,
         "breakout": breakout,
         "mean_reversion": mean_reversion,
@@ -2316,6 +2323,71 @@ def _pct_to_score(value: float | None) -> float:
     if value is None:
         return 0.5
     return max(0.0, min(1.0, 0.5 + value * 5))
+
+
+def _rsi(closes: list[float], period: int = 14) -> float | None:
+    """Wilder's RSI, 0-100. None when there is not enough history to compute it honestly.
+
+    2026-08-27: CRYPTO_RESEARCH_SCORES has always had an rsi column and 0 of 12,474 rows
+    ever carried a value, because nothing computed one. Wilder's smoothing (not a simple
+    mean of the last `period` moves) is used deliberately -- it is what every charting tool
+    and every published RSI threshold assumes, so a simple-average variant would put numbers
+    under the same name that do not mean the same thing.
+    """
+    if len(closes) < period + 1:
+        return None
+    gains, losses = [], []
+    for index in range(1, len(closes)):
+        change = closes[index] - closes[index - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for index in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[index]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[index]) / period
+    if avg_loss == 0:
+        # No downside at all in the window: RSI is defined as 100 here, not a divide-by-zero.
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return round(100.0 - (100.0 / (1.0 + rs)), 4)
+
+
+def _ema(values: list[float], period: int) -> float | None:
+    if len(values) < period:
+        return None
+    multiplier = 2.0 / (period + 1)
+    ema = sum(values[:period]) / period
+    for value in values[period:]:
+        ema = (value - ema) * multiplier + ema
+    return ema
+
+
+def _macd_line_pct(closes: list[float], fast: int = 12, slow: int = 26) -> float | None:
+    """MACD line (fast EMA - slow EMA) as a percentage of the latest price.
+
+    Two deliberate choices here.
+
+    Expressed as a percentage of price, because a raw MACD line is in price units: Bitcoin at
+    ~58,000 would produce a value hundreds of times larger than Stellar at ~0.30 for an
+    identical move, and cross-coin ranking -- which is exactly what the research scores do --
+    would sort by coin price rather than by momentum.
+
+    The LINE, not the histogram. The histogram (line minus its signal average) measures the
+    MACD's own acceleration, and in a steady decline it turns POSITIVE while price falls,
+    because the line is shrinking toward zero along with the price -- verified on a decaying
+    series: line -6.38, signal -6.88, histogram +0.50. Correct arithmetic, but stored in a
+    single column called "macd" that feeds a "is this trending up" score, it would read as
+    bullish during a sell-off. The line is negative in a downtrend, which is what a reader of
+    this field will assume it means.
+    """
+    if len(closes) < slow:
+        return None
+    fast_ema, slow_ema = _ema(closes, fast), _ema(closes, slow)
+    latest_price = closes[-1]
+    if fast_ema is None or slow_ema is None or not latest_price:
+        return None
+    return round(((fast_ema - slow_ema) / latest_price) * 100.0, 6)
 
 
 def _primary_regime(trend: float | None, risk: float | None, volatility: float | None) -> str:
