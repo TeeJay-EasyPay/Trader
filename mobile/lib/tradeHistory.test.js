@@ -440,3 +440,35 @@ test('tradeTableRow: a real fee with no usable quantity/price still reports the 
 });
 
 console.log(`\n${passed} passed`);
+
+// 2026-08-27 Founder-reported: the Portfolio card said "Completed today 19" while the Briefing
+// said 13 and the day's real answer was 6. A broker records one row per order EVENT, so the
+// same completed trade arrives several times and counting rows counted paperwork. Mirrors
+// src/ai_trader/trade_counting.py, which applies the same rule server-side.
+test('completedTradesToday counts distinct orders, not the several event rows each one produces', () => {
+  const today = new Date().toISOString();
+  const closedRow = (orderId, symbol) => ({
+    broker: 'alpaca', broker_order_id: orderId, symbol, side: 'sell',
+    status: 'closed', closed_at: today, exit_price: 90, price: 90, quantity: 2, profit_loss: 4,
+  });
+  const trades = [
+    closedRow('nee-exit', 'NEE'),
+    closedRow('nee-exit', 'NEE'),
+    closedRow('nee-exit', 'NEE'),
+    closedRow('mlm-exit', 'MLM'),
+    closedRow('mlm-exit', 'MLM'),
+  ];
+  const summary = tradeHistorySummary({ brokers: [] }, trades, 'all');
+  assert.strictEqual(summary.completedTradesToday, 2, 'five event rows describe two real orders');
+});
+
+test('a completed row carrying no order id is still counted once rather than dropped', () => {
+  // Under-reporting the Founder's real activity would be worse than counting one row twice.
+  const today = new Date().toISOString();
+  const bare = (symbol) => ({
+    broker: 'alpaca', symbol, side: 'sell', status: 'closed',
+    closed_at: today, exit_price: 5, price: 5, quantity: 1, profit_loss: 1,
+  });
+  const summary = tradeHistorySummary({ brokers: [] }, [bare('AAA'), bare('BBB')], 'all');
+  assert.strictEqual(summary.completedTradesToday, 2);
+});

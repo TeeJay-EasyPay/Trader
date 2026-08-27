@@ -5,7 +5,7 @@
 
 const React = require('react');
 const { useState } = React;
-const { ScrollView, Text, TouchableOpacity, View } = require('react-native');
+const { Text, TouchableOpacity, View } = require('react-native');
 const { styles } = require('../styles');
 const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
@@ -29,9 +29,9 @@ const {
   formatHoldingDuration,
 } = require('../lib/tradeHistory');
 
-// Enough rows that a busy day is fully reachable by scrolling, capped so one enormous day
-// cannot make the screen sluggish. The footnote below the table always states the real total.
-const MAX_TRADE_ROWS = 100;
+// Enough recent rows to read the table as a table without burying the cards below it. The
+// footnote always states the real total, and "Show all" renders every remaining row.
+const DEFAULT_TRADE_ROWS = 12;
 
 function TradeDetail({ item, onForceExit }) {
   const raw = item.raw || item.payload || {};
@@ -118,6 +118,46 @@ function TradeHistoryRow({ item, onCommand }) {
           <TradeDetail
             item={item}
             onForceExit={(trade) => onCommand('/force-managed-exit', { managed_exit_id: normalizeTradeRow(trade).managedExitId })}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// 2026-08-27 Founder-reported: "we run out of space, and I can't see if there were any more
+// trades placed today." The table was a hard slice(0, 20) rendered into the page, with no way
+// to reach the rest and nothing saying rows had been cut.
+//
+// First attempt was an inner ScrollView with nestedScrollEnabled, which is the textbook answer
+// and was wrong here. Verified on the emulator: it scrolled, but a 460dp scroll region sitting
+// in the middle of the app's own vertical page ScrollView captured essentially every vertical
+// drag -- including at the screen edge -- so the page could no longer be scrolled past the
+// table at all. Trading one navigation problem for a worse one.
+//
+// Expansion instead. Every row renders into the page and the page scrolls the ordinary way, so
+// there is no gesture to fight over. The Founder sees the most recent rows by default, the
+// footnote always states how many of how many, and "Show all" reveals the rest.
+function TradeHistoryTable({ trades, onCommand }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? trades : trades.slice(0, DEFAULT_TRADE_ROWS);
+  return (
+    <View style={styles.tradeTable}>
+      <TradeHistoryHeaderRow />
+      {visible.map((item, index) => (
+        <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+      ))}
+      <Text style={styles.tradeTableFootnote}>
+        {expanded
+          ? `Showing all ${trades.length} record${trades.length === 1 ? '' : 's'}, newest first.`
+          : `Showing the ${visible.length} most recent of ${trades.length} records.`}
+      </Text>
+      {trades.length > DEFAULT_TRADE_ROWS ? (
+        <View style={styles.buttonGrid}>
+          <Button
+            label={expanded ? 'Show fewer' : `Show all ${trades.length}`}
+            tone="neutral"
+            onPress={() => setExpanded((value) => !value)}
           />
         </View>
       ) : null}
@@ -227,29 +267,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         <Metric label="Completed today (since midnight)" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
         {trades.length ? (
-          <View style={styles.tradeTable}>
-            <TradeHistoryHeaderRow />
-            {/* 2026-08-27 Founder-reported: "we run out of space, and I can't see if there were
-                any more trades placed today." The table rendered a hard slice(0, 20) inside the
-                page with no scroll of its own and no sign that anything had been cut, so on a
-                busy day the rest of the day's trades simply did not exist as far as the screen
-                was concerned. The header stays put while the rows scroll, and the count below
-                says plainly how many of how many are shown. */}
-            <ScrollView
-              style={styles.tradeTableScroll}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator
-            >
-              {trades.slice(0, MAX_TRADE_ROWS).map((item, index) => (
-                <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
-              ))}
-            </ScrollView>
-            <Text style={styles.tradeTableFootnote}>
-              {trades.length > MAX_TRADE_ROWS
-                ? `Showing the ${MAX_TRADE_ROWS} most recent of ${trades.length} records. Scroll within the table to see more.`
-                : `Showing all ${trades.length} record${trades.length === 1 ? '' : 's'}. Scroll within the table to see more.`}
-            </Text>
-          </View>
+          <TradeHistoryTable trades={trades} onCommand={onCommand} />
         ) : (
           <Empty />
         )}
