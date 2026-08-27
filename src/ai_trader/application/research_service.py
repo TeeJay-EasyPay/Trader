@@ -27,6 +27,7 @@ from ..multi_broker import (
     record_recommendation_set,
     update_broker_runtime,
 )
+from ..crypto_sentiment import score_crypto_sentiment
 from ..operational import (
     latest_pnl_snapshot,
     record_crypto_scores_from_kraken_candles,
@@ -420,6 +421,15 @@ class ResearchService:
         # market-cap ranking and liquidity, refreshed every 12h -- losing either one degrades
         # the picture rather than stopping it. The reasoning payload records which produced
         # each score, so the two are never confused for one another.
+        # 2026-08-27, Founder-directed: judge the tone of recent news BEFORE scoring, so the
+        # sentiment component is fresh for this cycle rather than one cycle behind. A missing
+        # key, no coverage, or a failed call all leave sentiment simply unrecorded, which the
+        # scorer now treats as "not measured" instead of voting zero against the coin.
+        sentiment = score_crypto_sentiment(
+            self.settings.db_path,
+            api_key=self.settings.openai_api_key,
+            model=self.settings.openai_model,
+        )
         scoring = record_crypto_scores_from_kraken_candles(self.settings.db_path)
         result = {
             "status": "completed",
@@ -428,6 +438,7 @@ class ResearchService:
             "candles_written": candles_written,
             "quality_issues": quality_issues,
             "scoring": scoring,
+            "sentiment": sentiment,
         }
         record_operational_event(
             self.settings.db_path,
@@ -437,7 +448,8 @@ class ResearchService:
             summary=(
                 f"Crypto candle refresh: {candles_written} new candle(s) across "
                 f"{len(symbols_with_history)} symbol(s); {len(quality_issues)} issue(s); "
-                f"{scoring['scored']} symbol(s) scored from Kraken candles."
+                f"{scoring['scored']} symbol(s) scored from Kraken candles; "
+                f"news sentiment judged for {sentiment.get('scored', 0)} coin(s)."
             ),
             details=result,
         )

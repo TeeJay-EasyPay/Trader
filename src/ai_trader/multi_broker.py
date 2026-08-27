@@ -1302,16 +1302,44 @@ def record_seatbelt_event(
             )
 
 
+# At least this many of the five due-diligence metrics must be genuinely measured before an
+# overall verdict means anything. Three of five keeps a coin scoreable when one data source is
+# down, while refusing to call a coin "strong" off a single lucky number.
+_MIN_MEASURED_CRYPTO_METRICS = 3
+
 def record_crypto_research_score(db_path: Path, *, symbol: str, category: str | None, metrics: dict[str, Any], source: str) -> dict[str, Any]:
     initialize_multi_broker_schema(db_path)
-    technical = safe_score(metrics.get("technical_trend_score")) or 0.0
-    momentum = safe_score(metrics.get("momentum_score")) or 0.0
-    risk = safe_score(metrics.get("risk_score")) or 0.0
-    sentiment = safe_score(metrics.get("sentiment")) or 0.0
-    liquidity = safe_score(metrics.get("liquidity")) or 0.0
+    # 2026-08-27, Founder-directed. This averaged five metrics and coerced every unmeasured
+    # one to 0.0 with `or 0.0`, which conflates "we measured this and it is bad" with "nobody
+    # measured this". Sentiment had no data source at all, so it was 0.0 on every coin
+    # forever; liquidity was stored as a raw turnover ratio (ETH 0.041) rather than a 0-1
+    # score. Two of the five were therefore pinned near zero by construction, capping the
+    # achievable score around 0.46 against the 0.85 bar required to trade. Nothing could ever
+    # pass on merit -- only the fabricated 0.85 bootstrap score cleared it, which is why
+    # removing that fabrication stopped crypto trading entirely.
+    #
+    # Both halves are fixed: liquidity is now scaled in operational.liquidity_score, and
+    # sentiment is genuinely measured in crypto_sentiment. This is the third piece -- average
+    # only what was actually measured, so a metric with no data source lowers CONFIDENCE in
+    # the verdict rather than silently voting zero against the coin.
+    measured = {
+        "technical_trend_score": safe_score(metrics.get("technical_trend_score")),
+        "momentum_score": safe_score(metrics.get("momentum_score")),
+        "risk_score": safe_score(metrics.get("risk_score")),
+        "sentiment": safe_score(metrics.get("sentiment")),
+        "liquidity": safe_score(metrics.get("liquidity")),
+    }
+    present = [value for value in measured.values() if value is not None]
+    technical = measured["technical_trend_score"] or 0.0
+    momentum = measured["momentum_score"] or 0.0
+    risk = measured["risk_score"] or 0.0
+    sentiment = measured["sentiment"] or 0.0
+    liquidity = measured["liquidity"] or 0.0
     overall = safe_score(metrics.get("overall_due_diligence_score"))
     if overall is None:
-        overall = round((technical + momentum + risk + sentiment + liquidity) / 5, 4)
+        # Below this, the evidence is too thin to call a verdict from, so the coin scores 0
+        # and stays untraded rather than looking strong on one lucky metric.
+        overall = round(sum(present) / len(present), 4) if len(present) >= _MIN_MEASURED_CRYPTO_METRICS else 0.0
     confidence = safe_score(metrics.get("confidence_score")) or overall
     payload = {
         "symbol": symbol.upper(),

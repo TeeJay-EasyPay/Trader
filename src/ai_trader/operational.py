@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from .database import connect, selected_backend
@@ -539,19 +540,36 @@ def _recent_crypto_news_coverage_score(db_path: Path, symbol: str, *, window_hou
     return round(min(1.0, count / cap), 4)
 
 
+def _recent_crypto_sentiment(db_path: Path | None, symbol: str | None) -> float | None:
+    """Recent news sentiment for one coin, or None when it has not been judged.
+
+    Deferred import: crypto_sentiment reads this module's connect/schema helpers indirectly,
+    and this is a runtime-only dependency. Any failure returns None rather than raising --
+    unscored sentiment is a known, honest state; a crashed research cycle is not.
+    """
+    if db_path is None or not symbol:
+        return None
+    try:
+        from .crypto_sentiment import latest_sentiment
+
+        return latest_sentiment(db_path).get(str(symbol).upper())
+    except Exception:  # noqa: BLE001 - sentiment is one input, never a reason to stop research
+        return None
+
+
 def _crypto_metrics_from_market_row(row: dict[str, Any], *, db_path: Path | None = None, symbol: str | None = None) -> dict[str, Any]:
     change_24h = safe_float(row.get("price_change_percentage_24h_in_currency") or row.get("price_change_percentage_24h"))
     change_7d = safe_float(row.get("price_change_percentage_7d_in_currency"))
     change_30d = safe_float(row.get("price_change_percentage_30d_in_currency"))
     market_cap = safe_float(row.get("market_cap"))
     volume = safe_float(row.get("total_volume"))
-    liquidity = min(1.0, volume / market_cap) if market_cap and volume and market_cap > 0 else None
+    liquidity = liquidity_score(volume, market_cap)
     volatility = min(1.0, abs(change_30d) / 100) if change_30d is not None else None
     risk_score = round(1.0 - volatility, 4) if volatility is not None else None
     news_score = _recent_crypto_news_coverage_score(db_path, symbol) if db_path is not None and symbol else None
     return {
-        "technical_trend_score": _pct_to_unit_score(change_7d),
-        "momentum_score": _pct_to_unit_score(change_24h),
+        "technical_trend_score": _pct_to_unit_score(change_7d, _TREND_FULL_SCALE_PCT),
+        "momentum_score": _pct_to_unit_score(change_24h, _MOMENTUM_FULL_SCALE_PCT),
         "volatility": volatility,
         "liquidity": liquidity,
         "risk_score": risk_score,
@@ -564,25 +582,96 @@ def _crypto_metrics_from_market_row(row: dict[str, Any], *, db_path: Path | None
         # in overall_due_diligence_score's average (multi_broker.py's
         # record_crypto_research_score only averages technical/momentum/risk/sentiment/
         # liquidity) -- it is informational, not a factor in the accept/reject threshold.
-        "sentiment": None,
+        # 2026-08-27, Founder-directed: this was a hard None, which record_crypto_research_score
+        # turned into 0.0 inside a five-way average -- asserting that every coin had terrible
+        # sentiment when nothing had ever measured it. Now a real judgement of recent news
+        # coverage when there is coverage to judge, and still None when there is not.
+        "sentiment": _recent_crypto_sentiment(db_path, symbol),
         "news_score": news_score,
         "onchain_activity": None,
         "reasoning": {
             "source": "CoinGecko public markets API",
             "note": "technical/momentum/volatility/liquidity are computed from live price, volume, and market-cap data. "
             "news_score (when available) is real article-volume coverage from CryptoPanic, not sentiment. "
-            "on-chain activity and sentiment are not available without a paid data provider and are left blank.",
+            "sentiment, when present, is a judgement of recent news coverage (crypto_sentiment.py); "
+            "on-chain activity has no wired data source and is left blank.",
             "price_change_pct_24h": change_24h,
             "price_change_pct_7d": change_7d,
             "price_change_pct_30d": change_30d,
+            # 2026-08-27: the raw turnover behind the liquidity SCORE. Recorded because the
+            # Kraken path carries this coin's liquidity forward, and without the raw figure it
+            # cannot tell an old ratio (0.041) from a new score (0.041) -- the two mean
+            # opposite things, and guessing between them is exactly the class of error this
+            # calibration pass exists to remove.
+            "liquidity_turnover": (volume / market_cap) if market_cap and volume and market_cap > 0 else None,
         },
     }
 
 
-def _pct_to_unit_score(pct: float | None) -> float | None:
+# How big a move has to be to count as a full-strength signal over each window. Chosen from
+# the real distribution rather than from round numbers: today's 24h moves across the traded
+# universe spanned -2.56% to +4.09%, and a 3-4% day is a genuinely strong one in crypto.
+#
+# 2026-08-27, same defect as liquidity and found while fixing it. Both scores previously used a
+# fixed +/-100% scale, so a 4% daily move -- a big day -- scored 0.54, barely off neutral, and
+# every coin was squeezed into a band around 0.5 no matter what it did. The signal was real and
+# the scale erased it, which is exactly what the Founder was pointing at when he asked whether
+# liquidity should inform "momentum going to push and sustain a rally".
+_MOMENTUM_FULL_SCALE_PCT = 8.0   # 24-hour move
+_TREND_FULL_SCALE_PCT = 25.0     # 7-day move
+
+
+def _pct_to_unit_score(pct: float | None, full_scale_pct: float = 100.0) -> float | None:
+    """A percentage move mapped onto 0-1, where `full_scale_pct` is the end of the scale.
+
+    0.5 is unchanged, 1.0 is a full-strength rise, 0.0 a full-strength fall. Clamped, so an
+    exceptional move saturates rather than distorting the average.
+    """
     if pct is None:
         return None
-    return round(max(0.0, min(1.0, 0.5 + (pct / 100.0))), 4)
+    scale = float(full_scale_pct) if full_scale_pct else 100.0
+    return round(max(0.0, min(1.0, 0.5 + (float(pct) / (2.0 * scale)))), 4)
+
+
+# Turnover (24h volume / market cap) that marks the ends of the useful range. Below the floor
+# a position is genuinely hard to enter and leave; above the ceiling extra turnover tells you
+# nothing more about whether a move can be sustained.
+_LIQUIDITY_FLOOR_TURNOVER = 0.002
+_LIQUIDITY_CEILING_TURNOVER = 0.10
+
+
+def liquidity_score(volume: float | None, market_cap: float | None) -> float | None:
+    """Turnover expressed as a 0-1 quality score.
+
+    2026-08-27, Founder-challenged: "shouldn't liquidity be a part of gauging whether momentum
+    is going to push and sustain a rally?" It should, and it was already in the score -- but on
+    the wrong scale, which quietly destroyed it.
+
+    Liquidity was stored as the raw ratio volume/market_cap. Real values: ETH 0.041, XRP 0.044,
+    SOL 0.064. Those are HEALTHY -- a coin turning over 4% of its entire market cap in a day is
+    deeply liquid. Averaged into a due-diligence score whose other components run 0-1, though,
+    0.041 reads as "4 out of 100", so every genuinely liquid coin was scored as nearly
+    untradeable and the composite could never approach the 0.85 bar required to trade.
+
+    Log-scaled between the two ends of the range because it spans two orders of magnitude and
+    the interesting differences are multiplicative: 0.002 -> 0.004 is the difference between
+    untradeable and thin, while 0.06 -> 0.12 barely matters. On a linear scale the thin end,
+    which is the end that can actually hurt, would be indistinguishable.
+
+    Returns None when either input is missing, so an unmeasured coin stays unmeasured rather
+    than scoring zero -- the exact failure this whole audit has been unpicking.
+    """
+    volume_value = safe_float(volume)
+    cap_value = safe_float(market_cap)
+    if not cap_value or cap_value <= 0 or volume_value is None or volume_value < 0:
+        return None
+    turnover = volume_value / cap_value
+    if turnover <= _LIQUIDITY_FLOOR_TURNOVER:
+        return 0.0
+    if turnover >= _LIQUIDITY_CEILING_TURNOVER:
+        return 1.0
+    span = math.log(_LIQUIDITY_CEILING_TURNOVER / _LIQUIDITY_FLOOR_TURNOVER)
+    return round(math.log(turnover / _LIQUIDITY_FLOOR_TURNOVER) / span, 4)
 
 
 # --- Second price source: Kraken's own candles -------------------------------------------
@@ -652,7 +741,7 @@ def _last_coingecko_liquidity(db_path: Path, symbol: str) -> tuple[float | None,
         with closing(connect(db_path)) as conn:
             row = conn.execute(
                 """
-                SELECT liquidity, created_at FROM CRYPTO_RESEARCH_SCORES
+                SELECT liquidity, created_at, reasoning_json FROM CRYPTO_RESEARCH_SCORES
                 WHERE symbol = ? AND source = ? AND liquidity IS NOT NULL
                 ORDER BY created_at DESC LIMIT 1
                 """,
@@ -662,7 +751,28 @@ def _last_coingecko_liquidity(db_path: Path, symbol: str) -> tuple[float | None,
         return None, None
     if not row:
         return None, None
-    return safe_float(row[0]), (str(row[1]) if row[1] is not None else None)
+    stamp = str(row[1]) if row[1] is not None else None
+    # Prefer the raw turnover and rescale it here. Rows written before the 2026-08-27 rescale
+    # hold a raw ratio in the liquidity column, and a stored 0.04 is either "deeply liquid"
+    # (old ratio) or "almost untradeable" (new score) with nothing in the column to separate
+    # them. Turnover is unambiguous, so it wins whenever it is present.
+    reasoning = _json_dict(row[2])
+    turnover = safe_float(reasoning.get("liquidity_turnover"))
+    if turnover is not None:
+        return liquidity_score(turnover, 1.0), stamp
+    return safe_float(row[0]), stamp
+
+
+def _json_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 # CRYPTO_RESEARCH_SCORES has always carried rsi, macd, moving_average_position, volume_trend
@@ -721,12 +831,12 @@ def _crypto_metrics_from_kraken_candles(
     indicators = _technical_indicators(candles)
     return {
         **indicators,
-        "technical_trend_score": _pct_to_unit_score(change_7d),
-        "momentum_score": _pct_to_unit_score(change_24h),
+        "technical_trend_score": _pct_to_unit_score(change_7d, _TREND_FULL_SCALE_PCT),
+        "momentum_score": _pct_to_unit_score(change_24h, _MOMENTUM_FULL_SCALE_PCT),
         "volatility": volatility,
         "liquidity": liquidity,
         "risk_score": risk_score,
-        "sentiment": None,
+        "sentiment": _recent_crypto_sentiment(db_path, symbol),
         "news_score": _recent_crypto_news_coverage_score(db_path, symbol),
         "onchain_activity": None,
         "reasoning": {
