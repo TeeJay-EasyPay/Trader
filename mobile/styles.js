@@ -436,4 +436,17 @@ export const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 4,
   },
+  // 2026-08-27 Founder-reported: "we run out of space, and I can't see if there were any more
+  // trades placed today." The table now scrolls within its own bounded height instead of
+  // spilling into a page-length list that gets silently truncated. Tall enough that roughly a
+  // dozen rows are visible at once, so it still reads as a table rather than a peephole.
+  tradeTableScroll: {
+    maxHeight: 460,
+  },
+  tradeTableFootnote: {
+    fontSize: 12,
+    color: '#6c757d',
+    paddingTop: 6,
+    fontStyle: 'italic',
+  },
 });

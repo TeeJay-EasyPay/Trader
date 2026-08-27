@@ -5,7 +5,7 @@
 
 const React = require('react');
 const { useState } = React;
-const { Text, TouchableOpacity, View } = require('react-native');
+const { ScrollView, Text, TouchableOpacity, View } = require('react-native');
 const { styles } = require('../styles');
 const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
@@ -28,6 +28,10 @@ const {
   unavailableReason,
   formatHoldingDuration,
 } = require('../lib/tradeHistory');
+
+// Enough rows that a busy day is fully reachable by scrolling, capped so one enormous day
+// cannot make the screen sluggish. The footnote below the table always states the real total.
+const MAX_TRADE_ROWS = 100;
 
 function TradeDetail({ item, onForceExit }) {
   const raw = item.raw || item.payload || {};
@@ -225,9 +229,26 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         {trades.length ? (
           <View style={styles.tradeTable}>
             <TradeHistoryHeaderRow />
-            {trades.slice(0, 20).map((item, index) => (
-              <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
-            ))}
+            {/* 2026-08-27 Founder-reported: "we run out of space, and I can't see if there were
+                any more trades placed today." The table rendered a hard slice(0, 20) inside the
+                page with no scroll of its own and no sign that anything had been cut, so on a
+                busy day the rest of the day's trades simply did not exist as far as the screen
+                was concerned. The header stays put while the rows scroll, and the count below
+                says plainly how many of how many are shown. */}
+            <ScrollView
+              style={styles.tradeTableScroll}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
+            >
+              {trades.slice(0, MAX_TRADE_ROWS).map((item, index) => (
+                <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+              ))}
+            </ScrollView>
+            <Text style={styles.tradeTableFootnote}>
+              {trades.length > MAX_TRADE_ROWS
+                ? `Showing the ${MAX_TRADE_ROWS} most recent of ${trades.length} records. Scroll within the table to see more.`
+                : `Showing all ${trades.length} record${trades.length === 1 ? '' : 's'}. Scroll within the table to see more.`}
+            </Text>
           </View>
         ) : (
           <Empty />

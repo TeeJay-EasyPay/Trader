@@ -108,20 +108,28 @@ def _count_trades_since(db_path: Path, *, broker: str, since: str) -> int:
     # covers a genuinely fresh/uninitialized database (e.g. an isolated test), matching the
     # same "missing structure means no data yet, not a hard failure" convention already
     # established across this codebase's Postgres/SQLite dual-backend call sites.
+    # 2026-08-27, Founder-reported: this said "13 share trades placed today" on a day with 6.
+    # It counted evidence ROWS, and a broker records one row per order event -- a single
+    # bracketed buy produces new/held/partial_fill/fill/filled. Including 'new' also counted
+    # the protective stop-loss and take-profit legs a bracket attaches automatically, which
+    # are not trades the app decided to place. Now counts distinct broker orders that actually
+    # filled, the one definition in trade_counting.py that every surface shares.
+    from .trade_counting import count_trades
+
     try:
         with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
+            rows = conn.execute(
                 """
-                SELECT COUNT(*) AS n FROM PRODUCTION_TRADE_EVIDENCE
+                SELECT broker_order_id, broker_trade_id, symbol, side, status, payload_json
+                FROM PRODUCTION_TRADE_EVIDENCE
                 WHERE broker = ? AND observed_at >= ?
-                  AND status IN ('submitted', 'accepted', 'new', 'filled', 'partially_filled')
                 """,
                 (broker.lower(), since),
-            ).fetchone()
+            ).fetchall()
     except sqlite3.OperationalError:
         return 0
-    return int(row["n"]) if row else 0
+    return count_trades([dict(row) for row in rows])
 
 
 def daily_trading_plan_status(db_path: Path, *, broker: str, now: datetime | None = None) -> dict[str, Any]:
@@ -148,9 +156,25 @@ def daily_trading_plan_status(db_path: Path, *, broker: str, now: datetime | Non
     trades_today = _count_trades_since(db_path, broker=broker, since=plan["created_at"])
     if plan["decision"] == "stand_aside":
         if trades_today:
+            # 2026-08-27, Founder-reported: this read "Planned to stand aside, but 13 trade(s)
+            # were recorded today -- worth reviewing" directly above a plan whose stated
+            # reasoning was that nothing passed. Two faults in one sentence.
+            #
+            # "worth reviewing" and the outcome key "plan_broken" framed an ordinary sequence
+            # as a fault. The plan is written BEFORE the market opens, when every candidate is
+            # correctly rejected for market_closed; the market then opens and intraday scans
+            # find ideas the pre-market scan could not. The plan was right when written and
+            # simply superseded -- which is what a trader does, not a malfunction. Sending the
+            # Founder off to "review" a normal day trains him to ignore the line.
+            #
+            # And the sentence never said WHY both halves were true at once, so the card read
+            # as self-contradicting: stood aside, yet traded. Saying the plan was revised
+            # intraday makes one coherent story out of two true facts.
             outcome, outcome_text = (
-                "plan_broken",
-                f"Planned to stand aside, but {trades_today} trade(s) were recorded today -- worth reviewing.",
+                "revised_intraday",
+                f"The pre-market plan was to stand aside, because nothing cleared the bar before "
+                f"the open. {trades_today} trade(s) have been placed since, as intraday scans "
+                f"found opportunities the pre-market scan could not see.",
             )
         else:
             outcome, outcome_text = ("as_planned", "Stood aside as planned -- no trades attempted today.")

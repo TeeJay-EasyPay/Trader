@@ -119,7 +119,17 @@ class DailyTradingPlanTests(unittest.TestCase):
             self.assertEqual(status["outcome"], "as_planned")
             self.assertIn("Stood aside as planned", status["outcome_plain_english"])
 
-    def test_stand_aside_plan_with_a_trade_is_flagged_as_broken(self):
+    def test_stand_aside_plan_that_later_trades_is_explained_not_alarmed_about(self):
+        """2026-08-27, Founder-reported. This used to assert outcome == "plan_broken" with the
+        text "Planned to stand aside, but N trade(s) were recorded today -- worth reviewing",
+        shown directly above the morning's reasoning that nothing had passed. The Founder read
+        the card as contradicting itself, and fairly so.
+
+        Nothing was broken. The plan is written BEFORE the open, when every candidate is
+        correctly rejected for market_closed; the market then opens and intraday scans find
+        ideas the pre-market scan could not see. Calling that a broken plan and sending the
+        Founder off to "review" it trains him to ignore the line. The outcome now says the plan
+        was revised intraday and why, which makes one coherent story out of two true facts."""
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(tmp)
             record_daily_trading_plan(
@@ -139,7 +149,37 @@ class DailyTradingPlanTests(unittest.TestCase):
 
             status = daily_trading_plan_status(settings.db_path, broker="alpaca")
 
-            self.assertEqual(status["outcome"], "plan_broken")
+            self.assertEqual(status["outcome"], "revised_intraday")
+            self.assertEqual(status["trades_today"], 1)
+            text = status["outcome_plain_english"]
+            self.assertIn("pre-market plan was to stand aside", text)
+            self.assertIn("intraday", text)
+            self.assertNotIn("worth reviewing", text)
+
+    def test_one_order_reported_over_many_status_events_counts_as_one_trade(self):
+        """The count itself: a bracketed buy arrives as new/held/partial_fill/fill/filled plus
+        two protective legs. That is one trade, not seven, and not three orders."""
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(tmp)
+            record_daily_trading_plan(
+                settings.db_path, broker="alpaca", decision="stand_aside",
+                market_assessment="Morning scan.", reasoning="Nothing passed.",
+                symbols_scanned=19, candidates_found=0,
+            )
+            for status_value in ("new", "partial_fill", "partial_fill", "fill", "filled"):
+                record_trade_evidence(
+                    settings.db_path, broker="alpaca",
+                    event={"order_id": "nee-buy", "status": status_value, "symbol": "NEE", "qty": 2, "price": 82.0},
+                )
+            # The stop-loss and take-profit legs a bracket attaches, neither of which fired.
+            for leg in ("nee-stop", "nee-target"):
+                record_trade_evidence(
+                    settings.db_path, broker="alpaca",
+                    event={"order_id": leg, "status": "held", "symbol": "NEE", "qty": 2, "price": 80.0},
+                )
+
+            status = daily_trading_plan_status(settings.db_path, broker="alpaca")
+            self.assertEqual(status["trades_today"], 1)
 
     def test_record_is_idempotent_per_broker_and_trading_day(self):
         """A retried premarket-equity job (this deployment's idempotency-key scheduling

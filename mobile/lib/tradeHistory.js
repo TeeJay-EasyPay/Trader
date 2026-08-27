@@ -231,9 +231,22 @@ function tradeHistorySummary(status, trades, selectedExchange) {
     .map((broker) => Number(broker.open_positions || 0))
     .filter(Number.isFinite)
     .reduce((sum, value) => sum + value, 0);
+  // Distinct ORDERS, not event rows. See normalizeTradeRow's orderId comment: the same
+  // completed trade arrives as several rows, so `todaysClosed.length` reported 19 on a day
+  // with 6. A row with no usable order id still counts once on its own -- under-reporting the
+  // Founder's real activity would be a worse failure than counting one row twice.
+  const completedOrderIds = new Set();
+  let unidentifiedCompleted = 0;
+  todaysClosed.forEach((item, index) => {
+    if (item.orderId) {
+      completedOrderIds.add(String(item.orderId));
+    } else {
+      unidentifiedCompleted += 1;
+    }
+  });
   return {
     dailyPnlByCurrency,
-    completedTradesToday: todaysClosed.length,
+    completedTradesToday: completedOrderIds.size + unidentifiedCompleted,
     openPositions,
   };
 }
@@ -258,6 +271,17 @@ function normalizeTradeRow(item) {
   const closedAt = firstValue(item?.closed_at, item?.exit_time, raw.closed_at, raw.closetm, raw.exit_time);
   const eventTime = firstValue(item?.created_at, item?.updated_at, item?.closed_at, item?.opened_at, raw.transaction_time, raw.time, raw.date, raw.created_at, raw.updated_at);
   return {
+    // 2026-08-27 Founder-reported: the Portfolio card said "Completed today 19" while the
+    // Briefing said 13 and the day's real answer was 6. A broker records one row per order
+    // EVENT -- a bracketed buy produces new/held/partial_fill/fill/filled -- so counting rows
+    // counts paperwork. Carrying the broker's own order id up from the payload lets the
+    // summary count orders instead. Mirrors src/ai_trader/trade_counting.py::broker_order_key,
+    // which is the same rule on the backend.
+    orderId: firstValue(
+      item?.broker_order_id, item?.order_id, item?.external_id,
+      raw.order_id, raw.orderId, raw.id, raw.txid, raw.ordertxid,
+      item?.client_order_id, raw.client_order_id
+    ),
     managedExitId: firstNumber(item?.managed_exit_id, raw.managed_exit_id),
     broker: titleCaseBroker(firstValue(item?.broker, raw.broker)),
     symbol: firstValue(item?.symbol, raw.symbol, raw.pair, raw.asset_pair, raw.instrument, descr.pair),

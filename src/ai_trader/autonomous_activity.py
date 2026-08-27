@@ -16,6 +16,7 @@ from .always_on import (
     operations_health,
 )
 from .models import utc_now_iso
+from .trade_counting import broker_order_key, count_trades
 
 
 PERIODS = {
@@ -154,8 +155,14 @@ def activity_summary(db_path: Path, *, period: str = "24h") -> dict[str, Any]:
     # what it submitted, and those same orders then appear in BROKER_TRADE_HISTORY.
     # Adding them together double counts every order that both sources saw. They are two
     # measurements of one quantity, so the honest combination is the larger, never the sum.
-    submitted = max(_sum_int(jobs, "paper_orders_submitted"),
-                    _distinct_orders(broker_trades, {"submitted", "accepted", "new"}))
+    #
+    # 2026-08-27: the row-counting half is now count_trades (trade_counting.py), the single
+    # shared definition. The old status filter here was {submitted, accepted, new}, which
+    # selected precisely the RESTING orders -- including the protective stop-loss and
+    # take-profit legs a bracket attaches by itself -- and excluded the fills that prove a
+    # trade actually happened. That is why this reported 5 while the same screen's badge said
+    # 13 and the day's real answer was 6.
+    submitted = max(_sum_int(jobs, "paper_orders_submitted"), count_trades(broker_trades))
     filled = max(_sum_int(jobs, "paper_orders_filled"),
                  _distinct_orders(broker_trades, contains="filled"))
     closed = len([row for row in broker_trades if _lower(row.get("status")) in {"closed", "target_exit", "stop_exit", "manual_exit"}])
@@ -253,14 +260,15 @@ def _distinct_orders(rows: list[dict[str, Any]], statuses: set[str] | None = Non
                 continue
         elif statuses is not None and status not in statuses:
             continue
-        # BROKER_TRADE_HISTORY names this external_id; PRODUCTION_TRADE_EVIDENCE names the
-        # same identity broker_order_id. Checking only one meant seven rows of a single FSLR
-        # purchase counted as seven orders (2026-08-25).
-        identity = str(row.get("external_id") or row.get("broker_order_id") or "").strip()
-        if identity:
-            seen.add(identity)
-        else:
+        # 2026-08-27: external_id turned out to be unique per EVENT, not per order, so this
+        # still counted 22 rows as 22 orders where the broker had issued 12. The broker's own
+        # order id lives inside payload_json; trade_counting.broker_order_key is the one place
+        # that knows where to look, and every surface now shares it.
+        identity = broker_order_key(row)
+        if identity.startswith("row:"):
             loose += 1
+        else:
+            seen.add(identity)
     return len(seen) + loose
 
 
@@ -269,8 +277,24 @@ def why_no_trade_funnel(db_path: Path, *, period: str = "24h") -> dict[str, Any]
     funnels = _period_rows(list_research_funnels(db_path, limit=500), window, "created_at")
     jobs = _period_rows(list_job_runs(db_path, limit=500), window, "started_at", fallback_key="scheduled_for")
     broker_rows = _period_rows(_sqlite_rows(db_path, "BROKER_TRADE_HISTORY", "updated_at", 500), window, "updated_at")
-    submitted = _sum_int(funnels, "submitted") + _sum_int(jobs, "paper_orders_submitted")
-    filled = _sum_int(funnels, "filled") + _sum_int(jobs, "paper_orders_filled")
+    # 2026-08-27, Founder-reported: this said "24 orders were actually submitted" on a day the
+    # app placed 6 trades, sitting on the same screen as a badge that said 13. Two faults, both
+    # already diagnosed for activity_summary above but never applied here.
+    #
+    # These two sources OVERLAP -- paper_orders_submitted is the job's own tally of what it
+    # submitted, and those same orders then appear in the broker history -- so adding them
+    # double counts every order both sources saw. They are two measurements of one quantity, so
+    # the honest combination is the larger, never the sum.
+    #
+    # And what the Founder reads as "submitted" is trades the app decided to place, not the
+    # protective stop-loss and take-profit legs a bracket attaches by itself. count_trades is
+    # the one shared definition (trade_counting.py) every surface now reports.
+    submitted = max(
+        _sum_int(jobs, "paper_orders_submitted"),
+        _sum_int(funnels, "submitted"),
+        count_trades(broker_rows),
+    )
+    filled = max(_sum_int(jobs, "paper_orders_filled"), _sum_int(funnels, "filled"))
     completed = len([row for row in broker_rows if _lower(row.get("status")) in {"closed", "target_exit", "stop_exit", "manual_exit"}])
     assets = _sum_int(funnels, "symbols_examined")
     candidates = _sum_int(funnels, "interesting_ideas")
