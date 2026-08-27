@@ -86,15 +86,20 @@ function TradeDetail({ item, onForceExit }) {
 // five-column summary row was never meant to replace.
 function TradeHistoryHeaderRow() {
   return (
+    // 2026-08-27, seen on the emulator: the header cells were the only ones in the table
+    // WITHOUT numberOfLines/adjustsFontSizeToFit, so where a data cell shrinks to fit its
+    // column a header instead wrapped mid-word -- "AMOUN/T" and "CO/MM %" stacked over three
+    // lines, which is unreadable and made the columns look misaligned with their values.
+    // Headers now shrink exactly like the values beneath them.
     <View style={styles.tradeTableHeaderRow}>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellDate]}>Date</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSymbol]}>Symbol</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSide]}>Side</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPrice, styles.tradeTableCellTextRight]}>Price</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellAmount, styles.tradeTableCellTextRight]}>Amount</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommissionPct, styles.tradeTableCellTextRight]}>Comm %</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommission, styles.tradeTableCellTextRight]}>Comm</Text>
-      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPnl, styles.tradeTableCellTextRight]}>P&L</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellDate]} numberOfLines={1} adjustsFontSizeToFit>Date</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSymbol]} numberOfLines={1} adjustsFontSizeToFit>Symbol</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellSide]} numberOfLines={1} adjustsFontSizeToFit>Side</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPrice, styles.tradeTableCellTextRight]} numberOfLines={1} adjustsFontSizeToFit>Price</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellAmount, styles.tradeTableCellTextRight]} numberOfLines={1} adjustsFontSizeToFit>Amount</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommissionPct, styles.tradeTableCellTextRight]} numberOfLines={1} adjustsFontSizeToFit>Comm %</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellCommission, styles.tradeTableCellTextRight]} numberOfLines={1} adjustsFontSizeToFit>Comm</Text>
+      <Text style={[styles.tradeTableHeaderText, styles.tradeTableCellPnl, styles.tradeTableCellTextRight]} numberOfLines={1} adjustsFontSizeToFit>P&L</Text>
     </View>
   );
 }
