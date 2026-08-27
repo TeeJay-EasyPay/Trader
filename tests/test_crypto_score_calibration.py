@@ -160,5 +160,61 @@ class MeasuredOnlyAverageTests(unittest.TestCase):
         self.assertGreaterEqual(excellent, 0.85)
 
 
+
+class StablecoinExclusionTests(unittest.TestCase):
+    """2026-08-27, Founder-directed: "stable coins should not be part of the analysis for
+    trading."
+
+    They were scoring 0.75 and ranking third in the universe. Not a fault in the maths -- the
+    maths was right and the asset is wrong. A stablecoin is engineered to hold one price, so it
+    earns a near-perfect risk score (volatility ~0) and a near-perfect liquidity score (it is
+    what everything else trades against), with trend and momentum pinned at neutral because it
+    never moves. There is no rally to catch; the best outcome of buying one is your money back
+    minus 1.6% in round-trip fees.
+    """
+
+    def test_the_major_pegged_assets_are_excluded(self):
+        from ai_trader.operational import is_stablecoin
+
+        for symbol in ("USDT", "USDC", "DAI", "BUSD", "PYUSD", "FDUSD", "EURC"):
+            self.assertTrue(is_stablecoin(symbol), symbol)
+
+    def test_real_tradeable_coins_are_untouched(self):
+        from ai_trader.operational import is_stablecoin
+
+        for symbol in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LINK", "TAO"):
+            self.assertFalse(is_stablecoin(symbol), symbol)
+
+    def test_an_asset_pegged_to_a_volatile_thing_is_still_tradeable(self):
+        """WBTC tracks Bitcoin, moves with it, and has a rally to catch. Only
+        currency-pegged assets are excluded."""
+        from ai_trader.operational import is_stablecoin
+
+        self.assertFalse(is_stablecoin("WBTC"))
+        self.assertFalse(is_stablecoin("STETH"))
+
+    def test_pair_and_case_forms_are_recognised(self):
+        """The universe uses bare symbols, Kraken uses pairs, and casing varies by source."""
+        from ai_trader.operational import is_stablecoin
+
+        for symbol in ("USDTGBP", "usdc", "USDC/USD", "usdt-usd"):
+            self.assertTrue(is_stablecoin(symbol), symbol)
+
+    def test_empty_or_missing_input_is_not_treated_as_a_stablecoin(self):
+        from ai_trader.operational import is_stablecoin
+
+        for value in (None, "", "   "):
+            self.assertFalse(is_stablecoin(value))
+
+    def test_the_kraken_scoring_path_skips_them(self):
+        from ai_trader.operational import record_crypto_scores_from_kraken_candles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.db"
+            initialize_multi_broker_schema(db_path)
+            result = record_crypto_scores_from_kraken_candles(db_path, symbols=["USDT", "USDC"])
+            self.assertEqual(result["scored"], 0)
+            self.assertEqual(result.get("symbols_scored", []), [])
+
 if __name__ == "__main__":
     unittest.main()

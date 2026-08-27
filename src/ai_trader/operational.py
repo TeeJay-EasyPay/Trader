@@ -387,6 +387,11 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
                 with urlopen(url, timeout=20) as response:
                     raw = json.loads(response.read().decode("utf-8"))
                 for row in raw:
+                    # Founder-directed 2026-08-27: a currency-pegged asset has no move to
+                    # catch, so it is kept out of the universe entirely rather than scored and
+                    # then filtered downstream.
+                    if is_stablecoin(row.get("symbol")):
+                        continue
                     assets.append(_crypto_row(row, category_label, "CoinGecko public markets API"))
                     market_rows.append(row)
             source = "CoinGecko public markets API"
@@ -633,6 +638,46 @@ def _pct_to_unit_score(pct: float | None, full_scale_pct: float = 100.0) -> floa
     return round(max(0.0, min(1.0, 0.5 + (float(pct) / (2.0 * scale)))), 4)
 
 
+# Currency-pegged assets. 2026-08-27, Founder-directed: "stable coins should not be part of
+# the analysis for trading."
+#
+# They were scoring 0.75 and ranking third in the universe -- not through any fault in the
+# maths, but because the maths was right and the asset is wrong. A stablecoin is engineered to
+# hold one price, so it earns a near-perfect risk score (volatility ~0) and a near-perfect
+# liquidity score (enormous turnover, since it is what everything else is traded against). Two
+# of five metrics maxed by design, with a trend and momentum permanently pinned at neutral
+# because it never moves. There is no rally to catch: the best possible outcome of buying one
+# is to get your money back minus 1.6% in round-trip fees.
+#
+# Excluded at the point of scoring rather than filtered later, so they never enter a
+# recommendation, a ranking or a research score in the first place.
+#
+# Deliberately only currency-pegged assets. WBTC and similar are pegged to a VOLATILE asset,
+# move with it, and are legitimately tradeable.
+STABLECOIN_SYMBOLS = frozenset({
+    "USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "USDD", "FDUSD", "PYUSD", "GUSD",
+    "FRAX", "LUSD", "USDE", "USDS", "SUSD", "USDY", "RLUSD", "EURC", "EURT", "EURS",
+    "GYEN", "XSGD", "USTC", "USDG",
+})
+
+
+def is_stablecoin(symbol: Any) -> bool:
+    """Whether this asset is pegged to a currency and so has no move worth trading.
+
+    Tolerates the pair forms the various sources use (USDTGBP, USDC/USD) as well as the bare
+    symbol, since this is called from both the CoinGecko universe and the Kraken candle path.
+    """
+    text = str(symbol or "").upper().strip().replace("/", "").replace("-", "")
+    if not text:
+        return False
+    if text in STABLECOIN_SYMBOLS:
+        return True
+    for quote in ("GBP", "USD", "EUR", "USDT", "USDC"):
+        if text.endswith(quote) and text[: -len(quote)] in STABLECOIN_SYMBOLS:
+            return True
+    return False
+
+
 # Turnover (24h volume / market cap) that marks the ends of the useful range. Below the floor
 # a position is genuinely hard to enter and leave; above the ceiling extra turnover tells you
 # nothing more about whether a move can be sustained.
@@ -871,7 +916,11 @@ def record_crypto_scores_from_kraken_candles(
     from .market_intelligence_platform import load_recent_observations_batch
     from .multi_broker import record_crypto_research_score
 
-    targets = [str(symbol).upper() for symbol in (symbols or _active_crypto_symbols(db_path, limit=limit))]
+    targets = [
+        str(symbol).upper()
+        for symbol in (symbols or _active_crypto_symbols(db_path, limit=limit))
+        if not is_stablecoin(symbol)
+    ]
     if not targets:
         return {"scored": 0, "skipped": 0, "source": KRAKEN_CANDLE_SOURCE, "notes": "No active crypto symbols to score."}
 
