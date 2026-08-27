@@ -819,6 +819,11 @@ class ResearchService:
                 "proposal_count": len(proposals),
                 "auto_execution": auto_execution,
                 "thresholds_in_force": {
+                    # MIN_CONFIDENCE_SCORE first: it is the hardest gate (guardrails reject
+                    # outright below it), it is the one that was set to 0.85 in the hosting
+                    # environment while the code default said 0.65, and it is therefore the one
+                    # most worth being able to read back rather than assume.
+                    "min_confidence_score": self.settings.guardrails.min_confidence_score,
                     "min_confidence": self.settings.auto_trade.min_confidence,
                     "min_philosophy_fit": self.settings.auto_trade.min_philosophy_fit,
                     "crypto_risk_per_trade_pct": self.settings.auto_trade.crypto_risk_per_trade_pct,
