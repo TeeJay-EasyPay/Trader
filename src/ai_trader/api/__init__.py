@@ -2859,13 +2859,6 @@ def _kraken_candidate_pairs(assets: list[str]) -> list[str]:
     return [pair for pair in dict.fromkeys(pairs) if pair]
 
 
-def _kraken_pair_price(adapter: Any, pair: str) -> float | None:
-    try:
-        return _kraken_last_price(adapter.current_prices([pair]), pair)
-    except Exception:
-        return None
-
-
 def _kraken_asset_symbol(asset: str) -> str:
     normalized = str(asset or "").upper()
     aliases = {

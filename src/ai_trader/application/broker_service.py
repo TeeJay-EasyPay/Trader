@@ -240,7 +240,7 @@ class BrokerService:
       api/__init__.py too (same pattern research_service.py already established).
     - `kraken_balance_summary_lookup` is `_kraken_balance_summary` -- the Kraken wallet
       valuation/pricing pipeline (`_kraken_gbp_cash`/`_kraken_asset_gbp_price`/
-      `_kraken_usd_to_gbp`/`_kraken_pair_price`/`_kraken_asset_symbol`/
+      `_kraken_usd_to_gbp`/`_kraken_asset_symbol`/
       `_kraken_trading_allocation_gbp`). This entire pricing subsystem was deliberately
       NOT moved or duplicated: `_kraken_trading_allocation_gbp` is the same safety-critical
       Kraken AI capital-sleeve isolation function Phase 5 already established must keep

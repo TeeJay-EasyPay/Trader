@@ -48,17 +48,6 @@ function operationalRollup({ operatingState, plainEnglish, liveWorker, brokerPan
   return { ...base, level: 'Normal', reason: plainEnglish || 'All systems operating normally.' };
 }
 
-function operationalLevelTone(level) {
-  if (level === 'Normal') return 'good';
-  if (level === 'Blocked' || level === 'Degraded') return 'warn';
-  if (level === 'Critical') return 'danger';
-  return 'neutral';
-}
-
-// One derived readiness label per broker, used by Command, Broker Panels, Portfolio, and
-// Activity so the same broker never reads "Enabled" on one screen and "Disabled" on another.
-// Never says "Disabled" when the DB control is actually enabled, and never says "Healthy"/
-// "Ready" merely because a connection exists.
 function brokerOverallReadiness(broker) {
   if (!broker) {
     return { label: 'Data Unavailable', tone: 'neutral', newEntriesAllowed: null };
@@ -117,128 +106,6 @@ function krakenWholeAccountNote(broker) {
 // Activity screen: grouping, collapsing, and Founder-facing framing
 // ---------------------------------------------------------------------------
 
-const ACTIVITY_CATEGORY_ORDER = [
-  'Research',
-  'Recommendations',
-  'Decisions',
-  'Trades',
-  'Portfolio',
-  'Broker Operations',
-  'Learning',
-  'System Health',
-  'Founder Actions',
-];
-
-// Backend timeline items (_timeline() in production_evidence.py) only carry four raw
-// categories: Research, Execution, Learning, System (everything else, keyed by job_name in the
-// title). Job names are pattern-matched here to place worker-job events into the finer
-// Founder-facing taxonomy without requiring a backend schema change.
-const JOB_NAME_CATEGORY_PATTERNS = [
-  [/auto-execution/, 'Recommendations'],
-  [/broker-poll/, 'Broker Operations'],
-  [/reconcil/, 'Broker Operations'],
-  [/managed-exits/, 'Portfolio'],
-  [/evidence-snapshot/, 'System Health'],
-  [/push-dispatch/, 'Founder Actions'],
-  [/strategy-lab/, 'Learning'],
-  [/report/, 'Founder Actions'],
-];
-
-function activityCategoryFor(item) {
-  const backendCategory = item?.category;
-  if (backendCategory === 'Research') return 'Research';
-  if (backendCategory === 'Execution') return 'Trades';
-  if (backendCategory === 'Learning') return 'Learning';
-  const title = String(item?.title || '').toLowerCase();
-  const match = JOB_NAME_CATEGORY_PATTERNS.find(([pattern]) => pattern.test(title));
-  return match ? match[1] : 'System Health';
-}
-
-function activitySeverityRequiresAttention(item) {
-  const outcome = String(item?.outcome || '').toLowerCase();
-  return item?.severity === 'failure' || outcome.includes('timed_out') || outcome.includes('failed');
-}
-
-// One line answering what/why/outcome/action-required for a (possibly collapsed) event.
-function describeActivityEvent(item, category) {
-  const actionRequired = activitySeverityRequiresAttention(item);
-  const why = {
-    Research: 'Research evidence is what feeds new recommendations; a gap here means fewer or no fresh ideas.',
-    Recommendations: 'Auto-execution is the only path a recommendation can become a trade through.',
-    Decisions: 'Governance decisions are the final gate before any capital is committed.',
-    Trades: 'This is a confirmed broker order or fill event.',
-    Portfolio: 'Managed-exit checks are what close AI-managed positions on stop-loss/take-profit.',
-    'Broker Operations': 'Broker polling and reconciliation are what keep position and order truth current.',
-    Learning: 'Learning only runs after a trade is terminal and reconciled.',
-    'System Health': 'This is worker/job infrastructure evidence, not a trading outcome by itself.',
-    'Founder Actions': 'This is evidence sent toward the Founder (e.g. a push notification), not a Founder-initiated command.',
-  }[category] || 'Operational evidence.';
-  return {
-    what: item?.title || 'Unnamed event',
-    why,
-    outcome: item?.outcome || item?.summary || 'No outcome recorded.',
-    actionRequired,
-  };
-}
-
-// Groups raw timeline items into the 9 Founder-facing categories, filters to the given cutoff,
-// and collapses repeated identical titles (e.g. "auto-execution-alpaca completed_no_action"
-// appearing on every worker cycle) into one line with a count and the latest occurrence -
-// matching the "Auto execution completed with no eligible action x18" example in the spec.
-function groupActivity(items, { sinceIso } = {}) {
-  const cutoffMs = sinceIso ? new Date(sinceIso).getTime() : null;
-  const filtered = (items || []).filter((item) => {
-    if (cutoffMs === null) return true;
-    const timeMs = item?.timestamp ? new Date(item.timestamp).getTime() : NaN;
-    return Number.isNaN(timeMs) ? true : timeMs >= cutoffMs;
-  });
-
-  const buckets = {};
-  for (const item of filtered) {
-    const category = activityCategoryFor(item);
-    const key = String(item.title || 'Unknown event');
-    buckets[category] = buckets[category] || {};
-    const existing = buckets[category][key];
-    if (!existing) {
-      buckets[category][key] = { item, count: 1, latestAt: item.timestamp };
-    } else {
-      existing.count += 1;
-      if (!existing.latestAt || (item.timestamp && new Date(item.timestamp) > new Date(existing.latestAt))) {
-        existing.latestAt = item.timestamp;
-        existing.item = item;
-      }
-    }
-  }
-
-  return ACTIVITY_CATEGORY_ORDER.map((category) => {
-    const grouped = Object.values(buckets[category] || {}).sort(
-      (a, b) => new Date(b.latestAt || 0).getTime() - new Date(a.latestAt || 0).getTime()
-    );
-    const events = grouped.map((entry) => ({
-      ...describeActivityEvent(entry.item, category),
-      count: entry.count,
-      latestAt: entry.latestAt,
-      broker: entry.item.broker || null,
-      symbol: entry.item.symbol || null,
-      raw: entry.item,
-    }));
-    return {
-      category,
-      totalCount: events.reduce((sum, event) => sum + event.count, 0),
-      requiresAttention: events.some((event) => event.actionRequired),
-      events,
-    };
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Portfolio screen: AI-managed vs manual holdings
-// ---------------------------------------------------------------------------
-
-// A raw broker position is only ever labelled AI-managed when it has an explicit, open
-// MANAGED_TRADE_EXITS row for the same symbol - the AI's own tracked entry/exit record. There
-// is no heuristic fallback: if there is no managed-exit row, the position is presented as a
-// plain holding, never guessed to be AI-managed.
 function positionOwnership(position, managedExits) {
   const symbol = String(position?.symbol || '').toUpperCase();
   const match = (managedExits || []).find((exit) => String(exit.symbol || '').toUpperCase() === symbol && exit.status === 'open');
@@ -313,45 +180,6 @@ function learningSummary(evidence) {
 // rather than colocated in a single screen file - see architecture/ARCHITECTURE_DELTA.md)
 // ---------------------------------------------------------------------------
 
-function activityStatusTone(state) {
-  const text = String(state || '').toLowerCase();
-  if (text.includes('normal')) {
-    return 'good';
-  }
-  if (text.includes('warning') || text.includes('partial') || text.includes('unknown')) {
-    return 'warn';
-  }
-  if (text.includes('blocked') || text.includes('not operating')) {
-    return 'danger';
-  }
-  return 'neutral';
-}
-
-function activitySeverityTone(severity) {
-  const text = String(severity || '').toLowerCase();
-  if (text === 'success' || text === 'recovered') {
-    return 'good';
-  }
-  if (text === 'warning' || text === 'blocked') {
-    return 'warn';
-  }
-  if (text === 'failure' || text === 'failed' || text === 'error') {
-    return 'danger';
-  }
-  return 'neutral';
-}
-
-function noTradeTone(state) {
-  const text = String(state || '').toLowerCase();
-  if (text.includes('submitted') || text.includes('completed')) {
-    return 'good';
-  }
-  if (text.includes('did_not_run') || text.includes('not_submitted')) {
-    return 'warn';
-  }
-  return 'neutral';
-}
-
 function yesNo(value) {
   if (value === null || value === undefined) {
     return null;
@@ -370,60 +198,11 @@ function connectedFounderBrokers(brokers) {
   return (brokers || []).filter((item) => ['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()));
 }
 
-function futureBrokerPanels(brokers) {
-  return (brokers || [])
-    .filter((item) => !['alpaca', 'kraken'].includes(String(item.broker || '').toLowerCase()))
-    .map((item) => ({
-      broker: item.broker,
-      label: item.label || item.broker,
-      status: item.connection_status || item.source || 'Not connected',
-    }));
-}
-
-function formatUnavailableReasons(items) {
-  if (!items || !items.length) {
-    return 'No explained missing values currently require attention.';
-  }
-  return items.slice(0, 5).map((item) => `${item.field}: ${item.why} Required: ${item.required}`).join('\n');
-}
-
 function formatReconciliation(items) {
   if (!items || !items.length) {
     return 'Awaiting broker reconciliation - no reconciliation run has been recorded yet.';
   }
   return items.slice(0, 5).map((item) => `${item.broker}: ${item.status}. ${item.summary}`).join('\n');
-}
-
-function summaryTone(value) {
-  const text = String(value || '').toLowerCase();
-  if (text.includes('no action')) return 'good';
-  if (text.includes('review')) return 'warn';
-  if (text.includes('issue') || text.includes('unsuitable')) return 'danger';
-  return 'neutral';
-}
-
-function operationsTone(operations) {
-  const text = String(operations?.overall || operations?.plain_english || '').toLowerCase();
-  if (text.includes('healthy') || text.includes('persisted research')) return 'good';
-  if (text.includes('attention') || text.includes('incident') || text.includes('stale')) return 'danger';
-  return 'warn';
-}
-
-function latestJobTime(jobs, jobName) {
-  const row = (jobs || []).find((item) => item.job_name === jobName);
-  return row ? formatDateTime(row.completed_at || row.started_at || row.scheduled_for) : explainMissing(jobName, 'no durable job-run record has been returned yet');
-}
-
-function sumRecentJobs(jobs, key) {
-  const total = (jobs || []).reduce((sum, item) => sum + Number(item?.[key] || 0), 0);
-  return Number.isFinite(total) ? total : 0;
-}
-
-function operationsIncidentText(items) {
-  if (!items || !items.length) {
-    return 'No open operations incidents recorded.';
-  }
-  return items.slice(0, 5).map((item) => `${item.severity || 'issue'}: ${item.title || item.message}`).join('\n');
 }
 
 function riskTone(value) {
@@ -461,31 +240,16 @@ function formatRawKrakenBalances(items) {
 
 module.exports = {
   operationalRollup,
-  operationalLevelTone,
   brokerOverallReadiness,
   brokerReadinessSentence,
   krakenWholeAccountNote,
-  ACTIVITY_CATEGORY_ORDER,
-  activityCategoryFor,
-  describeActivityEvent,
-  groupActivity,
   positionOwnership,
   portfolioHeadline,
   learningSummary,
-  activityStatusTone,
-  activitySeverityTone,
-  noTradeTone,
   yesNo,
   enabledDisabled,
   connectedFounderBrokers,
-  futureBrokerPanels,
-  formatUnavailableReasons,
   formatReconciliation,
-  summaryTone,
-  operationsTone,
-  latestJobTime,
-  sumRecentJobs,
-  operationsIncidentText,
   riskTone,
   formatKrakenAssets,
   formatRawKrakenBalances,
