@@ -200,3 +200,62 @@ class TradeEvidenceSymbolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KrakenOpenTimeTests(unittest.TestCase):
+    """2026-08-27, Founder-reported as "why are trades on kraken all coming in at around GBP 2
+    today?". They were not today's and were not the AI's -- the Founder's own orders from
+    10-13 August, ingested in a reconciliation sweep on the 26th. Kraken names an order's open
+    time `opentm`, not `opened_at`, so it read None and readers fell back to observed_at, the
+    moment the app first SAW the order."""
+
+    def setUp(self):
+        from ai_trader.production_evidence import initialize_production_evidence_schema
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+        initialize_production_evidence_schema(self.db_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_krakens_opentm_becomes_the_orders_open_time(self):
+        from ai_trader.production_evidence import _trade_evidence_values
+
+        values = _trade_evidence_values("kraken", KRAKEN_ORDER)
+        # 1787698356.883816 is 2026-08-24; the point is that SOME real date is recorded
+        # rather than None, which is what forced the fallback to ingestion time.
+        opened = [v for v in values if isinstance(v, str) and v.startswith("2026-")]
+        self.assertTrue(opened, f"expected an ISO open time in {values}")
+
+    def test_backfill_recovers_the_real_time_and_is_idempotent(self):
+        from ai_trader.production_evidence import backfill_trade_evidence_open_times
+
+        with closing(connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO PRODUCTION_TRADE_EVIDENCE (idempotency_key, observed_at, broker,"
+                    " status, opened_at, payload_json) VALUES ('k9', '2026-08-26T23:05:00Z',"
+                    " 'kraken', 'closed', NULL, ?)",
+                    (json.dumps({"order_id": "OLD-1", "opentm": 1786400000.0, "descr": {"pair": "XRPGBP", "type": "buy"}}),),
+                )
+        first = backfill_trade_evidence_open_times(self.db_path)
+        self.assertEqual(first["open_times_set"], 1)
+        with closing(connect(self.db_path)) as conn:
+            opened = conn.execute("SELECT opened_at FROM PRODUCTION_TRADE_EVIDENCE").fetchone()[0]
+        self.assertTrue(str(opened).startswith("2026-08-"), opened)
+        # The whole point: the real order time must NOT be the ingestion time.
+        self.assertNotEqual(str(opened)[:10], "2026-08-26")
+        self.assertEqual(backfill_trade_evidence_open_times(self.db_path)["open_times_set"], 0)
+
+    def test_a_payload_with_no_time_at_all_is_left_alone(self):
+        from ai_trader.production_evidence import backfill_trade_evidence_open_times
+
+        with closing(connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO PRODUCTION_TRADE_EVIDENCE (idempotency_key, observed_at, broker,"
+                    " status, opened_at, payload_json) VALUES ('k10', '2026-08-26', 'kraken',"
+                    " 'closed', NULL, '{\"order_id\": \"X\"}')"
+                )
+        self.assertEqual(backfill_trade_evidence_open_times(self.db_path)["open_times_set"], 0)

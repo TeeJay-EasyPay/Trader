@@ -559,8 +559,15 @@ def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...
         str(symbol).upper() if symbol else None, side, status, quantity, price,
         _number(_first(event, "filled_avg_price", "average_price", "avg_price")),
         _number(_first(event, "fee", "fees", "commission")), _number(_first(event, "realized_pnl", "pnl", "profit_loss")),
-        _normalize_broker_timestamp(_first(event, "opened_at", "created_at")),
-        _normalize_broker_timestamp(_first(event, "closed_at", "filled_at")),
+        # 2026-08-27, Founder-reported as "why are trades on kraken all coming in at around
+        # GBP 2 today?". They were not today's trades and were not the AI's: they were the
+        # Founder's own Kraken orders from 10-13 August, ingested in a reconciliation sweep on
+        # the 26th. Kraken names an order's open time `opentm` (epoch seconds), not `opened_at`
+        # or `created_at`, so this read None and every reader fell back to observed_at -- the
+        # moment the app first SAW the order. Two-week-old orders therefore displayed as
+        # today's, inflating "trades today" and making the day look full of tiny trades.
+        _normalize_broker_timestamp(_first(event, "opened_at", "created_at", "opentm", "time")),
+        _normalize_broker_timestamp(_first(event, "closed_at", "filled_at", "closetm")),
         event.get("entry_reason"), event.get("exit_reason"), _json(event),
     )
 
@@ -2116,6 +2123,46 @@ def backfill_trade_evidence_symbols(db_path: Path, *, broker: str = "kraken") ->
             with conn:
                 conn.executemany(
                     "UPDATE PRODUCTION_TRADE_EVIDENCE SET symbol = ?, side = ? WHERE trade_evidence_id = ?",
+                    updates,
+                )
+    return outcome
+
+
+def backfill_trade_evidence_open_times(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
+    """Recover each order's real open time from the payload where opened_at is missing.
+
+    2026-08-27: Kraken names it `opentm`, not `opened_at`, so it was never read and every
+    reader fell back to observed_at -- the moment the app first saw the order. The Founder's
+    own orders from 10-13 August, ingested in a reconciliation sweep on the 26th, therefore
+    appeared in the app as today's trades. The real time was in payload_json all along.
+    """
+    initialize_production_evidence_schema(db_path)
+    outcome = {"examined": 0, "open_times_set": 0}
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT trade_evidence_id, payload_json FROM PRODUCTION_TRADE_EVIDENCE "
+            "WHERE broker = ? AND (opened_at IS NULL OR opened_at = '')",
+            (broker.lower(),),
+        ).fetchall()
+        updates: list[tuple[Any, ...]] = []
+        for row in rows:
+            outcome["examined"] += 1
+            try:
+                payload = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            opened = _normalize_broker_timestamp(
+                _first(payload, "opened_at", "created_at", "opentm", "time")
+            )
+            if opened:
+                outcome["open_times_set"] += 1
+                updates.append((opened, row[0]))
+        if updates:
+            with conn:
+                conn.executemany(
+                    "UPDATE PRODUCTION_TRADE_EVIDENCE SET opened_at = ? WHERE trade_evidence_id = ?",
                     updates,
                 )
     return outcome

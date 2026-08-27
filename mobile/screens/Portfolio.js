@@ -26,6 +26,7 @@ const {
   normalizeTradeRow,
   isOpenTrade,
   unavailableReason,
+  commissionExplanation,
   formatHoldingDuration,
 } = require('../lib/tradeHistory');
 
@@ -51,6 +52,10 @@ function TradeDetail({ item, onForceExit }) {
       <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice) || unavailableReason(normalized, 'current')} />
       <Metric label="Stop Loss" value={tradeMoney(normalized.stopLoss) || unavailableReason(normalized, 'stop')} />
       <Metric label="Exit Price" value={isOpen ? 'Unsold' : tradeMoney(normalized.exitPrice)} />
+      {/* 2026-08-27 Founder-reported blank commission cells. The table column is only wide
+          enough for a number, where "0.00" and "we do not know" look identical and mean
+          opposite things -- so the reason lives here, where there is room to say it. */}
+      <TextBlock label="Commission" value={commissionExplanation(normalized)} />
       <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
       <Metric label="Entry Date & Time" value={formatDateTime(normalized.openedAt)} />
       <Metric label="Exit Date & Time" value={isOpen ? 'Unsold' : formatDateTime(normalized.closedAt)} />

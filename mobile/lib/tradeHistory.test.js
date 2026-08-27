@@ -28,6 +28,7 @@ const {
   sameTrade,
   transactionRank,
   tradeTableRow,
+  commissionExplanation,
 } = require('./tradeHistory');
 
 let passed = 0;
@@ -405,8 +406,14 @@ test('tradeTableRow: a missing fee shows a compact dash in both commission colum
   // ("very small text instead of any values"). The dash keeps the cell legible; the full
   // explanation is still one tap away in TradeDetail. What must NOT happen is a 0 that
   // reads as "this trade was free".
+  //
+  // 2026-08-27: this case used to use Alpaca purely as a stand-in for "some broker with no
+  // fee on the row". Alpaca no longer fits, because its fee is now known rather than missing --
+  // checked against the live API, it charges no per-trade commission on US equities, so a
+  // genuine 0.00 is the honest answer there. The rule this test exists for is unchanged and
+  // still enforced, using a broker whose fee really is unrecorded.
   const row = tradeTableRow({
-    broker: 'alpaca', symbol: 'AAPL', side: 'sell', status: 'closed',
+    broker: 'coinbase', symbol: 'BTC', side: 'sell', status: 'closed',
     quantity: 10, exit_price: 100, profit_loss: 45, closed_at: '2026-08-21T07:49:34Z',
   });
   assert.strictEqual(row.commissionPctText, '-');
@@ -471,4 +478,54 @@ test('a completed row carrying no order id is still counted once rather than dro
   });
   const summary = tradeHistorySummary({ brokers: [] }, [bare('AAA'), bare('BBB')], 'all');
   assert.strictEqual(summary.completedTradesToday, 2);
+});
+
+// 2026-08-27 Founder-reported: "blank spaces in the trade history card where the commission
+// for maker and taker should sit." Every Alpaca row showed a dash.
+//
+// Verified against the live Alpaca API rather than assumed: a FILL activity carries no
+// commission field at all, because Alpaca charges no per-trade commission on US equities. A
+// dash means "we do not know", which was the wrong answer to a question that has a real one --
+// and it hid a genuine advantage Alpaca has over Kraken's 0.80% per side.
+test('a commission-free broker shows a real zero, not a dash that means unknown', () => {
+  const row = tradeTableRow({
+    broker: 'alpaca', symbol: 'NEE', side: 'sell', status: 'closed',
+    price: 82.87, position_size: 21, exit_price: 82.87, profit_loss: -18.69,
+    closed_at: '2026-08-27T14:37:00Z',
+  });
+  assert.strictEqual(row.commissionPctText, '0.00%');
+  assert.notStrictEqual(row.commissionText, '-');
+  assert.ok(/0/.test(row.commissionText), `expected a zero amount, got ${row.commissionText}`);
+});
+
+test('Kraken keeps its real fee and is never zeroed', () => {
+  // Kraken charges a genuine 0.40%/0.80% maker/taker fee. Showing zero there would be a lie
+  // about money, which is why the commission-free list is an explicit allow-list.
+  const row = tradeTableRow({
+    broker: 'kraken', symbol: 'XRPGBP', side: 'buy', status: 'filled',
+    price: 0.75, position_size: 2.65, fee: 0.02, opened_at: '2026-08-27T00:05:00Z',
+  });
+  assert.ok(row.commissionText.includes('0.02'), row.commissionText);
+  assert.notStrictEqual(row.commissionPctText, '0.00%');
+});
+
+test('an unknown broker with no fee still shows a dash rather than inventing a zero', () => {
+  const row = tradeTableRow({
+    broker: 'coinbase', symbol: 'BTC', side: 'buy', status: 'filled',
+    price: 100, position_size: 1, opened_at: '2026-08-27T00:05:00Z',
+  });
+  assert.strictEqual(row.commissionText, '-');
+  assert.strictEqual(row.commissionPctText, '-');
+});
+
+test('the detail view explains a zero commission instead of leaving it bare', () => {
+  const text = commissionExplanation(normalizeTradeRow({ broker: 'alpaca', symbol: 'NEE', side: 'sell' }));
+  assert.ok(/no per-trade commission/i.test(text), text);
+  assert.ok(/regulatory/i.test(text), 'must still disclose the fees Alpaca does charge');
+});
+
+test('the detail view reports a real fee plainly, with no explanation needed', () => {
+  const text = commissionExplanation(normalizeTradeRow({ broker: 'kraken', symbol: 'XRPGBP', side: 'buy', fee: 0.02 }));
+  assert.ok(text.includes('0.02'), text);
+  assert.ok(!/no per-trade commission/i.test(text));
 });

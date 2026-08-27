@@ -340,6 +340,22 @@ function unavailableReason(item, field) {
   return 'Not recorded';
 }
 
+// The commission line for TradeDetail. The table cell has room for a number only; this is
+// where the Founder gets the reason behind it, which matters because "0.00" and "we do not
+// know" look identical in a 40px column and mean opposite things.
+function commissionExplanation(normalized) {
+  const fee = normalized?.fee;
+  if (fee !== null && fee !== undefined) {
+    return historyMoneyOrText(normalized.broker, fee);
+  }
+  if (isCommissionFreePerTrade(normalized?.broker)) {
+    return `${historyMoneyOrText(normalized.broker, 0)} - this broker charges no per-trade `
+      + 'commission on US shares. Regulatory fees (SEC, TAF, CAT) are billed daily against the '
+      + 'account for that day of trading as a whole, so they cannot be attributed to one trade here.';
+  }
+  return 'Not recorded by the broker for this row';
+}
+
 function firstValue(...values) {
   return values.find((value) => value !== null && value !== undefined && value !== '');
 }
@@ -451,15 +467,44 @@ function describeTransaction(item) {
 // (symbol/side) keep the sentence, since they are wide enough to read it.
 const MISSING_NUMERIC_CELL = '-';
 
+// Brokers that charge no per-trade commission, verified against their live API rather than
+// assumed. Alpaca US equities: a FILL activity carries no commission field at all, and its
+// regulatory fees are billed daily at account level rather than against any one trade.
+// Kraken deliberately absent -- it charges a real 0.40%/0.80% maker/taker fee per trade, and
+// showing a zero there would be a lie about money.
+const COMMISSION_FREE_PER_TRADE = new Set(['alpaca']);
+
+function isCommissionFreePerTrade(broker) {
+  return COMMISSION_FREE_PER_TRADE.has(String(broker || '').trim().toLowerCase());
+}
+
+
 function tradeTableRow(item) {
   const normalized = normalizeTradeRow(item);
   const isOpen = isOpenTrade(normalized);
   const priceValue = isOpen ? normalized.entryPrice : (normalized.exitPrice ?? normalized.price ?? normalized.entryPrice);
   const pnlValue = normalized.profitLoss;
   const hasPnl = !isOpen && pnlValue !== null && pnlValue !== undefined;
-  const hasFee = normalized.fee !== null && normalized.fee !== undefined;
+  // 2026-08-27 Founder-reported: "blank spaces in the trade history card where the commission
+  // for maker and taker should sit." Every Alpaca row showed a dash.
+  //
+  // Checked against the live Alpaca API rather than guessed: a FILL activity carries no
+  // commission or fee field at all (keys are activity_type, cum_qty, id, leaves_qty, order_id,
+  // order_status, price, qty, side, symbol, transaction_time, type). That is not missing data
+  // -- Alpaca charges no per-trade commission on US equities. A dash means "we do not know",
+  // which was the wrong answer to a question that has a real one, and it hid a genuine
+  // advantage Alpaca has over Kraken's 0.80%.
+  //
+  // Regulatory fees (SEC/TAF/CAT) do exist on the account, but Alpaca charges them daily at
+  // account level for the day's trades collectively, not per fill, so they cannot honestly be
+  // attributed to a row here. TradeDetail says so in full; see unavailableReason.
+  const commissionFree = isCommissionFreePerTrade(normalized.broker);
+  const feeValue = normalized.fee !== null && normalized.fee !== undefined
+    ? normalized.fee
+    : (commissionFree ? 0 : null);
+  const hasFee = feeValue !== null;
   const hasCommissionBasis = hasFee && normalized.quantity && priceValue;
-  const commissionPct = hasCommissionBasis ? (normalized.fee / Math.abs(normalized.quantity * priceValue)) * 100 : null;
+  const commissionPct = hasCommissionBasis ? (feeValue / Math.abs(normalized.quantity * priceValue)) * 100 : null;
   // 2026-08-23 Founder request: "this table should also show the amount put forward to
   // trade for each". Price alone never showed how much money was actually committed --
   // the difference between a GBP 2 and a GBP 25 position was invisible here, which is
@@ -474,7 +519,7 @@ function tradeTableRow(item) {
     priceText: priceValue !== null && priceValue !== undefined ? historyMoneyOrText(normalized.broker, priceValue) : MISSING_NUMERIC_CELL,
     amountText: amountValue !== null ? historyMoneyOrText(normalized.broker, amountValue) : MISSING_NUMERIC_CELL,
     commissionPctText: commissionPct !== null ? `${commissionPct.toFixed(2)}%` : MISSING_NUMERIC_CELL,
-    commissionText: hasFee ? historyMoneyOrText(normalized.broker, normalized.fee) : MISSING_NUMERIC_CELL,
+    commissionText: hasFee ? historyMoneyOrText(normalized.broker, feeValue) : MISSING_NUMERIC_CELL,
     pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : MISSING_NUMERIC_CELL),
     pnlSign: hasPnl ? (pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'neutral') : 'neutral',
   };
@@ -509,6 +554,7 @@ module.exports = {
   normalizeTradeRow,
   isOpenTrade,
   unavailableReason,
+  commissionExplanation,
   firstValue,
   firstNumber,
   numeric,
