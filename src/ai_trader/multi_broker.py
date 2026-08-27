@@ -572,6 +572,25 @@ def _iso_timestamp(value: Any) -> str:
         return text
 
 
+def _descr(item: dict[str, Any]) -> dict[str, Any]:
+    """Kraken's nested order-description block, or an empty dict.
+
+    2026-08-27, found by reading the Trade History table on the phone: 149 of 391 rows --
+    every Kraken order, 38% of the table -- showed no symbol and no buy/sell direction.
+    Kraken's /0/private/OpenOrders and /0/private/ClosedOrders do not put `pair` and `type`
+    at the top level of an order the way its trades endpoint does; they sit one level down
+    in `descr`:
+
+        {"descr": {"pair": "LTCGBP", "type": "sell", "order": "sell 0.673 LTCGBP @ ..."}}
+
+    The reader looked only at the top level, so both columns came back empty and the table
+    rendered "Not available - source data has not been recorded yet." in place of the coin
+    name on every Kraken row. The data was always there and always stored in payload_json.
+    """
+    descr = item.get("descr")
+    return descr if isinstance(descr, dict) else {}
+
+
 def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Persist broker orders/fills, in batches.
 
@@ -628,9 +647,9 @@ def record_broker_trade_history(db_path: Path, broker: str, trades: list[dict[st
             (
                 broker_key,
                 external_id or None,
-                item.get("symbol") or item.get("pair"),
+                item.get("symbol") or item.get("pair") or _descr(item).get("pair"),
                 item.get("asset_type"),
-                item.get("side") or item.get("type"),
+                item.get("side") or item.get("type") or _descr(item).get("type"),
                 safe_float(item.get("qty") or item.get("vol") or item.get("quantity")),
                 safe_float(item.get("price")),
                 safe_float(item.get("notional")),
@@ -1399,3 +1418,43 @@ def _json_dict(value: Any) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def backfill_broker_history_symbols(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
+    """Recover symbol and side on rows stored before _descr was read.
+
+    The values were never lost -- the whole broker payload is kept in payload_json -- so this
+    reads them back out rather than re-fetching anything from the broker. Idempotent: rows
+    that already carry a symbol are left alone.
+    """
+    initialize_multi_broker_schema(db_path)
+    outcome = {"examined": 0, "symbols_set": 0, "sides_set": 0}
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT trade_history_id, payload_json, symbol, side FROM BROKER_TRADE_HISTORY "
+            "WHERE broker = ? AND (symbol IS NULL OR symbol = '' OR side IS NULL OR side = '')",
+            (broker.lower(),),
+        ).fetchall()
+        updates: list[tuple[Any, ...]] = []
+        for row in rows:
+            outcome["examined"] += 1
+            try:
+                payload = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            descr = _descr(payload)
+            symbol = row[2] or payload.get("symbol") or payload.get("pair") or descr.get("pair")
+            side = row[3] or payload.get("side") or payload.get("type") or descr.get("type")
+            if (symbol and symbol != row[2]) or (side and side != row[3]):
+                outcome["symbols_set"] += int(bool(symbol) and symbol != row[2])
+                outcome["sides_set"] += int(bool(side) and side != row[3])
+                updates.append((symbol, side, row[0]))
+        if updates:
+            with conn:
+                conn.executemany(
+                    "UPDATE BROKER_TRADE_HISTORY SET symbol = ?, side = ? WHERE trade_history_id = ?",
+                    updates,
+                )
+    return outcome
