@@ -1296,6 +1296,27 @@ def _refresh_reconciled_result(db_path: Path, logical_trade_id: str, *, conn: An
 
 
 
+def _kraken_exit_reason_index(conn: Any) -> dict[str, list[Any]]:
+    """Every recorded Kraken exit trigger, read once per connection rather than per trade.
+
+    exit_reasons_by_symbol reads the whole MANAGED_TRADE_EXITS table and a caller needs one
+    row out of it, so calling it inside a loop over reconciled trades re-fetched the entire
+    table for each one. The result is identical for every trade in a batch, so it is cached
+    on the connection object -- which ties the cache's lifetime to the connection's, rather
+    than to a module-level dict that could outlive it or collide across connections.
+    """
+    cached = getattr(conn, "_ai_trader_exit_reason_index", None)
+    if cached is None:
+        cached = trade_reasons.exit_reasons_by_symbol(conn, broker="kraken")
+        try:
+            conn._ai_trader_exit_reason_index = cached
+        except AttributeError:
+            # Some connection wrappers refuse attribute assignment; correctness does not
+            # depend on the cache, only speed.
+            pass
+    return cached
+
+
 def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any], now: str) -> None:
     """One PERFORMANCE_ATTRIBUTION row per completed round trip, from reconciled fills only.
 
@@ -1317,23 +1338,6 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
     # record is right, not merely corrected by whichever reader remembers to.
     symbol = normalize_symbol(result.get("symbol"))
     closed_at = result.get("exit_time") or now
-    # 2026-08-27 audit finding: both of these were the constant "Reconciled from Kraken
-    # fills." on all 38 production rows. reporting_service groups wins by entry_reason and
-    # losses by exit_reason to build its lessons, so that constant meant the learning loop
-    # was grouping every trade into a single bucket and learning nothing. The real
-    # rationale was already stored against the proposal; it was simply never joined.
-    entry_reason = (
-        trade_reasons.entry_reasons_for_proposals(conn, [result.get("proposal_id")]).get(
-            str(result.get("proposal_id") or "")
-        )
-        or trade_reasons.UNRECORDED_ENTRY
-    )
-    exit_reason = (
-        trade_reasons.nearest_exit_reason(
-            trade_reasons.exit_reasons_by_symbol(conn, broker="kraken"), symbol, closed_at
-        )
-        or trade_reasons.UNRECORDED_EXIT
-    )
     try:
         # PERFORMANCE_ATTRIBUTION's only key is its autoincrement id, so ON CONFLICT cannot
         # dedupe here -- an explicit check is required. Without it every replay cycle would
@@ -1355,6 +1359,31 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
         ).fetchone()
         if existing:
             return
+        # 2026-08-27 audit finding: both of these were the constant "Reconciled from Kraken
+        # fills." on all 38 production rows. reporting_service groups wins by entry_reason and
+        # losses by exit_reason to build its lessons, so that constant meant the learning loop
+        # was grouping every trade into a single bucket and learning nothing. The real
+        # rationale was already stored against the proposal; it was simply never joined.
+        #
+        # Deliberately computed AFTER the duplicate check, not before. replay_kraken_evidence
+        # re-processes every terminal trade on each cycle and the vast majority return at the
+        # line above, so doing this work first meant two extra remote-Postgres queries per
+        # already-recorded trade on every single replay -- one of them a full scan of
+        # MANAGED_TRADE_EXITS -- for a row that was then never written. That is the
+        # per-row-in-a-loop cost class this codebase has had to fix repeatedly, and it belongs
+        # on the path that actually inserts.
+        entry_reason = (
+            trade_reasons.entry_reasons_for_proposals(conn, [result.get("proposal_id")]).get(
+                str(result.get("proposal_id") or "")
+            )
+            or trade_reasons.UNRECORDED_ENTRY
+        )
+        exit_reason = (
+            trade_reasons.nearest_exit_reason(
+                _kraken_exit_reason_index(conn), symbol, closed_at
+            )
+            or trade_reasons.UNRECORDED_EXIT
+        )
         conn.execute(
             """
             INSERT INTO PERFORMANCE_ATTRIBUTION (
