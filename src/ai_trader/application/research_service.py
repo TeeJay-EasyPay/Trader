@@ -28,6 +28,7 @@ from ..multi_broker import (
     update_broker_runtime,
 )
 from ..crypto_sentiment import score_crypto_sentiment
+from ..market_themes import CRYPTO as THEME_CRYPTO, EQUITY as THEME_EQUITY, refresh_market_themes
 from ..operational import (
     latest_pnl_snapshot,
     record_crypto_scores_from_kraken_candles,
@@ -430,9 +431,20 @@ class ResearchService:
             api_key=self.settings.openai_api_key,
             model=self.settings.openai_model,
         )
+        # Crypto themes refresh on the same hourly cycle. Narratives rotate in weeks rather
+        # than quarters, and the refresh is a no-op when nothing new has been published, so
+        # running it often costs little and keeps the macro view from going stale the way the
+        # hand-maintained share themes did (untouched from 2 July until this was built).
+        themes = refresh_market_themes(
+            self.settings.db_path,
+            api_key=self.settings.openai_api_key,
+            model=self.settings.openai_model,
+            asset_class=THEME_CRYPTO,
+        )
         scoring = record_crypto_scores_from_kraken_candles(self.settings.db_path)
         result = {
             "status": "completed",
+            "themes": themes,
             "symbols_requested": symbols,
             "symbols_with_history": symbols_with_history,
             "candles_written": candles_written,
@@ -898,6 +910,27 @@ class ResearchService:
             broker=broker_name,
             summary=f"{broker_name.title()} research cycle started.",
             details={"trigger_type": trigger_type, "body": {key: value for key, value in body.items() if key != "token"}},
+        )
+        # Share themes refresh on the equity research cycle. Sector outlooks turn over quarters
+        # rather than weeks, so this only rewrites a theme when genuinely new company news has
+        # arrived for it; a run with nothing new leaves the existing view alone rather than
+        # restating it as fresh. Before this existed the 14 themes were hand-maintained and had
+        # not moved since 2 July -- a two-month-old outlook asserted as current, applied across
+        # a whole sector rather than one trade.
+        equity_themes = refresh_market_themes(
+            self.settings.db_path,
+            api_key=self.settings.openai_api_key,
+            model=self.settings.openai_model,
+            asset_class=THEME_EQUITY,
+        )
+        record_operational_event(
+            self.settings.db_path,
+            component="research",
+            event_type="market_themes_refreshed",
+            broker=broker_name,
+            summary=equity_themes.get("message") or "Share theme refresh completed.",
+            details=equity_themes,
+            success=equity_themes.get("status") in {"completed", "no_evidence"},
         )
         if broker_name == "kraken":
             symbols = body.get("symbols")

@@ -7,7 +7,7 @@ import threading
 from .database import connect, selected_backend
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -544,14 +544,55 @@ def set_risk_policy_value(db_path: Path, key: str, value: Any, *, updated_by: st
     }
 
 
+def _crypto_theme_view_exists(conn: sqlite3.Connection, symbol: str) -> bool:
+    """Whether a CURRENT theme view covers this coin, using the caller's open connection.
+
+    Deliberately not market_themes.current_theme_view, which opens its own connection: this
+    runs inside per-proposal scoring, and opening a fresh remote-Postgres connection per
+    candidate is the cost class this codebase has had to fix repeatedly.
+
+    Membership is re-derived here rather than stored, because a coin can change narrative when
+    its team pivots -- see market_themes.py.
+    """
+    from .market_themes import CRYPTO, MAX_AGE_HOURS
+
+    target = str(symbol or "").upper().strip()
+    if not target:
+        return False
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS[CRYPTO])).isoformat()
+    try:
+        rows = conn.execute(
+            """
+            SELECT t.theme FROM CRYPTO_MASTER m
+            JOIN MARKET_THEMES t ON t.theme = m.category
+            WHERE UPPER(m.symbol) = ? AND m.active = 1
+              AND t.last_updated >= ? AND t.current_outlook IS NOT NULL
+            LIMIT 1
+            """,
+            (target, cutoff),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a missing table or column must degrade, not crash
+        # Deliberately broad: under Postgres this raises psycopg errors, not
+        # sqlite3.OperationalError, and catching only the latter would let a schema problem
+        # escape into the caller's own broad handler where it becomes a silent False.
+        return False
+    return bool(rows)
+
+
 def _macro_context_available(conn: sqlite3.Connection, proposal: TradeProposal) -> bool:
     try:
         if proposal.asset_type == "crypto":
-            row = conn.execute(
-                "SELECT 1 FROM CRYPTO_RESEARCH_SCORES WHERE UPPER(symbol) = UPPER(?) ORDER BY score_id DESC LIMIT 1",
-                (proposal.symbol,),
-            ).fetchone()
-            return row is not None
+            # 2026-08-27, Founder-directed. This used to ask "does a research score exist for
+            # this coin?", which is circular: it is checked while scoring the coin, so it was
+            # always true. A macro dimension that always passes measures nothing -- it was a
+            # rubber stamp contributing a full mark to every crypto verdict.
+            #
+            # Crypto now has real themes (market_themes.py), derived from the categories the
+            # app already tracks and refreshed daily from news. Macro context means what it
+            # says: a current view exists on the narrative this coin belongs to. A coin whose
+            # theme has no current view simply does not get macro counted -- it is not
+            # penalised, because unmeasured is not zero.
+            return _crypto_theme_view_exists(conn, proposal.symbol)
         company = conn.execute(
             "SELECT sector, industry FROM COMPANY_MASTER WHERE UPPER(ticker) = UPPER(?) LIMIT 1",
             (proposal.symbol,),
