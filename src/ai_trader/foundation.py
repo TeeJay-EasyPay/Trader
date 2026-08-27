@@ -680,7 +680,29 @@ def calculate_investment_score(db_path: Path, proposal: TradeProposal) -> dict[s
     policy = float(p.philosophy_fit or 0.0)
     stop_loss_pct = abs(p.entry_price - p.stop_loss) / p.entry_price if p.entry_price else 1.0
     risk = max(0.0, min(1.0, 1.0 - stop_loss_pct))
-    overall = round((fundamental + technical + market + macro + behavioural + policy + risk) / 7, 4)
+    # 2026-08-27: average only the dimensions that had a data source, for the same reason
+    # already applied to the crypto research score. A missing source scored 0 here and dragged
+    # the whole verdict down, which conflates "we checked and it looks bad" with "nobody
+    # checked" -- and the two mean opposite things.
+    #
+    # Measured live, this penalises crypto and nothing else: equities match both a macro and a
+    # behavioural source, while every crypto symbol matches behavioural but NOT macro, because
+    # MARKET_THEMES has not been refreshed since 2 July. So a crypto proposal was scored as
+    # though its macro backdrop had been examined and found worthless. SOL at a real 0.79 came
+    # out at 0.7136 and failed the 0.75 policy gate purely on that absent seventh; counting only
+    # the six that exist gives 0.8325, which is what the evidence actually supports.
+    #
+    # Equity scores are unchanged, because all seven dimensions are present for them.
+    #
+    # The stale themes are a separate, real gap. Not counting an absent measurement is honest;
+    # it does not make the measurement exist, and macro remains genuinely unassessed for crypto
+    # until that pipeline is fixed.
+    components = [fundamental, technical, market, policy, risk]
+    if macro_available:
+        components.append(macro)
+    if behavioural_available:
+        components.append(behavioural)
+    overall = round(sum(components) / len(components), 4)
     reasoning = {
         "fundamental": "News and company context reviewed." if p.news_summary else "No news/company context supplied.",
         "technical": p.technical_summary or "No technical summary supplied.",

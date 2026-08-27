@@ -266,3 +266,58 @@ class ConfidenceThresholdTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"AUTO_TRADE_MIN_CONFIDENCE": "0.9"}):
             self.assertAlmostEqual(load_settings().auto_trade.min_confidence, 0.9, places=3)
+
+
+class InvestmentScoreMeasuredOnlyTests(unittest.TestCase):
+    """2026-08-27: the same unmeasured-counts-as-zero bug, one layer up.
+
+    calculate_investment_score averaged seven dimensions and scored 0 for any without a data
+    source. Measured live, that penalises crypto and nothing else: equities match both a macro
+    and a behavioural source, while every crypto symbol matches behavioural but NOT macro,
+    because MARKET_THEMES has not been refreshed since 2 July. A crypto proposal was therefore
+    scored as though its macro backdrop had been examined and found worthless -- SOL at a real
+    0.79 came out at 0.7136 and failed the 0.75 policy gate purely on that absent seventh.
+    """
+
+    def proposal(self, confidence=0.79):
+        from ai_trader.models import TradeProposal
+
+        return TradeProposal(
+            symbol="SOL", side="buy", entry_price=100.0, stop_loss=98.5, take_profit=103.0,
+            position_size=1.0, risk_percentage=0.005, confidence_score=confidence,
+            news_summary="x", market_sentiment_summary="y", technical_summary="z",
+            plain_english_reasoning="w", philosophy_fit=0.85,
+        )
+
+    def test_a_missing_dimension_does_not_drag_the_verdict_down(self):
+        from unittest import mock
+
+        from ai_trader.foundation import calculate_investment_score, initialize_foundation_schema
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "t.db"
+            initialize_foundation_schema(db_path)
+            with mock.patch("ai_trader.foundation._macro_context_available", return_value=False), \
+                 mock.patch("ai_trader.foundation._behavioural_context_available", return_value=True):
+                without_macro = calculate_investment_score(db_path, self.proposal())["overall_confidence"]
+            with mock.patch("ai_trader.foundation._macro_context_available", return_value=True), \
+                 mock.patch("ai_trader.foundation._behavioural_context_available", return_value=True):
+                with_macro = calculate_investment_score(db_path, self.proposal())["overall_confidence"]
+        # Missing macro must cost only the certainty of that dimension, not vote zero.
+        self.assertGreater(without_macro, 0.75, "an unmeasured dimension must not fail the gate on its own")
+        self.assertLess(abs(with_macro - without_macro), 0.05)
+
+    def test_an_all_dimensions_present_score_is_arithmetically_unchanged(self):
+        """Equities match every dimension, so this change must not move them at all."""
+        from unittest import mock
+
+        from ai_trader.foundation import calculate_investment_score, initialize_foundation_schema
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "t.db"
+            initialize_foundation_schema(db_path)
+            with mock.patch("ai_trader.foundation._macro_context_available", return_value=True), \
+                 mock.patch("ai_trader.foundation._behavioural_context_available", return_value=True):
+                score = calculate_investment_score(db_path, self.proposal(0.8))["overall_confidence"]
+        conf, policy, risk = 0.8, 0.85, 1 - 0.015
+        self.assertAlmostEqual(score, round((conf * 5 + policy + risk) / 7, 4), places=4)
