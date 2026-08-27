@@ -195,7 +195,7 @@ def load_settings() -> Settings:
                 "binance": _bool_env("BINANCE_AUTO_TRADING", False),
                 "interactive_brokers": _bool_env("IBKR_AUTO_TRADING", False),
             },
-            min_confidence=_float_env("AUTO_TRADE_MIN_CONFIDENCE", 0.85),
+            min_confidence=_float_env("AUTO_TRADE_MIN_CONFIDENCE", _AUTO_TRADE_DEFAULTS.min_confidence),
             min_philosophy_fit=_float_env("AUTO_TRADE_MIN_PHILOSOPHY_FIT", 0.85),
             max_trade_amount=_float_env("MAX_AUTO_TRADE_AMOUNT", 25.0),
             default_stop_loss_pct=_float_env("DEFAULT_STOP_LOSS_PCT", 0.03),

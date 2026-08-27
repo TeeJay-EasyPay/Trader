@@ -803,8 +803,28 @@ class ResearchService:
             component="research",
             event_type="research_completed",
             broker="kraken",
-            summary=f"Kraken crypto research reviewed {len(symbols)} symbol(s) and created {len(proposals)} proposal(s).",
-            details={"symbols": symbols, "proposal_count": len(proposals), "auto_execution": auto_execution},
+            summary=(
+                f"Kraken crypto research reviewed {len(symbols)} symbol(s) and created "
+                f"{len(proposals)} proposal(s) at a confidence bar of "
+                f"{self.settings.auto_trade.min_confidence:.2f}."
+            ),
+            # 2026-08-27: record the thresholds actually IN FORCE, not the ones in the code.
+            # AUTO_TRADE_MIN_CONFIDENCE is settable in the hosting environment, so a code
+            # default can be changed, deployed and tested while the running service quietly
+            # keeps using an old value -- a trap this project has already been caught by. The
+            # live number is now written into evidence on every cycle, so "did that setting
+            # actually take effect" is answerable by reading, not by assuming.
+            details={
+                "symbols": symbols,
+                "proposal_count": len(proposals),
+                "auto_execution": auto_execution,
+                "thresholds_in_force": {
+                    "min_confidence": self.settings.auto_trade.min_confidence,
+                    "min_philosophy_fit": self.settings.auto_trade.min_philosophy_fit,
+                    "crypto_risk_per_trade_pct": self.settings.auto_trade.crypto_risk_per_trade_pct,
+                    "crypto_max_trade_pct": self.settings.auto_trade.crypto_max_trade_pct,
+                },
+            },
         )
         result = {"status": "completed", "symbols": symbols, "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution}
         self._record_production_research(started_at, "kraken", "crypto", "scheduled", symbols, result)

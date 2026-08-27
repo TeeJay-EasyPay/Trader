@@ -24,7 +24,28 @@ class GuardrailConfig:
 class AutoTradeConfig:
     enabled: bool = False
     broker_enabled: dict[str, bool] = field(default_factory=dict)
-    min_confidence: float = 0.85
+    # 2026-08-27, Founder-directed: lowered from 0.85. "That was added initially as a
+    # precaution because kraken involved real money. However I feel the trader app may be
+    # intelligent enough to be able to trade now based on all the improvements."
+    #
+    # 0.85 was never a calibrated bar. It matched the FABRICATED bootstrap confidence exactly
+    # (every coin was stamped 0.85), so the gate passed everything while appearing strict, and
+    # the conviction scaler paid every trade the 50% minimum -- which is why Kraken trades came
+    # in at GBP 25 against a GBP 50 ceiling. Once the fabrication was removed and the score
+    # calibrated to measure real things, the honest range became roughly 0.69-0.79 and nothing
+    # could clear 0.85 at all.
+    #
+    # This is a starting point, not a finding: no threshold can be derived from this app's own
+    # history yet, because all 26 closed trades were taken when every coin scored an identical
+    # 0.85, leaving no variance to correlate against outcomes. It is set where trading can
+    # resume so that evidence accumulates, and should be re-derived from real results once the
+    # post-trade reviews have enough of them.
+    #
+    # Lowering the bar does NOT mean betting the same on a marginal trade: conviction scaling
+    # stakes 50% of the allowance at this threshold and 100% at full confidence, so a 0.75
+    # candidate risks GBP 25 where a 0.95 risks GBP 45. The fee hurdle and stop-losses are
+    # unchanged and reject uneconomic trades independently of confidence.
+    min_confidence: float = 0.75
     min_philosophy_fit: float = 0.85
     max_trade_amount: float = 25.0
     default_stop_loss_pct: float = 0.03

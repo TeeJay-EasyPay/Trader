@@ -218,3 +218,51 @@ class StablecoinExclusionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfidenceThresholdTests(unittest.TestCase):
+    """2026-08-27, Founder-directed: the bar moved from 0.85 to 0.75.
+
+    0.85 was never calibrated. It matched the FABRICATED bootstrap confidence exactly -- every
+    coin was stamped 0.85 -- so the gate passed everything while looking strict, and the
+    conviction scaler paid every trade its 50% minimum, which is why Kraken trades came in at
+    GBP 25 against a GBP 50 ceiling. Once the fabrication went and the score was calibrated to
+    measure real things, the honest range became ~0.69-0.79 and nothing could clear 0.85.
+    """
+
+    def test_the_bar_is_reachable_by_the_scores_the_app_now_produces(self):
+        from ai_trader.models import AutoTradeConfig
+
+        bar = AutoTradeConfig().min_confidence
+        best_observed_today = 0.79  # SOL, modelled against the live universe
+        self.assertLessEqual(bar, best_observed_today,
+                             "a bar no real coin can reach is not a filter, it is a stop switch")
+
+    def test_the_bar_is_not_so_low_that_anything_qualifies(self):
+        from ai_trader.models import AutoTradeConfig
+
+        weakest_observed_today = 0.48
+        self.assertGreater(AutoTradeConfig().min_confidence, weakest_observed_today)
+
+    def test_a_marginal_candidate_is_staked_less_than_a_strong_one(self):
+        """Lowering the bar must not mean betting the same on a weak case. This is the
+        property that makes 0.75 safe rather than reckless."""
+        from ai_trader.models import AutoTradeConfig
+        from ai_trader.technical_discretion import conviction_scaled_notional
+
+        bar = AutoTradeConfig().min_confidence
+        marginal = conviction_scaled_notional(approved_notional=50.0, confidence=bar, min_confidence=bar)
+        strong = conviction_scaled_notional(approved_notional=50.0, confidence=0.95, min_confidence=bar)
+        self.assertLess(marginal, strong)
+        self.assertAlmostEqual(marginal, 25.0, places=2)
+
+    def test_the_environment_can_still_override_the_default(self):
+        """The hosting environment must stay authoritative, so the bar can be tightened again
+        without a deploy."""
+        import os
+        from unittest import mock
+
+        from ai_trader.config import load_settings
+
+        with mock.patch.dict(os.environ, {"AUTO_TRADE_MIN_CONFIDENCE": "0.9"}):
+            self.assertAlmostEqual(load_settings().auto_trade.min_confidence, 0.9, places=3)
