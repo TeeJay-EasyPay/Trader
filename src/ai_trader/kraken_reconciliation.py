@@ -18,6 +18,7 @@ from .canonical_trades import (
 from .database import connect, selected_backend
 from .models import utc_now_iso
 from .symbol_track_record import normalize_symbol
+from . import trade_reasons
 from .multi_broker import initialize_multi_broker_schema, record_managed_trade_exit
 from .sprint6 import enqueue_learning_workflow, initialize_sprint6_schema
 
@@ -1316,6 +1317,23 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
     # record is right, not merely corrected by whichever reader remembers to.
     symbol = normalize_symbol(result.get("symbol"))
     closed_at = result.get("exit_time") or now
+    # 2026-08-27 audit finding: both of these were the constant "Reconciled from Kraken
+    # fills." on all 38 production rows. reporting_service groups wins by entry_reason and
+    # losses by exit_reason to build its lessons, so that constant meant the learning loop
+    # was grouping every trade into a single bucket and learning nothing. The real
+    # rationale was already stored against the proposal; it was simply never joined.
+    entry_reason = (
+        trade_reasons.entry_reasons_for_proposals(conn, [result.get("proposal_id")]).get(
+            str(result.get("proposal_id") or "")
+        )
+        or trade_reasons.UNRECORDED_ENTRY
+    )
+    exit_reason = (
+        trade_reasons.nearest_exit_reason(
+            trade_reasons.exit_reasons_by_symbol(conn, broker="kraken"), symbol, closed_at
+        )
+        or trade_reasons.UNRECORDED_EXIT
+    )
     try:
         # PERFORMANCE_ATTRIBUTION's only key is its autoincrement id, so ON CONFLICT cannot
         # dedupe here -- an explicit check is required. Without it every replay cycle would
@@ -1357,9 +1375,13 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
                 _number(result.get("net_pnl")),
                 result.get("entry_time"),
                 closed_at,
-                _number(result.get("holding_seconds")),
-                "Reconciled from Kraken fills.",
-                "Reconciled from Kraken fills.",
+                # holding_seconds arrives NULL on every production row, so this recomputes
+                # from the two timestamps that are reliably present rather than trusting a
+                # field that demonstrably was not populated.
+                _number(result.get("holding_seconds"))
+                or trade_reasons.holding_seconds(result.get("entry_time"), closed_at),
+                entry_reason,
+                exit_reason,
                 json.dumps({"logical_trade_id": result.get("logical_trade_id")}, sort_keys=True, default=str),
             ),
         )
