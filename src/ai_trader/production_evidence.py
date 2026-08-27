@@ -542,14 +542,21 @@ def _trade_evidence_values(broker: str, event: dict[str, Any]) -> tuple[Any, ...
     observed_at = _normalize_broker_timestamp(
         _first(event, "updated_at", "transaction_time", "time", "timestamp", "filled_at", "created_at")
     ) or utc_now_iso()
-    symbol = _first(event, "symbol", "pair")
+    # 2026-08-27: 105 of 297 rows here had no symbol and no side, for the same reason found
+    # the same day in BROKER_TRADE_HISTORY -- Kraken's order endpoints nest `pair` and `type`
+    # inside `descr` rather than at the top level, and this reader looked only at the top.
+    # That is what put "Not available - source data has not been recorded yet." where the coin
+    # name belongs in the Founder's Trade History table.
+    descr = event.get("descr") if isinstance(event.get("descr"), dict) else {}
+    symbol = _first(event, "symbol", "pair") or descr.get("pair")
+    side = _first(event, "side", "type") or descr.get("type")
     quantity = _number(_first(event, "qty", "quantity", "vol", "filled_qty", "cum_qty"))
     price = _number(_first(event, "price", "filled_avg_price", "average_price", "avg_price"))
     key_parts = [broker, str(broker_order_id or ""), str(broker_trade_id or ""), status, str(quantity or ""), str(price or "")]
     idempotency_key = ":".join(key_parts)
     return (
         idempotency_key, observed_at, broker.lower(), broker_order_id, broker_trade_id,
-        str(symbol).upper() if symbol else None, _first(event, "side", "type"), status, quantity, price,
+        str(symbol).upper() if symbol else None, side, status, quantity, price,
         _number(_first(event, "filled_avg_price", "average_price", "avg_price")),
         _number(_first(event, "fee", "fees", "commission")), _number(_first(event, "realized_pnl", "pnl", "profit_loss")),
         _normalize_broker_timestamp(_first(event, "opened_at", "created_at")),
@@ -2071,3 +2078,44 @@ def _risk_argument(proposal: dict[str, Any]) -> str:
     if failures:
         return "The strongest argument against this trade is that these checks need attention: " + ", ".join(map(str, failures))
     return "The trade can still lose money if the thesis fails or the stop loss is reached; confidence is not certainty."
+
+
+def backfill_trade_evidence_symbols(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
+    """Recover symbol and side on evidence rows stored before `descr` was read.
+
+    Reads them back out of payload_json rather than re-fetching from the broker -- the values
+    were always captured, just never lifted out of Kraken's nested order description.
+    Idempotent: rows that already carry a symbol are left untouched.
+    """
+    initialize_production_evidence_schema(db_path)
+    outcome = {"examined": 0, "symbols_set": 0, "sides_set": 0}
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT trade_evidence_id, payload_json, symbol, side FROM PRODUCTION_TRADE_EVIDENCE "
+            "WHERE broker = ? AND (symbol IS NULL OR symbol = '' OR side IS NULL OR side = '')",
+            (broker.lower(),),
+        ).fetchall()
+        updates: list[tuple[Any, ...]] = []
+        for row in rows:
+            outcome["examined"] += 1
+            try:
+                payload = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            descr = payload.get("descr") if isinstance(payload.get("descr"), dict) else {}
+            symbol = row[2] or payload.get("symbol") or payload.get("pair") or descr.get("pair")
+            side = row[3] or payload.get("side") or payload.get("type") or descr.get("type")
+            symbol = str(symbol).upper() if symbol else None
+            if (symbol and symbol != row[2]) or (side and side != row[3]):
+                outcome["symbols_set"] += int(bool(symbol) and symbol != row[2])
+                outcome["sides_set"] += int(bool(side) and side != row[3])
+                updates.append((symbol, side, row[0]))
+        if updates:
+            with conn:
+                conn.executemany(
+                    "UPDATE PRODUCTION_TRADE_EVIDENCE SET symbol = ?, side = ? WHERE trade_evidence_id = ?",
+                    updates,
+                )
+    return outcome

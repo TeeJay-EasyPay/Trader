@@ -149,5 +149,54 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(backfill_broker_history_symbols(self.db_path)["symbols_set"], 0)
 
 
+
+class TradeEvidenceSymbolTests(unittest.TestCase):
+    """The same nested-descr bug existed in a SECOND table, PRODUCTION_TRADE_EVIDENCE, which
+    is what actually feeds the Founder's Trade History card -- 105 of 297 rows blank. Fixing
+    only BROKER_TRADE_HISTORY left the screen unchanged, which is how this one was found."""
+
+    def setUp(self):
+        from ai_trader.production_evidence import initialize_production_evidence_schema
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+        initialize_production_evidence_schema(self.db_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_kraken_order_records_its_coin_and_direction(self):
+        from ai_trader.production_evidence import _trade_evidence_values
+
+        values = _trade_evidence_values("kraken", KRAKEN_ORDER)
+        self.assertIn("LTCGBP", values)
+        self.assertIn("sell", values)
+
+    def test_a_flat_payload_still_wins(self):
+        from ai_trader.production_evidence import _trade_evidence_values
+
+        values = _trade_evidence_values("kraken", KRAKEN_TRADE)
+        self.assertIn("XBTGBP", values)
+        self.assertIn("buy", values)
+
+    def test_backfill_recovers_existing_rows_and_is_idempotent(self):
+        from ai_trader.production_evidence import backfill_trade_evidence_symbols
+
+        with closing(connect(self.db_path)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO PRODUCTION_TRADE_EVIDENCE (idempotency_key, observed_at, broker,"
+                    " status, payload_json) VALUES ('k1', '2026-08-26', 'kraken', 'open', ?)",
+                    (json.dumps(KRAKEN_ORDER),),
+                )
+        first = backfill_trade_evidence_symbols(self.db_path)
+        self.assertEqual(first["symbols_set"], 1)
+        with closing(connect(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT symbol, side FROM PRODUCTION_TRADE_EVIDENCE").fetchall(),
+                [("LTCGBP", "sell")],
+            )
+        self.assertEqual(backfill_trade_evidence_symbols(self.db_path)["symbols_set"], 0)
+
 if __name__ == "__main__":
     unittest.main()
