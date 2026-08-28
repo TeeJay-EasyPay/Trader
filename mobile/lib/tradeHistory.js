@@ -391,6 +391,27 @@ function commissionExplanation(normalized) {
   return 'Not recorded by the broker for this row';
 }
 
+// 2026-08-27 Founder-reported: a Kraken position rendered as "5e-8". JavaScript switches to
+// exponent notation below 1e-6, and crypto quantities routinely go that small -- 0.00000005 of
+// a coin is a real holding, but "5e-8" is not a number a person reads. Rendered in full
+// instead, with trailing zeros trimmed so ordinary quantities are unaffected.
+function formatQuantity(value) {
+  const number = numeric(value);
+  if (number === null) {
+    return value ?? null;
+  }
+  if (number === 0) {
+    return '0';
+  }
+  if (Math.abs(number) >= 0.001) {
+    // Ordinary sizes keep their natural form: 13, 2.5, 0.673.
+    return String(Number(number.toFixed(8)));
+  }
+  // Small enough that JS would use exponent notation. toFixed(12) is beyond any real
+  // broker's precision, so nothing meaningful is lost by trimming the trailing zeros.
+  return number.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function firstValue(...values) {
   return values.find((value) => value !== null && value !== undefined && value !== '');
 }
@@ -590,6 +611,7 @@ module.exports = {
   isOpenTrade,
   unavailableReason,
   commissionExplanation,
+  formatQuantity,
   firstValue,
   firstNumber,
   numeric,

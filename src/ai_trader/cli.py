@@ -980,14 +980,24 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # essentially zero ideas. Listed BEFORE crypto-research so that on any cycle where both
     # are due, the shopping list is refreshed before research reads it.
     due.append(("crypto-universe-refresh", _time_bucket(now, research_seconds)))
-    due.append(("crypto-research", _time_bucket(now, research_seconds)))
     # Phase 1 of the CIO-level forecasting build (2026-08-20): real Kraken OHLC candle
-    # ingestion. Crypto-only, hourly, on a plain UTC clock like crypto-research above
+    # ingestion. Crypto-only, hourly, on a plain UTC clock like crypto-research below
     # (crypto trades 24/7, so this must not be gated behind the NYSE weekday check
-    # below). Purely additive -- writes to MARKET_DATA_OBSERVATIONS, which nothing else
-    # reads yet -- so unlike external-intelligence-refresh it is not gated behind a
-    # settings flag.
+    # further down).
+    #
+    # 2026-08-28: MOVED ABOVE crypto-research, for exactly the reason the universe refresh
+    # above it already gives. This job was originally "purely additive -- writes to
+    # MARKET_DATA_OBSERVATIONS, which nothing else reads yet", so its position did not
+    # matter. It now also writes CRYPTO_RESEARCH_SCORES, which crypto-research reads to
+    # decide what to propose, and leaving it below meant every proposal was judged on scores
+    # from the PREVIOUS hour.
+    #
+    # Confirmed live: research ran at 17:45 on scores written at 15:42-16:39 and rejected all
+    # 19 coins, while the fresh scores carrying real order-book liquidity landed at 17:47 --
+    # two minutes too late to be used. A permanent one-cycle lag, not a one-off, and my own
+    # regression from making this job do the scoring.
     due.append(("crypto-candle-refresh", _time_bucket(now, 3600)))
+    due.append(("crypto-research", _time_bucket(now, research_seconds)))
     # Phase 3 of the CIO-level forecasting build (2026-08-20): real CIO-style market
     # forecasts. Every 6 hours, not hourly -- each symbol costs a real OpenAI call, and a
     # multi-day directional view does not meaningfully change within an hour. Covers both

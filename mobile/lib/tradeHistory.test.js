@@ -29,6 +29,7 @@ const {
   transactionRank,
   tradeTableRow,
   commissionExplanation,
+  formatQuantity,
 } = require('./tradeHistory');
 
 let passed = 0;
@@ -594,4 +595,24 @@ test('rows carrying no order id still fall back to the old heuristic', () => {
   });
   const status = { brokers: [{ broker: 'kraken', trade_history: [bare('AAA'), bare('BBB')] }] };
   assert.strictEqual(combinedTransactions(status, {}, 'all', [], 50).length, 2);
+});
+
+// 2026-08-27 Founder-reported: a Kraken position rendered as "5e-8". JavaScript switches to
+// exponent notation below 1e-6, and crypto quantities routinely go that small -- 0.00000005 of
+// a coin is a real holding, but "5e-8" is not a number a person reads.
+test('a tiny crypto quantity renders in full rather than as exponent notation', () => {
+  assert.strictEqual(formatQuantity(5e-8), '0.00000005');
+  assert.ok(!String(formatQuantity(5e-8)).includes('e'));
+});
+
+test('ordinary quantities are left exactly as they read today', () => {
+  assert.strictEqual(formatQuantity(13), '13');
+  assert.strictEqual(formatQuantity(2.5), '2.5');
+  assert.strictEqual(formatQuantity(0.673242), '0.673242');
+});
+
+test('zero and unusable quantities do not become misleading numbers', () => {
+  assert.strictEqual(formatQuantity(0), '0');
+  assert.strictEqual(formatQuantity(null), null);
+  assert.strictEqual(formatQuantity('not a number'), 'not a number');
 });

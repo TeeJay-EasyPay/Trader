@@ -27,6 +27,7 @@ const {
   isOpenTrade,
   unavailableReason,
   commissionExplanation,
+  formatQuantity,
   formatHoldingDuration,
 } = require('../lib/tradeHistory');
 
@@ -46,7 +47,7 @@ function TradeDetail({ item, onForceExit }) {
       <Metric label="Symbol" value={normalized.symbol} />
       <Metric label="Side" value={normalized.side} />
       <Metric label="Status" value={isOpen ? 'Holding / unsold' : (normalized.status || item.event_type)} />
-      <Metric label="Quantity" value={normalized.quantity} />
+      <Metric label="Quantity" value={formatQuantity(normalized.quantity)} />
       <Metric label="Entry Price" value={tradeMoney(normalized.entryPrice)} />
       <Metric label="Target Price" value={tradeMoney(normalized.targetPrice) || unavailableReason(normalized, 'target')} />
       <Metric label="Current Live Price" value={tradeMoney(normalized.currentPrice) || unavailableReason(normalized, 'current')} />
