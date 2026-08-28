@@ -529,3 +529,69 @@ test('the detail view reports a real fee plainly, with no explanation needed', (
   assert.ok(text.includes('0.02'), text);
   assert.ok(!/no per-trade commission/i.test(text));
 });
+
+// 2026-08-28 Founder-reported: "a number of sales today... but no figures on what the profit or
+// losses for some of the sales." Today's TWO real sells rendered as TEN rows, and only two
+// carried a P&L. A broker files one row per order EVENT and the realised P&L lands on the
+// terminal one: SCCO arrived as partial_fill (x3), fill, filled and canceled, with -69.14 on
+// the 'filled' row alone. The five siblings showed as separate sales with an empty P&L column,
+// which reads as missing data rather than as one sale reported six times.
+function sccoEventRows() {
+  const mk = (status, quantity, price, realized_pnl) => ({
+    broker: 'alpaca', broker_order_id: 'scco-sell-1', symbol: 'SCCO', side: 'sell',
+    status, quantity, price, realized_pnl, exit_price: price,
+    closed_at: '2026-08-28T14:07:00Z', created_at: '2026-08-28T14:07:00Z', event_type: 'broker_trade',
+  });
+  return [
+    mk('partial_fill', 1, 211.32, null),
+    mk('partial_fill', 1, 211.32, null),
+    mk('partial_fill', 10, 211.32, null),
+    mk('fill', 1, 211.21, null),
+    mk('filled', 13, 211.31, -69.14),
+    mk('canceled', 13, null, null),
+  ];
+}
+
+test('one order reported over many events collapses to a single row', () => {
+  const status = { brokers: [{ broker: 'alpaca', trade_history: sccoEventRows() }] };
+  const out = combinedTransactions(status, {}, 'all', [], 50);
+  assert.strictEqual(out.length, 1, `six event rows describe one sale, got ${out.length}`);
+});
+
+test('the surviving row keeps the realised P&L rather than an empty partial fill', () => {
+  const status = { brokers: [{ broker: 'alpaca', trade_history: sccoEventRows() }] };
+  const row = tradeTableRow(combinedTransactions(status, {}, 'all', [], 50)[0]);
+  assert.ok(row.pnlText.includes('69.14'), `expected the -69.14 loss, got ${row.pnlText}`);
+  assert.strictEqual(row.pnlSign, 'negative');
+});
+
+test('quantity differences within one order no longer prevent the merge', () => {
+  // The old heuristic matched on quantity, and these partials were 1, 1, 10 and 13 of the
+  // same order, so it could never collapse them. The broker order id says what belongs together.
+  const rows = sccoEventRows();
+  const quantities = new Set(rows.map((r) => r.quantity));
+  assert.ok(quantities.size > 1, 'this case is only meaningful with differing quantities');
+  const status = { brokers: [{ broker: 'alpaca', trade_history: rows }] };
+  assert.strictEqual(combinedTransactions(status, {}, 'all', [], 50).length, 1);
+});
+
+test('two genuinely different orders stay as two rows', () => {
+  const rows = [
+    ...sccoEventRows(),
+    { broker: 'alpaca', broker_order_id: 'nee-sell-1', symbol: 'NEE', side: 'sell', status: 'filled',
+      quantity: 6, price: 82.04, realized_pnl: -10.3, exit_price: 82.04,
+      closed_at: '2026-08-28T13:33:00Z', created_at: '2026-08-28T13:33:00Z', event_type: 'broker_trade' },
+  ];
+  const status = { brokers: [{ broker: 'alpaca', trade_history: rows }] };
+  const out = combinedTransactions(status, {}, 'all', [], 50);
+  assert.strictEqual(out.length, 2);
+});
+
+test('rows carrying no order id still fall back to the old heuristic', () => {
+  const bare = (symbol) => ({
+    broker: 'kraken', symbol, side: 'buy', status: 'filled', quantity: 1, price: 100,
+    created_at: '2026-08-28T10:00:00Z', event_type: 'broker_trade',
+  });
+  const status = { brokers: [{ broker: 'kraken', trade_history: [bare('AAA'), bare('BBB')] }] };
+  assert.strictEqual(combinedTransactions(status, {}, 'all', [], 50).length, 2);
+});

@@ -32,7 +32,16 @@ function transactionRank(item) {
   if (item.event_type === 'performance_attribution') {
     return 3;
   }
-  return normalizeTradeRow(item).symbol ? 2 : 1;
+  const normalized = normalizeTradeRow(item);
+  if (!normalized.symbol) {
+    return 1;
+  }
+  // 2026-08-28: when several rows describe one order, the one carrying the realised P&L is
+  // the one worth keeping. Without this the first row seen won -- for SCCO that was a
+  // partial_fill with an empty P&L column, so a -69.14 loss was collapsed away and the sale
+  // looked like it had no result. Ranked above a bare symbol match but below reconciled
+  // attribution, which remains the most authoritative source of realised P&L.
+  return numeric(normalized.profitLoss) !== null ? 2.5 : 2;
 }
 
 function sameTrade(a, b) {
@@ -77,7 +86,33 @@ function sameTrade(a, b) {
 // that pre-sort newest-first keep that order for the surviving row.
 function dedupeTransactions(transactions) {
   const kept = [];
+  const byOrderId = new Map();
   (transactions || []).forEach((item) => {
+    // 2026-08-28 Founder-reported: "a number of sales today... but no figures on what the
+    // profit or losses for some of the sales." Today's two real sells rendered as TEN rows,
+    // and only two carried a P&L.
+    //
+    // A broker files one row per order EVENT, and the realised P&L lands on the terminal one:
+    // SCCO arrived as partial_fill (x3), fill, filled and canceled, with -69.14 on the
+    // 'filled' row alone. The five siblings were shown as separate sales with an empty P&L
+    // column, which reads as missing data rather than as the same sale reported six times.
+    //
+    // The existing heuristic could not merge them: it matches on quantity, and the partials
+    // were 1, 1, 10 and 13 of the same order. The broker's own order id says exactly what
+    // belongs together, so it is used first and the heuristic stays as the fallback for rows
+    // that carry no id.
+    const orderId = normalizeTradeRow(item).orderId;
+    if (orderId) {
+      const key = String(orderId);
+      const seenIndex = byOrderId.get(key);
+      if (seenIndex === undefined) {
+        byOrderId.set(key, kept.length);
+        kept.push(item);
+      } else if (transactionRank(item) > transactionRank(kept[seenIndex])) {
+        kept[seenIndex] = item;
+      }
+      return;
+    }
     const matchIndex = kept.findIndex((existing) => sameTrade(existing, item));
     if (matchIndex === -1) {
       kept.push(item);
