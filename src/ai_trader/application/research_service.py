@@ -441,7 +441,10 @@ class ResearchService:
             model=self.settings.openai_model,
             asset_class=THEME_CRYPTO,
         )
-        scoring = record_crypto_scores_from_kraken_candles(self.settings.db_path)
+        # The adapter is passed so liquidity comes from Kraken's live order book -- real
+        # money at real prices on the venue that fills the trade -- rather than a
+        # carried-forward CoinGecko ratio that covered only 8 of the 19 traded pairs.
+        scoring = record_crypto_scores_from_kraken_candles(self.settings.db_path, adapter=adapter)
         result = {
             "status": "completed",
             "themes": themes,

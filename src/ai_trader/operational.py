@@ -865,7 +865,8 @@ def _technical_indicators(candles: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _crypto_metrics_from_kraken_candles(
-    candles: list[dict[str, Any]], *, db_path: Path, symbol: str
+    candles: list[dict[str, Any]], *, db_path: Path, symbol: str,
+    order_book_liquidity: float | None = None,
 ) -> dict[str, Any] | None:
     """The same five research metrics as the CoinGecko path, computed from Kraken candles.
 
@@ -881,7 +882,17 @@ def _crypto_metrics_from_kraken_candles(
         return None
     volatility = min(1.0, abs(change_30d) / 100) if change_30d is not None else None
     risk_score = round(1.0 - volatility, 4) if volatility is not None else None
-    liquidity, liquidity_as_of = _last_coingecko_liquidity(db_path, symbol)
+    # 2026-08-28, Founder-directed: "we need actual liquidity data. Doesn't kraken have that?"
+    # It does. Kraken's own order book -- real money resting at real prices on the venue where
+    # the fill happens -- is measured in liquidity_map and scored in liquidity_quality_score.
+    # It beats the CoinGecko figure it replaces on every count: that was volume / market cap, a
+    # global statistic saying nothing about whether THIS account can get in and out on Kraken,
+    # and it only covered 8 of the 19 pairs actually traded. The CoinGecko value remains as a
+    # fallback for anything the book cannot be read for.
+    if order_book_liquidity is not None:
+        liquidity, liquidity_as_of = order_book_liquidity, "live Kraken order book"
+    else:
+        liquidity, liquidity_as_of = _last_coingecko_liquidity(db_path, symbol)
     newest = str(candles[-1].get("observation_time") or "")
     indicators = _technical_indicators(candles)
     return {
@@ -914,8 +925,29 @@ def _crypto_metrics_from_kraken_candles(
     }
 
 
+def _order_book_liquidity(adapter: Any, symbol: str) -> float | None:
+    """Live Kraken order-book liquidity for one coin, or None if the book cannot be read.
+
+    2026-08-28, Founder-directed. Two extra public calls per coin per cycle -- roughly 38 an
+    hour for the traded universe, comfortably inside Kraken's public limits, and the same two
+    calls the proposal path already makes later on.
+
+    Any failure returns None, which the scorer treats as unmeasured rather than as bad. A
+    Kraken outage must not quietly mark every coin illiquid and stop trading.
+    """
+    if adapter is None:
+        return None
+    try:
+        from .broker_adapters import _kraken_pair
+        from .liquidity_map import liquidity_map_for_pair, liquidity_quality_score
+
+        return liquidity_quality_score(liquidity_map_for_pair(adapter, _kraken_pair(symbol)))
+    except Exception:  # noqa: BLE001 - liquidity is one input, never a reason to stop research
+        return None
+
+
 def record_crypto_scores_from_kraken_candles(
-    db_path: Path, *, symbols: list[str] | None = None, limit: int = 40
+    db_path: Path, *, symbols: list[str] | None = None, limit: int = 40, adapter: Any = None
 ) -> dict[str, Any]:
     """Score the crypto universe from stored Kraken candles instead of CoinGecko.
 
@@ -939,7 +971,8 @@ def record_crypto_scores_from_kraken_candles(
     skipped: list[str] = []
     for symbol in targets:
         metrics = _crypto_metrics_from_kraken_candles(
-            candles_by_symbol.get(symbol) or [], db_path=db_path, symbol=symbol
+            candles_by_symbol.get(symbol) or [], db_path=db_path, symbol=symbol,
+            order_book_liquidity=_order_book_liquidity(adapter, symbol),
         )
         if metrics is None:
             skipped.append(symbol)

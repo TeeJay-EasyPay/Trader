@@ -318,3 +318,81 @@ def liquidity_map_for_pair(adapter: Any, pair: str) -> LiquidityMap | None:
     tape_reader = getattr(adapter, "recent_trades", None)
     trades = tape_reader(pair) if callable(tape_reader) else None
     return liquidity_map(pair, bids=book.get("bids"), asks=book.get("asks"), trades=trades)
+
+
+# --- Liquidity as a 0-1 research score ---------------------------------------------------
+#
+# 2026-08-28, Founder-directed: "Rather than computing liquidity, which I don't know if it's a
+# good idea, we need actual liquidity data. Doesn't kraken have that?"
+#
+# It does, and this module was already reading it -- just for a proposal-time penalty, never as
+# the liquidity metric in the research score. That metric was carried forward from CoinGecko's
+# volume / market cap, a global statistic that says nothing about whether THIS account can get
+# in and out on Kraken, and which only covered 8 of the 19 pairs actually traded.
+#
+# The order book is the better answer on every count: real money at real prices, on the venue
+# where the fill happens, free, and available for every listed pair. Measured live the day this
+# was written:
+#
+#   XBTGBP  spread 0.02%  bid depth GBP 508k  support 2.0% down
+#   DOTGBP  spread 0.14%  bid depth GBP 109k  support 2.5% down
+#   BCHGBP  spread 0.56%  bid depth GBP  42k  support none
+#
+# Two components, weighted by what actually costs money on a small account.
+#
+# SPREAD is the dominant term because it is paid on every trade, in both directions, and it is
+# invisible in the fee schedule. BCH's 0.56% spread costs ~1.1% per round trip on top of 1.6%
+# in fees -- so a BCH round trip needs ~2.7% of movement to break even, not the 1.6% the Trade
+# Scorecard assumes. That is precisely the fee drag the Founder has been chasing all week, and
+# it was never being scored.
+#
+# SUPPORT DEPTH is second: how far real resting bids extend below the price. A fall through a
+# level with nothing underneath is a different risk to one that has to eat a wall.
+#
+# Book DEPTH deliberately carries no weight. Every pair here rests six figures of bids against
+# a GBP 25-50 trade, so depth cannot discriminate at this size; including it would add a term
+# that is 1.0 for everything and dilute the two that do discriminate. If position sizes ever
+# approach the book, this is the first thing to revisit.
+
+# Spread at or below this is free in practice; at or above the ceiling it is punitive.
+_SPREAD_EXCELLENT_PCT = 0.05
+_SPREAD_POOR_PCT = 0.60
+
+# How far real bid support must extend to count as fully supportive.
+_SUPPORT_STRONG_PCT = 3.0
+
+
+def _spread_component(spread_pct: float | None) -> float | None:
+    if spread_pct is None or spread_pct < 0:
+        return None
+    if spread_pct <= _SPREAD_EXCELLENT_PCT:
+        return 1.0
+    if spread_pct >= _SPREAD_POOR_PCT:
+        return 0.0
+    span = _SPREAD_POOR_PCT - _SPREAD_EXCELLENT_PCT
+    return round(1.0 - ((spread_pct - _SPREAD_EXCELLENT_PCT) / span), 4)
+
+
+def _support_component(support_floor_pct: float | None) -> float | None:
+    # None means the book was too thin to establish any floor, which is real evidence of poor
+    # liquidity rather than missing data -- unlike a feed that simply did not cover the coin.
+    if support_floor_pct is None:
+        return 0.0
+    return round(max(0.0, min(1.0, float(support_floor_pct) / _SUPPORT_STRONG_PCT)), 4)
+
+
+def liquidity_quality_score(liquidity: LiquidityMap | None) -> float | None:
+    """Kraken order-book liquidity as a 0-1 score, or None when the book could not be read.
+
+    None means unmeasured and is excluded from the due-diligence average, the same rule used
+    everywhere else. It never means "bad", which would penalise a coin for an outage.
+    """
+    if liquidity is None or not liquidity.mid_price:
+        return None
+    spread = _spread_component(liquidity.spread_pct)
+    if spread is None:
+        return None
+    support = _support_component(liquidity.support_floor_pct)
+    # Spread weighted double: it is a certain cost on every trade, while thin support is a
+    # risk that may never be realised.
+    return round(((spread * 2.0) + support) / 3.0, 4)
