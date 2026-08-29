@@ -191,11 +191,39 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(decision.decision, "rejected")
         self.assertIn("asset_unavailable", decision.rejection_reason)
 
-    def test_confidence_below_85_rejection(self):
-        decision = self.run_decision(proposal(confidence_score=0.84))
+    def test_confidence_below_the_bar_is_rejected(self):
+        """2026-08-29: was test_confidence_below_85_rejection, asserting 0.84 fails.
+
+        Two things moved underneath it. The bar came down from 0.85 to 0.75, so 0.84 now
+        correctly PASSES -- the old case was testing a number, not a rule. And the four
+        confidence/permission checks were collapsed to two, renaming the failure from
+        confidence_below_auto_trade_minimum to confidence_below_minimum.
+
+        The rule this test exists for is unchanged: a proposal the research is not convinced
+        by must not trade. It now uses a confidence clearly under the bar rather than one that
+        happened to be under the bar in July.
+        """
+        decision = self.run_decision(proposal(confidence_score=0.60))
 
         self.assertEqual(decision.decision, "rejected")
-        self.assertIn("confidence_below_auto_trade_minimum", decision.rejection_reason)
+        self.assertIn("confidence_below_minimum", decision.rejection_reason)
+
+    def test_a_confident_proposal_is_not_rejected_on_confidence(self):
+        """The other half of the same rule, which the old test never covered: something above
+        the bar must not be blocked by it."""
+        decision = self.run_decision(proposal(confidence_score=0.84))
+
+        self.assertNotIn("confidence_below_minimum", decision.rejection_reason or "")
+
+    def test_an_asset_outside_the_permitted_universe_is_rejected(self):
+        """The Shariah screen, enforced structurally rather than by a rule engine: a company
+        absent from the Founder-approved watchlist has no rating, so philosophy_fit stays at
+        its 0.0 default and can never reach the permission bar. Renamed from
+        philosophy_fit_below_auto_trade_minimum -- this is permission, not preference."""
+        decision = self.run_decision(proposal(philosophy_fit=0.0))
+
+        self.assertEqual(decision.decision, "rejected")
+        self.assertIn("not_in_permitted_universe", decision.rejection_reason)
 
     def test_missing_stop_loss_rejection(self):
         decision = self.run_decision(proposal(stop_loss=0))

@@ -163,14 +163,35 @@ class InvestmentOrchestrator:
             failures.append("broker_disabled_by_policy")
         if p.side == "sell" and not context.guardrails.allow_short_selling:
             failures.append("short_selling_disabled")
+        # 2026-08-29, Founder-directed: four checks collapsed to two.
+        #
+        # These were two questions asked twice each, and the duplication cost real money in
+        # confusion: tuning one threshold took four separate investigations and two wrong
+        # attempts, because the raw and averaged numbers differ and the raw one blocks first.
+        #
+        #   "is this convincing"  was checked on p.confidence_score AND on the investment
+        #                         score's overall_confidence -- but that score is largely the
+        #                         SAME number averaged with itself: fundamental, technical,
+        #                         market, macro and behavioural are each set to `confidence`
+        #                         (foundation.py). A smoothed copy is not a second opinion, and
+        #                         gating on both is double jeopardy on one measurement.
+        #
+        #   "is this permitted"   was checked on p.philosophy_fit AND on the investment score's
+        #                         investment_policy_score -- which is that identical value
+        #                         copied across (`policy = float(p.philosophy_fit or 0.0)`).
+        #                         The same number, compared to the same threshold, twice.
+        #
+        # So: one confidence gate on the research verdict itself, and one permission gate.
+        # The seven-dimension investment score is still computed and recorded as evidence --
+        # its macro, behavioural and risk terms are real -- it simply no longer acts as a
+        # second gate on numbers already tested here.
         if p.confidence_score < policy.min_ai_confidence:
-            failures.append("confidence_below_auto_trade_minimum")
+            failures.append("confidence_below_minimum")
+        # Permission, not preference. A company absent from the Founder-approved universe has
+        # no rating and therefore scores 0.0 (TradeProposal's default), so it can never pass --
+        # which is what enforces the Shariah screen. See models.py philosophy_fit.
         if p.philosophy_fit < policy.min_investment_policy_fit:
-            failures.append("philosophy_fit_below_auto_trade_minimum")
-        if investment_score["overall_confidence"] < policy.min_ai_confidence:
-            failures.append("investment_score_below_policy_minimum")
-        if investment_score["investment_policy_score"] < policy.min_investment_policy_fit:
-            failures.append("investment_policy_score_below_minimum")
+            failures.append("not_in_permitted_universe")
         if due_diligence["overall_status"] != "completed":
             failures.append("due_diligence_incomplete")
         if p.stop_loss <= 0:

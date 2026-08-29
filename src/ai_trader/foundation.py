@@ -284,11 +284,28 @@ CREATE TABLE IF NOT EXISTS CRYPTO_TRADING_HISTORY (
 """
 
 
+# 2026-08-29, Founder-directed. These seeds are the LAST word on the two gates -- they outrank
+# both the code defaults in models.py and the Render environment variables, because
+# load_trading_policy reads them first. That precedence is fine; what was not fine is that they
+# disagreed with everything else and nobody knew they existed.
+#
+# minimum_overall_confidence sat at 0.85 while the code and Render both said 0.75, silently
+# blocking every buy for a full session (117 rejections) after two other places had already been
+# changed to unblock it. Seeded at 0.75 so a fresh database cannot recreate that.
+#
+# crypto_enabled sat at False while crypto traded live, overridden by the Kraken environment
+# approval. Those three env vars (KRAKEN_TRADING_ENABLED / KRAKEN_LIVE_TRADING_APPROVED /
+# KRAKEN_SUBMIT_REAL_ORDERS) remain the real-money authority; this no longer contradicts them.
+#
+# minimum_investment_policy_score stays at 0.85 deliberately and is NOT a tuning knob. It is the
+# Shariah screen: only companies on the Founder-curated watchlist carry a rating, so anything
+# else keeps TradeProposal's 0.0 default and cannot pass. Lowering this towards zero would
+# silently admit companies that were never vetted -- see orchestrator.py's permission check.
 DEFAULT_INVESTMENT_POLICIES: dict[str, tuple[Any, str, str]] = {
     "equities_enabled": (True, "boolean", "Permit equity research and paper trading."),
-    "crypto_enabled": (False, "boolean", "Permit crypto trading only after founder approval."),
-    "minimum_investment_policy_score": (0.85, "float", "Minimum Investment Policy Score for autonomous execution."),
-    "minimum_overall_confidence": (0.85, "float", "Minimum structured Overall Confidence for autonomous execution."),
+    "crypto_enabled": (True, "boolean", "Permit crypto trading. Real-money submission is separately gated by the Kraken environment approval."),
+    "minimum_investment_policy_score": (0.85, "float", "Permission gate: an asset must be in the Founder-approved universe. NOT a quality score - this enforces the Shariah screen."),
+    "minimum_overall_confidence": (0.75, "float", "The single confidence bar for every broker and asset class."),
 }
 
 DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
