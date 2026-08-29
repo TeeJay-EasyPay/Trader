@@ -99,6 +99,7 @@ from ..kraken_reconciliation import (
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
 )
+from ..cycle_runner import cycle_status, start_cycle_in_background
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
@@ -500,6 +501,11 @@ class LocalApiService:
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":
             return 200, self.status()
+        if path == "/cycle-run":
+            # Progress of an on-demand cycle (POST /run-cycle). No cycle_id returns the most
+            # recent one, so the app can show the last run's result on open without having
+            # to remember an id across launches.
+            return 200, cycle_status(self.settings.db_path, _first(query, "cycle_id"))
         if path == "/founder-evidence":
             return 200, founder_evidence_payload(
                 self.settings.db_path,
@@ -787,6 +793,17 @@ class LocalApiService:
             if not key:
                 return 400, {"error": "missing_key", "message": "Body must include a 'key' naming an existing RISK_POLICIES row."}
             return 200, set_risk_policy_value(self.settings.db_path, key, body.get("value"), updated_by=str(body.get("updated_by") or "founder"))
+        if path == "/run-cycle":
+            # 2026-08-29, Founder-directed: one button in the app that runs a whole cycle
+            # and narrates it. Returns immediately with a cycle_id; the app polls
+            # GET /cycle-run. A full cycle takes minutes and Render cuts any request at 60
+            # seconds, so this cannot be synchronous even in principle.
+            scope = str(body.get("scope") or "all").strip().lower()
+            if scope not in {"all", "crypto", "equities"}:
+                return 400, {"error": "invalid_scope", "message": "scope must be all, crypto or equities."}
+            return 200, start_cycle_in_background(
+                self, scope=scope, trigger_source=str(body.get("trigger_source") or "app"),
+            )
         if path == "/admin/set-investment-policy":
             # 2026-08-29: the confidence bar lives in INVESTMENT_POLICIES and had no writer,
             # so every change to it meant raw SQL against production. See

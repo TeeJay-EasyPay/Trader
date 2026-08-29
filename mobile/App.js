@@ -15,6 +15,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
 import { AskAiTrader } from './screens/Ask';
+import { RunCycleScreen } from './screens/RunCycle';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
 import { useFounderBrief } from './hooks/useFounderBrief';
@@ -50,8 +51,13 @@ const { shortApiBase, apiRequest } = require('./api/client');
 // Briefing directly under the summary, sharing one conversation, which is where the questions
 // get asked anyway ("that way I don't need to go to a separate screen"). A tab whose only
 // content already appears on the screen before it is a navigation step that buys nothing.
-const SCREENS = ['ExecutiveBriefing', 'Portfolio'];
-const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing' };
+// 2026-08-29, Founder-directed: a third screen, deliberately, after two rounds of
+// simplification cut the app from seven screens to two. It earns its tab because it answers a
+// question the other two cannot -- "run the whole thing now and show me every step" -- and
+// because it is how updates get tested on the emulator without waiting for the worker's
+// hourly schedule. It is a run log, not a dashboard, so it does not belong on the Briefing.
+const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'RunCycle'];
+const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', RunCycle: 'Run a Cycle' };
 
 export default function App() {
   const [screen, setScreen] = useState('ExecutiveBriefing');
@@ -165,6 +171,20 @@ export default function App() {
             setAskMessages={setAskMessages}
             request={apiRequest}
           />
+        </ErrorBoundary>
+      );
+    }
+    if (screen === 'RunCycle') {
+      // Own ErrorBoundary: this screen polls a backend endpoint on a timer, and a render
+      // failure here must not take down the Briefing or Portfolio with it.
+      return (
+        <ErrorBoundary
+          label="RunCycle"
+          title="The cycle screen could not be displayed."
+          message="Something went wrong showing the run log. Your other data and navigation are unaffected."
+          onRetry={() => setScreen('ExecutiveBriefing')}
+        >
+          <RunCycleScreen />
         </ErrorBoundary>
       );
     }

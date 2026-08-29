@@ -442,4 +442,56 @@ export const styles = StyleSheet.create({
     paddingTop: 6,
     fontStyle: 'italic',
   },
+  // Run-a-cycle screen (2026-08-29). Each step is a bordered block rather than a plain row:
+  // the summaries run to two lines and without separation they read as one paragraph.
+  cycleStep: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#dee2e6',
+    paddingLeft: 10,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  cycleStepHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  cycleStepLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#212529',
+  },
+  cycleStepSummary: {
+    fontSize: 13,
+    color: '#495057',
+    paddingTop: 4,
+    lineHeight: 18,
+  },
+  cycleStepPending: {
+    fontSize: 13,
+    color: '#6c757d',
+    paddingTop: 4,
+    fontStyle: 'italic',
+  },
+  cycleConclusion: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#212529',
+    lineHeight: 21,
+    paddingBottom: 6,
+  },
+  cycleBusyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 10,
+  },
+  cycleError: {
+    fontSize: 13,
+    color: '#c92a2a',
+    paddingTop: 10,
+    lineHeight: 18,
+  },
 });
