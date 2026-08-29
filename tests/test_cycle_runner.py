@@ -19,6 +19,7 @@ from ai_trader.cycle_runner import (
     start_cycle,
     start_cycle_in_background,
 )
+from ai_trader.multi_broker import initialize_multi_broker_schema
 from ai_trader.operational import initialize_operational_schema
 
 
@@ -63,6 +64,8 @@ class _Service:
 def _fresh_db(tmp: str) -> Path:
     db_path = Path(tmp) / "cycle.db"
     initialize_operational_schema(db_path)
+    # CRYPTO_RESEARCH_SCORES lives in the multi-broker schema, not the operational one.
+    initialize_multi_broker_schema(db_path)
     return db_path
 
 
@@ -162,6 +165,60 @@ def test_a_second_cycle_is_refused_while_one_is_running():
             if cycle_status(db_path, first["cycle_id"])["status"] != "running":
                 break
             time.sleep(0.1)
+
+
+def test_a_step_reporting_on_an_earlier_steps_work_uses_the_whole_cycle_window():
+    """Found on the very first live production run, and it made the log self-contradictory.
+
+    The scores are written by step 2 (the price and liquidity refresh) and only READ by step
+    3 (research). Measuring step 3's own window found nothing, so the run log printed:
+
+        [OK] 2. Get fresh prices...  Fresh prices... read for 20 coins.
+        [OK] 3. Research and score every coin   No coins were scored this cycle.
+
+    Two adjacent lines flatly contradicting each other, in the one feature whose entire
+    purpose is to say truthfully what happened.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+
+        written: dict[str, bool] = {}
+
+        class _WritesScoresInStepTwo(_Service):
+            def refresh_crypto_candle_history(self):
+                result = self._stage("candles")
+                # Write score rows the way the real refresh does: during step 2.
+                from contextlib import closing as _closing
+
+                from ai_trader.database import connect as _connect
+                from ai_trader.models import utc_now_iso as _now
+
+                with _closing(_connect(db_path)) as conn:
+                    with conn:
+                        for symbol, score in (("LTC", 0.81), ("SOL", 0.64), ("ETH", 0.55)):
+                            conn.execute(
+                                """INSERT INTO CRYPTO_RESEARCH_SCORES
+                                       (created_at, symbol, overall_due_diligence_score,
+                                        reasoning_json, source)
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                (_now(), symbol, score, "{}", "test"),
+                            )
+                written["yes"] = True
+                return result
+
+        service = _WritesScoresInStepTwo(db_path)
+        cycle_id = start_cycle(db_path, scope="crypto")
+        run_cycle(service, cycle_id, scope="crypto")
+
+        assert written.get("yes"), "the fake refresh should have written score rows"
+        steps = {s["seq"]: s for s in cycle_status(db_path, cycle_id)["steps"]}
+        research = steps[3]["summary"] or ""
+        assert "No coins were scored" not in research, (
+            f"research reported nothing while step 2 wrote 3 scores: {research!r}"
+        )
+        assert "3 coins scored" in research, research
+        # And it must name the best one, which is the number the Founder actually acts on.
+        assert "LTC" in research and "0.81" in research, research
 
 
 def test_status_before_any_run_is_reported_plainly():

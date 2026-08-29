@@ -127,6 +127,14 @@ def _summarise_scores(db_path: Path, since: str) -> str:
 
 
 def _summarise_research(db_path: Path, since: str, bar: float) -> str:
+    """`since` must be the CYCLE start, not this step's start.
+
+    2026-08-29, found on the first live run: the scores are written by the PREVIOUS step
+    (the price and liquidity refresh) and merely read by this one, so measuring this step's
+    own window found nothing and reported "No coins were scored this cycle" directly beneath
+    a step that had just said 20 coins were scored. Two adjacent lines contradicting each
+    other is precisely the dishonest narration this whole feature exists to replace.
+    """
     with closing(connect(db_path)) as conn:
         scored = int(_scalar(
             conn, "SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES WHERE created_at >= ?", (since,)
@@ -330,6 +338,10 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
     """
     db_path = service.settings.db_path
     bar = _confidence_bar(service)
+    # Some steps REPORT on rows an EARLIER step wrote (research reads the scores the price
+    # refresh produced), so those summaries measure from the start of the whole cycle rather
+    # than from their own step. See _summarise_research.
+    cycle_started = cycle_status(db_path, cycle_id).get("started_at") or utc_now_iso()
     do_crypto = scope in {"all", "crypto"}
     do_equities = scope in {"all", "equities"}
 
@@ -344,10 +356,13 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
              lambda since: _summarise_scores(db_path, since)),
             ("Research and score every coin",
              lambda: service.run_crypto_analysis(limit=0),
-             lambda since: _summarise_research(db_path, since, bar)),
+             lambda since: _summarise_research(db_path, cycle_started, bar)),
+            # Same window problem as research above: the proposals and their pass/fail
+            # decisions are written DURING the research step, so this reports on the cycle
+            # rather than on its own (instantaneous) step.
             ("Check each idea against the two rules",
              lambda: {"status": "reviewed"},
-             lambda since: _summarise_proposals(db_path, since)),
+             lambda since: _summarise_proposals(db_path, cycle_started)),
             ("Place any crypto orders",
              lambda: service.auto_execute_recommendations_kraken(),
              lambda since: _summarise_orders(db_path, since, "Kraken")),
