@@ -13,6 +13,7 @@ from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
+from .compliance_screen import screen_business_activity
 from .operational import PERMITTED_UNIVERSE_FIT, permitted_universe_fit, safe_score
 from .proposal_context import build_proposal_context
 from .liquidity_map import liquidity_map_for_pair
@@ -254,7 +255,7 @@ class AITradingAgent:
             with closing(connect(self.db_path)) as conn:
                 row = conn.execute(
                     """
-                    SELECT 1
+                    SELECT cm.company_name, cm.sector, cm.industry, cm.business_summary
                     FROM INVESTMENT_WATCHLIST iw
                     JOIN COMPANY_MASTER cm ON cm.id = iw.company_id
                     WHERE UPPER(cm.ticker) = UPPER(?) AND COALESCE(iw.active, 1) = 1
@@ -284,7 +285,34 @@ class AITradingAgent:
         # path, which sets philosophy_fit=1.0 for the same reason (see
         # propose_crypto_trades). A company absent from the watchlist still returns None,
         # keeping TradeProposal's 0.0 default -- unscreened is never assumed permitted.
-        return permitted_universe_fit(row is not None)
+        if row is None:
+            return None
+        # 2026-08-29, Founder-directed: the Shariah screen is now CHECKED here, not merely
+        # assumed from the fact that a human once approved the list. Membership used to be
+        # the whole test, which was safe only for as long as the watchlist stayed the
+        # hand-curated 50 -- the moment it grows (which is the Founder's stated goal:
+        # "there could be thousands"), membership stops being evidence of anything.
+        #
+        # Running it at permission time rather than only at admission time is deliberate.
+        # A company's business can change after it is admitted, the row can be edited, and
+        # a future bulk import could add names nobody screened. This is the last gate before
+        # real money, so it re-derives the answer instead of trusting a stored one.
+        #
+        # Verified against production the day this was wired: all 50 companies pass, so this
+        # changes no existing behaviour -- it makes the existing behaviour enforced.
+        verdict = screen_business_activity(
+            company_name=row[0], sector=row[1], industry=row[2], business_summary=row[3],
+        )
+        if not verdict.tradeable:
+            # "referred" lands here too, and that is the intended asymmetry: an ambiguous
+            # company waits for a human rather than trading on the benefit of the doubt.
+            print(
+                f"[compliance] symbol={symbol} verdict={verdict.verdict} "
+                f"category={verdict.category} reason={verdict.reason}",
+                flush=True,
+            )
+            return None
+        return permitted_universe_fit(True)
 
     def _demo_proposal(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal:
         price = _latest_close(symbol, market) or 100.0
