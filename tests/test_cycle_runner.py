@@ -221,6 +221,62 @@ def test_a_step_reporting_on_an_earlier_steps_work_uses_the_whole_cycle_window()
         assert "LTC" in research and "0.81" in research, research
 
 
+def test_a_cycle_killed_by_a_restart_does_not_disable_the_button_forever():
+    """Found on the emulator: a deploy restarted the service mid-cycle.
+
+    The background thread died with the process, but the database row still said "running".
+    The app disables the Run button while a cycle is in flight, so the Founder was left with
+    a cycle running forever and a button that would never work again. A feature whose entire
+    point is a button that works cannot have a state where the button stops working.
+    """
+    from contextlib import closing as _closing
+    from datetime import datetime, timedelta, timezone
+
+    from ai_trader.cycle_runner import STALE_AFTER_MINUTES
+    from ai_trader.database import connect as _connect
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+        orphan = start_cycle(db_path, scope="all")
+        long_ago = (
+            datetime.now(timezone.utc) - timedelta(minutes=STALE_AFTER_MINUTES + 5)
+        ).isoformat()
+        with _closing(_connect(db_path)) as conn:
+            with conn:
+                conn.execute("UPDATE CYCLE_RUNS SET started_at = ? WHERE cycle_id = ?",
+                             (long_ago, orphan))
+                conn.execute(
+                    """INSERT INTO CYCLE_RUN_STEPS (cycle_id, seq, label, status, started_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (orphan, 1, "Refresh the list of coins we are allowed to trade",
+                     "running", long_ago),
+                )
+
+        status = cycle_status(db_path, orphan)
+        assert status["status"] == FAILED, "an abandoned cycle must not stay 'running'"
+        assert "interrupted" in (status["conclusion"] or "").lower()
+        assert all(s["status"] != "running" for s in status["steps"]), (
+            "a step left mid-flight by a dead process must be closed out too"
+        )
+
+        # And crucially, a new cycle can now be started.
+        service = _Service(db_path)
+        result = start_cycle_in_background(service, scope="crypto")
+        assert result["status"] == "started", result
+        for _ in range(80):
+            if cycle_status(db_path, result["cycle_id"])["status"] != "running":
+                break
+            time.sleep(0.1)
+
+
+def test_a_recent_running_cycle_is_never_reaped():
+    """The reaper must not kill a cycle that is simply still working."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+        live = start_cycle(db_path, scope="all")
+        assert cycle_status(db_path, live)["status"] == "running"
+
+
 def test_status_before_any_run_is_reported_plainly():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = _fresh_db(tmp)

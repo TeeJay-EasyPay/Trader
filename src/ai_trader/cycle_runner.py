@@ -273,9 +273,62 @@ def _finish_cycle(db_path: Path, cycle_id: str, *, status: str, conclusion: str)
             )
 
 
+# A cycle normally finishes in two to four minutes; the slowest stage observed in production
+# is equity research at around ten. Twenty is generous enough never to reap a live run and
+# short enough that an orphan does not sit there all afternoon.
+STALE_AFTER_MINUTES = 20
+
+
+def _reap_interrupted(db_path: Path) -> None:
+    """Close out cycles whose process died mid-run.
+
+    2026-08-29, found on the emulator: a deploy restarted the web service while a cycle was
+    on its last step. The thread died with it, but the database row still said "running" --
+    so the app showed a cycle running forever and, because the button is disabled while one
+    is in flight, the Founder could never start another. A feature whose entire purpose is a
+    button that works cannot have a state where the button stops working.
+
+    Every restart-driven orphan looks like this, so it is reaped on read rather than needing
+    anyone to notice and clear it by hand.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STALE_AFTER_MINUTES)).isoformat()
+    with closing(connect(db_path)) as conn:
+        stale = _rows(
+            conn,
+            """SELECT r.cycle_id FROM CYCLE_RUNS r
+               WHERE r.status = ?
+                 AND COALESCE(
+                       (SELECT MAX(COALESCE(s.completed_at, s.started_at))
+                          FROM CYCLE_RUN_STEPS s WHERE s.cycle_id = r.cycle_id),
+                       r.started_at) < ?""",
+            (RUNNING, cutoff),
+        )
+        if not stale:
+            return
+        with conn:
+            for row in stale:
+                conn.execute(
+                    """UPDATE CYCLE_RUNS SET status = ?, completed_at = ?, conclusion = ?
+                       WHERE cycle_id = ?""",
+                    (FAILED, utc_now_iso(),
+                     "This cycle was interrupted before it finished - usually because the "
+                     "service restarted. Nothing was left half-traded; press Run again.",
+                     row[0]),
+                )
+                conn.execute(
+                    """UPDATE CYCLE_RUN_STEPS SET status = ?, completed_at = ?, summary = ?
+                       WHERE cycle_id = ? AND status = ?""",
+                    (FAILED, utc_now_iso(), "Interrupted when the service restarted.",
+                     row[0], RUNNING),
+                )
+
+
 def cycle_status(db_path: Path, cycle_id: str | None = None) -> dict[str, Any]:
     """One cycle's progress, for the app to poll. Defaults to the most recent cycle."""
     initialize_cycle_schema(db_path)
+    _reap_interrupted(db_path)
     with closing(connect(db_path)) as conn:
         if cycle_id:
             run = conn.execute(
@@ -449,6 +502,9 @@ def start_cycle_in_background(service, *, scope: str = "all", trigger_source: st
     """
     db_path = service.settings.db_path
     initialize_cycle_schema(db_path)
+    # Clear any orphan from a previous process before deciding whether one is "already
+    # running" -- otherwise a restart-killed cycle blocks the button for good.
+    _reap_interrupted(db_path)
     if _RUN_LOCK.locked():
         current = cycle_status(db_path)
         return {
