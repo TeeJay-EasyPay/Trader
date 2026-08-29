@@ -28,7 +28,7 @@ function stepMark(status) {
   if (status === 'completed') return 'Done';
   if (status === 'failed') return 'Failed';
   if (status === 'running') return 'Running';
-  return 'Waiting';
+  return 'To do';
 }
 
 export function RunCycleScreen({ cycleRun }) {
@@ -87,10 +87,15 @@ export function RunCycleScreen({ cycleRun }) {
                 </Text>
                 <StatusPill label={stepMark(step.status)} tone={stepTone(step.status)} />
               </View>
+              {/* The whole plan is written up front, so a step with no summary is either
+                  in flight or still queued -- and saying "working on this now" for a step
+                  that has not started would be the same overstatement as "step 1 of 1". */}
               {step.summary ? (
                 <Text style={styles.cycleStepSummary}>{step.summary}</Text>
               ) : (
-                <Text style={styles.cycleStepPending}>Working on this now...</Text>
+                <Text style={styles.cycleStepPending}>
+                  {step.status === 'running' ? 'Working on this now...' : 'Not started yet.'}
+                </Text>
               )}
             </View>
           ))}

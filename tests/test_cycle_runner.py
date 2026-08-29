@@ -277,6 +277,37 @@ def test_a_recent_running_cycle_is_never_reaped():
         assert cycle_status(db_path, live)["status"] == "running"
 
 
+def test_the_whole_plan_exists_from_the_first_moment():
+    """Seen on the emulator: the header read "step 1 of 1" while five steps were coming.
+
+    Steps used to be created as each one started, so the total counted only what had already
+    begun. That told the Founder the cycle was on its LAST step when it was on its first. A
+    progress indicator that overstates progress is worse than no indicator at all.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+
+        seen_totals: list[int] = []
+
+        class _ChecksPlanMidRun(_Service):
+            def refresh_crypto_candle_history(self):
+                # Step 2 of 5: by now the app must already be able to see all five.
+                seen_totals.append(len(cycle_status(db_path, self.cycle_id)["steps"]))
+                return self._stage("candles")
+
+        service = _ChecksPlanMidRun(db_path)
+        cycle_id = start_cycle(db_path, scope="crypto")
+        service.cycle_id = cycle_id
+        run_cycle(service, cycle_id, scope="crypto")
+
+        assert seen_totals == [5], (
+            f"the full five-step plan must be visible while step 2 runs, saw {seen_totals}"
+        )
+        steps = cycle_status(db_path, cycle_id)["steps"]
+        assert [s["seq"] for s in steps] == [1, 2, 3, 4, 5]
+        assert all(s["status"] == COMPLETED for s in steps)
+
+
 def test_status_before_any_run_is_reported_plainly():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = _fresh_db(tmp)

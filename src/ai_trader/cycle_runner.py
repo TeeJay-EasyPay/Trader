@@ -243,13 +243,39 @@ def start_cycle(db_path: Path, *, scope: str = "all", trigger_source: str = "app
     return cycle_id
 
 
+PENDING = "pending"
+
+
+def _plan_steps(db_path: Path, cycle_id: str, labels: list[str]) -> None:
+    """Write the whole plan up front, every step pending.
+
+    2026-08-29, seen on the emulator: steps used to be created as they started, so while the
+    first one ran the app read "step 1 of 1" -- telling the Founder the cycle was on its last
+    step when it was on its first, out of five. A progress indicator that overstates progress
+    is worse than none.
+
+    Writing the plan first also means the screen shows the whole sequence immediately, so he
+    can see what is coming rather than watching lines appear one at a time with no idea how
+    many are left.
+    """
+    now = utc_now_iso()
+    with closing(connect(db_path)) as conn:
+        with conn:
+            for seq, label in enumerate(labels, start=1):
+                conn.execute(
+                    """INSERT INTO CYCLE_RUN_STEPS (cycle_id, seq, label, status, started_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (cycle_id, seq, label, PENDING, now),
+                )
+
+
 def _open_step(db_path: Path, cycle_id: str, seq: int, label: str) -> None:
     with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
-                """INSERT INTO CYCLE_RUN_STEPS (cycle_id, seq, label, status, started_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (cycle_id, seq, label, RUNNING, utc_now_iso()),
+                """UPDATE CYCLE_RUN_STEPS SET status = ?, started_at = ?
+                   WHERE cycle_id = ? AND seq = ?""",
+                (RUNNING, utc_now_iso(), cycle_id, seq),
             )
 
 
@@ -429,6 +455,10 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
              lambda: service.auto_execute_recommendations_alpaca(),
              lambda since: _summarise_orders(db_path, since, "Alpaca")),
         ]
+
+    # Lay out the whole plan before running anything, so "step 2 of 5" is true from the
+    # first moment rather than counting only the steps created so far.
+    _plan_steps(db_path, cycle_id, [label for label, _action, _summarise in stages])
 
     failed = False
     for seq, (label, action, summarise) in enumerate(stages, start=1):
