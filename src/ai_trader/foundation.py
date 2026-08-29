@@ -305,7 +305,19 @@ DEFAULT_INVESTMENT_POLICIES: dict[str, tuple[Any, str, str]] = {
     "equities_enabled": (True, "boolean", "Permit equity research and paper trading."),
     "crypto_enabled": (True, "boolean", "Permit crypto trading. Real-money submission is separately gated by the Kraken environment approval."),
     "minimum_investment_policy_score": (0.85, "float", "Permission gate: an asset must be in the Founder-approved universe. NOT a quality score - this enforces the Shariah screen."),
-    "minimum_overall_confidence": (0.75, "float", "The single confidence bar for every broker and asset class."),
+    # 2026-08-29, Founder-directed: 0.85 -> 0.75 -> 0.70. The two earlier numbers were both
+    # chosen against a score that was not yet a real measurement -- CRYPTO_RESEARCH_SCORES
+    # returned exactly 0.850 for every coin, every hour, from 20 July to 26 August (min =
+    # avg = max = 0.850 across 495 readings a day). Real scoring began on 27 August with the
+    # live Kraken order-book and news-sentiment work, and honest scores run far lower: over
+    # the following 56 hourly cycles only 6.6% of readings cleared 0.75, against 23.7% at
+    # 0.70. Both bars found ideas in the same 30 of 56 cycles, so this widens the choice
+    # within an active hour rather than adding active hours.
+    #
+    # NOTE: changing this line alone does NOT move a deployment that has already seeded the
+    # row -- _seed_policies is INSERT OR IGNORE. Use /admin/set-investment-policy, which
+    # exists for exactly this.
+    "minimum_overall_confidence": (0.70, "float", "The single confidence bar for every broker and asset class."),
 }
 
 DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
@@ -550,6 +562,42 @@ def set_risk_policy_value(db_path: Path, key: str, value: Any, *, updated_by: st
         with conn:
             conn.execute(
                 "UPDATE RISK_POLICIES SET policy_value = ?, updated_at = ? WHERE policy_key = ?",
+                (_stringify(value), utc_now_iso(), key),
+            )
+    return {
+        "status": "updated",
+        "policy_key": key,
+        "previous_value": previous_value,
+        "new_value": _stringify(value),
+        "updated_by": updated_by,
+    }
+
+
+def set_investment_policy_value(db_path: Path, key: str, value: Any, *, updated_by: str = "founder") -> dict[str, Any]:
+    """Directly update an already-seeded INVESTMENT_POLICIES row.
+
+    2026-08-29: RISK_POLICIES got a writer on 2026-08-16 (above) for exactly this reason,
+    but INVESTMENT_POLICIES never did -- even though it holds minimum_overall_confidence,
+    the single most-adjusted number in the whole app and the one the Founder has asked to
+    change three times. _seed_policies uses INSERT OR IGNORE, so editing
+    DEFAULT_INVESTMENT_POLICIES in code does nothing to a deployment that has already
+    seeded the row; the only way to move it was raw SQL against production, which is
+    exactly the kind of undocumented side channel that makes a value drift out of sync
+    with the code that claims to set it.
+
+    Same contract as set_risk_policy_value: updates an existing row only, so a typo'd key
+    fails loudly rather than seeding a stray policy nothing reads.
+    """
+    initialize_foundation_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute("SELECT * FROM INVESTMENT_POLICIES WHERE policy_key = ?", (key,)).fetchone()
+        if existing is None:
+            return {"status": "not_found", "policy_key": key}
+        previous_value = existing["policy_value"]
+        with conn:
+            conn.execute(
+                "UPDATE INVESTMENT_POLICIES SET policy_value = ?, updated_at = ? WHERE policy_key = ?",
                 (_stringify(value), utc_now_iso(), key),
             )
     return {

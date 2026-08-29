@@ -63,6 +63,7 @@ from ..foundation import (
     list_capital_allocations,
     latest_investment_score_batch,
     load_trading_policy,
+    set_investment_policy_value,
     set_risk_policy_value,
 )
 from ..experience_engine import initialize_experience_engine_schema
@@ -786,6 +787,14 @@ class LocalApiService:
             if not key:
                 return 400, {"error": "missing_key", "message": "Body must include a 'key' naming an existing RISK_POLICIES row."}
             return 200, set_risk_policy_value(self.settings.db_path, key, body.get("value"), updated_by=str(body.get("updated_by") or "founder"))
+        if path == "/admin/set-investment-policy":
+            # 2026-08-29: the confidence bar lives in INVESTMENT_POLICIES and had no writer,
+            # so every change to it meant raw SQL against production. See
+            # foundation.set_investment_policy_value.
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return 400, {"error": "missing_key", "message": "Body must include a 'key' naming an existing INVESTMENT_POLICIES row."}
+            return 200, set_investment_policy_value(self.settings.db_path, key, body.get("value"), updated_by=str(body.get("updated_by") or "founder"))
         if path == "/admin/kraken-allocation":
             # Founder capital top-up for the Kraken AI ledger. Needs an explicit
             # `reference` so a retried call cannot double-credit the allocation.
