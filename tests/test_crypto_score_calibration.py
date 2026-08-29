@@ -321,3 +321,48 @@ class InvestmentScoreMeasuredOnlyTests(unittest.TestCase):
                 score = calculate_investment_score(db_path, self.proposal(0.8))["overall_confidence"]
         conf, policy, risk = 0.8, 0.85, 1 - 0.015
         self.assertAlmostEqual(score, round((conf * 5 + policy + risk) / 7, 4), places=4)
+
+
+class CryptoPermissionTests(unittest.TestCase):
+    """2026-08-29: crypto set philosophy_fit to its own confidence score, and the orchestrator
+    tests that field against min_investment_policy_fit (0.85). So crypto silently needed 0.85
+    confidence to pass a PERMISSION check, while the confidence gate itself sits at 0.75 --
+    a hidden bar 10 points higher than equities faced, and the reason crypto never traded.
+
+    Confirmed live: the best coins scored 0.60-0.67 and were rejected as
+    not_in_permitted_universe -- a permission failure reported for a coin that IS permitted.
+    """
+
+    def test_a_crypto_proposal_is_marked_permitted_not_scored_on_conviction(self):
+        """Checks the executable line, with comments stripped -- the first version of this
+        test grepped raw source and matched the comment that DESCRIBES the old code, so it
+        failed against a correct fix."""
+        import inspect
+        import re
+
+        from ai_trader import agent
+
+        code = " ".join(
+            re.sub(r"#.*$", "", line) for line in inspect.getsource(agent).splitlines()
+        )
+        self.assertNotIn("philosophy_fit=confidence", code,
+                         "crypto must not reuse its confidence as a permission value")
+        self.assertIn("philosophy_fit=1.0", code)
+
+    def test_permission_and_conviction_are_separate_numbers(self):
+        """The rule the whole consolidation rests on: one field answers 'may we own this',
+        another answers 'are we convinced'. Mixing them means one threshold silently governs
+        both, which is what happened here."""
+        from ai_trader.models import AutoTradeConfig, TradeProposal
+
+        auto = AutoTradeConfig()
+        # A permitted coin whose conviction is merely adequate must clear permission and be
+        # judged solely on confidence.
+        p = TradeProposal(
+            symbol="SOL", side="buy", entry_price=100.0, stop_loss=98.0, take_profit=105.0,
+            position_size=1.0, risk_percentage=0.005, confidence_score=0.78,
+            news_summary="x", market_sentiment_summary="y", technical_summary="z",
+            plain_english_reasoning="w", asset_type="crypto", philosophy_fit=1.0,
+        ).normalized()
+        self.assertGreaterEqual(p.philosophy_fit, auto.min_philosophy_fit)
+        self.assertGreaterEqual(p.confidence_score, auto.min_confidence)

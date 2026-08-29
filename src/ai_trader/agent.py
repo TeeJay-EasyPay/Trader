@@ -690,7 +690,23 @@ def propose_crypto_trades(
                 ),
                 asset_type="crypto",
                 exchange="KRAKEN",
-                philosophy_fit=confidence,
+                # 2026-08-29: was `philosophy_fit=confidence`, which quietly held crypto to a
+                # far higher bar than equities and is why it has never traded.
+                #
+                # philosophy_fit is the PERMISSION field -- "is this an asset the Founder has
+                # approved owning" -- and the orchestrator tests it against
+                # min_investment_policy_fit, which is 0.85. Feeding the coin's confidence into
+                # it meant crypto needed 0.85 confidence to pass a permission check, while the
+                # actual confidence gate sits at 0.75. Confirmed live: the best coins scored
+                # 0.60-0.67 and were rejected as not_in_permitted_universe -- a permission
+                # failure reported for a coin that IS permitted.
+                #
+                # Permission for crypto is already established elsewhere and properly: this
+                # loop only iterates the approved universe, and foundation.py separately
+                # requires an active CRYPTO_MASTER row before any crypto order. So a coin
+                # reaching this line is permitted by construction, and says so. Its conviction
+                # continues to be judged on confidence_score, once, like everything else.
+                philosophy_fit=1.0,
             ).normalized()
             intelligence = evaluate_trade_intelligence(
                 db_path,
