@@ -107,6 +107,35 @@ def main(argv: list[str] | None = None) -> int:
     run_job.add_argument("--claimed-job-run-id", default=None, type=int, help=argparse.SUPPRESS)
     run_job.add_argument("--worker-id", default=None, help=argparse.SUPPRESS)
 
+    # 2026-08-29, Founder-directed: "can we introduce a function to immediately start the
+    # crypto research cycle so that we don't have to wait each time". The worker only runs
+    # crypto-research on its own hourly bucket, so verifying any scoring or gating change
+    # meant waiting up to an hour per attempt -- which is exactly how a one-line fix turned
+    # into a morning of polling.
+    #
+    # This runs the same three jobs in the same order the worker does, but WITHOUT claiming a
+    # scheduled-job slot. That is deliberate: claim_scheduled_job keys on job_name + the time
+    # bucket, so claiming here would make the worker skip its own next run. A manual run must
+    # not silently cancel the scheduled one.
+    crypto_now = sub.add_parser("crypto-now")
+    crypto_now.add_argument("--limit", default=0, type=int)
+    crypto_now.add_argument(
+        "--research-only",
+        action="store_true",
+        help="Skip the universe and candle refresh and re-score against existing data.",
+    )
+    # Crypto research needs Kraken credentials, which live only in Render -- deliberately,
+    # since Kraken is the live-money account and those keys have no business sitting on a
+    # laptop. So a local run reports "Kraken credentials are required" and stops. --remote
+    # drives the hosted service's existing POST endpoints instead, which is the only way to
+    # trigger a real production crypto cycle from here.
+    crypto_now.add_argument(
+        "--remote",
+        action="store_true",
+        help="Trigger the cycle on the hosted API rather than in this process.",
+    )
+    crypto_now.add_argument("--base-url", default="https://trader-no0f.onrender.com")
+
     migrate_database = sub.add_parser("migrate-sqlite-to-postgres")
     migrate_database.add_argument("--source", required=True)
 
@@ -515,6 +544,46 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"job": failed, "error": str(exc)}, indent=2, sort_keys=True))
             return 1
 
+    if args.command == "crypto-now":
+        from .api import LocalApiService
+
+        if args.remote:
+            return _crypto_now_remote(
+                settings,
+                base_url=args.base_url,
+                research_only=args.research_only,
+                limit=args.limit,
+            )
+
+        _raise_if_invalid_hosted_runtime(settings)
+        service = LocalApiService(settings)
+        # Same order as _due_worker_jobs: the shopping list is refreshed before the scores
+        # are recomputed, and the scores before research reads them. Getting this order
+        # wrong is what produced the permanent one-cycle scoring lag noted there, so a
+        # manual trigger that ran them in any other order would not be testing production.
+        stages = ["crypto-research"] if args.research_only else [
+            "crypto-universe-refresh",
+            "crypto-candle-refresh",
+            "crypto-research",
+        ]
+        results: dict[str, dict] = {}
+        for stage in stages:
+            print(f"[crypto-now] stage={stage} status=started", flush=True)
+            started = time.monotonic()
+            try:
+                results[stage] = _run_named_job(service, stage, limit=args.limit)
+            except Exception as exc:  # noqa: BLE001 - report which stage broke, then stop
+                results[stage] = {"status": "failed", "error": str(exc)}
+                print(f"[crypto-now] stage={stage} status=failed error={exc}", flush=True)
+                print(json.dumps(results, indent=2, sort_keys=True, default=str))
+                return 1
+            print(
+                f"[crypto-now] stage={stage} status=completed elapsed={time.monotonic() - started:.1f}s",
+                flush=True,
+            )
+        print(json.dumps(results, indent=2, sort_keys=True, default=str))
+        return 0
+
     if args.command == "migrate-sqlite-to-postgres":
         from .api import LocalApiService
         from .database_migration import migrate_sqlite_runtime_to_postgres
@@ -528,6 +597,66 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def _crypto_now_remote(settings, *, base_url: str, research_only: bool, limit: int) -> int:
+    """Trigger a real production crypto cycle against the hosted API.
+
+    Render's proxy cuts a synchronous request at roughly 100 seconds, and a full research
+    pass over the crypto universe takes longer than that. The work is NOT cancelled when
+    that happens -- the request handler keeps running in the hosted process and writes its
+    proposals as normal. So a read timeout here is reported as "dispatched, still running",
+    not as a failure, because treating it as one would be plain wrong and would send anyone
+    reading this output hunting for a bug that is not there.
+    """
+    import http.client
+    import os
+    import urllib.error
+    import urllib.request
+
+    token = os.getenv("AI_TRADER_API_TOKEN", "").strip()
+    if not token:
+        print("AI_TRADER_API_TOKEN is not set locally, so the hosted API will reject this.")
+        return 1
+
+    base = base_url.rstrip("/")
+    stages = [("/run-crypto-analysis", {"limit": limit})]
+    if not research_only:
+        stages.insert(0, ("/refresh-crypto-candle-history", {}))
+
+    for path, payload in stages:
+        request = urllib.request.Request(
+            f"{base}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-API-Key": token},
+            method="POST",
+        )
+        print(f"[crypto-now] remote stage={path} status=started", flush=True)
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=280) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+            print(
+                f"[crypto-now] remote stage={path} status=completed "
+                f"elapsed={time.monotonic() - started:.1f}s",
+                flush=True,
+            )
+            print(json.dumps(body, indent=2, sort_keys=True, default=str))
+        # RemoteDisconnected is the shape the Render proxy cutoff actually takes -- it closes
+        # the connection rather than returning a status, and it is an HTTPException, NOT a
+        # URLError, so catching URLError alone misses the single most likely outcome here.
+        except (TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
+            reason = getattr(exc, "reason", exc) or type(exc).__name__
+            if isinstance(exc, urllib.error.HTTPError):
+                print(f"[crypto-now] remote stage={path} status=failed http={exc.code} {exc.read()[:400]!r}")
+                return 1
+            print(
+                f"[crypto-now] remote stage={path} status=dispatched "
+                f"elapsed={time.monotonic() - started:.1f}s detail={reason} -- the hosted "
+                "process is still working; check the decisions table for the result.",
+                flush=True,
+            )
+    return 0
 
 
 def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "daily") -> dict:

@@ -147,6 +147,33 @@ def safe_score(value: Any) -> float | None:
     return number / 100 if number > 1 else number
 
 
+# 2026-08-29, Founder-directed consolidation: "is this our kind of asset?" is a YES/NO, and
+# the answer lives here, in one place, for every broker.
+#
+# The permission gate compares philosophy_fit against a threshold, so the answer still has to
+# be expressed as a number -- but only two numbers are ever correct. PERMITTED must sit at or
+# above every configured minimum (currently 0.85) so that a screened asset always clears it,
+# whatever the threshold is later moved to; a non-member returns None so the caller keeps
+# TradeProposal's 0.0 default and can never trade on an invented score.
+PERMITTED_UNIVERSE_FIT = 1.0
+
+
+def permitted_universe_fit(is_screened_member: bool) -> float | None:
+    """Whether the Founder is willing to own this at all -- not how good it looks.
+
+    Membership of a screened universe IS the permission: the 50-company Alpaca watchlist was
+    hand-screened for Shariah compliance before anything was added to it, and the Kraken
+    crypto universe is screened by construction. Every member is equally permitted.
+
+    This deliberately ignores quality ratings. Until today the equity side graded permission
+    by the watchlist's "Strong"/"Good"/"Moderate" wording (0.90/0.75/0.50) against a 0.85
+    gate, which barred 31 of the Founder's own 50 chosen companies from ever being bought
+    while still allowing them to be sold. Quality is what the confidence score measures --
+    the other of the two checks -- and it must not be double-counted as permission.
+    """
+    return PERMITTED_UNIVERSE_FIT if is_screened_member else None
+
+
 def safe_float(value: Any) -> float | None:
     if value in (None, ""):
         return None

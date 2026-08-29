@@ -347,7 +347,16 @@ class CryptoPermissionTests(unittest.TestCase):
         )
         self.assertNotIn("philosophy_fit=confidence", code,
                          "crypto must not reuse its confidence as a permission value")
-        self.assertIn("philosophy_fit=1.0", code)
+        # 2026-08-29: assert the MEANING, not the spelling. This pinned the literal
+        # "philosophy_fit=1.0" and so failed the moment that 1.0 became the shared
+        # PERMITTED_UNIVERSE_FIT constant -- which was the improvement, not a regression.
+        # A test that breaks when correct code is made more correct is worse than no test.
+        from ai_trader.operational import PERMITTED_UNIVERSE_FIT
+
+        self.assertIn("philosophy_fit=PERMITTED_UNIVERSE_FIT", code,
+                      "crypto should take its permission value from the one shared definition")
+        self.assertGreaterEqual(PERMITTED_UNIVERSE_FIT, 0.85,
+                                "the permitted value must clear the live permission gate")
 
     def test_permission_and_conviction_are_separate_numbers(self):
         """The rule the whole consolidation rests on: one field answers 'may we own this',

@@ -98,7 +98,7 @@ from ..kraken_reconciliation import (
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
 )
-from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
+from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
 from ..portfolio_intelligence import initialize_portfolio_intelligence_schema, upsert_asset_metadata
@@ -1241,7 +1241,8 @@ class LocalApiService:
         rows = self._rows(
             """
             SELECT ta.*, cm.company_name, cm.country, cm.sector, cm.investment_thesis,
-                   cm.reasons_for_caution, iw.current_investment_philosophy_fit
+                   cm.reasons_for_caution, iw.current_investment_philosophy_fit,
+                   iw.active AS watchlist_active
             FROM trade_audit ta
             LEFT JOIN COMPANY_MASTER cm ON UPPER(cm.ticker) = UPPER(ta.symbol)
             LEFT JOIN INVESTMENT_WATCHLIST iw ON iw.company_id = cm.id
@@ -1281,7 +1282,15 @@ class LocalApiService:
             guardrail_failures = _validation_failures(row["validation_result"])
             guardrail_checks = _guardrail_checks(row["validation_result"], row["payload_json"])
             confidence = safe_score(row["ai_confidence"]) or 0.0
-            philosophy_fit = safe_score(row["current_investment_philosophy_fit"]) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
+            # 2026-08-29: this used to read the watchlist's qualitative rating through
+            # safe_score, so the app showed "Good" companies at 0.75 against a 0.85
+            # auto-trade bar and reported them ineligible -- the display side of the same
+            # category error fixed in agent.py. Permission is membership of the screened
+            # watchlist, nothing more; see operational.permitted_universe_fit for the rule.
+            # The LEFT JOIN leaves watchlist_active NULL for any symbol not on the list,
+            # which is exactly the "not screened, so not permitted" case.
+            in_watchlist = row["watchlist_active"] is not None and int(row["watchlist_active"] or 0) == 1
+            philosophy_fit = permitted_universe_fit(in_watchlist) or _proposal_philosophy_fit(row["payload_json"]) or 0.0
             decision = decisions_by_id.get(row["proposal_id"])
             proposal_broker = self._proposal_broker(row["payload_json"])
             if proposal_broker is None:

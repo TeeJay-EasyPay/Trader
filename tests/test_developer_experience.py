@@ -28,7 +28,7 @@ from ai_trader.market_intelligence_platform import initialize_market_intelligenc
 from ai_trader.models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 from ai_trader.models import AutoTradeConfig
 from ai_trader.multi_broker import set_broker_auto_trading
-from ai_trader.operational import safe_score
+from ai_trader.operational import PERMITTED_UNIVERSE_FIT, safe_score
 from ai_trader.scheduler import IntervalWorker, ResearchScheduler
 
 
@@ -1217,12 +1217,18 @@ class DeveloperExperienceTests(unittest.TestCase):
             self.assertIsNotNone(row, "seed data should carry at least one assessed company")
             ticker, expected = row
 
-            # Stored qualitatively ("Strong") as often as numerically, which is why every
-            # reader of this column goes through safe_score -- float() raises on real seed data.
-            expected_score = safe_score(expected)
-            self.assertIsNotNone(expected_score)
-            self.assertAlmostEqual(agent._watchlist_philosophy_fit(ticker), expected_score)
-            self.assertAlmostEqual(agent._watchlist_philosophy_fit(str(ticker).lower()), expected_score)
+            # 2026-08-29: this used to assert the lookup returned safe_score(expected) --
+            # the watchlist's QUALITATIVE rating, "Strong" -> 0.90, "Good" -> 0.75. That is
+            # the behaviour that blocked 31 of the Founder's 50 hand-screened companies from
+            # ever being bought, against a 0.85 permission gate, and this test was quietly
+            # holding it in place. Permission is now membership: on the list means permitted,
+            # full stop, whatever the quality wording says. See tests/test_permitted_universe.py
+            # for the full account, and operational.permitted_universe_fit for the rule.
+            self.assertIsNotNone(safe_score(expected), "seed data should still carry a rating")
+            self.assertAlmostEqual(agent._watchlist_philosophy_fit(ticker), PERMITTED_UNIVERSE_FIT)
+            self.assertAlmostEqual(
+                agent._watchlist_philosophy_fit(str(ticker).lower()), PERMITTED_UNIVERSE_FIT
+            )
             # A company this system has never assessed must not auto-trade on an invented
             # score: None leaves TradeProposal's existing default in place.
             self.assertIsNone(agent._watchlist_philosophy_fit("ZZZNOTREAL"))

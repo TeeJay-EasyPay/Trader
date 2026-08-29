@@ -13,7 +13,7 @@ from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
-from .operational import safe_score
+from .operational import PERMITTED_UNIVERSE_FIT, permitted_universe_fit, safe_score
 from .proposal_context import build_proposal_context
 from .liquidity_map import liquidity_map_for_pair
 from .sprint6 import _ai_managed_symbols
@@ -254,21 +254,37 @@ class AITradingAgent:
             with closing(connect(self.db_path)) as conn:
                 row = conn.execute(
                     """
-                    SELECT iw.current_investment_philosophy_fit
+                    SELECT 1
                     FROM INVESTMENT_WATCHLIST iw
                     JOIN COMPANY_MASTER cm ON cm.id = iw.company_id
-                    WHERE UPPER(cm.ticker) = UPPER(?)
+                    WHERE UPPER(cm.ticker) = UPPER(?) AND COALESCE(iw.active, 1) = 1
                     ORDER BY iw.id DESC LIMIT 1
                     """,
                     (symbol,),
                 ).fetchone()
         except Exception:  # noqa: BLE001 - a lookup failure must fall back to the existing default, never block a proposal
             return None
-        # Stored qualitatively ("Strong", "Moderate") as often as numerically, which is
-        # why every reader of this column goes through safe_score -- float() raises on the
-        # real seed data. QUALITATIVE_SCORES maps the words to the same 0-1 scale the
-        # gates compare against.
-        return safe_score(row[0]) if row else None
+        # 2026-08-29: this used to return the watchlist's QUALITATIVE rating through
+        # safe_score -- "Strong" -> 0.90, "Good" -> 0.75, "Moderate" -> 0.50 -- and the
+        # permission gate then required 0.85. That is a category error, and it is why the
+        # Founder saw shares being sold but none bought. Membership of this watchlist IS
+        # the Shariah screen: every one of the 50 companies on it was hand-screened before
+        # being added, so all 50 are equally permitted to trade. "Strong" vs "Good" rates
+        # how ATTRACTIVE a permitted company is, not whether the Founder is willing to own
+        # it -- so grading permission by it silently barred 31 of his own 50 chosen
+        # companies from ever being bought.
+        #
+        # Confirmed live 2026-08-29: MSFT, NVDA, LULU, NKE, LUV, DAL, ISRG and LLY were all
+        # rejected "not_in_permitted_universe" on philosophy_fit 0.75 -- every one of them a
+        # company the Founder deliberately put on the list.
+        #
+        # Permission is a yes/no, exactly as the Founder described it ("is this our kind of
+        # asset?"), so it returns 1.0 or nothing. Attractiveness is already judged by the
+        # confidence score, which is the other of the two checks. This matches the crypto
+        # path, which sets philosophy_fit=1.0 for the same reason (see
+        # propose_crypto_trades). A company absent from the watchlist still returns None,
+        # keeping TradeProposal's 0.0 default -- unscreened is never assumed permitted.
+        return permitted_universe_fit(row is not None)
 
     def _demo_proposal(self, symbol: str, market: dict, news: dict, account: AccountContext) -> TradeProposal:
         price = _latest_close(symbol, market) or 100.0
@@ -706,7 +722,7 @@ def propose_crypto_trades(
                 # requires an active CRYPTO_MASTER row before any crypto order. So a coin
                 # reaching this line is permitted by construction, and says so. Its conviction
                 # continues to be judged on confidence_score, once, like everything else.
-                philosophy_fit=1.0,
+                philosophy_fit=PERMITTED_UNIVERSE_FIT,
             ).normalized()
             intelligence = evaluate_trade_intelligence(
                 db_path,
