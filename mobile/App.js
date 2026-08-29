@@ -16,6 +16,7 @@ import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
 import { AskAiTrader } from './screens/Ask';
 import { RunCycleScreen } from './screens/RunCycle';
+import { useCycleRun, cycleProgressLabel } from './hooks/useCycleRun';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
 import { useFounderBrief } from './hooks/useFounderBrief';
@@ -109,6 +110,11 @@ export default function App() {
   // rather than kept as a separate, un-refreshable screen-less data source.
   const marketData = useMarketData();
   const founderBrief = useFounderBrief();
+  // 2026-08-29, Founder-reported: a cycle "stopped" whenever he switched tabs. It had not --
+  // it runs on the server -- but every bit of its state lived inside RunCycleScreen, which
+  // App.js unmounts on navigation, so the polling stopped and the run became invisible.
+  // Mounted here, once, it keeps polling on every screen and drives the header line below.
+  const cycleRun = useCycleRun();
 
   // AT-ED-011.5 requirement 5 (see mobile/lib/screenRefresh.js and the ownership table in
   // architecture/ARCHITECTURE_DELTA.md / Data_Freshness_Findings.md): every screen's own
@@ -184,7 +190,7 @@ export default function App() {
           message="Something went wrong showing the run log. Your other data and navigation are unaffected."
           onRetry={() => setScreen('ExecutiveBriefing')}
         >
-          <RunCycleScreen />
+          <RunCycleScreen cycleRun={cycleRun} />
         </ErrorBoundary>
       );
     }
@@ -218,6 +224,7 @@ export default function App() {
     performanceAttribution,
     portfolio,
     recommendations,
+    cycleRun,
     screenRefresh,
     screen,
     status,
@@ -245,6 +252,13 @@ export default function App() {
             while. */}
         {!bootstrapping && inProgressMessage && (
           <Text style={styles.subtitle}>{inProgressMessage}</Text>
+        )}
+        {/* 2026-08-29: a running cycle is announced on EVERY screen, naming the step it is
+            on. The Founder's report was that he could not tell whether a cycle was still
+            going or had died once he navigated away - a bare spinner on one screen does not
+            answer that, and "is it still running?" is not a question he should have to ask. */}
+        {cycleProgressLabel(cycleRun) && (
+          <Text style={styles.cycleHeaderLine}>{cycleProgressLabel(cycleRun)}</Text>
         )}
         {/* AT-ED-011.5: the backend evidence-snapshot-age line and the AsyncStorage cache
             banner both describe the shared founder-evidence source. */}

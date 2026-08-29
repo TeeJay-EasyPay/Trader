@@ -488,6 +488,15 @@ export const styles = StyleSheet.create({
     gap: 10,
     paddingTop: 10,
   },
+  // Deliberately the accent blue rather than the muted grey the other header subtitles use:
+  // this line is the answer to "is my cycle still running?", so it has to be findable at a
+  // glance from any screen, not blend into the timestamps above it.
+  cycleHeaderLine: {
+    fontSize: 12,
+    color: '#1971c2',
+    fontWeight: '600',
+    paddingTop: 2,
+  },
   cycleError: {
     fontSize: 13,
     color: '#c92a2a',

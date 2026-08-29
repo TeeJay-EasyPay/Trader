@@ -1,11 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { styles } from '../styles';
 import { Section } from '../components/shared/Section';
 import { Button } from '../components/shared/Button';
 import { StatusPill } from '../components/shared/StatusPill';
-
-const { apiRequest, COMMAND_TIMEOUT_MS } = require('../api/client');
 
 // 2026-08-29, Founder-directed: "add a card to the app UI where I can click on a button for
 // it to start a research cycle and potentially trade. the card should show every step of the
@@ -16,15 +14,9 @@ const { apiRequest, COMMAND_TIMEOUT_MS } = require('../api/client');
 // a growing step-by-step run log is a different question that needs vertical room while it
 // runs. Moving it onto the Briefing later is a small change if the Founder prefers that.
 //
-// A cycle takes two to four minutes, so the button starts it and this screen polls. It must
-// never look frozen: every state below says what is happening and when it last checked.
-const POLL_MS = 3000;
-// Long enough to cover a Render cold start on the first tap of the day (the free-tier web
-// service sleeps), short enough that a genuinely dead request still surfaces as an error.
-const START_TIMEOUT_MS = Math.max(COMMAND_TIMEOUT_MS || 30000, 45000);
-
-const TERMINAL = ['completed', 'failed', 'none'];
-
+// This component holds NO state of its own. Everything comes from useCycleRun, mounted once
+// in App.js, because state kept here was destroyed every time the Founder switched tabs --
+// see the hook's own comment for the bug report that caused the change.
 function stepTone(status) {
   if (status === 'completed') return 'good';
   if (status === 'failed') return 'danger';
@@ -39,88 +31,8 @@ function stepMark(status) {
   return 'Waiting';
 }
 
-export function RunCycleScreen() {
-  const [cycle, setCycle] = useState(null);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState(null);
-  const [lastChecked, setLastChecked] = useState(null);
-  // Held in a ref as well as state: the polling interval closes over its own scope, and
-  // reading `cycle` from state inside it would capture a stale value forever.
-  const activeCycleId = useRef(null);
-  const mounted = useRef(true);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const poll = useCallback(async () => {
-    try {
-      const id = activeCycleId.current;
-      const path = id ? `/cycle-run?cycle_id=${encodeURIComponent(id)}` : '/cycle-run';
-      const result = await apiRequest(path);
-      if (!mounted.current) return null;
-      setCycle(result);
-      setLastChecked(new Date());
-      setError(null);
-      return result;
-    } catch (err) {
-      if (!mounted.current) return null;
-      // A failed poll is not a failed cycle -- the run continues on the server. Say so,
-      // rather than letting the Founder assume his cycle died because the phone blinked.
-      setError(`Could not check progress: ${err.message}`);
-      return null;
-    }
-  }, []);
-
-  // Show the previous run on open, so the screen is never blank and the last result is
-  // still readable after the app is reopened.
-  useEffect(() => {
-    poll().then((result) => {
-      if (result?.cycle_id && result.status === 'running') {
-        activeCycleId.current = result.cycle_id;
-      }
-    });
-  }, [poll]);
-
-  useEffect(() => {
-    if (!cycle || TERMINAL.includes(cycle.status)) return undefined;
-    const timer = setInterval(poll, POLL_MS);
-    return () => clearInterval(timer);
-  }, [cycle, poll]);
-
-  const start = useCallback(
-    async (scope) => {
-      setStarting(true);
-      setError(null);
-      try {
-        const result = await apiRequest('/run-cycle', {
-          method: 'POST',
-          body: JSON.stringify({ scope, trigger_source: 'app' }),
-          timeoutMs: START_TIMEOUT_MS,
-        });
-        if (!mounted.current) return;
-        if (result?.status === 'already_running') {
-          setError(result.message || 'A cycle is already running.');
-        }
-        if (result?.cycle_id) {
-          activeCycleId.current = result.cycle_id;
-          await poll();
-        }
-      } catch (err) {
-        if (mounted.current) setError(`Could not start the cycle: ${err.message}`);
-      } finally {
-        if (mounted.current) setStarting(false);
-      }
-    },
-    [poll]
-  );
-
-  const running = Boolean(cycle && cycle.status === 'running');
-  const steps = cycle?.steps || [];
-  const busy = starting || running;
+export function RunCycleScreen({ cycleRun }) {
+  const { cycle, steps, running, starting, busy, error, lastChecked, start } = cycleRun;
 
   return (
     <View>
@@ -148,7 +60,9 @@ export function RunCycleScreen() {
           <View style={styles.cycleBusyRow}>
             <ActivityIndicator />
             <Text style={styles.smallText}>
-              {starting ? 'Starting the cycle...' : 'Cycle running - this screen updates itself.'}
+              {starting
+                ? 'Starting the cycle...'
+                : 'Cycle running on the server. You can switch screens - it keeps going and keeps updating.'}
             </Text>
           </View>
         )}
@@ -183,7 +97,7 @@ export function RunCycleScreen() {
         </Section>
       )}
 
-      {cycle?.conclusion && (
+      {cycle?.conclusion && !running && (
         <Section title="Conclusion">
           <Text style={styles.cycleConclusion}>{cycle.conclusion}</Text>
           <Text style={styles.smallText}>
