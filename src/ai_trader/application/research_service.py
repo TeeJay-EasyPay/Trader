@@ -19,6 +19,7 @@ from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..forecasting import generate_market_forecast
+from ..foundation import load_trading_policy
 from ..market_intelligence_platform import latest_observation_times_batch, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -725,7 +726,29 @@ class ResearchService:
             account,
             self.settings.guardrails,
             self.audit,
-            min_confidence=self.settings.auto_trade.min_confidence,
+            # 2026-08-30: was `self.settings.auto_trade.min_confidence` -- the
+            # AUTO_TRADE_MIN_CONFIDENCE environment variable, still 0.85, and a THIRD place
+            # the confidence bar lived after the 2026-08-29 consolidation collapsed the
+            # orchestrator's four checks into two. The Founder's own words when he asked for
+            # that work: "isn't it silly that we have confidence scores in 3 separate places?
+            # everytime we make an adjustment to it we have to change it in 3 separate
+            # places." This was the one I missed, and it is the gate that matters most,
+            # because it runs BEFORE a proposal exists -- so nothing downstream ever sees the
+            # idea, and no rejection reason reaches the app.
+            #
+            # It was invisible until 27 August because CRYPTO_RESEARCH_SCORES returned a
+            # hardcoded 0.850 for every coin, every hour, which clears a 0.85 bar. Real
+            # scoring (live order book + news sentiment) made the score mean something, and
+            # the bar became a blockade: of 1,508 readings since, exactly ONE would clear
+            # 0.85, against 246 at the 0.70 the Founder chose and the app displays.
+            #
+            # Confirmed live 2026-08-30: SOL scored 0.7137 with a healthy 0.7701 trend --
+            # above the bar shown in the app on both counts -- and was silently dropped.
+            min_confidence=load_trading_policy(
+                self.settings.db_path,
+                auto_trade=self.settings.auto_trade,
+                guardrails=self.settings.guardrails,
+            ).min_ai_confidence,
             # Founder-directed 2026-08-20: "I would rather they be a percentage of the
             # available cash rather than a fixed value... that way they can scale with the
             # cash available." account.equity is the AI's own allocated capital for this

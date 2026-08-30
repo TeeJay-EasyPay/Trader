@@ -1298,6 +1298,16 @@ class LocalApiService:
         # set, but broker_auto_trading_enabled() also opens its own fresh connection (plus a
         # schema-init) per call -- memoize per distinct broker string rather than per row.
         broker_auto_enabled_cache: dict[str, bool] = {}
+        # 2026-08-30: the reason text shown in the app must quote the SAME bar the app
+        # actually applies, or it explains a rejection against a number nothing uses. Read
+        # once here, not per row -- load_trading_policy opens its own connection, and a
+        # per-row lookup in this exact loop is the cost class this file has had to fix
+        # before (see the batching note above).
+        policy_min_confidence = load_trading_policy(
+            self.settings.db_path,
+            auto_trade=self.settings.auto_trade,
+            guardrails=self.settings.guardrails,
+        ).min_ai_confidence
         for row in rows:
             if row["proposal_id"] in seen:
                 continue
@@ -1347,7 +1357,7 @@ class LocalApiService:
             auto_trade_eligible = (
                 guardrails_passed
                 and freshness["status"] != "Expired"
-                and confidence >= self.settings.auto_trade.min_confidence
+                and confidence >= policy_min_confidence
                 and philosophy_fit >= self.settings.auto_trade.min_philosophy_fit
                 and not already_executed
                 and broker_auto_enabled
@@ -1405,7 +1415,7 @@ class LocalApiService:
                         philosophy_fit=philosophy_fit,
                         auto_enabled=broker_auto_enabled,
                         auto_label=f"{proposal_broker} auto trading" if proposal_broker else "AUTO_PAPER_TRADING",
-                        min_confidence=self.settings.auto_trade.min_confidence,
+                        min_confidence=policy_min_confidence,
                         min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
                         freshness_status=freshness["status"],
                         guardrails_passed=guardrails_passed,

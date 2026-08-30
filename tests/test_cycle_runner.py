@@ -7,6 +7,7 @@ crash -- it is a run log that says something untrue.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from ai_trader.cycle_runner import (
     start_cycle,
     start_cycle_in_background,
 )
+from ai_trader.audit import AuditDatabase
 from ai_trader.multi_broker import initialize_multi_broker_schema
 from ai_trader.operational import initialize_operational_schema
 
@@ -64,8 +66,12 @@ class _Service:
 def _fresh_db(tmp: str) -> Path:
     db_path = Path(tmp) / "cycle.db"
     initialize_operational_schema(db_path)
-    # CRYPTO_RESEARCH_SCORES lives in the multi-broker schema, not the operational one.
+    # CRYPTO_RESEARCH_SCORES lives in the multi-broker schema, not the operational one,
+    # and EXECUTION_EVENTS (where the pre-proposal drop reasons are recorded) lives in the
+    # audit schema. Three owners, which is itself why "nothing was recorded" was so easy to
+    # conclude wrongly when looking in only one of them.
     initialize_multi_broker_schema(db_path)
+    AuditDatabase(db_path, Path(str(db_path) + ".log")).initialize()
     return db_path
 
 
@@ -306,6 +312,85 @@ def test_the_whole_plan_exists_from_the_first_moment():
         steps = cycle_status(db_path, cycle_id)["steps"]
         assert [s["seq"] for s in steps] == [1, 2, 3, 4, 5]
         assert all(s["status"] == COMPLETED for s in steps)
+
+
+def test_the_log_accounts_for_coins_that_clear_the_bar_but_are_dropped_anyway():
+    """The Founder's exact report, 2026-08-30: "2 coins cleared the checks but no trades
+    reached the checks."
+
+    His run log read:
+
+        3. Research and score every coin
+           20 coins scored. 2 cleared the 0.70 bar. Best was SOL at 0.71.
+        4. Check each idea against the two rules
+           No trade ideas reached the checks, so there was nothing to approve or reject.
+
+    Two coins clear the bar and then simply vanish, with no line explaining where they went.
+    The score bar is not the only gate -- a coin also needs a rising price trend, and can
+    still be dropped for fees, liquidity or its own losing history. Every one of those is
+    recorded; none of it was being shown.
+    """
+    from contextlib import closing as _closing
+
+    from ai_trader.database import connect as _connect
+    from ai_trader.models import utc_now_iso as _now
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+
+        class _RealShape(_Service):
+            def refresh_crypto_candle_history(self):
+                result = self._stage("candles")
+                with _closing(_connect(db_path)) as conn:
+                    with conn:
+                        # SOL clears both gates; ALGO clears the score bar but its trend is
+                        # weak; XRP misses the bar. These are yesterday's real numbers.
+                        for symbol, score, trend in (
+                            ("SOL", 0.7137, 0.7701),
+                            ("ALGO", 0.7097, 0.4178),
+                            ("XRP", 0.6978, 0.4240),
+                        ):
+                            conn.execute(
+                                """INSERT INTO CRYPTO_RESEARCH_SCORES
+                                       (created_at, symbol, overall_due_diligence_score,
+                                        technical_trend_score, reasoning_json, source)
+                                   VALUES (?, ?, ?, ?, ?, ?)""",
+                                (_now(), symbol, score, trend, "{}", "test"),
+                            )
+                return result
+
+            def run_crypto_analysis(self, limit=0):
+                result = self._stage("research")
+                # ALGO is discarded before any proposal exists, exactly as the real path does.
+                with _closing(_connect(db_path)) as conn:
+                    with conn:
+                        conn.execute(
+                            """INSERT INTO EXECUTION_EVENTS
+                                   (created_at, proposal_id, event_type, payload_json)
+                               VALUES (?, ?, ?, ?)""",
+                            (_now(), "no-trade-crypto-ALGO", "agent_no_trade",
+                             json.dumps({
+                                 "symbol": "ALGO",
+                                 "reason": "crypto_due_diligence_below_threshold_or_negative_trend",
+                             })),
+                        )
+                return result
+
+        service = _RealShape(db_path)
+        cycle_id = start_cycle(db_path, scope="crypto")
+        run_cycle(service, cycle_id, scope="crypto")
+
+        steps = {s["seq"]: s["summary"] or "" for s in cycle_status(db_path, cycle_id)["steps"]}
+
+        # Step 3 must not imply two buyable ideas when only one clears both gates.
+        assert "1 cleared the 0.70 bar with a rising trend" in steps[3], steps[3]
+
+        # Step 4 must name what happened to the one that fell out, in plain English.
+        assert "ALGO" in steps[4], steps[4]
+        assert "trend" in steps[4].lower(), steps[4]
+        assert steps[4] != "No trade ideas reached the checks, so there was nothing to approve or reject.", (
+            "step 4 must account for ideas dropped before the checks, not stop at silence"
+        )
 
 
 def test_status_before_any_run_is_reported_plainly():

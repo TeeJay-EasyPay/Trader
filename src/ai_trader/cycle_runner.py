@@ -21,6 +21,7 @@ while the work carried on invisibly.
 
 from __future__ import annotations
 
+import json
 import threading
 import traceback
 import uuid
@@ -154,12 +155,70 @@ def _summarise_research(db_path: Path, since: str, bar: float) -> str:
                WHERE created_at >= ? AND overall_due_diligence_score >= ?""",
             (since, bar),
         ) or 0)
+        # A coin must ALSO have a rising price trend to be bought -- a second gate in
+        # propose_crypto_trades that nothing in the app used to mention. Reporting only the
+        # score bar is why the log could say "2 cleared the bar" and then buy nothing, with
+        # no line accounting for the difference (Founder, 2026-08-30).
+        tradeable = int(_scalar(
+            conn,
+            """SELECT COUNT(*) FROM CRYPTO_RESEARCH_SCORES
+               WHERE created_at >= ? AND overall_due_diligence_score >= ?
+                 AND technical_trend_score > 0.5""",
+            (since, bar),
+        ) or 0)
     best_symbol, best_score = (row[0], float(row[1] or 0.0)) if row else ("-", 0.0)
-    if passed:
-        return (f"{scored} coins scored. {passed} cleared the {bar:.2f} bar. "
-                f"Best was {best_symbol} at {best_score:.2f}.")
-    return (f"{scored} coins scored, none cleared the {bar:.2f} bar. "
-            f"Best was {best_symbol} at {best_score:.2f} - nothing worth buying today.")
+    if not passed:
+        return (f"{scored} coins scored, none cleared the {bar:.2f} bar. "
+                f"Best was {best_symbol} at {best_score:.2f} - nothing worth buying today.")
+    if tradeable:
+        return (f"{scored} coins scored. {tradeable} cleared the {bar:.2f} bar with a rising "
+                f"trend. Best was {best_symbol} at {best_score:.2f}.")
+    return (f"{scored} coins scored. {passed} cleared the {bar:.2f} bar but none had a rising "
+            f"price trend, which is also required. Best was {best_symbol} at {best_score:.2f}.")
+
+
+# Plain English for every reason propose_crypto_trades records before a proposal exists.
+# These drops happen BEFORE the two rules are applied, so without this the run log jumps
+# straight from "2 coins cleared the bar" to "nothing reached the checks" and never accounts
+# for the difference -- which is exactly what the Founder caught on 2026-08-30.
+_DROP_REASONS = {
+    "crypto_due_diligence_below_threshold_or_negative_trend": "score or price trend too weak",
+    "entry_too_extended_in_24h_range": "already run too far up today to buy safely",
+    "fee_hurdle_not_cleared": "profit would not cover Kraken's fees",
+    "own_track_record_negative": "our own past trades in it have lost money",
+    "liquidity_structure_unfavourable": "order book too thin to trade cleanly",
+    "btc_weak_regime": "Bitcoin is weak, so the whole market is risky",
+    "recently_stopped_out": "stopped out of it recently, still cooling off",
+    "kraken_pair_unavailable": "not tradeable on Kraken right now",
+    "current_price_not_available": "no live price available",
+}
+
+
+def _drops_before_the_checks(db_path: Path, since: str) -> list[tuple[str, str]]:
+    """(symbol, plain-English reason) for ideas discarded before the two rules ran."""
+    with closing(connect(db_path)) as conn:
+        rows = _rows(
+            conn,
+            """SELECT proposal_id, payload_json FROM EXECUTION_EVENTS
+               WHERE event_type = 'agent_no_trade' AND created_at >= ?
+               ORDER BY created_at""",
+            (since,),
+        )
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for proposal_id, raw in rows:
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (TypeError, ValueError):
+            payload = {}
+        symbol = str(payload.get("symbol") or proposal_id or "").upper()
+        symbol = symbol.replace("NO-TRADE-CRYPTO-", "").replace("NO-TRADE-", "")
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        reason = str(payload.get("reason") or "")
+        out.append((symbol, _DROP_REASONS.get(reason, reason.replace("_", " ") or "no reason recorded")))
+    return out
 
 
 def _summarise_proposals(db_path: Path, since: str) -> str:
@@ -177,6 +236,16 @@ def _summarise_proposals(db_path: Path, since: str) -> str:
         )
     approved = [r for r in rows if str(r[1] or "").lower() in {"approved", "accepted", "executed"}]
     if not made and not rows:
+        # 2026-08-30, Founder-caught: this used to stop at "nothing reached the checks",
+        # directly under a line saying two coins had cleared the bar. It never accounted for
+        # the difference, so the log read as a contradiction. Every idea discarded earlier is
+        # now named, with the reason in plain English.
+        dropped = _drops_before_the_checks(db_path, since)
+        if dropped:
+            head = f"Nothing reached the two rules. {len(dropped)} idea(s) were dropped earlier: "
+            shown = "; ".join(f"{symbol} ({reason})" for symbol, reason in dropped[:3])
+            more = f" and {len(dropped) - 3} more" if len(dropped) > 3 else ""
+            return head + shown + more + "."
         return "No trade ideas reached the checks, so there was nothing to approve or reject."
     parts = [f"{made} trade idea(s) put forward"]
     if rows:

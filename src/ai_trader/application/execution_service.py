@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..broker_adapters import _kraken_last_price, _kraken_pair
 from ..config import Settings
+from ..foundation import load_trading_policy
 from ..guardrails import us_equity_market_hours_between
 from ..models import AccountContext, OrderRequest, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -269,7 +270,16 @@ class ExecutionService:
         return type(self.settings.auto_trade)(
             enabled=enabled,
             broker_enabled=dict(self.settings.auto_trade.broker_enabled),
-            min_confidence=self.settings.auto_trade.min_confidence,
+            # 2026-08-30: the execution gate reads the one stored bar too. Leaving it on
+            # AUTO_TRADE_MIN_CONFIDENCE (0.85) would mean an idea researched at the Founder's
+            # 0.70 was proposed and then refused at execution on a different number -- the
+            # same split that let crypto go quiet for days without an explanation reaching
+            # the app. See the propose_crypto_trades call in research_service.py.
+            min_confidence=load_trading_policy(
+                self.settings.db_path,
+                auto_trade=self.settings.auto_trade,
+                guardrails=self.settings.guardrails,
+            ).min_ai_confidence,
             min_philosophy_fit=self.settings.auto_trade.min_philosophy_fit,
             max_trade_amount=self.settings.auto_trade.crypto_max_trade_amount if broker == "kraken" else self.settings.auto_trade.max_trade_amount,
             default_stop_loss_pct=self.settings.auto_trade.crypto_default_stop_loss_pct if broker == "kraken" else self.settings.auto_trade.default_stop_loss_pct,
