@@ -206,7 +206,13 @@ def _drops_before_the_checks(db_path: Path, since: str) -> list[tuple[str, str]]
         )
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for proposal_id, raw in rows:
+    for row in rows:
+        # Index explicitly. Under Postgres these rows are a dict subclass, so tuple
+        # unpacking (`for proposal_id, raw in rows`) yields the COLUMN NAMES, not the values
+        # -- which is precisely what shipped: the app displayed
+        # "PROPOSAL_ID (no reason recorded)". The tests pass under SQLite, where rows really
+        # are tuples, so only running it against production caught it.
+        proposal_id, raw = row[0], row[1]
         try:
             payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
         except (TypeError, ValueError):
