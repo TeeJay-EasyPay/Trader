@@ -19,7 +19,7 @@ from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..forecasting import generate_market_forecast
-from ..foundation import load_trading_policy
+from ..foundation import load_trading_policy, policy_aligned_guardrails
 from ..market_intelligence_platform import latest_observation_times_batch, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -724,7 +724,16 @@ class ResearchService:
             adapter,
             symbols,
             account,
-            self.settings.guardrails,
+            # 2026-08-30: the policy-aligned guardrails, not the raw settings. Without this
+            # a proposal that clears the Founder's 0.70 is still failed by
+            # validate_trade_proposal against MIN_CONFIDENCE_SCORE (0.85) -- confirmed live
+            # on GRT at 0.7177, the first crypto proposal in days. See
+            # foundation.policy_aligned_guardrails.
+            policy_aligned_guardrails(
+                self.settings.db_path,
+                auto_trade=self.settings.auto_trade,
+                guardrails=self.settings.guardrails,
+            ),
             self.audit,
             # 2026-08-30: was `self.settings.auto_trade.min_confidence` -- the
             # AUTO_TRADE_MIN_CONFIDENCE environment variable, still 0.85, and a THIRD place

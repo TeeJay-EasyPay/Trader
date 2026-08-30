@@ -92,3 +92,27 @@ def test_the_policy_default_is_the_number_the_founder_chose():
         f"the seeded confidence bar is {found}; the Founder chose 0.70 on 2026-08-29 after "
         "being shown the calibration data. Changing it needs his decision, not a code edit."
     )
+
+
+def test_proposal_validation_uses_the_policy_bar_not_min_confidence_score_env():
+    """The FOURTH home, found live on 2026-08-30.
+
+    GRT was proposed at ai_confidence 0.7177 -- above the Founder's 0.70 -- and immediately
+    failed validate_trade_proposal with ['confidence_below_minimum'], because
+    GuardrailConfig.min_confidence_score comes from MIN_CONFIDENCE_SCORE, a separate Render
+    variable set to 0.85. The Founder had named that variable to me himself three days
+    earlier and I still left it behind when consolidating.
+    """
+    text = (SOURCE / "application" / "research_service.py").read_text(encoding="utf-8")
+    call = re.search(r"propose_crypto_trades\((.*?)\n        \)", text, re.DOTALL)
+    assert call, "could not locate the propose_crypto_trades call"
+    code = "\n".join(re.sub(r"#.*$", "", line) for line in call.group(1).splitlines())
+
+    assert "policy_aligned_guardrails(" in code, (
+        "crypto proposals must be validated against the one stored bar, not "
+        "MIN_CONFIDENCE_SCORE -- see foundation.policy_aligned_guardrails"
+    )
+    assert not re.search(r"^\s*self\.settings\.guardrails,\s*$", code, re.MULTILINE), (
+        "the raw settings guardrails carry MIN_CONFIDENCE_SCORE (0.85) and will fail a "
+        "proposal that cleared the Founder's own bar"
+    )

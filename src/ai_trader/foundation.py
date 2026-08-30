@@ -4,13 +4,13 @@ import json
 import os
 import sqlite3
 import threading
-from .database import connect, selected_backend
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .database import connect, selected_backend
 from .models import TradeProposal, utc_now_iso
 from .operational import safe_score
 from .technical_discretion import cash_capped_notional, conviction_scaled_notional
@@ -571,6 +571,31 @@ def set_risk_policy_value(db_path: Path, key: str, value: Any, *, updated_by: st
         "new_value": _stringify(value),
         "updated_by": updated_by,
     }
+
+
+def policy_aligned_guardrails(db_path: Path, *, auto_trade: Any, guardrails: Any) -> Any:
+    """The guardrail config with its confidence bar replaced by the one stored policy value.
+
+    2026-08-30. This was the FOURTH home of the confidence bar, found only because the first
+    crypto proposal in days was produced and then immediately failed validation:
+
+        GRT  ai_confidence 0.7177  ->  failures: ['confidence_below_minimum']
+
+    0.7177 clears the Founder's 0.70. It does not clear MIN_CONFIDENCE_SCORE, a separate
+    Render environment variable set to 0.85, which validate_trade_proposal reads through
+    GuardrailConfig.min_confidence_score. The Founder had actually told me about this
+    variable by name on 2026-08-27 -- "there is a environment variable in Render, which is
+    called min underscore confidence underscore score, and that is set to point eight five"
+    -- and I still left it behind when consolidating.
+
+    So the same number lived in: the INVESTMENT_POLICIES row, AUTO_TRADE_MIN_CONFIDENCE
+    (research + execution + display), and MIN_CONFIDENCE_SCORE (proposal validation). Four
+    places to change one bar, which is exactly what the Founder asked to be rid of.
+
+    GuardrailConfig is frozen, so this returns a copy rather than mutating shared settings.
+    """
+    policy = load_trading_policy(db_path, auto_trade=auto_trade, guardrails=guardrails)
+    return dataclass_replace(guardrails, min_confidence_score=policy.min_ai_confidence)
 
 
 def set_investment_policy_value(db_path: Path, key: str, value: Any, *, updated_by: str = "founder") -> dict[str, Any]:
