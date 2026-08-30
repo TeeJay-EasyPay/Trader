@@ -5,7 +5,7 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
-from dataclasses import dataclass, replace as dataclass_replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -317,7 +317,12 @@ DEFAULT_INVESTMENT_POLICIES: dict[str, tuple[Any, str, str]] = {
     # NOTE: changing this line alone does NOT move a deployment that has already seeded the
     # row -- _seed_policies is INSERT OR IGNORE. Use /admin/set-investment-policy, which
     # exists for exactly this.
-    "minimum_overall_confidence": (0.70, "float", "The single confidence bar for every broker and asset class."),
+    # 2026-08-30, Founder-directed: RENDER now owns the confidence bar
+    # (MIN_CONFIDENCE_SCORE), so this row is no longer read by load_trading_policy. It is
+    # kept only so existing deployments do not lose a historical record of what it once
+    # held; nothing decides a trade from it. Do not reintroduce it as a source -- the whole
+    # problem was the same number living in more than one place.
+    "minimum_overall_confidence": (0.70, "float", "RETIRED as a source. The live bar is MIN_CONFIDENCE_SCORE in Render."),
 }
 
 DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
@@ -521,7 +526,22 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         max_weekly_loss_pct=float(risk.get("maximum_weekly_loss_pct", 0.06)),
         max_monthly_loss_pct=float(risk.get("maximum_monthly_loss_pct", 0.10)),
         emergency_shutdown_balance=float(risk.get("emergency_shutdown_balance", 0.0)),
-        min_ai_confidence=float(investment.get("minimum_overall_confidence", getattr(auto_trade, "min_confidence", 0.85))),
+        # 2026-08-30, Founder-directed: RENDER IS AUTHORITATIVE for the confidence bar.
+        #
+        # It previously read the INVESTMENT_POLICIES row first, so the same number lived in
+        # the database, in MIN_CONFIDENCE_SCORE, and in AUTO_TRADE_MIN_CONFIDENCE -- and
+        # whichever one someone edited, at least one of the others disagreed. The Founder
+        # manages MIN_CONFIDENCE_SCORE in the Render dashboard and asked for that to win.
+        #
+        # Every gate in the app reaches its bar through this one line (research, proposal
+        # validation, execution, and the reason text shown in the app), so changing the
+        # source here changes it everywhere at once and nothing can drift out of step.
+        #
+        # A note for whoever reads this next: render.yaml is NOT what is running. It declared
+        # AUTO_TRADE_MIN_CONFIDENCE (which exists on neither service) and gave
+        # MIN_CONFIDENCE_SCORE as 0.85 when both services actually had 0.75. Check the
+        # dashboard or the API, never the file.
+        min_ai_confidence=float(getattr(guardrails, "min_confidence_score", 0.75)),
         min_investment_policy_fit=float(investment.get("minimum_investment_policy_score", getattr(auto_trade, "min_philosophy_fit", 0.85))),
         default_stop_loss_pct=float(risk.get("default_stop_loss_pct", getattr(auto_trade, "default_stop_loss_pct", 0.03))),
         max_stop_loss_pct=float(risk.get("maximum_stop_loss_pct", getattr(auto_trade, "max_stop_loss_pct", 0.05))),
@@ -571,31 +591,6 @@ def set_risk_policy_value(db_path: Path, key: str, value: Any, *, updated_by: st
         "new_value": _stringify(value),
         "updated_by": updated_by,
     }
-
-
-def policy_aligned_guardrails(db_path: Path, *, auto_trade: Any, guardrails: Any) -> Any:
-    """The guardrail config with its confidence bar replaced by the one stored policy value.
-
-    2026-08-30. This was the FOURTH home of the confidence bar, found only because the first
-    crypto proposal in days was produced and then immediately failed validation:
-
-        GRT  ai_confidence 0.7177  ->  failures: ['confidence_below_minimum']
-
-    0.7177 clears the Founder's 0.70. It does not clear MIN_CONFIDENCE_SCORE, a separate
-    Render environment variable set to 0.85, which validate_trade_proposal reads through
-    GuardrailConfig.min_confidence_score. The Founder had actually told me about this
-    variable by name on 2026-08-27 -- "there is a environment variable in Render, which is
-    called min underscore confidence underscore score, and that is set to point eight five"
-    -- and I still left it behind when consolidating.
-
-    So the same number lived in: the INVESTMENT_POLICIES row, AUTO_TRADE_MIN_CONFIDENCE
-    (research + execution + display), and MIN_CONFIDENCE_SCORE (proposal validation). Four
-    places to change one bar, which is exactly what the Founder asked to be rid of.
-
-    GuardrailConfig is frozen, so this returns a copy rather than mutating shared settings.
-    """
-    policy = load_trading_policy(db_path, auto_trade=auto_trade, guardrails=guardrails)
-    return dataclass_replace(guardrails, min_confidence_score=policy.min_ai_confidence)
 
 
 def set_investment_policy_value(db_path: Path, key: str, value: Any, *, updated_by: str = "founder") -> dict[str, Any]:

@@ -19,7 +19,7 @@ from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..forecasting import generate_market_forecast
-from ..foundation import load_trading_policy, policy_aligned_guardrails
+from ..foundation import load_trading_policy
 from ..market_intelligence_platform import latest_observation_times_batch, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -724,16 +724,10 @@ class ResearchService:
             adapter,
             symbols,
             account,
-            # 2026-08-30: the policy-aligned guardrails, not the raw settings. Without this
-            # a proposal that clears the Founder's 0.70 is still failed by
-            # validate_trade_proposal against MIN_CONFIDENCE_SCORE (0.85) -- confirmed live
-            # on GRT at 0.7177, the first crypto proposal in days. See
-            # foundation.policy_aligned_guardrails.
-            policy_aligned_guardrails(
-                self.settings.db_path,
-                auto_trade=self.settings.auto_trade,
-                guardrails=self.settings.guardrails,
-            ),
+            # settings.guardrails carries MIN_CONFIDENCE_SCORE, which is the authoritative
+            # bar (Founder-directed 2026-08-30). load_trading_policy now derives from the
+            # same value, so the research gate below and this validation cannot disagree.
+            self.settings.guardrails,
             self.audit,
             # 2026-08-30: was `self.settings.auto_trade.min_confidence` -- the
             # AUTO_TRADE_MIN_CONFIDENCE environment variable, still 0.85, and a THIRD place
@@ -1073,8 +1067,21 @@ class ResearchService:
         broker = self._broker_factory()
         analyzer = None
         if self.settings.openai_api_key:
+            # The analyzer's guardrails go straight into the model's prompt
+            # ("confidence_score must be at least X"), so this must be the same bar every
+            # gate applies -- otherwise the AI is instructed to withhold ideas the app would
+            # have accepted. settings.guardrails is MIN_CONFIDENCE_SCORE, the one source.
             analyzer = OpenAIProposalAnalyzer(self.settings.openai_api_key, self.settings.openai_model, self.settings.guardrails)
-        agent = AITradingAgent(market_data=broker, audit=self.audit, guardrails=self.settings.guardrails, analyzer=analyzer)
+        # Equities and crypto now share one bar by construction: settings.guardrails carries
+        # MIN_CONFIDENCE_SCORE, and load_trading_policy derives min_ai_confidence from that
+        # same value, so no gate can disagree with another (Founder-directed 2026-08-30 --
+        # Render is authoritative).
+        agent = AITradingAgent(
+            market_data=broker,
+            audit=self.audit,
+            guardrails=self.settings.guardrails,
+            analyzer=analyzer,
+        )
         daily_pnl = safe_float(latest_pnl_snapshot(self.settings.db_path, "alpaca").get("day_pnl")) or 0.0
         account = broker.account_context(daily_realized_pnl=daily_pnl)
         skipped_symbols: list[dict[str, str]] = []

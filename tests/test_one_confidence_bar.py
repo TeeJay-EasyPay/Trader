@@ -1,23 +1,24 @@
-"""One confidence bar, one place, for every broker and every stage.
+"""One confidence bar, and Render owns it.
 
 Founder, 2026-08-29: "isn't it silly that we have confidence scores in 3 separate places?
-everytime we make an adjustment to it we have to change it in 3 separate places. this
-complicates things even further if we add more exchanges for both crypto or shares."
+everytime we make an adjustment to it we have to change it in 3 separate places."
 
-That work collapsed the orchestrator's four checks into two. It MISSED the third place --
-the crypto research gate, which reads its bar straight from the AUTO_TRADE_MIN_CONFIDENCE
-environment variable. That gate is the one that matters most, because it runs BEFORE a
-proposal exists: an idea killed there is never seen by the orchestrator, never recorded as a
-rejection, and never explainable in the app.
+Founder, 2026-08-30, after being shown where it actually lived: Render wins. He manages
+MIN_CONFIDENCE_SCORE in the dashboard, and that value must be the one every gate applies.
 
-It stayed hidden because CRYPTO_RESEARCH_SCORES returned a hardcoded 0.850 for every coin
-every hour until 27 August, and 0.850 clears a 0.85 bar. Once scoring became real the bar
-became a blockade: of 1,508 readings in the following days exactly ONE cleared 0.85, against
-246 at the 0.70 the Founder had chosen and the app was displaying.
+What was really running before this (checked against the Render API, not render.yaml):
 
-Confirmed live 2026-08-30: SOL scored 0.7137 with a 0.7701 trend -- above the displayed bar
-on both counts -- and was dropped anyway, which is the contradiction the Founder spotted in
-his own run log ("2 coins cleared the checks but no trades reached the checks").
+    MIN_CONFIDENCE_SCORE        = 0.75   on both services
+    AUTO_TRADE_MIN_CONFIDENCE   = not set on either service -> silent code default of 0.75
+    INVESTMENT_POLICIES row     = 0.70   set from the app, and read FIRST by load_trading_policy
+
+Three sources, two of them invisible from any dashboard, and whichever one someone edited at
+least one of the others disagreed. render.yaml said 0.85 for MIN_CONFIDENCE_SCORE and
+declared AUTO_TRADE_MIN_CONFIDENCE -- neither true of the running services, which is exactly
+how a written summary of this came to be wrong.
+
+Now: config reads MIN_CONFIDENCE_SCORE once, load_trading_policy derives min_ai_confidence
+from it, and every gate reaches its bar through one of those two.
 """
 
 from __future__ import annotations
@@ -26,57 +27,85 @@ import ast
 import re
 from pathlib import Path
 
-SOURCE = Path(__file__).resolve().parents[1] / "src" / "ai_trader"
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = ROOT / "src" / "ai_trader"
 
 
-def test_crypto_research_takes_its_bar_from_the_policy_not_an_env_var():
-    """The exact regression: the research gate must read the one stored value."""
-    text = (SOURCE / "application" / "research_service.py").read_text(encoding="utf-8")
-    call = re.search(r"propose_crypto_trades\((.*?)\n        \)", text, re.DOTALL)
-    assert call, "could not locate the propose_crypto_trades call"
-    body = call.group(1)
-    # Strip comments so the explanation of the old bug does not match as if it were code.
-    code = "\n".join(re.sub(r"#.*$", "", line) for line in body.splitlines())
-
-    assert "min_confidence=load_trading_policy(" in code, (
-        "crypto research must take min_confidence from load_trading_policy, so the Founder's "
-        "single stored bar applies to it like everything else"
+def test_the_policy_bar_is_derived_from_the_render_variable_not_the_database():
+    """load_trading_policy is the single funnel every gate reaches its bar through."""
+    text = (SOURCE / "foundation.py").read_text(encoding="utf-8")
+    match = re.search(r"min_ai_confidence=([^\n]+)", text)
+    assert match, "could not find min_ai_confidence in load_trading_policy"
+    expression = match.group(1)
+    assert "guardrails" in expression and "min_confidence_score" in expression, (
+        f"min_ai_confidence must derive from the Render variable, got: {expression.strip()}"
     )
-    assert "settings.auto_trade.min_confidence" not in code, (
-        "the AUTO_TRADE_MIN_CONFIDENCE env var must not gate crypto research again -- it is "
-        "set to 0.85 in render.yaml and silently blocked every coin once scoring became real"
+    assert "minimum_overall_confidence" not in expression, (
+        "the database row must not be a source again -- the Founder chose Render as "
+        "authoritative on 2026-08-30"
     )
 
 
-def test_no_other_caller_reintroduces_a_second_confidence_bar():
-    """Guards the whole package, not just the one call site fixed today.
+def test_no_second_environment_variable_feeds_the_confidence_bar():
+    """AUTO_TRADE_MIN_CONFIDENCE is set on neither Render service.
 
-    A new broker added next month is exactly how a fourth copy of this number appears, and
-    the Founder specifically asked that adding exchanges not multiply the places to change.
+    Reading it meant falling through to a code default nobody could see in any dashboard --
+    an invisible second source for a number the Founder was actively managing elsewhere.
     """
+    text = (SOURCE / "config.py").read_text(encoding="utf-8")
+    code = "\n".join(re.sub(r"#.*$", "", line) for line in text.splitlines())
+    assert "AUTO_TRADE_MIN_CONFIDENCE" not in code, (
+        "min_confidence must come from MIN_CONFIDENCE_SCORE, the variable that actually "
+        "exists on both Render services and that the Founder edits"
+    )
+
+
+def test_render_yaml_matches_what_is_actually_deployed():
+    """The file that caused the wrong answer.
+
+    render.yaml declared AUTO_TRADE_MIN_CONFIDENCE (on neither service) and gave
+    MIN_CONFIDENCE_SCORE as 0.85 when both services had 0.75. Anyone reading the repo --
+    including me, in a table I presented to the Founder as fact -- got a false picture.
+    A config file that lies is worse than no config file.
+    """
+    raw = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    # Strip comments: the explanation of this very bug names the retired variable, and a
+    # guard that trips on its own documentation is a guard nobody keeps.
+    text = "\n".join(re.sub(r"#.*$", "", line) for line in raw.splitlines())
+    assert "AUTO_TRADE_MIN_CONFIDENCE" not in text, (
+        "render.yaml must not declare a variable the code no longer reads and neither "
+        "service defines"
+    )
+    match = re.search(r"key:\s*MIN_CONFIDENCE_SCORE\s*\n\s*value:\s*\"?([0-9.]+)\"?", text)
+    if match:
+        assert match.group(1) == "0.75", (
+            f"render.yaml claims MIN_CONFIDENCE_SCORE is {match.group(1)}; the live value on "
+            "both services is 0.75. Update the file when the dashboard changes, or drop the "
+            "hardcoded value and mark it sync:false so the file cannot contradict reality."
+        )
+
+
+def test_no_caller_reintroduces_a_rival_confidence_source():
+    """Guards the whole package. Adding a broker is exactly how a fourth copy appears."""
     offenders: list[str] = []
     for path in SOURCE.rglob("*.py"):
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = re.sub(r"#.*$", "", line)
-            if "min_confidence=" not in stripped:
-                continue
-            if "auto_trade.min_confidence" in stripped:
-                offenders.append(f"{path.relative_to(SOURCE)}:{number}: {line.strip()[:90]}")
+            if re.search(r"_float_env\(\s*[\"']AUTO_TRADE_MIN_CONFIDENCE", stripped):
+                offenders.append(f"{path.relative_to(SOURCE)}:{number}")
+            if "investment.get(\"minimum_overall_confidence\"" in stripped:
+                offenders.append(f"{path.relative_to(SOURCE)}:{number}")
     assert offenders == [], (
-        "min_confidence must come from load_trading_policy (the single stored bar), not from "
-        f"settings.auto_trade: {offenders}"
+        f"a rival source for the confidence bar reappeared: {offenders}"
     )
 
 
-def test_the_policy_default_is_the_number_the_founder_chose():
-    """foundation's seeded default and the live policy row must not drift apart silently."""
+def test_the_seeded_database_row_is_marked_retired_not_authoritative():
+    """It stays for history, but its description must not invite anyone to trust it."""
     text = (SOURCE / "foundation.py").read_text(encoding="utf-8")
     tree = ast.parse(text)
-    found: float | None = None
+    description: str | None = None
     for node in ast.walk(tree):
-        # DEFAULT_INVESTMENT_POLICIES carries a type annotation, so it parses as AnnAssign
-        # rather than Assign -- handle both, or this silently finds nothing and the guard
-        # quietly stops guarding.
         if isinstance(node, ast.AnnAssign):
             targets = [node.target.id] if isinstance(node.target, ast.Name) else []
         elif isinstance(node, ast.Assign):
@@ -87,32 +116,8 @@ def test_the_policy_default_is_the_number_the_founder_chose():
             continue
         for key, value in zip(node.value.keys, node.value.values):
             if getattr(key, "value", None) == "minimum_overall_confidence":
-                found = value.elts[0].value
-    assert found == 0.70, (
-        f"the seeded confidence bar is {found}; the Founder chose 0.70 on 2026-08-29 after "
-        "being shown the calibration data. Changing it needs his decision, not a code edit."
-    )
-
-
-def test_proposal_validation_uses_the_policy_bar_not_min_confidence_score_env():
-    """The FOURTH home, found live on 2026-08-30.
-
-    GRT was proposed at ai_confidence 0.7177 -- above the Founder's 0.70 -- and immediately
-    failed validate_trade_proposal with ['confidence_below_minimum'], because
-    GuardrailConfig.min_confidence_score comes from MIN_CONFIDENCE_SCORE, a separate Render
-    variable set to 0.85. The Founder had named that variable to me himself three days
-    earlier and I still left it behind when consolidating.
-    """
-    text = (SOURCE / "application" / "research_service.py").read_text(encoding="utf-8")
-    call = re.search(r"propose_crypto_trades\((.*?)\n        \)", text, re.DOTALL)
-    assert call, "could not locate the propose_crypto_trades call"
-    code = "\n".join(re.sub(r"#.*$", "", line) for line in call.group(1).splitlines())
-
-    assert "policy_aligned_guardrails(" in code, (
-        "crypto proposals must be validated against the one stored bar, not "
-        "MIN_CONFIDENCE_SCORE -- see foundation.policy_aligned_guardrails"
-    )
-    assert not re.search(r"^\s*self\.settings\.guardrails,\s*$", code, re.MULTILINE), (
-        "the raw settings guardrails carry MIN_CONFIDENCE_SCORE (0.85) and will fail a "
-        "proposal that cleared the Founder's own bar"
+                description = value.elts[2].value
+    assert description is not None, "the policy key should still be seeded for history"
+    assert "RETIRED" in description.upper() and "MIN_CONFIDENCE_SCORE" in description, (
+        f"the retired row must say where the real bar lives, got: {description!r}"
     )

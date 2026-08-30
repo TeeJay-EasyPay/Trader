@@ -371,6 +371,15 @@ class ExecutionService:
         seen: set[str] = set()
         skipped: list[dict[str, Any]] = []
         surviving_rows: list[Any] = []
+        # 2026-08-30: the one stored bar, read once before the loop. This check used to
+        # compare against AUTO_TRADE_MIN_CONFIDENCE (0.85) with a hardcoded "below 85%"
+        # message, so an idea researched and validated at the Founder's 0.70 was refused
+        # here anyway -- the last of the four places the same number was living.
+        policy_min_confidence = load_trading_policy(
+            self.settings.db_path,
+            auto_trade=self.settings.auto_trade,
+            guardrails=self.settings.guardrails,
+        ).min_ai_confidence
         for row in rows:
             proposal_id = row["proposal_id"]
             if proposal_id in seen:
@@ -378,13 +387,16 @@ class ExecutionService:
             seen.add(proposal_id)
             freshness = _recommendation_freshness(row["created_at"], row["ai_confidence"], row["broker"])
             confidence = safe_score(row["ai_confidence"]) or 0.0
-            if confidence < self.settings.auto_trade.min_confidence:
+            if confidence < policy_min_confidence:
                 skipped.append({
                     "proposal_id": proposal_id,
                     "symbol": row["symbol"],
                     "confidence": confidence,
-                    "reason": "confidence_below_85_percent",
-                    "message": "Confidence is below 85%.",
+                    # The reason and message state the bar actually applied. The old pair
+                    # hardcoded "85 percent" into both, so even after the threshold moved
+                    # the app would have kept explaining refusals with the wrong number.
+                    "reason": "confidence_below_minimum",
+                    "message": f"Confidence is below {policy_min_confidence:.0%}.",
                 })
                 continue
             if freshness["status"] == "Expired":

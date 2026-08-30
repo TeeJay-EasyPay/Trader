@@ -140,7 +140,12 @@ class CryptoSizingDefaultsTests(unittest.TestCase):
         from ai_trader.config import load_settings
 
         env_names = {
-            "min_confidence": "AUTO_TRADE_MIN_CONFIDENCE",
+            # 2026-08-30: min_confidence reads MIN_CONFIDENCE_SCORE now, not a private
+            # AUTO_TRADE_MIN_CONFIDENCE. That variable was set on neither Render service, so
+            # it silently resolved to a code default no dashboard could show -- a second,
+            # invisible source for the one number the Founder actively manages. The whole
+            # app now derives its confidence bar from the variable he edits.
+            "min_confidence": "MIN_CONFIDENCE_SCORE",
             "min_philosophy_fit": "AUTO_TRADE_MIN_PHILOSOPHY_FIT",
             "max_trade_amount": "MAX_AUTO_TRADE_AMOUNT",
             "default_stop_loss_pct": "DEFAULT_STOP_LOSS_PCT",

@@ -42,8 +42,6 @@ services:
         value: "false"
       - key: IBKR_AUTO_TRADING
         value: "false"
-      - key: AUTO_TRADE_MIN_CONFIDENCE
-        value: "0.85"
       - key: AUTO_TRADE_MIN_PHILOSOPHY_FIT
         value: "0.85"
       - key: MAX_AUTO_TRADE_AMOUNT
@@ -123,8 +121,13 @@ services:
         value: "60"
       - key: PAPER_TRADING_ONLY
         value: "true"
+      # 2026-08-30: the ONE confidence bar, and the Founder manages it in the Render
+      # dashboard. sync:false so this file can never contradict the running services again.
+      # It previously hardcoded 0.85 while both services actually had 0.75, and separately
+      # declared AUTO_TRADE_MIN_CONFIDENCE, which existed on neither -- a written summary
+      # taken from this file was wrong on both counts. Check the dashboard, not this file.
       - key: MIN_CONFIDENCE_SCORE
-        value: "0.85"
+        sync: false
       - key: MAX_RISK_PER_TRADE_PCT
         value: "0.01"
       - key: MAX_DAILY_LOSS_PCT

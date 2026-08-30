@@ -195,7 +195,15 @@ def load_settings() -> Settings:
                 "binance": _bool_env("BINANCE_AUTO_TRADING", False),
                 "interactive_brokers": _bool_env("IBKR_AUTO_TRADING", False),
             },
-            min_confidence=_float_env("AUTO_TRADE_MIN_CONFIDENCE", _AUTO_TRADE_DEFAULTS.min_confidence),
+            # 2026-08-30, Founder-directed: ONE confidence bar, and it is
+            # MIN_CONFIDENCE_SCORE in Render. This used to read its own
+            # AUTO_TRADE_MIN_CONFIDENCE, which is set on NEITHER Render service -- so it
+            # silently fell through to a code default of 0.75 that no dashboard showed and
+            # nobody could see. Two invisible sources for one number.
+            #
+            # It now derives from the same variable as everything else, so the value the
+            # Founder edits in Render is the value every gate applies.
+            min_confidence=_float_env("MIN_CONFIDENCE_SCORE", _AUTO_TRADE_DEFAULTS.min_confidence),
             min_philosophy_fit=_float_env("AUTO_TRADE_MIN_PHILOSOPHY_FIT", 0.85),
             max_trade_amount=_float_env("MAX_AUTO_TRADE_AMOUNT", 25.0),
             default_stop_loss_pct=_float_env("DEFAULT_STOP_LOSS_PCT", 0.03),

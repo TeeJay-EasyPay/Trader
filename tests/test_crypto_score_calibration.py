@@ -264,8 +264,17 @@ class ConfidenceThresholdTests(unittest.TestCase):
 
         from ai_trader.config import load_settings
 
-        with mock.patch.dict(os.environ, {"AUTO_TRADE_MIN_CONFIDENCE": "0.9"}):
-            self.assertAlmostEqual(load_settings().auto_trade.min_confidence, 0.9, places=3)
+        # 2026-08-30: the variable is MIN_CONFIDENCE_SCORE. AUTO_TRADE_MIN_CONFIDENCE was
+        # set on NEITHER Render service, so reading it meant silently falling through to a
+        # code default no dashboard showed -- a second, invisible source for one number.
+        # This test's intent is unchanged and is now the Founder's explicit choice: the
+        # hosting environment is authoritative.
+        with mock.patch.dict(os.environ, {"MIN_CONFIDENCE_SCORE": "0.9"}):
+            settings = load_settings()
+            self.assertAlmostEqual(settings.auto_trade.min_confidence, 0.9, places=3)
+            # And the guardrail used for proposal validation must agree, or a proposal can
+            # clear one gate and fail the other on the same number.
+            self.assertAlmostEqual(settings.guardrails.min_confidence_score, 0.9, places=3)
 
 
 class InvestmentScoreMeasuredOnlyTests(unittest.TestCase):
