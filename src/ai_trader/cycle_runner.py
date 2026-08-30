@@ -111,6 +111,34 @@ def _rows(conn, sql: str, params: tuple = ()) -> list:
 # Step summaries: each reads what the stage actually wrote, in the window it ran.
 # --------------------------------------------------------------------------------------
 
+def _summarise_reconciliation(result: dict) -> str:
+    """What the position check found, in the Founder's terms.
+
+    2026-08-30: this is step 1 deliberately, not the last step. Everything after it reasons
+    about what is held -- the duplicate-position check, the position cap, available cash --
+    so the picture has to be true before any of it runs, not corrected afterwards.
+    """
+    if not isinstance(result, dict):
+        return "Position check ran."
+    if result.get("status") == "skipped":
+        return str(result.get("message") or "Could not check positions, so nothing was changed.")
+    closed = result.get("closed") or []
+    kept = result.get("kept") or []
+    stale = int(result.get("stale_execution_intents") or 0)
+    if closed:
+        names = ", ".join(str(c.get("symbol")) for c in closed[:3])
+        more = f" and {len(closed) - 3} more" if len(closed) > 3 else ""
+        head = (f"Closed {len(closed)} position(s) Kraken says we do not hold ({names}{more}). "
+                f"{len(kept)} confirmed real.")
+    elif kept:
+        head = f"All {len(kept)} open position(s) confirmed against Kraken."
+    else:
+        head = "No open positions to check."
+    if stale:
+        head += f" ({stale} old unfilled order records are being tracked separately.)"
+    return head
+
+
 def _summarise_universe(db_path: Path, since: str) -> str:
     with closing(connect(db_path)) as conn:
         total = _scalar(conn, "SELECT COUNT(*) FROM CRYPTO_ASSET_MASTER WHERE active = 1") or 0
@@ -499,9 +527,21 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
     do_crypto = scope in {"all", "crypto"}
     do_equities = scope in {"all", "equities"}
 
+    # Holds the reconciliation result between its action and its summary, because this is
+    # the one step whose summary comes from what the call RETURNED rather than from rows it
+    # wrote -- the closures below are otherwise all database reads.
+    reconciliation: dict[str, Any] = {}
+
+    def _run_reconciliation() -> Any:
+        reconciliation.update(service.reconcile_open_positions(broker="kraken") or {})
+        return reconciliation
+
     stages: list[tuple[str, Callable[[], Any], Callable[[str], str]]] = []
     if do_crypto:
         stages += [
+            ("Check what we actually hold against Kraken",
+             _run_reconciliation,
+             lambda since: _summarise_reconciliation(reconciliation)),
             ("Refresh the list of coins we are allowed to trade",
              lambda: service.refresh_crypto_universe(),
              lambda since: _summarise_universe(db_path, since)),

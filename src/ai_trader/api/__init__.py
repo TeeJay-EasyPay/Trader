@@ -100,6 +100,7 @@ from ..kraken_reconciliation import (
     verify_kraken_reconciliation,
 )
 from ..cycle_runner import cycle_status, start_cycle_in_background
+from ..position_reconciliation import reconcile_open_positions, stale_execution_intents
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
@@ -387,6 +388,21 @@ class LocalApiService:
         self._apply_env_broker_auto_defaults()
         self._apply_founder_kraken_live_authorization()
         self._initialize_control()
+
+    def reconcile_open_positions(self, *, broker: str = "kraken") -> dict[str, Any]:
+        """Close positions the app believes it holds that the broker does not report.
+
+        2026-08-30, Founder-directed. See position_reconciliation for the two ways a phantom
+        arises and why the check only ever closes, never opens.
+        """
+        adapter = self.orchestrator.adapters.get(broker)
+        if adapter is None:
+            return {"status": "skipped", "message": f"No {broker} adapter is configured."}
+        result = reconcile_open_positions(self.settings.db_path, adapter, broker=broker)
+        result["stale_execution_intents"] = stale_execution_intents(
+            self.settings.db_path, broker=broker
+        )
+        return result
 
     def reconcile_on_startup(self) -> dict[str, Any]:
         stuck_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()

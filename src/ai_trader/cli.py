@@ -696,6 +696,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.capture_production_broker_snapshots()
     if job_name == "managed-exits":
         return service.monitor_managed_exits()
+    if job_name == "position-reconciliation":
+        return service.reconcile_open_positions(broker="kraken")
     if job_name == "kraken-startup-reconciliation":
         return replay_persisted_kraken_evidence(service.settings.db_path)
     if job_name == "push-dispatch":
@@ -1108,6 +1110,13 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # "approved-pair fallback", with research examining 9 symbols an hour and producing
     # essentially zero ideas. Listed BEFORE crypto-research so that on any cycle where both
     # are due, the shopping list is refreshed before research reads it.
+    # 2026-08-30, Founder-directed: "how do we ensure no phantom positions open up again".
+    # Runs BEFORE the research jobs below, for the same reason it is step 1 of the manual
+    # cycle: the duplicate-position check, the position cap and available cash all reason
+    # about what is held, so that picture must be true before anything decides what to buy.
+    # Hourly is ample -- a phantom costs nothing for an hour, and the check is one balance
+    # read against a handful of rows.
+    due.append(("position-reconciliation", _time_bucket(now, 3600)))
     due.append(("crypto-universe-refresh", _time_bucket(now, research_seconds)))
     # Phase 1 of the CIO-level forecasting build (2026-08-20): real Kraken OHLC candle
     # ingestion. Crypto-only, hourly, on a plain UTC clock like crypto-research below

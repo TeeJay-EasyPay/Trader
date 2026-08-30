@@ -44,6 +44,10 @@ class _Service:
             raise RuntimeError(f"{name} is unreachable")
         return {"status": "ok"}
 
+    def reconcile_open_positions(self, *, broker="kraken"):
+        self._stage("reconcile")
+        return {"status": "ok", "checked": 0, "closed": [], "kept": []}
+
     def refresh_crypto_universe(self):
         return self._stage("universe")
 
@@ -86,7 +90,7 @@ def test_every_step_is_recorded_in_order_with_a_summary_and_a_conclusion():
         assert status["status"] == COMPLETED
         steps = status["steps"]
         assert [s["seq"] for s in steps] == list(range(1, len(steps) + 1)), "steps must be ordered"
-        assert len(steps) == 7, "five crypto stages plus two equity stages"
+        assert len(steps) == 8, "the position check, five crypto stages, two equity stages"
         for step in steps:
             assert step["label"], "every step needs a Founder-readable label"
             assert step["summary"], f"step {step['seq']} produced no one-line summary"
@@ -218,7 +222,7 @@ def test_a_step_reporting_on_an_earlier_steps_work_uses_the_whole_cycle_window()
 
         assert written.get("yes"), "the fake refresh should have written score rows"
         steps = {s["seq"]: s for s in cycle_status(db_path, cycle_id)["steps"]}
-        research = steps[3]["summary"] or ""
+        research = steps[4]["summary"] or ""
         assert "No coins were scored" not in research, (
             f"research reported nothing while step 2 wrote 3 scores: {research!r}"
         )
@@ -297,7 +301,7 @@ def test_the_whole_plan_exists_from_the_first_moment():
 
         class _ChecksPlanMidRun(_Service):
             def refresh_crypto_candle_history(self):
-                # Step 2 of 5: by now the app must already be able to see all five.
+                # Mid-cycle: by now the app must already be able to see every step.
                 seen_totals.append(len(cycle_status(db_path, self.cycle_id)["steps"]))
                 return self._stage("candles")
 
@@ -306,11 +310,11 @@ def test_the_whole_plan_exists_from_the_first_moment():
         service.cycle_id = cycle_id
         run_cycle(service, cycle_id, scope="crypto")
 
-        assert seen_totals == [5], (
-            f"the full five-step plan must be visible while step 2 runs, saw {seen_totals}"
+        assert seen_totals == [6], (
+            f"the full six-step plan must be visible while the refresh runs, saw {seen_totals}"
         )
         steps = cycle_status(db_path, cycle_id)["steps"]
-        assert [s["seq"] for s in steps] == [1, 2, 3, 4, 5]
+        assert [s["seq"] for s in steps] == [1, 2, 3, 4, 5, 6]
         assert all(s["status"] == COMPLETED for s in steps)
 
 
@@ -383,12 +387,12 @@ def test_the_log_accounts_for_coins_that_clear_the_bar_but_are_dropped_anyway():
         steps = {s["seq"]: s["summary"] or "" for s in cycle_status(db_path, cycle_id)["steps"]}
 
         # Step 3 must not imply two buyable ideas when only one clears both gates.
-        assert "1 cleared the 0.70 bar with a rising trend" in steps[3], steps[3]
+        assert "1 cleared the 0.70 bar with a rising trend" in steps[4], steps[4]
 
         # Step 4 must name what happened to the one that fell out, in plain English.
-        assert "ALGO" in steps[4], steps[4]
-        assert "trend" in steps[4].lower(), steps[4]
-        assert steps[4] != "No trade ideas reached the checks, so there was nothing to approve or reject.", (
+        assert "ALGO" in steps[5], steps[5]
+        assert "trend" in steps[5].lower(), steps[5]
+        assert steps[5] != "No trade ideas reached the checks, so there was nothing to approve or reject.", (
             "step 4 must account for ideas dropped before the checks, not stop at silence"
         )
 
