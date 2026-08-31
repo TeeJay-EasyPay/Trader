@@ -66,7 +66,7 @@ export default function App() {
   const [askMessages, setAskMessages] = useState([
     {
       role: 'assistant',
-      text: 'Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned. I am read-only and cannot place trades.',
+      text: 'Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned. Press Speak to talk instead of typing, and I will answer out loud. I can also run a cycle or re-check positions if you ask me to. I cannot place a trade, change a threshold, or turn trading on or off.',
     },
   ]);
 
