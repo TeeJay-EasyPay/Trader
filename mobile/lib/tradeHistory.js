@@ -151,9 +151,16 @@ const SETTLED_SOURCES = new Set(['performance_attribution', 'broker_trade', 'man
 
 function isExecutedTrade(item) {
   const normalized = normalizeTradeRow(item);
-  if (SETTLED_SOURCES.has(String(item?.event_type || ''))) return true;
   const status = String(normalized.status || '').toLowerCase().replace(/[\s-]/g, '_');
-  if (EXECUTED_STATUSES.has(status)) return true;
+  // STATUS FIRST, source second. The first version of this checked the source first and
+  // whitelisted broker_trade rows wholesale -- but those rows carry real statuses including
+  // 'new' and 'held', so the resting exits were waved straight through and the Founder's
+  // screen was unchanged. A blanket "this source is always settled" rule cannot be right
+  // when the source reports order state.
+  if (status) return EXECUTED_STATUSES.has(status);
+  // Only when a row carries NO status does the source decide: a broker's settled trade
+  // history and a reconciled attribution row are records of things that already happened.
+  if (SETTLED_SOURCES.has(String(item?.event_type || ''))) return true;
   // No status is not the same as not executed: some sources carry only a price and quantity.
   // A row with a real fill price is evidence that something happened, whatever it is called.
   if (!status && numeric(normalized.price) !== null) return true;

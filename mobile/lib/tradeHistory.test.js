@@ -4,6 +4,7 @@
 
 const assert = require('assert');
 const {
+  allTransactions,
   isExecutedTrade,
   restingProtectiveOrders,
   combinedTransactions,
@@ -490,6 +491,35 @@ test('resting protective orders are counted, not silently dropped', () => {
   assert.strictEqual(resting.length, 2, 'the two bracket exits');
   // A cancelled order is neither a trade nor a live protection, so it is in neither list.
   assert.ok(!resting.some((r) => r.status === 'canceled'));
+});
+
+test('a resting exit is excluded even when it arrives from a settled source', () => {
+  // The bug in the first version of this fix. broker_trade rows were whitelisted wholesale
+  // as "settled", but they carry real order statuses including 'new' and 'held' -- so the
+  // resting exits were waved straight through and the Founder's screen was unchanged after
+  // shipping. Status has to win over source; a source that reports order state cannot be
+  // treated as always-settled.
+  assert.strictEqual(
+    isExecutedTrade({ symbol: 'MSFT', side: 'sell', status: 'held', event_type: 'broker_trade' }),
+    false
+  );
+  assert.strictEqual(
+    isExecutedTrade({ symbol: 'MSFT', side: 'sell', status: 'new', event_type: 'broker_trade' }),
+    false
+  );
+});
+
+test('the real production shape renders one trade per order, not three', () => {
+  // MSFT as it actually arrived on 31 Aug: a filled buy plus its two resting bracket exits.
+  const status = { brokers: [{ broker: 'alpaca', trade_history: [
+    { symbol: 'MSFT', side: 'sell', status: 'new', broker_order_id: '6545cc5e', closed_at: '2026-08-31T17:56:00Z' },
+    { symbol: 'MSFT', side: 'buy', status: 'filled', price: 511.464, broker_order_id: 'cfdda561', closed_at: '2026-08-31T17:56:00Z' },
+    { symbol: 'MSFT', side: 'sell', status: 'held', broker_order_id: '7f1e2c80', closed_at: '2026-08-31T17:56:00Z' },
+  ] }] };
+  const shown = combinedTransactions(status, null, 'All', [], 50);
+  assert.strictEqual(shown.length, 1, 'one purchase is one row');
+  assert.strictEqual(normalizeTradeRow(shown[0]).side, 'buy');
+  assert.strictEqual(restingProtectiveOrders(allTransactions(status, null, 'All', [], 50)).length, 2);
 });
 
 console.log(`\n${passed} passed`);
