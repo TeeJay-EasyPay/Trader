@@ -19,6 +19,7 @@ from ..database import connect
 from ..db_diagnostics import database_size_report, vacuum_table
 from ..persistence.query_executor import QueryExecutor
 from .http_server import ApiHandler
+import threading
 import time
 from collections import Counter, defaultdict
 from contextlib import closing
@@ -1215,18 +1216,57 @@ class LocalApiService:
     # Caching it turns a conversation from "wait 35 seconds, every time" into "wait once",
     # which is the difference between an app you interrogate and one you talk to.
     _ASK_CONTEXT_CACHE_SECONDS = 90.0
+    # How stale the evidence may get before a question waits for fresh data rather than
+    # being answered from what we have. Ten minutes is well inside "nothing material has
+    # changed" for balances and recent trades, and far outside the 90s refresh cadence, so
+    # in practice a question only ever blocks on the very first ask after a restart.
+    _ASK_CONTEXT_MAX_STALE_SECONDS = 600.0
 
     def _ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
+        """Evidence for one question, served warm wherever possible.
+
+        Caching alone was not enough. With a flat 90s expiry the first question after the
+        cache lapsed still waited ~32s for a rebuild -- and that is exactly when the Founder
+        asks, having just opened the app. So a slightly stale context is served IMMEDIATELY
+        and refreshed behind the request (stale-while-revalidate). Nobody waits for a rebuild
+        except on a genuinely cold start.
+        """
         cached = getattr(self, "_ask_context_cache", None)
-        if cached and (time.monotonic() - cached[0]) < self._ASK_CONTEXT_CACHE_SECONDS:
-            # Stamped so the model can say how fresh its evidence is rather than implying
-            # it looked just now. Being a minute stale is fine; pretending otherwise is not.
-            context = dict(cached[1])
-            context["evidence_age_seconds"] = round(time.monotonic() - cached[0], 1)
-            return context
+        now = time.monotonic()
+        if cached:
+            age = now - cached[0]
+            if age < self._ASK_CONTEXT_CACHE_SECONDS:
+                return self._stamped_context(cached[1], age)
+            if age < self._ASK_CONTEXT_MAX_STALE_SECONDS:
+                self._refresh_ask_context_in_background()
+                return self._stamped_context(cached[1], age)
         context = self._build_ask_ai_context(deadline=deadline)
         self._ask_context_cache = (time.monotonic(), context)
-        return context
+        return self._stamped_context(context, 0.0)
+
+    def _stamped_context(self, context: dict[str, Any], age: float) -> dict[str, Any]:
+        # Stamped so the model can say how fresh its evidence is rather than implying it
+        # looked just now. Being a minute stale is fine; pretending otherwise is not.
+        stamped = dict(context)
+        stamped["evidence_age_seconds"] = round(age, 1)
+        return stamped
+
+    def _refresh_ask_context_in_background(self) -> None:
+        """Rebuild the evidence behind the current request, at most one rebuild at a time."""
+        if getattr(self, "_ask_context_refreshing", False):
+            return
+        self._ask_context_refreshing = True
+
+        def _worker() -> None:
+            try:
+                context = self._build_ask_ai_context(deadline=None)
+                self._ask_context_cache = (time.monotonic(), context)
+            except Exception:  # noqa: BLE001 - a failed refresh must leave the last good
+                logger.warning("Ask context refresh failed; keeping the previous evidence.", exc_info=True)
+            finally:
+                self._ask_context_refreshing = False
+
+        threading.Thread(target=_worker, name="ask-context-refresh", daemon=True).start()
 
     def _build_ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
         """Evidence for one Ask question, built to a wall-clock deadline.
