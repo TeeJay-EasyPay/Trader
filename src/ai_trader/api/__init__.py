@@ -1240,6 +1240,30 @@ class LocalApiService:
             if age < self._ASK_CONTEXT_MAX_STALE_SECONDS:
                 self._refresh_ask_context_in_background()
                 return self._stamped_context(cached[1], age)
+        # Genuinely cold -- the service has just restarted. A full build takes ~35s, which
+        # the phone gives up on at 55s, so the Founder got a timeout instead of an answer:
+        # observed on the emulator immediately after a deploy.
+        #
+        # So build only the CHEAP half (balances, trades, reports -- every one of those
+        # queries is under a tenth of a second) and start the full build behind the request.
+        # He gets a real answer about his money in about a second, and the next question has
+        # everything. The alternative was a minute of silence ending in failure.
+        #
+        # Only when background refresh is actually available, which means only when serving
+        # the API. Anywhere else -- tests, the worker, a CLI call -- build synchronously and
+        # completely, because a half-built context that never fills in is worse than a slow
+        # one, and a daemon thread writing to a test's temp database after teardown is worse
+        # than both (it broke the suite the first time this shipped).
+        if getattr(self, "_ask_background_refresh_enabled", False):
+            self._refresh_ask_context_in_background()
+            fast = self._build_ask_ai_context(deadline=deadline, fast_only=True)
+            fast["evidence_status"] = "warming"
+            fast["evidence_note"] = (
+                "AI Trader has just restarted. This answer uses balances, trades and reports "
+                "only; research and recommendations are still loading. Ask again in a moment "
+                "for the full picture."
+            )
+            return fast
         context = self._build_ask_ai_context(deadline=deadline)
         self._ask_context_cache = (time.monotonic(), context)
         return self._stamped_context(context, 0.0)
@@ -1252,7 +1276,13 @@ class LocalApiService:
         return stamped
 
     def _refresh_ask_context_in_background(self) -> None:
-        """Rebuild the evidence behind the current request, at most one rebuild at a time."""
+        """Rebuild the evidence behind the current request, at most one rebuild at a time.
+
+        A no-op unless the API is actually serving. See the note in _ask_ai_context on why
+        a background thread must never be started from a test or a CLI process.
+        """
+        if not getattr(self, "_ask_background_refresh_enabled", False):
+            return
         if getattr(self, "_ask_context_refreshing", False):
             return
         self._ask_context_refreshing = True
@@ -1268,7 +1298,7 @@ class LocalApiService:
 
         threading.Thread(target=_worker, name="ask-context-refresh", daemon=True).start()
 
-    def _build_ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
+    def _build_ask_ai_context(self, *, deadline: float | None = None, fast_only: bool = False) -> dict[str, Any]:
         """Evidence for one Ask question, built to a wall-clock deadline.
 
         2026-08-24: this used to embed world_class_evidence and two separate
@@ -1366,7 +1396,10 @@ class LocalApiService:
                     """
                 )
             ],
-            "latest_recommendations": [
+            # Measured at ~11s in production -- by far the most expensive section here, and
+            # the reason a cold Ask could not answer inside the phone's timeout. Skipped on
+            # the warming path; the background build fills it in for the next question.
+            "latest_recommendations": [] if fast_only else [
                 _slim_recommendation(row) for row in self.recommendations(limit=_ASK_RECOMMENDATION_LIMIT)
             ],
             "latest_orchestrator_decisions": [
@@ -1385,9 +1418,10 @@ class LocalApiService:
         # so asked how XRP might do, it answered that it had no view, while a 14-day XRP
         # forecast with reasoning sat in the database unread. These are the three research
         # products it was blind to. All are plain table reads.
-        context["market_forecasts"] = self._ask_market_forecasts()
-        context["crypto_research_scores"] = self._ask_crypto_research_scores()
-        context["recent_crypto_news"] = self._ask_recent_crypto_news()
+        # ~6s and ~2s respectively against production, so both wait for the warm build.
+        context["market_forecasts"] = [] if fast_only else self._ask_market_forecasts()
+        context["crypto_research_scores"] = [] if fast_only else self._ask_crypto_research_scores()
+        context["recent_crypto_news"] = [] if fast_only else self._ask_recent_crypto_news()
         # The Founder's own realised record per coin -- the only evidence here that is
         # not published free to every other trader. See symbol_track_record.py.
         context["own_track_record_by_coin"] = all_symbol_track_records(self.settings.db_path)
@@ -2331,6 +2365,19 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
     service = LocalApiService(settings, initialize_runtime=not worker_owns_runtime)
     service.hosted_read_only = hosted_read_only
     service.api_token_configured = bool(api_token)
+    # 2026-08-31: this process serves the API, so background evidence refresh is allowed
+    # here and nowhere else (see _refresh_ask_context_in_background).
+    #
+    # Deliberately OUTSIDE the `if not worker_owns_runtime` block below. In hosted
+    # production that flag is TRUE -- the worker owns schema and bootstrap -- so anything
+    # placed inside it never runs on the live web service. A first draft of this line sat in
+    # there and would have shipped looking complete while doing nothing at all, which is a
+    # mistake this codebase has made more than once.
+    service._ask_background_refresh_enabled = True
+    # Warm the Ask evidence immediately. A cold build takes ~35s, and the Founder opening
+    # the app right after a deploy is exactly when he asks -- observed on the emulator,
+    # where the first question timed out at 55s.
+    service._refresh_ask_context_in_background()
     if not worker_owns_runtime:
         service.intelligence.seed_initial_data()
         service.benchmark.seed_initial_data()
