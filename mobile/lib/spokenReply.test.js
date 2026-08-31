@@ -9,6 +9,7 @@
 
 const assert = require('assert');
 const {
+  acknowledgement,
   shouldSpeak,
   spokenText,
   speechRequestOptions,
@@ -99,6 +100,35 @@ test('every failure shape degrades to no audio rather than an error', () => {
   ]) {
     assert.strictEqual(playableAudioUri(payload), null, `should be null for ${JSON.stringify(payload)}`);
   }
+});
+
+test('a question gets an immediate acknowledgement to break the silence', () => {
+  // The Founder's complaint was not that answers are slow, it was that nothing happens in
+  // the meantime: "at least I know that it's doing something".
+  const ack = acknowledgement('am I up today', 13);
+  assert.ok(ack.length > 0);
+  assert.ok(/[.!]$/.test(ack), 'should read as a spoken sentence');
+});
+
+test('a longer question gets wording that sets expectations', () => {
+  const long = acknowledgement('why did the app not trade anything today and what stopped it', 5);
+  assert.ok(/second|moment|pull|numbers/i.test(long), long);
+});
+
+test('the same question always gets the same acknowledgement', () => {
+  // Deterministic for a given seed, so this is testable and a repeated question does not
+  // visibly reshuffle its wording.
+  assert.strictEqual(acknowledgement('am I up today', 7), acknowledgement('am I up today', 7));
+});
+
+test('different questions do not all get identical filler', () => {
+  const seen = new Set([0, 1, 2, 3, 4, 5].map((n) => acknowledgement('am I up today', n)));
+  assert.ok(seen.size > 1, 'one fixed phrase every time stops reading as a response');
+});
+
+test('an empty question gets no acknowledgement', () => {
+  assert.strictEqual(acknowledgement('', 1), '');
+  assert.strictEqual(acknowledgement('   ', 1), '');
 });
 
 console.log(`\n${passed} passed`);

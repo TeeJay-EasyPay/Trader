@@ -1201,7 +1201,34 @@ class LocalApiService:
             "note": "Read-only. Cannot place trades, approve trades, change guardrails, or change broker settings.",
         }
 
+    # 2026-08-31, Founder-reported: "it timed out when I asked a question verbally... I
+    # don't wanna ask a question, wait a whole minute just for an answer, or maybe not get
+    # an answer."
+    #
+    # Measured against production, the context build alone was eating the budget before
+    # OpenAI was ever called -- recommendations(limit=10) ~11s, crypto rejections ~6s,
+    # forecasts ~2s -- so a real question returned the canned evidence summary and the app
+    # reported a timeout. The queries are not the problem (all under 1.5s); the cost is
+    # per-section work repeated in full for every single question.
+    #
+    # None of this evidence changes meaningfully between two questions asked a minute apart.
+    # Caching it turns a conversation from "wait 35 seconds, every time" into "wait once",
+    # which is the difference between an app you interrogate and one you talk to.
+    _ASK_CONTEXT_CACHE_SECONDS = 90.0
+
     def _ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
+        cached = getattr(self, "_ask_context_cache", None)
+        if cached and (time.monotonic() - cached[0]) < self._ASK_CONTEXT_CACHE_SECONDS:
+            # Stamped so the model can say how fresh its evidence is rather than implying
+            # it looked just now. Being a minute stale is fine; pretending otherwise is not.
+            context = dict(cached[1])
+            context["evidence_age_seconds"] = round(time.monotonic() - cached[0], 1)
+            return context
+        context = self._build_ask_ai_context(deadline=deadline)
+        self._ask_context_cache = (time.monotonic(), context)
+        return context
+
+    def _build_ask_ai_context(self, *, deadline: float | None = None) -> dict[str, Any]:
         """Evidence for one Ask question, built to a wall-clock deadline.
 
         2026-08-24: this used to embed world_class_evidence and two separate

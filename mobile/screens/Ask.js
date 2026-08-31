@@ -55,7 +55,7 @@ function loadAudioModules() {
 }
 
 const { micButtonLabel, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
-const { shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
+const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -99,9 +99,15 @@ function AskAiTrader({ messages, setMessages, request }) {
       if (result.ok) {
         setVoiceState('idle');
         setAskStatus('Ready');
+        // 2026-08-31, Founder-reported: "when I speak to it and it's transcribing or
+        // figuring out what I'm saying, it should be writing it down. So at least I can see
+        // what it thinks I'm saying." The words went up only once the ANSWER arrived, so a
+        // slow answer meant staring at a screen with no evidence he had been heard at all.
+        // Shown here, the moment the transcript exists and before any thinking starts.
+        setMessages((prev) => [...prev, { role: 'user', text: normalizeChatText(result.text) }]);
         // Sent straight through: the Founder asked to "press it and just ask the app
         // something verbally and submit it", so speaking IS the submission.
-        await ask(result.text, { spoken: true });
+        await ask(result.text, { spoken: true, alreadyShown: true });
         return;
       }
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(result.message) }]);
@@ -206,15 +212,25 @@ function AskAiTrader({ messages, setMessages, request }) {
     }
   };
 
-  const ask = async (text, { spoken = false } = {}) => {
+  const ask = async (text, { spoken = false, alreadyShown = false } = {}) => {
     const finalQuestion = String(text || question || '').trim();
     if (!finalQuestion || askLoading) {
       return;
     }
     setQuestion('');
-    setMessages((prev) => [...prev, { role: 'user', text: normalizeChatText(finalQuestion) }]);
+    if (!alreadyShown) {
+      setMessages((prev) => [...prev, { role: 'user', text: normalizeChatText(finalQuestion) }]);
+    }
     setAskLoading(true);
     setAskStatus('Thinking...');
+    // Break the silence immediately. The answer reads real broker and market evidence and
+    // cannot always be quick, so rather than pretend otherwise the app says it is working --
+    // shown at once, and spoken too when the question was spoken.
+    const ack = acknowledgement(finalQuestion, finalQuestion.length);
+    if (ack) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: ack, pending: true }]);
+      if (spoken) speakAnswer(ack);
+    }
     // The timeout has to travel as `timeoutMs` in the request options -- api/client.js
     // applies its own AbortController and overrides any signal passed in, so a local
     // controller here would be silently ignored (it was, until 2026-08-24). See
@@ -227,7 +243,10 @@ function AskAiTrader({ messages, setMessages, request }) {
       );
       const answerText = normalizeChatText(result.answer);
       const note = result.note ? `\n\n${normalizeChatText(result.note)}` : '';
-      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) }]);
+      setMessages((prev) => [
+        ...prev.filter((m) => !m.pending),
+        { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) },
+      ]);
       setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
       if (shouldSpeak({ askedByVoice: spoken, ok: true, answer: answerText })) {
         speakAnswer(answerText);
@@ -237,7 +256,10 @@ function AskAiTrader({ messages, setMessages, request }) {
       // Founder - only the timeout case gets a specific explanation (it has a genuine,
       // actionable business meaning: the backend is slow to wake up); anything else is
       // reported honestly but in plain English, with no exception text attached.
-      setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(askErrorMessage(error)) }]);
+      setMessages((prev) => [
+        ...prev.filter((m) => !m.pending),
+        { role: 'assistant', text: normalizeChatText(askErrorMessage(error)) },
+      ]);
       setAskStatus('Ask failed or timed out.');
     } finally {
       setAskLoading(false);

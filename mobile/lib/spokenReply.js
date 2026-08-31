@@ -79,7 +79,47 @@ function playableAudioUri(payload) {
   return `data:${contentType};base64,${audio}`;
 }
 
+
+// 2026-08-31, Founder-reported: "if it needs time to do something, it should be able to
+// respond and say, let me check that or just give me a second or let me take a look. And
+// that way, at least I know that it's doing something."
+//
+// The answer itself cannot always be fast -- it reads real broker and market evidence -- so
+// the fix is not to pretend otherwise but to STOP THE SILENCE. The acknowledgement is shown
+// and spoken within a second of the question landing, so the wait becomes a pause in a
+// conversation rather than an app that might be broken.
+//
+// Varied rather than fixed, because hearing the identical sentence every time is how a
+// person stops believing anything is happening. Chosen by question length so a quick "am I
+// up today" does not get "this might take a moment".
+const QUICK_ACKS = [
+  'Let me check that.',
+  'One moment.',
+  'Let me take a look.',
+];
+
+const SLOWER_ACKS = [
+  'Let me look that up, give me a second.',
+  'Good question, let me check the numbers.',
+  'Let me pull that together for you.',
+];
+
+/**
+ * What to say the instant a question arrives, before the real answer exists.
+ *
+ * `seed` makes the choice deterministic for tests while still varying in use -- callers pass
+ * something that changes per question, such as its length or a timestamp.
+ */
+function acknowledgement(question, seed) {
+  const text = String(question || '').trim();
+  if (!text) return '';
+  const pool = text.length > 45 ? SLOWER_ACKS : QUICK_ACKS;
+  const index = Math.abs(Number.isFinite(seed) ? seed : text.length) % pool.length;
+  return pool[index];
+}
+
 module.exports = {
+  acknowledgement,
   shouldSpeak,
   spokenText,
   speechRequestOptions,
