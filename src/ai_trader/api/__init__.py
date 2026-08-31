@@ -101,6 +101,7 @@ from ..kraken_reconciliation import (
 )
 from ..cycle_runner import cycle_status, start_cycle_in_background
 from ..position_reconciliation import reconcile_open_positions, stale_execution_intents
+from ..voice_actions import detect_action, run_action
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
@@ -388,6 +389,48 @@ class LocalApiService:
         self._apply_env_broker_auto_defaults()
         self._apply_founder_kraken_live_authorization()
         self._initialize_control()
+
+    def start_cycle_from_voice(self, *, scope: str = "all") -> dict[str, Any]:
+        """Start a cycle on the Founder's spoken instruction.
+
+        A named method rather than calling start_cycle_in_background inline, so the audit
+        trail records that a human asked for this rather than the hourly schedule -- which
+        matters when reading back why a trade happened at an odd time.
+        """
+        return start_cycle_in_background(self, scope=scope, trigger_source="voice")
+
+    def speak_answer(self, body: dict[str, Any]) -> dict[str, Any]:
+        """MP3 for one answer, base64 encoded so it rides the existing JSON transport.
+
+        Base64 costs about a third in size and saves adding binary response handling to a
+        client that has none. A spoken answer is a few seconds of audio, so the overhead is
+        immaterial next to the round trip that produced the words.
+        """
+        import base64
+
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return {"status": "no_text", "audio_base64": "", "message": "There was nothing to say."}
+        if not self.settings.openai_api_key:
+            return {
+                "status": "not_configured",
+                "audio_base64": "",
+                "message": "Speech needs OPENAI_API_KEY, which is not set for this deployment.",
+            }
+        from ..ai import OpenAISpeaker
+
+        try:
+            audio = OpenAISpeaker(self.settings.openai_api_key).speak(text)
+        except Exception as exc:  # noqa: BLE001 - the text answer already reached the phone
+            logger.warning("Speech generation failed: %s", exc)
+            return {"status": "failed", "audio_base64": "", "message": str(exc)[:200]}
+        if not audio:
+            return {"status": "no_audio", "audio_base64": "", "message": "No audio was produced."}
+        return {
+            "status": "spoken",
+            "audio_base64": base64.b64encode(audio).decode("ascii"),
+            "content_type": "audio/mpeg",
+        }
 
     def reconcile_open_positions(self, *, broker: str = "kraken") -> dict[str, Any]:
         """Close positions the app believes it holds that the broker does not report.
@@ -804,6 +847,11 @@ class LocalApiService:
             return 200, self.ask_ai_trader(body)
         if path == "/transcribe-question":
             return 200, self.transcribe_question(body)
+        if path == "/speak":
+            # 2026-08-31: text -> spoken audio, so the app can answer out loud. Server-side
+            # because expo-av is already in the shipped binary and can play audio, whereas
+            # expo-speech would be a new native module and a manual reinstall.
+            return 200, self.speak_answer(body)
         if path == "/admin/set-risk-policy":
             key = str(body.get("key") or "").strip()
             if not key:
@@ -985,6 +1033,20 @@ class LocalApiService:
                 "answer": "Ask me a question about AI Trader's balances, trades, reports, recommendations, or learning.",
                 "read_only": True,
             }
+        # 2026-08-31, Founder-directed: a clear instruction is DONE, not explained.
+        #
+        # Only fires on an unambiguous imperative -- see voice_actions for why this is phrase
+        # matching rather than an LLM classifier, and for the honest caveat that a cycle can
+        # end in a trade (the same trade the hourly worker would place; voice changes the
+        # timing, not the authority). Anything short of a clear instruction falls through to
+        # the read-only answer below, which is the safe direction to fail in.
+        action_key = detect_action(question)
+        if action_key:
+            outcome = run_action(self, action_key)
+            outcome["read_only"] = False
+            outcome["question"] = question
+            return outcome
+
         # 2026-08-26: every answer shipped the whole evidence context to the phone --
         # measured live, 73,100 bytes of evidence attached to a 1,594-byte answer, on every
         # question, over mobile data. The app has never read a byte of it: Ask.js uses

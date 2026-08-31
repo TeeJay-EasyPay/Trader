@@ -55,6 +55,7 @@ function loadAudioModules() {
 }
 
 const { micButtonLabel, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
+const { shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -100,7 +101,7 @@ function AskAiTrader({ messages, setMessages, request }) {
         setAskStatus('Ready');
         // Sent straight through: the Founder asked to "press it and just ask the app
         // something verbally and submit it", so speaking IS the submission.
-        await ask(result.text);
+        await ask(result.text, { spoken: true });
         return;
       }
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(result.message) }]);
@@ -163,8 +164,49 @@ function AskAiTrader({ messages, setMessages, request }) {
     }
   };
 
-  const toggleVoice = () => (voiceState === 'recording' ? stopRecording() : startRecording());
-  const ask = async (text) => {
+  // Interrupting the reply by pressing the mic is how a real conversation works.
+  const toggleVoice = () => (voiceState === 'recording' ? stopRecording() : (stopSpeaking(), startRecording()));
+  // Holds the currently playing spoken reply so a new answer can stop the previous one --
+  // otherwise a quick second question talks over the first, which is the opposite of a
+  // conversation.
+  const spokenRef = React.useRef(null);
+
+  const stopSpeaking = async () => {
+    const sound = spokenRef.current;
+    spokenRef.current = null;
+    if (!sound) return;
+    try {
+      await sound.unloadAsync();
+    } catch (error) {
+      // Already finished or unloaded. Nothing to recover from.
+    }
+  };
+
+  const speakAnswer = async (answerText) => {
+    // Best-effort by design: the written answer is already on screen, so a failure here
+    // must never surface as an error. Silence is an acceptable outcome; a red message on
+    // top of a good answer is not.
+    try {
+      const payload = await request('/speak', speechRequestOptions(answerText));
+      const uri = playableAudioUri(payload);
+      if (!uri) return;
+      const { Audio } = audioRef.current || {};
+      if (!Audio) return;
+      await stopSpeaking();
+      // Play through the speaker rather than the earpiece, and keep working when the phone
+      // is on silent -- the Founder asked a question out loud and expects to hear back.
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
+      spokenRef.current = sound;
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status && status.didJustFinish) stopSpeaking();
+      });
+    } catch (error) {
+      // Deliberately silent -- see above.
+    }
+  };
+
+  const ask = async (text, { spoken = false } = {}) => {
     const finalQuestion = String(text || question || '').trim();
     if (!finalQuestion || askLoading) {
       return;
@@ -187,6 +229,9 @@ function AskAiTrader({ messages, setMessages, request }) {
       const note = result.note ? `\n\n${normalizeChatText(result.note)}` : '';
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) }]);
       setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
+      if (shouldSpeak({ askedByVoice: spoken, ok: true, answer: answerText })) {
+        speakAnswer(answerText);
+      }
     } catch (error) {
       // AT-ED-013 Section 12: never surface a raw exception/stack-trace string to the
       // Founder - only the timeout case gets a specific explanation (it has a genuine,

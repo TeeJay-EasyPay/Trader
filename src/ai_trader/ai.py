@@ -549,6 +549,57 @@ def _proposal_from_response_text(text: str) -> TradeProposal | None:
 MAX_TRANSCRIPTION_BYTES = 20 * 1024 * 1024
 
 
+# Speech happens here rather than on the phone for the same reason transcription does, plus
+# one specific to this app: expo-speech would be a THIRD native module and therefore a new
+# build the Founder has to install by hand. expo-av is already in the shipped binary and can
+# play audio as well as record it, so generating the speech server-side means the whole voice
+# loop ships as an over-the-air update like every other change.
+#
+# 2026-08-31, Founder-directed: "can it have a speaking function as well so that when I speak
+# to it it responds back to me with text and speech".
+MAX_SPEECH_CHARACTERS = 4000
+
+
+class OpenAISpeaker:
+    """Text to speech for one answer. Never raises for a bad request."""
+
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini-tts", voice: str = "alloy",
+                 timeout_seconds: float = 30.0):
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+        self.timeout_seconds = float(timeout_seconds)
+
+    def speak(self, text: str) -> bytes:
+        """MP3 bytes for the given text, or b"" if there is nothing worth speaking.
+
+        Truncates rather than refusing: a long answer read aloud is still useful, and
+        failing the whole request because an answer ran long would make the voice reply
+        unreliable exactly when the app had most to say.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return b""
+        if len(cleaned) > MAX_SPEECH_CHARACTERS:
+            cleaned = cleaned[:MAX_SPEECH_CHARACTERS].rsplit(" ", 1)[0] + "..."
+        request = Request(
+            "https://api.openai.com/v1/audio/speech",
+            data=json.dumps({
+                "model": self.model,
+                "voice": self.voice,
+                "input": cleaned,
+                "response_format": "mp3",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            return response.read()
+
+
 class OpenAITranscriber:
     """Speech to text for one recorded question. Never raises for a bad recording."""
 
