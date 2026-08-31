@@ -88,7 +88,37 @@ async function run() {
     assert.deepStrictEqual(chatTurnsNewestFirst([]), []);
   });
 
-  console.log(`\n${passed} passed`);
+  test('markdown is stripped so the chat does not show raw asterisks', () => {
+    // The Founder saw a literal "**Kraken (GBP):**" in his own chat. A React Native <Text>
+    // renders no markdown, and the speech endpoint would read the asterisks aloud.
+    const out = normalizeChatText('- **Kraken (GBP):** Down 77.27.');
+    assert.strictEqual(out, '- Kraken (GBP): Down 77.27.');
+  });
+
+  test('a markdown table becomes readable lines, not pipes and dashes', () => {
+    const table = [
+      '| Broker | Day P&L |',
+      '|--------|---------|',
+      '| Kraken | -77.27 |',
+    ].join('\n');
+    const out = normalizeChatText(table);
+    assert.ok(!out.includes('|'), out);
+    assert.ok(out.includes('Broker - Day P&L'), out);
+    assert.ok(out.includes('Kraken - -77.27'), out);
+  });
+
+  test('headings and code ticks are removed', () => {
+    assert.strictEqual(normalizeChatText('## Summary'), 'Summary');
+    assert.strictEqual(normalizeChatText('Use `caution`.'), 'Use caution.');
+  });
+
+  test('ordinary text with symbols is left alone', () => {
+    // Guard against over-stripping: real answers contain these characters legitimately.
+    const plain = 'Kraken is down 77.27 (about 1.8%) today - no trades placed.';
+    assert.strictEqual(normalizeChatText(plain), plain);
+  });
+
+console.log(`\n${passed} passed`);
 }
 
 run();

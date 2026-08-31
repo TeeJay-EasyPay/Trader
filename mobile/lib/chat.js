@@ -20,6 +20,24 @@ function normalizeChatText(value) {
   return text
     .replace(/\r\n/g, '\n')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    // 2026-08-31: the model answers in markdown and a React Native <Text> renders none of
+    // it, so the Founder saw a literal "**Kraken (GBP):**" and a pipe-and-dash table in his
+    // chat -- on his own screen, asking "am I up or down today".
+    //
+    // Stripped rather than rendered: a markdown renderer is another dependency and another
+    // native rebuild, and these answers are short enough that plain sentences read better.
+    // It matters for speech too, which would otherwise read asterisks and pipes aloud.
+    .replace(/^[ \t]*\|[\s\-:|]+\|[ \t]*$/gm, '')
+    .replace(/^[ \t]*\|(.+)\|[ \t]*$/gm, (match, row) =>
+      row
+        .split('|')
+        .map((cell) => cell.trim())
+        .filter(Boolean)
+        .join(' - ')
+    )
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    .replace(/`{1,3}([^`]*)`{1,3}/g, '$1')
     .replace(/\n{4,}/g, '\n\n\n')
     .trim();
 }
