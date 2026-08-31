@@ -29,6 +29,8 @@ const {
   commissionExplanation,
   formatQuantity,
   formatHoldingDuration,
+  allTransactions,
+  restingProtectiveOrders,
 } = require('../lib/tradeHistory');
 
 // Enough recent rows to read the table as a table without burying the cards below it. The
@@ -149,7 +151,7 @@ function TradeHistoryRow({ item, onCommand }) {
 // Expansion instead. Every row renders into the page and the page scrolls the ordinary way, so
 // there is no gesture to fight over. The Founder sees the most recent rows by default, the
 // footnote always states how many of how many, and "Show all" reveals the rest.
-function TradeHistoryTable({ trades, onCommand }) {
+function TradeHistoryTable({ trades, onCommand, protectiveOrders = 0 }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? trades : trades.slice(0, DEFAULT_TRADE_ROWS);
   return (
@@ -160,9 +162,21 @@ function TradeHistoryTable({ trades, onCommand }) {
       ))}
       <Text style={styles.tradeTableFootnote}>
         {expanded
-          ? `Showing all ${trades.length} record${trades.length === 1 ? '' : 's'}, newest first.`
-          : `Showing the ${visible.length} most recent of ${trades.length} records.`}
+          ? `Showing all ${trades.length} trade${trades.length === 1 ? '' : 's'}, newest first.`
+          : `Showing the ${visible.length} most recent of ${trades.length} trades.`}
       </Text>
+      {/* 2026-08-31: resting take-profit and stop-loss orders used to appear here as SELL
+          rows with blank price and amount, which read as phantom sales -- the Founder saw
+          one ISRG purchase rendered as a buy and two sells. They are real orders protecting
+          real positions, so they are acknowledged rather than silently dropped, but they are
+          not trades and no longer sit in a list headed Trade History. */}
+      {protectiveOrders > 0 ? (
+        <Text style={styles.tradeTableFootnote}>
+          {`${protectiveOrders} protective exit order${protectiveOrders === 1 ? '' : 's'} `}
+          {'are resting on your open positions (take-profit and stop-loss). They are not trades '}
+          {'and appear here only once they execute.'}
+        </Text>
+      ) : null}
       {trades.length > DEFAULT_TRADE_ROWS ? (
         <View style={styles.buttonGrid}>
           <Button
@@ -180,6 +194,11 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
   const portfolioCommand = status?.founder_experience?.portfolio_command || {};
   const evidence = status?.world_class_evidence || {};
   const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
+  // Counted from the unfiltered list, because combinedTransactions now returns executions
+  // only -- the resting exits it excludes are exactly what this is reporting.
+  const protectiveOrders = restingProtectiveOrders(
+    allTransactions(status, portfolio, selectedExchange, performanceAttribution, 200)
+  ).length;
   const summary = tradeHistorySummary(status, trades, selectedExchange);
   const brokerPanels = connectedFounderBrokers(status?.brokers || []);
 
@@ -278,7 +297,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         <Metric label="Completed today (since midnight)" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
         {trades.length ? (
-          <TradeHistoryTable trades={trades} onCommand={onCommand} />
+          <TradeHistoryTable trades={trades} onCommand={onCommand} protectiveOrders={protectiveOrders} />
         ) : (
           <Empty />
         )}

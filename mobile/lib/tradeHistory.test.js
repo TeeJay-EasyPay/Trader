@@ -4,6 +4,8 @@
 
 const assert = require('assert');
 const {
+  isExecutedTrade,
+  restingProtectiveOrders,
   combinedTransactions,
   describeLatestTrade,
   describeTransaction,
@@ -445,6 +447,49 @@ test('tradeTableRow: a real fee with no usable quantity/price still reports the 
   // unchanged: a real fee is still shown, and the percentage is NOT invented from nothing.
   assert.strictEqual(row.commissionPctText, '-');
   assert.strictEqual(row.commissionText, '£0.02');
+});
+
+test('a resting stop-loss is not a trade', () => {
+  // 2026-08-31, Founder-reported: one ISRG purchase rendered as "BUY $368.74 / SELL - / SELL -".
+  // Nothing was duplicated -- those are the two bracket exits every buy places, sitting
+  // unfilled on the book, which is why price and amount were blank.
+  assert.strictEqual(isExecutedTrade({ symbol: 'ISRG', side: 'sell', status: 'new' }), false);
+  assert.strictEqual(isExecutedTrade({ symbol: 'ISRG', side: 'sell', status: 'held' }), false);
+});
+
+test('an executed fill is a trade, however the broker spells it', () => {
+  for (const status of ['filled', 'fill', 'partially_filled', 'partial-fill', 'partially filled']) {
+    assert.strictEqual(
+      isExecutedTrade({ symbol: 'NKE', side: 'buy', price: 39.31, status }), true, status
+    );
+  }
+});
+
+test('a cancelled order is not a trade', () => {
+  assert.strictEqual(isExecutedTrade({ symbol: 'AAPL', side: 'sell', status: 'canceled' }), false);
+});
+
+test('a row with a real fill price counts even with no status', () => {
+  // Some sources carry only price and quantity. Absence of a status is not evidence that
+  // nothing happened.
+  assert.strictEqual(isExecutedTrade({ symbol: 'BTC', side: 'buy', price: 30000 }), true);
+});
+
+test('reconciled attribution always counts as a completed trade', () => {
+  assert.strictEqual(isExecutedTrade({ event_type: 'performance_attribution', symbol: 'SCCO' }), true);
+});
+
+test('resting protective orders are counted, not silently dropped', () => {
+  const rows = [
+    { symbol: 'ISRG', side: 'buy', price: 368.74, status: 'filled', broker_order_id: 'a' },
+    { symbol: 'ISRG', side: 'sell', status: 'new', broker_order_id: 'b' },
+    { symbol: 'ISRG', side: 'sell', status: 'held', broker_order_id: 'c' },
+    { symbol: 'AAPL', side: 'sell', status: 'canceled', broker_order_id: 'd' },
+  ];
+  const resting = restingProtectiveOrders(rows);
+  assert.strictEqual(resting.length, 2, 'the two bracket exits');
+  // A cancelled order is neither a trade nor a live protection, so it is in neither list.
+  assert.ok(!resting.some((r) => r.status === 'canceled'));
 });
 
 console.log(`\n${passed} passed`);

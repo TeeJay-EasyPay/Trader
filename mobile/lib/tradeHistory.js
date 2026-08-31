@@ -125,7 +125,54 @@ function dedupeTransactions(transactions) {
   return kept;
 }
 
-function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
+// 2026-08-31, Founder-reported after seeing "ISRG BUY $368.74 / ISRG SELL - / ISRG SELL -"
+// on his own Trade History and asking whether it was the same duplication bug as the crypto
+// universe. It was not: nothing is duplicated, and the order-id dedup above is already
+// collapsing the partial fills correctly. Checked against production, NKE's 64 shares filled
+// as 7 + 3 + 45 + 9 under ONE order id and collapse to one row as intended.
+//
+// What remains is three genuinely DIFFERENT orders per position: the buy, plus the two
+// resting bracket exits (take-profit and stop-loss) that every buy places. Those are real
+// orders, correctly recorded, and they have not executed -- which is why price and amount
+// render as blank dashes. Shown in a list headed "Trade History" they read as phantom sales.
+//
+// A resting stop-loss is a protective order, not a trade. This is the line between them:
+// a row belongs in trade history when something actually EXECUTED.
+const EXECUTED_STATUSES = new Set([
+  'filled', 'fill', 'partially_filled', 'partial_fill', 'closed', 'done', 'settled', 'executed',
+]);
+
+// Sources that only ever contain things that already happened. A broker's trade_history and
+// a reconciled attribution row are settled records, not order states, and they carry no
+// status field to check -- so the source itself is the evidence. Without this the filter was
+// too strict and dropped genuine completed trades, caught by an existing test rather than in
+// production, which is the right order for that to happen in.
+const SETTLED_SOURCES = new Set(['performance_attribution', 'broker_trade', 'managed_exit']);
+
+function isExecutedTrade(item) {
+  const normalized = normalizeTradeRow(item);
+  if (SETTLED_SOURCES.has(String(item?.event_type || ''))) return true;
+  const status = String(normalized.status || '').toLowerCase().replace(/[\s-]/g, '_');
+  if (EXECUTED_STATUSES.has(status)) return true;
+  // No status is not the same as not executed: some sources carry only a price and quantity.
+  // A row with a real fill price is evidence that something happened, whatever it is called.
+  if (!status && numeric(normalized.price) !== null) return true;
+  return false;
+}
+
+// The resting exits, counted so they can be acknowledged rather than silently dropped. The
+// Founder should be able to see that his positions are protected without those orders
+// masquerading as sales.
+function restingProtectiveOrders(transactions) {
+  return (transactions || []).filter((item) => {
+    if (isExecutedTrade(item)) return false;
+    const normalized = normalizeTradeRow(item);
+    const status = String(normalized.status || '').toLowerCase();
+    return isSell(normalized.side) && (status === 'new' || status === 'held' || status === 'accepted');
+  });
+}
+
+function allTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
   const selected = brokerKey(selectedExchange);
   const attribution = (performanceAttribution || [])
     .filter((item) => selected === 'all' || brokerKey(item.broker) === selected)
@@ -186,6 +233,16 @@ function combinedTransactions(status, portfolio, selectedExchange = 'All', perfo
   // duplicate rows for recent trades could push a genuinely distinct older trade out of the
   // returned window.
   return dedupeTransactions(merged).slice(0, limit);
+}
+
+// Executions only -- what belongs under the heading "Trade History".
+//
+// See isExecutedTrade: resting bracket exits are real orders but not trades, and showing
+// them here is what made one ISRG purchase render as a buy and two sells. Callers that need
+// the resting orders too (to count them) use allTransactions above.
+function combinedTransactions(status, portfolio, selectedExchange = 'All', performanceAttribution = [], limit = 20) {
+  return allTransactions(status, portfolio, selectedExchange, performanceAttribution, limit)
+    .filter(isExecutedTrade);
 }
 
 function describeLatestTrade(value) {
@@ -604,6 +661,9 @@ function friendlyEvent(eventType) {
 
 
 module.exports = {
+  allTransactions,
+  isExecutedTrade,
+  restingProtectiveOrders,
   combinedTransactions,
   describeLatestTrade,
   describeTransaction,
