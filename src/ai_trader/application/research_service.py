@@ -32,6 +32,7 @@ from ..multi_broker import (
 from ..crypto_sentiment import score_crypto_sentiment
 from ..market_themes import CRYPTO as THEME_CRYPTO, EQUITY as THEME_EQUITY, refresh_market_themes
 from ..operational import (
+    seed_kraken_first_universe,
     latest_pnl_snapshot,
     record_crypto_scores_from_kraken_candles,
     record_research_run,
@@ -176,7 +177,14 @@ class ResearchService:
         self._broker_factory = broker_factory
 
     def refresh_crypto_universe(self) -> dict[str, Any]:
-        result = seed_crypto_universe(self.settings.db_path, fetch_live=True)
+        # 2026-08-31, Founder-directed: the exchange is the source of truth for what can be
+        # traded, and CoinGecko is only a labeller. Falls back to the old CoinGecko seed if
+        # Kraken cannot be reached, so an outage leaves a stale-but-real universe rather
+        # than none. See kraken_universe for why turnover beats market cap here.
+        allowed = set(self._bootstrap_crypto_universe_from_kraken_permissions(limit=30) or [])
+        result = seed_kraken_first_universe(self.settings.db_path, always_include=allowed)
+        if result.get("status") != "ok":
+            result = seed_crypto_universe(self.settings.db_path, fetch_live=True)
         update_broker_runtime(
             self.settings.db_path,
             "kraken",

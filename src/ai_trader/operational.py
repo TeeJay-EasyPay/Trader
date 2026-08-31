@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS CRYPTO_ASSET_MASTER (
     notes TEXT,
     last_updated TEXT NOT NULL
 );
+
+-- 2026-08-31: there was no unique constraint here and the refresh ran a plain INSERT every
+-- hour, so every cycle appended another copy of the whole universe. Production held 702 rows
+-- for 59 coins -- XMR alone stored 22 times -- and every count taken from this table was
+-- inflated roughly twelvefold. The cycle reported "702 coins are on the approved shopping
+-- list" while the app was scoring 51 and trading 19, which is how a number nobody could
+-- reconcile went unquestioned for weeks.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_asset_master_symbol_category
+ON CRYPTO_ASSET_MASTER(symbol, category);
 """
 
 
@@ -381,6 +390,76 @@ def _hours_since_last_universe_refresh(db_path: Path) -> float | None:
     return (datetime.now(timezone.utc) - stamp).total_seconds() / 3600.0
 
 
+def seed_kraken_first_universe(db_path: Path, *, always_include: set[str] | None = None,
+                               min_turnover: float = 100_000.0, limit: int = 80) -> dict[str, Any]:
+    """Build the universe from what Kraken actually trades, ranked by its own turnover.
+
+    2026-08-31, Founder-directed: "rebuild the universe kraken first anyway... whenever a new
+    exchange is added, its broker should look at that exchange first."
+
+    The old order asked CoinGecko what exists and then discovered Kraken did not list 24 of
+    the 56 answers. Asking the exchange first means everything here is, by construction,
+    something an order could be placed for. CoinGecko keeps only the labelling job, applied
+    to a list the exchange has already vouched for.
+
+    Falls back to the CoinGecko seed when Kraken cannot be reached, so an outage leaves the
+    app with a stale-but-real universe rather than none.
+    """
+    from .kraken_universe import fetch_kraken_markets, select_universe, universe_rows
+
+    markets = fetch_kraken_markets()
+    if not markets:
+        return {"inserted": 0, "notes": "Kraken markets could not be read; universe unchanged.",
+                "source": "kraken", "status": "unavailable"}
+    # CoinGecko's remaining job: labels. Read whatever categories are already stored so an
+    # AI or privacy coin keeps its classification when it reappears from Kraken's list.
+    category_by_symbol: dict[str, str] = {}
+    try:
+        with closing(connect(db_path)) as conn:
+            for row in conn.execute(
+                """SELECT symbol, category FROM CRYPTO_ASSET_MASTER
+                   WHERE category LIKE 'Top 20%'"""
+            ).fetchall():
+                category_by_symbol.setdefault(str(row[0]).upper(), str(row[1]))
+    except Exception:  # noqa: BLE001 - labels are a nicety, the listing is the substance
+        category_by_symbol = {}
+
+    selected = select_universe(markets, min_turnover=min_turnover, limit=limit,
+                               always_include=always_include)
+    rows = universe_rows(selected, category_by_symbol=category_by_symbol)
+    now = utc_now_iso()
+    initialize_operational_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        with conn:
+            for asset in rows:
+                conn.execute(
+                    """
+                    INSERT INTO CRYPTO_ASSET_MASTER (
+                        symbol, name, category, market_cap_rank, source, active, notes, last_updated
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(symbol, category) DO UPDATE SET
+                        name = excluded.name,
+                        market_cap_rank = excluded.market_cap_rank,
+                        source = excluded.source,
+                        active = 1,
+                        notes = excluded.notes,
+                        last_updated = excluded.last_updated
+                    """,
+                    (asset["symbol"], asset["name"], asset["category"], asset["market_cap_rank"],
+                     asset["source"], asset["notes"], now),
+                )
+    tradeable = sum(1 for m in selected if m.tradeable_in_account_currency)
+    return {
+        "inserted": len(rows),
+        "source": "kraken",
+        "status": "ok",
+        "tradeable_in_gbp": tradeable,
+        "needs_usd_conversion": len(selected) - tradeable,
+        "notes": (f"{len(rows)} Kraken markets ranked by 24h turnover; {tradeable} tradeable "
+                  f"in GBP today, {len(selected) - tradeable} would need a USD conversion."),
+    }
+
+
 def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str, Any]:
     initialize_operational_schema(db_path)
     assets: list[dict[str, Any]] = []
@@ -434,6 +513,13 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
                         INSERT INTO CRYPTO_ASSET_MASTER (
                             symbol, name, category, market_cap_rank, source, active, notes, last_updated
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(symbol, category) DO UPDATE SET
+                            name = excluded.name,
+                            market_cap_rank = excluded.market_cap_rank,
+                            source = excluded.source,
+                            active = excluded.active,
+                            notes = excluded.notes,
+                            last_updated = excluded.last_updated
                         """,
                         (
                             asset["symbol"],

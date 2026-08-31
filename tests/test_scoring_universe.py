@@ -59,8 +59,12 @@ def _db(tmp: str) -> Path:
     try:
         with conn:
             for symbol, category in CLASSIFIED:
+                # INSERT OR IGNORE because a UNIQUE(symbol, category) index now prevents
+                # the duplication this fixture reproduces. That constraint is the real fix --
+                # production had 702 rows for 59 coins -- and the dedup below is the belt to
+                # its braces, for databases that already accumulated duplicates.
                 conn.execute(
-                    """INSERT INTO CRYPTO_ASSET_MASTER
+                    """INSERT OR IGNORE INTO CRYPTO_ASSET_MASTER
                            (symbol, name, category, source, active, notes, last_updated)
                        VALUES (?, ?, ?, 'test', 1, '', '2026-08-31')""",
                     (symbol, symbol, category),
@@ -71,7 +75,12 @@ def _db(tmp: str) -> Path:
 
 
 def test_duplicate_rows_collapse_to_one_coin():
-    """Production stores XMR 22 times. Every count taken from that table was inflated."""
+    """Production stored XMR 22 times, inflating every count taken from that table.
+
+    A UNIQUE(symbol, category) index now stops new duplicates at the source. This still
+    asserts the reader deduplicates, because databases seeded before that index exists
+    (production, right now) still hold the old rows.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         classified = classified_symbols(_db(tmp))
         assert classified["BTC"] == "Top 20 by market cap"
