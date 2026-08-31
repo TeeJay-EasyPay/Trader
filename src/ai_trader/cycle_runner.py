@@ -140,9 +140,26 @@ def _summarise_reconciliation(result: dict) -> str:
 
 
 def _summarise_universe(db_path: Path, since: str) -> str:
+    """How many coins are really in play, not how many rows are catalogued.
+
+    2026-08-31, Founder-questioned: this counted ROWS and reported "702 coins are on the
+    approved shopping list" while the app was scoring 51 and trading 19. The universe table
+    stores one row per coin per category and is re-inserted on every refresh, so XMR alone
+    was stored 22 times -- inflating the figure roughly twelvefold and implying a universe
+    that played no part in what got researched.
+    """
     with closing(connect(db_path)) as conn:
-        total = _scalar(conn, "SELECT COUNT(*) FROM CRYPTO_ASSET_MASTER WHERE active = 1") or 0
-    return f"{int(total)} coins are on the approved shopping list."
+        distinct = _scalar(
+            conn, "SELECT COUNT(DISTINCT symbol) FROM CRYPTO_ASSET_MASTER WHERE active = 1"
+        ) or 0
+        scored = _scalar(
+            conn, "SELECT COUNT(DISTINCT symbol) FROM CRYPTO_RESEARCH_SCORES WHERE created_at >= ?",
+            (since,),
+        ) or 0
+    if scored:
+        return (f"{int(scored)} coins measured this cycle, from a classified universe of "
+                f"{int(distinct)}.")
+    return f"{int(distinct)} coins are classified and available to measure."
 
 
 def _summarise_scores(db_path: Path, since: str) -> str:

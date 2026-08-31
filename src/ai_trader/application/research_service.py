@@ -20,6 +20,7 @@ from ..daily_plan import record_daily_trading_plan
 from ..database import connect
 from ..forecasting import generate_market_forecast
 from ..foundation import load_trading_policy
+from ..scoring_universe import build_scoring_universe, universe_summary
 from ..market_intelligence_platform import latest_observation_times_batch, record_market_observations
 from ..models import AccountContext, TradeProposal, utc_now_iso
 from ..multi_broker import (
@@ -343,7 +344,26 @@ class ResearchService:
                 success=False,
             )
             return result
-        symbols = self._bootstrap_crypto_universe_from_kraken_permissions(limit=30)
+        # 2026-08-31, Founder-directed widening. SCORING is now separated from TRADING: this
+        # measures every coin in the Founder's own classification that Kraken actually
+        # lists, while run_crypto_analysis below still proposes only from
+        # KRAKEN_ALLOWED_PAIRS. Scoring places no orders, so measuring a coin the account
+        # cannot yet buy costs an API call and answers a question that was previously
+        # unanswerable: whether a wider universe would produce trades at all.
+        #
+        # See scoring_universe for why the classification is read rather than invented, and
+        # for the two data problems found on the way (the universe reports 702 coins and
+        # contains 59; 24 of 56 are not listed on Kraken in any currency).
+        allowed = self._bootstrap_crypto_universe_from_kraken_permissions(limit=30)
+        known_pairs = None
+        try:
+            pair_map = adapter.known_pair_map()
+            known_pairs = {str(k).upper() for k in pair_map} if pair_map else None
+        except Exception:  # noqa: BLE001 - an unreadable pair list must not stop scoring
+            known_pairs = None
+        targets = build_scoring_universe(self.settings.db_path, known_pairs, always_include=allowed)
+        symbols = [t.symbol for t in targets]
+        pair_by_symbol = {t.symbol: t.pair for t in targets}
         if not symbols:
             result = {"status": "not_available", "message": "No active crypto symbols are available yet."}
             record_operational_event(
@@ -367,7 +387,9 @@ class ResearchService:
         # connection count for no benefit. See latest_observation_times_batch's docstring.
         since_by_symbol = latest_observation_times_batch(self.settings.db_path, provider="kraken", normalized_symbols=symbols, timeframe="1d")
         for symbol in symbols:
-            pair = _kraken_pair(symbol)
+            # The pair carries its own quote currency: GBP where the account can trade it,
+            # USD where the coin only lists there and is being measured for evidence.
+            pair = pair_by_symbol.get(symbol) or _kraken_pair(symbol)
             since_iso = since_by_symbol.get(symbol)
             if since_iso:
                 since_epoch = int(datetime.fromisoformat(since_iso).timestamp())
