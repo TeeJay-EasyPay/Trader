@@ -39,10 +39,16 @@ export function RunCycleScreen({ cycleRun }) {
       <Section title="Run a cycle now">
         <Text style={styles.bodyText}>
           Runs the whole process end to end: refresh the market data, research every asset,
-          check each idea against the two rules, and place any orders that pass. It normally
-          takes two to four minutes. Any trades it makes will appear in Trade History on the
-          Portfolio screen.
+          check each idea against the two rules, and place any orders that pass. Run one
+          broker on its own to test a change without waiting on the other. It normally takes
+          two to four minutes. Any trades it makes appear in Trade History on the Portfolio
+          screen.
         </Text>
+        {/* 2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken...
+            especially if we are doing test runs after upgrades or updates." One button per
+            venue, so a change to one broker can be tested without running the other and
+            without waiting on it. The backend already supported an equities-only scope; it
+            had simply never been offered here. */}
         <View style={styles.buttonGrid}>
           <Button
             label={busy ? 'Running...' : 'Run everything'}
@@ -50,9 +56,15 @@ export function RunCycleScreen({ cycleRun }) {
             disabled={busy}
           />
           <Button
-            label="Crypto only"
+            label="Kraken only"
             tone="neutral"
-            onPress={() => start('crypto')}
+            onPress={() => start('kraken')}
+            disabled={busy}
+          />
+          <Button
+            label="Alpaca only"
+            tone="neutral"
+            onPress={() => start('alpaca')}
             disabled={busy}
           />
         </View>

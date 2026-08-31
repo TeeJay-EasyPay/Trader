@@ -529,6 +529,43 @@ def _confidence_bar(service) -> float:
         return 0.70
 
 
+# 2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken... when we add
+# more brokers we should be able to trigger research cycles on exchanges independently of
+# other exchanges. especially if we are doing test runs after upgrades or updates."
+#
+# The scopes used to be ASSET CLASSES -- "crypto" and "equities" -- which worked only because
+# there happens to be exactly one broker per class today. Add a second crypto exchange and
+# "crypto" would fire both, which is precisely the coupling he wants gone. Scope is now the
+# BROKER, so each venue is independently runnable and adding one is a line in this map rather
+# than a new branch in run_cycle.
+#
+# The old names still resolve, because they are stored on every cycle run already recorded and
+# a scope that silently stopped working would break the history rather than migrate it.
+BROKER_SCOPES: tuple[str, ...] = ("kraken", "alpaca")
+
+_SCOPE_ALIASES: dict[str, tuple[str, ...]] = {
+    "all": BROKER_SCOPES,
+    "crypto": ("kraken",),
+    "equities": ("alpaca",),
+    "shares": ("alpaca",),
+    "stocks": ("alpaca",),
+}
+
+
+def brokers_for_scope(scope: str) -> tuple[str, ...]:
+    """Which brokers a scope means. Unknown scopes run nothing rather than everything.
+
+    Failing closed matters here: a typo that quietly ran every broker would place real orders
+    on an account the caller did not name.
+    """
+    key = str(scope or "all").strip().lower()
+    if key in _SCOPE_ALIASES:
+        return _SCOPE_ALIASES[key]
+    if key in BROKER_SCOPES:
+        return (key,)
+    return ()
+
+
 def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
     """Execute the cycle, writing one row per step as it goes.
 
@@ -541,8 +578,9 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
     # refresh produced), so those summaries measure from the start of the whole cycle rather
     # than from their own step. See _summarise_research.
     cycle_started = cycle_status(db_path, cycle_id).get("started_at") or utc_now_iso()
-    do_crypto = scope in {"all", "crypto"}
-    do_equities = scope in {"all", "equities"}
+    brokers = brokers_for_scope(scope)
+    do_crypto = "kraken" in brokers
+    do_equities = "alpaca" in brokers
 
     # Holds the reconciliation result between its action and its summary, because this is
     # the one step whose summary comes from what the call RETURNED rather than from rows it

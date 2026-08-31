@@ -100,7 +100,7 @@ from ..kraken_reconciliation import (
     resume_kraken_entries_after_verification,
     verify_kraken_reconciliation,
 )
-from ..cycle_runner import cycle_status, start_cycle_in_background
+from ..cycle_runner import brokers_for_scope, cycle_status, start_cycle_in_background
 from ..position_reconciliation import reconcile_open_positions, stale_execution_intents
 from ..voice_actions import detect_action, run_action
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
@@ -864,8 +864,13 @@ class LocalApiService:
             # GET /cycle-run. A full cycle takes minutes and Render cuts any request at 60
             # seconds, so this cannot be synchronous even in principle.
             scope = str(body.get("scope") or "all").strip().lower()
-            if scope not in {"all", "crypto", "equities"}:
-                return 400, {"error": "invalid_scope", "message": "scope must be all, crypto or equities."}
+            # Broker names as well as the older asset-class names -- see
+            # cycle_runner.brokers_for_scope for why scope became per-broker.
+            if not brokers_for_scope(scope):
+                return 400, {
+                    "error": "invalid_scope",
+                    "message": "scope must be all, a broker name (kraken, alpaca), or crypto/equities.",
+                }
             return 200, start_cycle_in_background(
                 self, scope=scope, trigger_source=str(body.get("trigger_source") or "app"),
             )

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ai_trader.cycle_runner import (
     COMPLETED,
+    brokers_for_scope,
     FAILED,
     cycle_status,
     run_cycle,
@@ -404,3 +405,46 @@ def test_status_before_any_run_is_reported_plainly():
         assert status["status"] == "none"
         assert status["steps"] == []
         assert status["message"]
+
+def test_each_broker_can_be_run_on_its_own():
+    """2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken...
+    especially if we are doing test runs after upgrades or updates."
+
+    A change to one venue must be testable without running -- or waiting on -- the other.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+        service = _Service(db_path)
+        cycle_id = start_cycle(db_path, scope="alpaca")
+        run_cycle(service, cycle_id, scope="alpaca")
+        assert "equity-research" in service.called
+        assert "alpaca-orders" in service.called
+        assert not any(c.startswith("cycle") or c in {"universe", "candles", "research"}
+                       for c in service.called), service.called
+
+
+def test_scope_names_resolve_to_brokers():
+    """Scope is the BROKER now, not the asset class.
+
+    The asset-class names still resolve because they are stored on every cycle run already
+    recorded -- a scope that silently stopped working would break the history rather than
+    migrate it.
+    """
+    assert brokers_for_scope("all") == ("kraken", "alpaca")
+    assert brokers_for_scope("kraken") == ("kraken",)
+    assert brokers_for_scope("alpaca") == ("alpaca",)
+    assert brokers_for_scope("crypto") == ("kraken",)
+    assert brokers_for_scope("equities") == ("alpaca",)
+
+
+def test_an_unknown_scope_runs_nothing_rather_than_everything():
+    """Failing closed matters: a typo that quietly ran every broker would place real orders
+    on an account the caller never named."""
+    assert brokers_for_scope("krakan") == ()
+    assert brokers_for_scope("bogus") == ()
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = _fresh_db(tmp)
+        service = _Service(db_path)
+        cycle_id = start_cycle(db_path, scope="krakan")
+        run_cycle(service, cycle_id, scope="krakan")
+        assert service.called == [], service.called
