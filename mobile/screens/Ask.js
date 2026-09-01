@@ -292,24 +292,29 @@ function AskAiTrader({ messages, setMessages, request }) {
             disabled={askLoading || voiceState === 'transcribing' || voiceState === 'requesting'}
           />
         </View>
+        {/* 2026-09-01, Founder-directed: "can we just remove it and let the app provide its
+            answers in the same ask AI trader card that the question is typed. it's just
+            cleaner that way."
+            
+            The answers now sit directly under the input that produced them, inside one card,
+            rather than in a second card further down the screen. Newest turn first, so the
+            reply to the question just asked is the thing immediately below the buttons and
+            needs no scrolling to find. */}
+        {messages.length ? (
+          <View style={styles.askConversation}>
+            {chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
+              <View key={`turn-${turnIndex}`} style={styles.chatTurn}>
+                {turn.map((item, messageIndex) => (
+                  <View key={`${item.role}-${turnIndex}-${messageIndex}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
+                    <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
+                    <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
+                  </View>
+                ))}
+              </View>
+            ))}
+          </View>
+        ) : null}
       </Section>
-      {/* Only once there IS a conversation. An empty card headed "Conversation", containing
-          a standing explanation of what the app can do, was a second copy of the description
-          directly above it -- which is what the Founder asked to be rid of. */}
-      {messages.length ? (
-        <Section title="Conversation">
-          {chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
-            <View key={`turn-${turnIndex}`} style={styles.chatTurn}>
-              {turn.map((item, messageIndex) => (
-                <View key={`${item.role}-${turnIndex}-${messageIndex}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
-                  <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
-                  <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
-                </View>
-              ))}
-            </View>
-          ))}
-        </Section>
-      ) : null}
     </View>
   );
 }

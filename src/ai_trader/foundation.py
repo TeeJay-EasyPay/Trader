@@ -5,7 +5,7 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -368,10 +368,22 @@ DEFAULT_BROKER_POLICIES: dict[str, dict[str, tuple[Any, str, str]]] = {
     "alpaca": {
         "enabled": (True, "boolean", "Alpaca Paper Trading is the primary equity broker."),
         "paper_or_sandbox_only": (True, "boolean", "Live Alpaca trading is not approved."),
+        # 2026-09-01: 5 was the shared cap, sized for Kraken's 25-50 pound positions against
+        # a 500 allocation. On a 101,000 dollar paper account holding ~2,500 dollar positions
+        # it left 93,000 idle and refused 76 ideas in one night.
+        #
+        # 10, not more: 10 x 2,500 on a 101,000 account is 24.8%, which is the most the
+        # existing maximum_capital_allocation_pct (25%) permits to be at work at once. A
+        # first draft used 12 and the test below caught it at 29.7% -- the position count
+        # must not be able to authorise more exposure than the allocation guardrail allows.
+        "maximum_concurrent_positions": (10, "integer", "Alpaca may hold more positions than Kraken: bigger account, positions far smaller relative to it, and no per-trade commission. Sized to sit inside the 25% capital allocation cap."),
     },
     "kraken": {
         "enabled": (False, "boolean", "Kraken execution requires founder approval."),
         "paper_or_sandbox_only": (True, "boolean", "Kraken trading remains disabled unless explicitly approved."),
+        # Unchanged, and deliberately so: this is real money, positions are a tenth of the
+        # allocation each, and 5 already represents half the sleeve at full size.
+        "maximum_concurrent_positions": (5, "integer", "Kraken is real money on a small allocation; the cap stays where the Founder set it."),
     },
     "coinbase": {
         "enabled": (False, "boolean", "Coinbase execution requires founder approval."),
@@ -424,6 +436,10 @@ class TradingPolicy:
     crypto_enabled: bool
     equities_enabled: bool
     broker_enabled: dict[str, bool]
+    # Per-broker overrides for max_concurrent_positions. Empty means every broker shares the
+    # one number, which is how it behaved before 2026-09-01. Last in the field list because
+    # it is the only one with a default and a frozen dataclass requires that ordering.
+    broker_position_caps: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -449,6 +465,7 @@ class TradingPolicy:
             "max_trade_absolute_gbp": self.max_trade_absolute_gbp,
             "take_profit_required": self.take_profit_required,
             "max_concurrent_positions": self.max_concurrent_positions,
+            "broker_position_caps": dict(self.broker_position_caps),
             "max_drawdown_pct": self.max_drawdown_pct,
             "crypto_enabled": self.crypto_enabled,
             "equities_enabled": self.equities_enabled,
@@ -493,6 +510,19 @@ def initialize_foundation_schema(db_path: Path) -> None:
         _INITIALIZED_SCHEMA_KEYS.add(key)
 
 
+def position_cap_for(policy: Any, broker: str | None) -> int:
+    """The position cap that applies to one broker.
+
+    Falls back to the shared cap when a broker has no explicit value, so adding a broker
+    never silently grants it more room than intended -- it has to be given a cap on purpose.
+    """
+    caps = getattr(policy, "broker_position_caps", None) or {}
+    key = str(broker or "").strip().lower()
+    if key and key in caps:
+        return int(caps[key])
+    return int(getattr(policy, "max_concurrent_positions", 3))
+
+
 def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> TradingPolicy:
     initialize_foundation_schema(db_path)
     with closing(connect(db_path)) as conn:
@@ -503,6 +533,25 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
             row["broker"]: _parse_value(row["policy_value"], row["value_type"])
             for row in conn.execute(
                 "SELECT broker, policy_value, value_type FROM BROKER_POLICIES WHERE policy_key = 'enabled' AND active = 1"
+            )
+        }
+        # 2026-09-01, Founder-directed: "what can we do to increase the number of trades that
+        # can be done on alpaca."
+        #
+        # The position cap was ONE number shared by every broker, and it was set for Kraken
+        # -- where a position is 25-50 pounds against a 500 allocation. Applied to Alpaca it
+        # meant 5 positions of ~2,500 dollars on a 101,000 dollar account, so the broker that
+        # is actually trading sat full with 93,000 dollars idle while 76 ideas were refused
+        # overnight on maximum_open_positions_exceeded. The learning data says those are the
+        # most expensive refusals we make: 19 of them, and the price moved +3.24% afterwards.
+        #
+        # Per-broker now, in the table that already exists for per-broker settings. A broker
+        # with no explicit value keeps the shared one, so nothing changes by accident.
+        broker_position_caps = {
+            row["broker"]: _parse_value(row["policy_value"], row["value_type"])
+            for row in conn.execute(
+                "SELECT broker, policy_value, value_type FROM BROKER_POLICIES "
+                "WHERE policy_key = 'maximum_concurrent_positions' AND active = 1"
             )
         }
     return TradingPolicy(
@@ -551,6 +600,7 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         max_trade_absolute_gbp=float(risk.get("max_trade_absolute_gbp", 0.0)),
         take_profit_required=bool(risk.get("take_profit_required", True)),
         max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
+        broker_position_caps={k: int(v) for k, v in broker_position_caps.items() if str(v).strip() not in ("", "None")},
         max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
         crypto_enabled=bool(investment.get("crypto_enabled", False)) or _kraken_crypto_policy_approved(),
         equities_enabled=bool(investment.get("equities_enabled", True)),

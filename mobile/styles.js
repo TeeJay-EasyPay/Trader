@@ -444,6 +444,15 @@ export const styles = StyleSheet.create({
   },
   // Run-a-cycle screen (2026-08-29). Each step is a bordered block rather than a plain row:
   // the summaries run to two lines and without separation they read as one paragraph.
+  // The conversation now lives inside the Ask card rather than in a card of its own
+  // (Founder, 2026-09-01). A rule above it separates the answers from the controls without
+  // needing a second heading.
+  askConversation: {
+    borderTopWidth: 1,
+    borderTopColor: '#e9ecef',
+    marginTop: 14,
+    paddingTop: 12,
+  },
   cycleStep: {
     borderLeftWidth: 3,
     borderLeftColor: '#dee2e6',

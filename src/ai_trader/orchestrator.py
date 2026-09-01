@@ -12,6 +12,7 @@ from typing import Any
 from .broker_adapters import BrokerAdapter, _float_env, _kraken_pair
 from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
+    position_cap_for,
     calculate_capital_allocation,
     calculate_investment_score,
     create_due_diligence_assessment,
@@ -203,7 +204,12 @@ class InvestmentOrchestrator:
             failures.append("max_stop_loss_pct_exceeded")
         if context.account.equity <= policy.emergency_shutdown_balance:
             failures.append("emergency_shutdown_balance_breached")
-        if len(context.account.open_positions) >= policy.max_concurrent_positions:
+        # 2026-09-01: the cap is per broker now. It was one shared number sized for Kraken,
+        # which left Alpaca full at 5 positions on a 101,000 dollar account with 93,000 idle
+        # -- and the learning data says that is the most expensive refusal we make (19 of
+        # them, price moved +3.24% afterwards). See foundation.position_cap_for.
+        position_cap = position_cap_for(policy, selected.name if selected else None)
+        if len(context.account.open_positions) >= position_cap:
             failures.append("maximum_concurrent_positions_exceeded")
         if allocation["result"] != "approved":
             failures.append("capital_allocation_rejected")
