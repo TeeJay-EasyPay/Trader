@@ -63,12 +63,14 @@ const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', RunCycle: 'Run 
 export default function App() {
   const [screen, setScreen] = useState('ExecutiveBriefing');
   const [selectedExchange, setSelectedExchange] = useState('All');
-  const [askMessages, setAskMessages] = useState([
-    {
-      role: 'assistant',
-      text: 'Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned. Press Speak to talk instead of typing, and I will answer out loud. I can also run a cycle or re-check positions if you ask me to. I cannot place a trade, change a threshold, or turn trading on or off.',
-    },
-  ]);
+  // 2026-09-01, Founder-directed: "can we remove the 'conversation' card from executive
+  // briefing as it is just explaining something I already know."
+  //
+  // The card itself is where his answers appear, so removing it would lose them. What he was
+  // actually reading was this SEEDED message -- a standing explainer that made an empty
+  // conversation look like a redundant duplicate of the card description directly above it.
+  // Starting empty means the Conversation card only appears once there is a conversation.
+  const [askMessages, setAskMessages] = useState([]);
 
   const {
     status,

@@ -65,4 +65,38 @@ test('a real payload yields real rows', () => {
   assert.strictEqual(card.rows[1].confidence, null);
 });
 
+test('mechanical reasons fill the card when there is no judgement call to report', () => {
+  // 2026-09-01: the card read empty for days while the app was turning down hundreds of
+  // ideas. Correct by its own design -- it shows the AI reviewer's judgement, and nothing
+  // reached the reviewer -- but a card titled "Trades I Turned Down" showing nothing on such
+  // a day reads as broken rather than as precise.
+  const card = declineReasonsCard({
+    declines: [],
+    available: true,
+    mechanical_summary: [
+      { reason: 'fee_hurdle_not_cleared', count: 3, explanation: 'profit would not have covered fees', examples: ['SOL'] },
+    ],
+  });
+  assert.strictEqual(card.mechanical, true);
+  assert.strictEqual(card.rows.length, 1);
+  assert.ok(card.rows[0].why.includes('fees'));
+  assert.ok(card.rows[0].symbol.includes('3 ideas'));
+});
+
+test('a real judgement call still takes precedence over the mechanical summary', () => {
+  const card = declineReasonsCard({
+    // declineRow needs symbol AND why; anything else is dropped as unrenderable.
+    declines: [{ symbol: 'SCCO', why: 'The setup was already too extended to buy safely.' }],
+    mechanical_summary: [{ reason: 'fee_hurdle_not_cleared', count: 9, explanation: 'fees', examples: [] }],
+  });
+  assert.strictEqual(card.mechanical, false);
+  assert.ok(card.rows.length >= 1);
+});
+
+test('genuinely nothing refused still reads as empty', () => {
+  const card = declineReasonsCard({ declines: [], available: true, mechanical_summary: [] });
+  assert.strictEqual(card.rows.length, 0);
+  assert.strictEqual(card.mechanical, false);
+});
+
 console.log(`\n${passed} test(s) passed.`);

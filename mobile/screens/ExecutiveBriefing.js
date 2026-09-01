@@ -480,7 +480,9 @@ function DeclineReasonsCard({ declineReasons }) {
   return (
     <CollapsibleSection
       title="Trades I Turned Down"
-      subtitle="Where I judged a trade was not worth taking, and why."
+      subtitle={card.mechanical
+        ? 'Why ideas did not become trades. No judgement calls were needed - the rules stopped them first.'
+        : 'Where I judged a trade was not worth taking, and why.'}
       defaultExpanded={false}
     >
       {card.rows.length === 0 ? (

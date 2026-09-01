@@ -265,13 +265,6 @@ function AskAiTrader({ messages, setMessages, request }) {
       setAskLoading(false);
     }
   };
-  const suggestions = [
-    'Am I up or down today, and why?',
-    'What open positions do I have?',
-    'Which recent trades made or lost money?',
-    'What has AI Trader learned today?',
-    'Is AI Trader getting better at trading?',
-  ];
   return (
     <View>
       <Section title="Ask AI Trader">
@@ -279,11 +272,10 @@ function AskAiTrader({ messages, setMessages, request }) {
           Ask about anything AI Trader knows, by typing or by pressing Speak - spoken questions get spoken answers. I can also run a cycle, re-check what we hold, or refresh prices if you ask. I cannot place or approve a trade, change a threshold, or turn trading on or off.
         </Text>
         <Metric label="Ask Status" value={askStatus} />
-        <View style={styles.buttonGrid}>
-          {suggestions.map((item) => (
-            <Button key={item} label={item} tone="neutral" onPress={() => ask(item)} disabled={askLoading} />
-          ))}
-        </View>
+        {/* 2026-09-01, Founder-directed: "can we remove the 5 buttons that are questions. I
+            don't really use them and it adds clutter." Five full-width buttons sat between
+            the description and the input box, pushing the thing he actually uses off the
+            first screen. */}
         <TextInput
           style={[styles.input, styles.multilineInput]}
           multiline
@@ -301,9 +293,12 @@ function AskAiTrader({ messages, setMessages, request }) {
           />
         </View>
       </Section>
-      <Section title="Conversation">
-        {messages.length ? (
-          chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
+      {/* Only once there IS a conversation. An empty card headed "Conversation", containing
+          a standing explanation of what the app can do, was a second copy of the description
+          directly above it -- which is what the Founder asked to be rid of. */}
+      {messages.length ? (
+        <Section title="Conversation">
+          {chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
             <View key={`turn-${turnIndex}`} style={styles.chatTurn}>
               {turn.map((item, messageIndex) => (
                 <View key={`${item.role}-${turnIndex}-${messageIndex}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
@@ -312,11 +307,9 @@ function AskAiTrader({ messages, setMessages, request }) {
                 </View>
               ))}
             </View>
-          ))
-        ) : (
-          <Text style={styles.bodyText}>Ask me about balances, open positions, trades, reports, recommendations, or what AI Trader learned.</Text>
-        )}
-      </Section>
+          ))}
+        </Section>
+      ) : null}
     </View>
   );
 }

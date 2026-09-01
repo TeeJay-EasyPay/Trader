@@ -140,4 +140,61 @@ def recent_decline_reasons(db_path: Path, *, limit: int = 8) -> dict[str, Any]:
         declines.append(summary)
         if len(declines) >= limit:
             break
-    return {"declines": declines, "available": True}
+    if declines:
+        return {"declines": declines, "available": True}
+    # 2026-09-01, Founder-questioned: "I wonder whether the View Ahead card and Trades I
+    # turned down cards are giving me up to date information."
+    #
+    # The View Ahead was current. This one had been empty for days -- correctly, by its own
+    # design, because it shows only the AI reviewer's JUDGEMENT calls and nothing had reached
+    # the reviewer: 4,562 agent_no_trade events since 25 August and every one of them a
+    # mechanical gate. A card headed "Trades I Turned Down" showing nothing, on a day the app
+    # turned down hundreds, answers a narrower question than its title asks.
+    #
+    # So when there is no judgement to report, it reports the mechanical reasons instead,
+    # labelled as such. Empty now means genuinely nothing refused, not "refused for a kind of
+    # reason this card does not cover".
+    return {
+        "declines": [],
+        "available": True,
+        "mechanical_summary": _mechanical_decline_summary(rows),
+    }
+
+
+def _mechanical_decline_summary(rows: list[Any]) -> list[dict[str, Any]]:
+    """The gate reasons, grouped and worded for the Founder rather than for a log."""
+    plain = {
+        "crypto_due_diligence_below_threshold_or_negative_trend": "score or price trend too weak",
+        "entry_too_extended_in_24h_range": "already run too far up that day to buy safely",
+        "fee_hurdle_not_cleared": "profit would not have covered Kraken's fees",
+        "own_track_record_negative": "our own past trades in it have lost money",
+        "liquidity_structure_unfavourable": "order book too thin to trade cleanly",
+        "btc_weak_regime": "Bitcoin was weak, so the whole market looked risky",
+        "recently_stopped_out": "stopped out of it recently, still cooling off",
+        "kraken_pair_unavailable": "not tradeable on Kraken at the time",
+        "current_price_not_available": "no live price was available",
+    }
+    counts: dict[str, int] = {}
+    symbols: dict[str, set] = {}
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        reason = str(payload.get("reason") or "")
+        if not reason:
+            continue
+        counts[reason] = counts.get(reason, 0) + 1
+        symbol = str(payload.get("symbol") or "").upper()
+        if symbol:
+            symbols.setdefault(reason, set()).add(symbol)
+    ordered = sorted(counts.items(), key=lambda kv: -kv[1])[:5]
+    return [
+        {
+            "reason": reason,
+            "count": count,
+            "explanation": plain.get(reason, reason.replace("_", " ")),
+            "examples": sorted(symbols.get(reason, set()))[:4],
+        }
+        for reason, count in ordered
+    ]
