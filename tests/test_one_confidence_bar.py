@@ -31,18 +31,31 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "ai_trader"
 
 
-def test_the_policy_bar_is_derived_from_the_render_variable_not_the_database():
-    """load_trading_policy is the single funnel every gate reaches its bar through."""
+def test_the_policy_bar_is_derived_from_the_database_with_render_as_fallback():
+    """load_trading_policy is the single funnel every gate reaches its bar through.
+
+    2026-09-02, Founder-directed, REVERSING the 2026-08-30 decision this file was written for:
+    "move the confidence bar to the database. it's not an environment variable."
+
+    The earlier decision was the right answer to a different question -- the number lived in
+    three places and naming Render the winner ended the argument. Now that every decision has
+    one declared home (decision_registry.py) the tie-break is unnecessary, and a strategy
+    number should not need a deploy and a 15-minute worker restart to change.
+
+    Done in the safe order: the live INVESTMENT_POLICIES row was set to 0.70, the exact value
+    already in MIN_CONFIDENCE_SCORE, BEFORE the reader was switched -- so moving the home
+    could not move the bar. What this file guards is unchanged: exactly ONE source, never three.
+    """
     text = (SOURCE / "foundation.py").read_text(encoding="utf-8")
-    match = re.search(r"min_ai_confidence=([^\n]+)", text)
+    match = re.search(r"min_ai_confidence=(.+?\n.*?\n.*?\),)", text, re.S)
     assert match, "could not find min_ai_confidence in load_trading_policy"
     expression = match.group(1)
-    assert "guardrails" in expression and "min_confidence_score" in expression, (
-        f"min_ai_confidence must derive from the Render variable, got: {expression.strip()}"
+    assert "minimum_overall_confidence" in expression, (
+        f"min_ai_confidence must read the database row, got: {expression.strip()}"
     )
-    assert "minimum_overall_confidence" not in expression, (
-        "the database row must not be a source again -- the Founder chose Render as "
-        "authoritative on 2026-08-30"
+    assert "min_confidence_score" in expression, (
+        "Render must remain the fallback, or a database missing that row silently drops the "
+        f"bar to a built-in default, got: {expression.strip()}"
     )
 
 
@@ -93,15 +106,37 @@ def test_no_caller_reintroduces_a_rival_confidence_source():
             stripped = re.sub(r"#.*$", "", line)
             if re.search(r"_float_env\(\s*[\"']AUTO_TRADE_MIN_CONFIDENCE", stripped):
                 offenders.append(f"{path.relative_to(SOURCE)}:{number}")
-            if "investment.get(\"minimum_overall_confidence\"" in stripped:
-                offenders.append(f"{path.relative_to(SOURCE)}:{number}")
     assert offenders == [], (
         f"a rival source for the confidence bar reappeared: {offenders}"
     )
 
 
-def test_the_seeded_database_row_is_marked_retired_not_authoritative():
-    """It stays for history, but its description must not invite anyone to trust it."""
+def test_exactly_one_place_reads_the_confidence_row():
+    """The point of the file, restated for the new home.
+
+    Reading the database row is now correct -- in ONE place. A second reader is how the
+    original three-way split began, so the count is asserted rather than trusted.
+    """
+    readers: list[str] = []
+    for path in SOURCE.rglob("*.py"):
+        if path.name == "decision_registry.py":
+            continue  # declares the decision; does not resolve it for the live path yet
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = re.sub(r"#.*$", "", line)
+            if "minimum_overall_confidence" in stripped and ".get(" in stripped:
+                readers.append(f"{path.relative_to(SOURCE)}:{number}")
+    assert len(readers) == 1, (
+        f"the confidence row must have exactly one reader, found: {readers}"
+    )
+
+
+def test_the_seeded_database_row_is_described_as_the_live_bar():
+    """2026-09-02: this row IS the bar now, so its description must say so.
+
+    It previously had to be marked RETIRED, because trusting it would have been a mistake.
+    Leaving that wording in place after the Founder moved the bar would be worse than useless
+    -- it would tell the next reader to ignore the number that is actually in charge.
+    """
     text = (SOURCE / "foundation.py").read_text(encoding="utf-8")
     tree = ast.parse(text)
     description: str | None = None
@@ -117,7 +152,10 @@ def test_the_seeded_database_row_is_marked_retired_not_authoritative():
         for key, value in zip(node.value.keys, node.value.values):
             if getattr(key, "value", None) == "minimum_overall_confidence":
                 description = value.elts[2].value
-    assert description is not None, "the policy key should still be seeded for history"
-    assert "RETIRED" in description.upper() and "MIN_CONFIDENCE_SCORE" in description, (
-        f"the retired row must say where the real bar lives, got: {description!r}"
+    assert description is not None, "the policy key must be seeded"
+    assert "RETIRED" not in description.upper(), (
+        f"this row is the live bar now, not a retired one: {description!r}"
+    )
+    assert "sure" in description.lower() or "confiden" in description.lower(), (
+        f"the description must say in plain English what the number does, got: {description!r}"
     )

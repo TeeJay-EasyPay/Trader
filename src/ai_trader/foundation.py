@@ -322,7 +322,7 @@ DEFAULT_INVESTMENT_POLICIES: dict[str, tuple[Any, str, str]] = {
     # kept only so existing deployments do not lose a historical record of what it once
     # held; nothing decides a trade from it. Do not reintroduce it as a source -- the whole
     # problem was the same number living in more than one place.
-    "minimum_overall_confidence": (0.70, "float", "RETIRED as a source. The live bar is MIN_CONFIDENCE_SCORE in Render."),
+    "minimum_overall_confidence": (0.70, "float", "How sure the AI must be before a trade is allowed. The live bar, Founder-directed 2026-09-02."),
 }
 
 DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
@@ -385,7 +385,11 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     "max_trade_pct_of_available_cash": (0.20, "float", "Maximum share of currently-available cash committed to one trade."),
     "max_trade_absolute_gbp": (0.0, "float", "Hard per-trade cash ceiling; 0 disables the absolute cap."),
     "take_profit_required": (True, "boolean", "Every autonomous trade needs a take profit."),
-    "maximum_concurrent_positions": (3, "integer", "Maximum open positions."),
+    # 2026-09-02, Founder-directed ("for point 2 it should be 10"): the database said 5 while
+    # Render said 10, and the two had drifted. Aligned on 10, and the live row was updated
+    # to match rather than left to this insert-or-ignore default, which never reaches an
+    # already-seeded deployment.
+    "maximum_concurrent_positions": (10, "integer", "Maximum open positions when a broker has no cap of its own."),
     "maximum_drawdown_pct": (0.15, "float", "Maximum tolerated drawdown before shutdown."),
 }
 
@@ -692,22 +696,31 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         max_weekly_loss_pct=float(risk.get("maximum_weekly_loss_pct", 0.06)),
         max_monthly_loss_pct=float(risk.get("maximum_monthly_loss_pct", 0.10)),
         emergency_shutdown_balance=float(risk.get("emergency_shutdown_balance", 0.0)),
-        # 2026-08-30, Founder-directed: RENDER IS AUTHORITATIVE for the confidence bar.
+        # 2026-09-02, Founder-directed, REVERSING the 2026-08-30 decision below:
+        # "move the confidence bar to the database. it's not an environment variable."
         #
-        # It previously read the INVESTMENT_POLICIES row first, so the same number lived in
-        # the database, in MIN_CONFIDENCE_SCORE, and in AUTO_TRADE_MIN_CONFIDENCE -- and
-        # whichever one someone edited, at least one of the others disagreed. The Founder
-        # manages MIN_CONFIDENCE_SCORE in the Render dashboard and asked for that to win.
+        # He is right, and the earlier decision was the right answer to a different question.
+        # On 2026-08-30 this number lived in three places at once -- the database,
+        # MIN_CONFIDENCE_SCORE, and AUTO_TRADE_MIN_CONFIDENCE -- and whichever was edited, the
+        # others disagreed. Picking Render as the winner ended that argument, but it also
+        # meant a strategy decision required a deploy and a 15-minute worker restart to
+        # change. Now that every decision has one declared home (see decision_registry.py),
+        # the tie-break is unnecessary and the database is where a trading number belongs.
+        #
+        # DONE SAFELY, and the order mattered: the INVESTMENT_POLICIES row was set to 0.70 --
+        # the exact value live in MIN_CONFIDENCE_SCORE -- BEFORE this line was changed, so
+        # moving the home could not move the bar. It read 0.7 already, so nothing shifted.
+        # Render remains the fallback if the row is ever missing.
         #
         # Every gate in the app reaches its bar through this one line (research, proposal
-        # validation, execution, and the reason text shown in the app), so changing the
-        # source here changes it everywhere at once and nothing can drift out of step.
+        # validation, execution, and the reason text shown in the app), so the source changes
+        # everywhere at once and nothing can drift out of step.
         #
-        # A note for whoever reads this next: render.yaml is NOT what is running. It declared
-        # AUTO_TRADE_MIN_CONFIDENCE (which exists on neither service) and gave
-        # MIN_CONFIDENCE_SCORE as 0.85 when both services actually had 0.75. Check the
+        # A note for whoever reads this next: render.yaml is NOT what is running. Check the
         # dashboard or the API, never the file.
-        min_ai_confidence=float(getattr(guardrails, "min_confidence_score", 0.75)),
+        min_ai_confidence=float(
+            investment.get("minimum_overall_confidence", getattr(guardrails, "min_confidence_score", 0.75))
+        ),
         min_investment_policy_fit=float(investment.get("minimum_investment_policy_score", getattr(auto_trade, "min_philosophy_fit", 0.85))),
         default_stop_loss_pct=float(risk.get("default_stop_loss_pct", getattr(auto_trade, "default_stop_loss_pct", 0.03))),
         max_stop_loss_pct=float(risk.get("maximum_stop_loss_pct", getattr(auto_trade, "max_stop_loss_pct", 0.05))),

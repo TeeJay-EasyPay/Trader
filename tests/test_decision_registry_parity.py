@@ -35,6 +35,7 @@ from ai_trader.decision_registry import (
     CODE_DEFAULT,
     DECISIONS,
     GUARDRAIL_ENV,
+    INVESTMENT_POLICY,
     RISK_POLICY,
     resolve_all,
 )
@@ -99,14 +100,27 @@ def test_the_registry_covers_the_decisions_that_gate_a_trade(db):
         assert name in registry, f"{name} is not declared in the registry"
 
 
-def test_confidence_is_recorded_as_coming_from_render(db):
-    """The one decision that deliberately ignores its database row.
+def test_confidence_now_comes_from_the_database(db):
+    """2026-09-02, Founder-directed: "move the confidence bar to the database. it's not an
+    environment variable."
 
-    foundation.py reads min_confidence_score off GuardrailConfig and never consults
-    INVESTMENT_POLICIES, because the Founder manages that number in the Render dashboard. If
-    the registry quietly 'fixed' that to read the database, it would change the live bar --
-    so the oddity is asserted, not tidied away.
+    It used to be the one decision that ignored its own database row. The live row was set to
+    0.70 -- the value already in MIN_CONFIDENCE_SCORE -- before the reader was switched, so
+    moving the home could not move the bar. Render stays as a fallback.
     """
+    _, registry = _both(db)
+    assert registry["min_ai_confidence"].source == INVESTMENT_POLICY
+    assert registry["min_ai_confidence"].value == 0.70
+
+
+def test_render_still_answers_if_the_confidence_row_is_missing(db):
+    """The fallback must survive, or a database without that row silently drops the bar to a
+    built-in default rather than the number the Founder set in Render."""
+    import sqlite3
+    from contextlib import closing as _closing
+    with _closing(sqlite3.connect(db)) as conn:
+        with conn:
+            conn.execute("DELETE FROM INVESTMENT_POLICIES WHERE policy_key = 'minimum_overall_confidence'")
     _, registry = _both(db)
     assert registry["min_ai_confidence"].source == GUARDRAIL_ENV
     assert registry["min_ai_confidence"].value == 0.70

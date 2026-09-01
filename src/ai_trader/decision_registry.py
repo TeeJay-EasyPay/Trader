@@ -25,12 +25,16 @@ resolution rules are in use at once:
 
   * most values      database first, environment as fallback
   * some values      database first, a bare literal as fallback
-  * min_ai_confidence  ENVIRONMENT ONLY -- the database row is ignored entirely, deliberately,
-                       because the Founder manages that one in the Render dashboard
+  * min_ai_confidence  ENVIRONMENT ONLY -- the database row was ignored entirely
 
 Nothing announced which pattern applied where; you had to read the constructor. Each entry
 below states its chain explicitly, so the inconsistency is visible rather than latent. P3
 moves the storage; this module does not change the answers.
+
+2026-09-02: the third pattern is gone. The Founder moved the confidence bar into the database
+("it's not an environment variable"), so every trading number now reads database-first with
+Render as a fallback. The live row was set to the value already in MIN_CONFIDENCE_SCORE
+BEFORE the reader was switched, so moving the home could not move the bar.
 """
 
 from __future__ import annotations
@@ -106,10 +110,12 @@ DECISIONS: tuple[Decision, ...] = (
     Decision(
         name="min_ai_confidence", kind="float", default=0.75,
         summary="How sure the AI must be before a trade is allowed.",
-        # The odd one out, and deliberately so -- see the long note in foundation.py.
-        # The database row is NOT consulted. Recorded here rather than left to be discovered.
-        precedence=(GUARDRAIL_ENV, CODE_DEFAULT),
-        policy_attr="min_ai_confidence", env_attr="min_confidence_score",
+        # 2026-09-02: was the odd one out -- environment only, database row ignored. The
+        # Founder moved it ("it's not an environment variable"), so it now reads like every
+        # other trading number, with Render kept only as a fallback if the row is missing.
+        precedence=(INVESTMENT_POLICY, GUARDRAIL_ENV, CODE_DEFAULT),
+        policy_attr="min_ai_confidence", investment_key="minimum_overall_confidence",
+        env_attr="min_confidence_score",
     ),
     Decision(
         name="max_concurrent_positions", kind="int", default=3,

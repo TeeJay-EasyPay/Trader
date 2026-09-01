@@ -173,14 +173,16 @@ class FoundationSprintTests(unittest.TestCase):
         # found while reconciling Kraken's disagreeing "max open positions" settings.
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
-            initialize_foundation_schema(db_path)  # seeds maximum_concurrent_positions=3
+            initialize_foundation_schema(db_path)  # seeds maximum_concurrent_positions=10
             before = load_trading_policy(db_path, auto_trade=AutoTradeConfig(enabled=True), guardrails=GuardrailConfig())
-            self.assertEqual(before.max_concurrent_positions, 3)
+            # 2026-09-02, Founder-directed ("for point 2 it should be 10"): the seeded default
+            # was 3 while Render said 10 and the live database row said 5. All three now agree.
+            self.assertEqual(before.max_concurrent_positions, 10)
 
             result = set_risk_policy_value(db_path, "maximum_concurrent_positions", 5)
 
             self.assertEqual(result["status"], "updated")
-            self.assertEqual(result["previous_value"], "3")
+            self.assertEqual(result["previous_value"], "10")
             after = load_trading_policy(db_path, auto_trade=AutoTradeConfig(enabled=True), guardrails=GuardrailConfig())
             self.assertEqual(after.max_concurrent_positions, 5)
 
