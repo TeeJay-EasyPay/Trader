@@ -138,10 +138,21 @@ class InvestmentOrchestrator:
         market_open = selected.is_market_open(p.exchange) if selected else False
         asset_available = selected.is_asset_available(p.symbol, p.exchange, p.asset_type) if selected else False
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=adapter_selected broker={selected.name if selected else None} elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
-        validation = validate_trade_proposal(p, context.account, context.guardrails, now=context.now)
-        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=guardrails_validated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
+        # 2026-09-01, P1: the policy is loaded BEFORE validation now, where it used to be
+        # loaded after. Nothing here depends on the validation result, and the swap is what
+        # lets the single position-cap check below receive the per-broker number. See the
+        # long note in guardrails.py for why there is only one such check now.
         policy = load_trading_policy(self.db_path, auto_trade=context.auto_trade, guardrails=context.guardrails)
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=policy_loaded elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
+        position_cap = position_cap_for(policy, selected.name if selected else None)
+        validation = validate_trade_proposal(
+            p,
+            context.account,
+            context.guardrails,
+            now=context.now,
+            max_open_positions=position_cap,
+        )
+        print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=guardrails_validated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         due_diligence = create_due_diligence_assessment(self.db_path, p)
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=due_diligence_assessed elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         investment_score = calculate_investment_score(self.db_path, p)
@@ -222,13 +233,12 @@ class InvestmentOrchestrator:
             failures.append("reward_risk_below_minimum")
         if context.account.equity <= policy.emergency_shutdown_balance:
             failures.append("emergency_shutdown_balance_breached")
-        # 2026-09-01: the cap is per broker now. It was one shared number sized for Kraken,
-        # which left Alpaca full at 5 positions on a 101,000 dollar account with 93,000 idle
-        # -- and the learning data says that is the most expensive refusal we make (19 of
-        # them, price moved +3.24% afterwards). See foundation.position_cap_for.
-        position_cap = position_cap_for(policy, selected.name if selected else None)
-        if len(context.account.open_positions) >= position_cap:
-            failures.append("maximum_concurrent_positions_exceeded")
+        # 2026-09-01, P1: the duplicate position-cap check that used to live here is GONE.
+        # It was the second of two, emitting maximum_concurrent_positions_exceeded while
+        # guardrails.py emitted maximum_open_positions_exceeded for the same decision against
+        # a different number -- together 51 of 77 live refusals. `position_cap` is computed
+        # above and handed to validate_trade_proposal, so the rule is enforced exactly once,
+        # with the per-broker value, under one name the app already understands.
         if allocation["result"] != "approved":
             failures.append("capital_allocation_rejected")
         pnl_snapshot = latest_pnl_snapshot(self.db_path, selected.name) if selected else {}

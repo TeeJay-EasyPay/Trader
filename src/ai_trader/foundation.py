@@ -365,6 +365,11 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     # 1.0 here provably cannot reject a Kraken trade that already passed its own gate: net
     # RR >= 1 means reward >= risk + fees, so gross RR is strictly greater than 1.
     "minimum_reward_risk": (1.0, "float", "Minimum reward-to-risk ratio. Below 1.0 the target is nearer than the stop, so wins are smaller than losses."),
+    # 2026-09-01, P3. Seeded at the values live on Render at the time of writing
+    # (ALLOW_SHORT_SELLING=false, CRYPTO_RISK_PER_TRADE_PCT=0.01) so the home moves and the
+    # value does not. Nothing reads these yet -- that is P4.
+    "allow_short_selling": (False, "boolean", "Whether the AI may bet on a price falling."),
+    "crypto_risk_per_trade_pct": (0.01, "float", "How much of the crypto pot one crypto trade may risk."),
     # 2026-08-19: Founder approved native (Kraken-side) trailing stops so a stop-loss
     # keeps working even if AI Trader's own process is down or Kraken is unreachable --
     # see KrakenBrokerAdapter.place_trailing_stop_order and orchestrator.py's entry hook.
@@ -409,6 +414,34 @@ DEFAULT_BROKER_POLICIES: dict[str, dict[str, tuple[Any, str, str]]] = {
         # Unchanged, and deliberately so: this is real money, positions are a tenth of the
         # allocation each, and 5 already represents half the sleeve at full size.
         "maximum_concurrent_positions": (5, "integer", "Kraken is real money on a small allocation; the cap stays where the Founder set it."),
+        # 2026-09-01, P3 of the "one home per decision" work. These are Kraken's trading
+        # numbers, seeded here at EXACTLY the values live on Render at the time of writing so
+        # that moving their home cannot move their value:
+        #
+        #   KRAKEN_MAX_ORDER_GBP=50   KRAKEN_MIN_ORDER_GBP=2   KRAKEN_TRADING_ALLOCATION_GBP=500
+        #   KRAKEN_BUY_ONLY_ENTRIES=true   KRAKEN_LIMIT_ENTRIES_ENABLED=True
+        #   KRAKEN_LIMIT_ENTRY_TIMEOUT_SECONDS=600
+        #
+        # NOTHING READS THESE YET. P3 gives each decision a home; P4 points the readers at it.
+        # Seeding first means the values are in place and provably identical before any code
+        # depends on them, which is the same reason the registry was built dormant.
+        "max_trade_absolute_gbp": (50.0, "float", "Largest single Kraken order in pounds."),
+        "minimum_order_gbp": (2.0, "float", "Kraken will not accept an order smaller than this."),
+        "trading_allocation_gbp": (500.0, "float", "The pot the AI may trade on Kraken, kept apart from the Founder's own holdings."),
+        "buy_only_entries": (True, "boolean", "New Kraken positions are always buys; the AI does not open shorts."),
+        "limit_entries_enabled": (True, "boolean", "Enter with a patient limit order to earn the lower maker fee."),
+        "limit_entry_timeout_seconds": (600, "integer", "How long a patient entry waits before giving up."),
+        # The worker's list, deliberately. The two Render services hold DIFFERENT lists (the
+        # web service also allows BTCGBP and XDGGBP; the worker also allows AAVEGBP), and the
+        # worker is the process that actually places orders, so its list is the real one.
+        # Recorded here so there is one answer rather than two. The env drift itself is a
+        # separate live defect, still to be fixed.
+        "allowed_pairs": (
+            "AAVEGBP,ADAGBP,ALGOGBP,ATOMGBP,BCHGBP,DOTGBP,ETHGBP,FILGBP,GRTGBP,KSMGBP,"
+            "LINKGBP,LTCGBP,MINAGBP,SANDGBP,SOLGBP,SUIGBP,XBTGBP,XLMGBP,XRPGBP",
+            "string",
+            "The coins the AI may buy on Kraken.",
+        ),
     },
     "coinbase": {
         "enabled": (False, "boolean", "Coinbase execution requires founder approval."),

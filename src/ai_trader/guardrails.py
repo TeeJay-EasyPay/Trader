@@ -13,6 +13,7 @@ def validate_trade_proposal(
     *,
     now: datetime | None = None,
     ai_managed_symbols: set[str] | list[str] | None = None,
+    max_open_positions: int | None = None,
 ) -> ValidationResult:
     p = proposal.normalized()
     failures: list[str] = []
@@ -55,7 +56,23 @@ def validate_trade_proposal(
         if account.daily_realized_pnl <= -max_daily_loss:
             failures.append("maximum_daily_loss_exceeded")
 
-    if len(account.open_positions) >= config.max_open_positions:
+    # 2026-09-01, P1 of the "one home per decision" work. This used to be one of TWO position
+    # caps. The other lived in orchestrator.py, was per broker, and emitted a different name
+    # (maximum_concurrent_positions_exceeded) -- so the same decision was checked twice against
+    # two different numbers. Measured on live refusals: 34 hits here and 17 there, 51 of 77
+    # refusals in total, all of them one rule counted twice.
+    #
+    # It is also why raising Alpaca's cap from 5 to 10 on 2026-08-31 did nothing. The per-broker
+    # value said 10, this broker-blind one still said 5, and this one runs first.
+    #
+    # Now there is one check. `max_open_positions` is opt-in, exactly like `ai_managed_symbols`
+    # above: a caller that knows which broker it is trading passes the per-broker cap, and a
+    # caller that does not keeps the shared config value it always used. So the orchestrator
+    # gets the correct number and no other path silently loses its cap.
+    effective_max_open_positions = (
+        config.max_open_positions if max_open_positions is None else int(max_open_positions)
+    )
+    if len(account.open_positions) >= effective_max_open_positions:
         failures.append("maximum_open_positions_exceeded")
 
     existing_symbols = {position.symbol.upper() for position in account.open_positions}
