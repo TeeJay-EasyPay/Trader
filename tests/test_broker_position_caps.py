@@ -76,3 +76,48 @@ def test_the_alpaca_cap_stays_inside_the_capital_allocation_guardrail():
     assert (cap * position) / account <= allocation_pct + 1e-9, (
         f"{cap} positions of {position} on {account} exceeds the {allocation_pct:.0%} allocation cap"
     )
+
+
+def test_the_shared_env_ceiling_is_not_below_any_per_broker_cap():
+    """The per-broker cap is unreachable if the broker-blind guardrail sits below it.
+
+    2026-09-01. This is the bug this test exists for, and it shipped: the per-broker caps
+    above were added and were completely INERT, because guardrails.py runs first and knows
+    nothing about brokers --
+
+        if len(account.open_positions) >= config.max_open_positions:
+            failures.append("maximum_open_positions_exceeded")
+
+    -- and orchestrator.py calls validate_trade_proposal BEFORE consulting position_cap_for.
+    So Alpaca was refused at MAX_OPEN_POSITIONS (5) and the 10 was never reached. Everything
+    looked shipped; nothing had changed.
+
+    MAX_OPEN_POSITIONS is therefore a CEILING, not the cap: it must be at least the largest
+    per-broker cap, or that broker silently loses the room it was given. Raising it does not
+    loosen any broker that has its own lower number -- Kraken keeps 5 both here and through
+    its independent KRAKEN_MAX_OPEN_TRADES dry-run gate.
+    """
+    import re
+    from pathlib import Path
+
+    from ai_trader.foundation import DEFAULT_BROKER_POLICIES
+
+    blueprint = Path(__file__).resolve().parents[1] / "render.yaml"
+    values = re.findall(
+        r"- key: MAX_OPEN_POSITIONS\b.*?^\s*value: \"(\d+)\"",
+        blueprint.read_text(encoding="utf-8"),
+        re.DOTALL | re.MULTILINE,
+    )
+    assert values, "MAX_OPEN_POSITIONS is no longer declared in render.yaml"
+
+    broker_caps = {
+        broker: policies["maximum_concurrent_positions"][0]
+        for broker, policies in DEFAULT_BROKER_POLICIES.items()
+        if "maximum_concurrent_positions" in policies
+    }
+    largest = max(broker_caps.values())
+    for ceiling in (int(v) for v in values):
+        assert ceiling >= largest, (
+            f"MAX_OPEN_POSITIONS={ceiling} sits below the largest per-broker cap "
+            f"({broker_caps}); that broker's cap is unreachable and the change is inert"
+        )

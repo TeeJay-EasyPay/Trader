@@ -143,7 +143,26 @@ services:
         # raising Alpaca's concurrent-position room too, which is a welcome side
         # effect, not an unwanted one, per this session's standing direction to
         # give Alpaca more room to actually trade.
-        value: "5"
+        #
+        # 2026-09-01: 5 -> 10. BROKER_POLICIES gained a per-broker
+        # maximum_concurrent_positions (alpaca 10, kraken 5, foundation.position_cap_for)
+        # so that Alpaca is no longer sized by a number chosen for Kraken. That change was
+        # INERT on its own: the broker-blind check above runs first (orchestrator.py calls
+        # validate_trade_proposal before the per-broker cap), so Alpaca was still refused
+        # at 5 and the 10 was never reached. This value is what makes the per-broker cap
+        # reachable -- it is now a CEILING, and the per-broker numbers do the real work.
+        #
+        # This does NOT loosen Kraken. Kraken has an independent gate: when
+        # _ai_managed_open_trade_count reaches KRAKEN_MAX_OPEN_TRADES (5),
+        # can_submit_real_orders goes false and execution_mode_for_broker drops Kraken to
+        # dry-run, so no real order is submitted regardless of this number. Verified before
+        # raising it, because this is real money and the check is shared.
+        #
+        # Why 10 and not more: 10 x ~2.5% of equity is ~24.8%, inside the existing
+        # maximum_capital_allocation_pct (0.25). 12 was tried first and a test caught it at
+        # 29.7% -- position count must never authorise more exposure than the allocation
+        # rule allows.
+        value: "10"
 
   - type: worker
     name: ai-trader-worker
