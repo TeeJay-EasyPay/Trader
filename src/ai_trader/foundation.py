@@ -345,6 +345,26 @@ DEFAULT_RISK_POLICIES: dict[str, tuple[Any, str, str]] = {
     "equities_leverage_multiplier": (1.0, "float", "Leverage multiplier for equities. 1.0 is cash-only."),
     "default_stop_loss_pct": (0.03, "float", "Default stop loss distance."),
     "maximum_stop_loss_pct": (0.05, "float", "Maximum permitted stop loss distance."),
+    # 2026-09-01, Founder-directed after seeing losses on the first day Alpaca could hold
+    # more than 5 positions. Only a MAXIMUM stop distance was ever checked, so a stop could
+    # be arbitrarily TIGHT and nothing objected. Every one of the nine equity entries that
+    # day sat inside the 3% default -- 0.19% to 2.39% -- and the two tightest were the two
+    # that lost: JNJ stopped out 91 seconds after entry on a 0.19% stop (inside the normal
+    # bid/ask jiggle of a large-cap), LLY after 6m41s on 0.77%. Those are not losing trades,
+    # they are trades never given room to be right.
+    #
+    # 0.5% globally is a floor against the absurd, deliberately well below Kraken's own
+    # 1.5% crypto_default_stop_loss_pct so real-money crypto behaviour does not change.
+    # Equities get the real floor (1.5%) per broker in DEFAULT_BROKER_POLICIES below.
+    "minimum_stop_loss_pct": (0.005, "float", "Minimum permitted stop loss distance. Stops tighter than this sit inside ordinary price noise and are stopped out before the idea can be tested."),
+    # Reward must be at least risk. NVDA on the same day was bought risking 3.71 dollars a
+    # share to make 2.78 -- a ratio of 0.75, so it had to be right 57% of the time just to
+    # break even, and nothing rejected it. Crypto already refuses this via
+    # crypto_min_net_reward_risk (1.0, measured AFTER fees); equities had no equivalent.
+    #
+    # 1.0 here provably cannot reject a Kraken trade that already passed its own gate: net
+    # RR >= 1 means reward >= risk + fees, so gross RR is strictly greater than 1.
+    "minimum_reward_risk": (1.0, "float", "Minimum reward-to-risk ratio. Below 1.0 the target is nearer than the stop, so wins are smaller than losses."),
     # 2026-08-19: Founder approved native (Kraken-side) trailing stops so a stop-loss
     # keeps working even if AI Trader's own process is down or Kraken is unreachable --
     # see KrakenBrokerAdapter.place_trailing_stop_order and orchestrator.py's entry hook.
@@ -377,6 +397,11 @@ DEFAULT_BROKER_POLICIES: dict[str, dict[str, tuple[Any, str, str]]] = {
         # first draft used 12 and the test below caught it at 29.7% -- the position count
         # must not be able to authorise more exposure than the allocation guardrail allows.
         "maximum_concurrent_positions": (10, "integer", "Alpaca may hold more positions than Kraken: bigger account, positions far smaller relative to it, and no per-trade commission. Sized to sit inside the 25% capital allocation cap."),
+        # 2026-09-01: equities-specific, because the global floor above is deliberately
+        # permissive so it cannot disturb Kraken. For shares the Founder's own configured
+        # default_stop_loss_pct is 3%; 1.5% is half that, leaving the AI real discretion to
+        # tighten a stop on a technical level while making a 0.19% stop impossible.
+        "minimum_stop_loss_pct": (0.015, "float", "Equities: a stop nearer than 1.5% is inside ordinary intraday noise for a liquid share."),
     },
     "kraken": {
         "enabled": (False, "boolean", "Kraken execution requires founder approval."),
@@ -436,10 +461,19 @@ class TradingPolicy:
     crypto_enabled: bool
     equities_enabled: bool
     broker_enabled: dict[str, bool]
+    # Defaulted fields must come last in a dataclass, so every field below here has one.
+    #
     # Per-broker overrides for max_concurrent_positions. Empty means every broker shares the
-    # one number, which is how it behaved before 2026-09-01. Last in the field list because
-    # it is the only one with a default and a frozen dataclass requires that ordering.
+    # one number, which is how it behaved before 2026-09-01.
     broker_position_caps: dict[str, int] = field(default_factory=dict)
+    # The smallest stop distance and the worst reward:risk shape a trade may have. Both
+    # default to permissive values so an older database that predates these rows behaves
+    # exactly as it did before, rather than silently refusing everything.
+    min_stop_loss_pct: float = 0.0
+    min_reward_risk: float = 0.0
+    # Per-broker overrides for min_stop_loss_pct, same convention as broker_position_caps:
+    # the global value is a floor against the absurd, a broker may demand more.
+    broker_min_stop_loss_pct: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -466,6 +500,9 @@ class TradingPolicy:
             "take_profit_required": self.take_profit_required,
             "max_concurrent_positions": self.max_concurrent_positions,
             "broker_position_caps": dict(self.broker_position_caps),
+            "min_stop_loss_pct": self.min_stop_loss_pct,
+            "min_reward_risk": self.min_reward_risk,
+            "broker_min_stop_loss_pct": dict(self.broker_min_stop_loss_pct),
             "max_drawdown_pct": self.max_drawdown_pct,
             "crypto_enabled": self.crypto_enabled,
             "equities_enabled": self.equities_enabled,
@@ -523,6 +560,46 @@ def position_cap_for(policy: Any, broker: str | None) -> int:
     return int(getattr(policy, "max_concurrent_positions", 3))
 
 
+def min_stop_loss_pct_for(policy: Any, broker: str | None) -> float:
+    """The tightest stop one broker may set, as a share of entry price.
+
+    Same convention as position_cap_for, with one deliberate difference: this takes the
+    LARGER of the broker value and the global one. The global figure is a floor against the
+    absurd that should hold everywhere; a broker may demand more room than that but must
+    never be able to quietly ask for less.
+    """
+    floors = getattr(policy, "broker_min_stop_loss_pct", None) or {}
+    shared = float(getattr(policy, "min_stop_loss_pct", 0.0) or 0.0)
+    key = str(broker or "").strip().lower()
+    if key and key in floors:
+        try:
+            return max(float(floors[key]), shared)
+        except (TypeError, ValueError):
+            return shared
+    return shared
+
+
+def reward_risk_ratio(proposal: Any) -> float | None:
+    """Reward distance divided by risk distance, or None when it cannot be measured.
+
+    None rather than 0.0 for an unmeasurable shape: a missing take-profit is already caught
+    by take_profit_required, and returning a number here would make this check fail a
+    proposal for the wrong reason.
+    """
+    try:
+        entry = float(proposal.entry_price)
+        stop = float(proposal.stop_loss)
+        target = float(proposal.take_profit)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if entry <= 0 or stop <= 0 or target <= 0:
+        return None
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return None
+    return abs(target - entry) / risk
+
+
 def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> TradingPolicy:
     initialize_foundation_schema(db_path)
     with closing(connect(db_path)) as conn:
@@ -552,6 +629,13 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
             for row in conn.execute(
                 "SELECT broker, policy_value, value_type FROM BROKER_POLICIES "
                 "WHERE policy_key = 'maximum_concurrent_positions' AND active = 1"
+            )
+        }
+        broker_min_stop_loss_pct = {
+            row["broker"]: _parse_value(row["policy_value"], row["value_type"])
+            for row in conn.execute(
+                "SELECT broker, policy_value, value_type FROM BROKER_POLICIES "
+                "WHERE policy_key = 'minimum_stop_loss_pct' AND active = 1"
             )
         }
     return TradingPolicy(
@@ -601,6 +685,11 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         take_profit_required=bool(risk.get("take_profit_required", True)),
         max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
         broker_position_caps={k: int(v) for k, v in broker_position_caps.items() if str(v).strip() not in ("", "None")},
+        min_stop_loss_pct=float(risk.get("minimum_stop_loss_pct", 0.0) or 0.0),
+        min_reward_risk=float(risk.get("minimum_reward_risk", 0.0) or 0.0),
+        broker_min_stop_loss_pct={
+            k: float(v) for k, v in broker_min_stop_loss_pct.items() if str(v).strip() not in ("", "None")
+        },
         max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
         crypto_enabled=bool(investment.get("crypto_enabled", False)) or _kraken_crypto_policy_approved(),
         equities_enabled=bool(investment.get("equities_enabled", True)),

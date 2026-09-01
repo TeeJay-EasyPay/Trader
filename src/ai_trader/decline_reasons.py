@@ -173,6 +173,11 @@ def _mechanical_decline_summary(rows: list[Any]) -> list[dict[str, Any]]:
         "recently_stopped_out": "stopped out of it recently, still cooling off",
         "kraken_pair_unavailable": "not tradeable on Kraken at the time",
         "current_price_not_available": "no live price was available",
+        # 2026-09-01: the two new equity gates. Worded as what the Founder would say,
+        # not as the failure name -- "sold before it could move" is the thing that
+        # actually happened to JNJ.
+        "stop_loss_too_tight": "the safety net was set so close it would trigger on normal price wobble",
+        "reward_risk_below_minimum": "aiming to win less than it was risking",
     }
     counts: dict[str, int] = {}
     symbols: dict[str, set] = {}

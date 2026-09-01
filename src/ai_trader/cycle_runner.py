@@ -236,6 +236,8 @@ _DROP_REASONS = {
     "recently_stopped_out": "stopped out of it recently, still cooling off",
     "kraken_pair_unavailable": "not tradeable on Kraken right now",
     "current_price_not_available": "no live price available",
+    "stop_loss_too_tight": "safety net set too close to the buy price",
+    "reward_risk_below_minimum": "aiming to win less than it was risking",
 }
 
 

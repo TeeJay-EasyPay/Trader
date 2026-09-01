@@ -12,7 +12,9 @@ from typing import Any
 from .broker_adapters import BrokerAdapter, _float_env, _kraken_pair
 from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
+    min_stop_loss_pct_for,
     position_cap_for,
+    reward_risk_ratio,
     calculate_capital_allocation,
     calculate_investment_score,
     create_due_diligence_assessment,
@@ -202,6 +204,22 @@ class InvestmentOrchestrator:
         stop_loss_pct = _stop_loss_pct(p)
         if stop_loss_pct > policy.max_stop_loss_pct:
             failures.append("max_stop_loss_pct_exceeded")
+        # 2026-09-01, Founder-directed. Only the maximum was ever checked, so a stop could be
+        # arbitrarily tight and nothing objected -- JNJ was bought with a stop 0.19% below
+        # entry and sold 91 seconds later, inside the ordinary bid/ask jiggle of a large-cap.
+        # A trade cut off before it can move is not a losing idea, it is an untested one, and
+        # it teaches the learning engine nothing except noise.
+        min_stop_pct = min_stop_loss_pct_for(policy, selected.name if selected else None)
+        if min_stop_pct > 0 and stop_loss_pct < min_stop_pct:
+            failures.append("stop_loss_too_tight")
+        # The shape of the bet, not its direction: below 1.0 the target is nearer than the
+        # stop, so every win is smaller than every loss and the trade must be right more than
+        # half the time merely to break even. NVDA the same morning risked 3.71 dollars a
+        # share to make 2.78 (0.75) and nothing rejected it. Crypto has enforced the
+        # equivalent since it had fees to clear; equities never got it.
+        reward_risk = reward_risk_ratio(p)
+        if policy.min_reward_risk > 0 and reward_risk is not None and reward_risk < policy.min_reward_risk:
+            failures.append("reward_risk_below_minimum")
         if context.account.equity <= policy.emergency_shutdown_balance:
             failures.append("emergency_shutdown_balance_breached")
         # 2026-09-01: the cap is per broker now. It was one shared number sized for Kraken,
