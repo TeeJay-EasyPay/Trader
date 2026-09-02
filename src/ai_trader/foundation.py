@@ -675,27 +675,51 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
                 "WHERE policy_key = 'minimum_stop_loss_pct' AND active = 1"
             )
         }
+    # 2026-09-02, P4 of the "one home per decision" work: every number below now comes
+    # from decision_registry.DECISIONS instead of being resolved by hand here.
+    #
+    # This is P4 done at the funnel rather than at the 62 call sites. Every reader in the app
+    # already reaches its value through TradingPolicy, so populating TradingPolicy FROM the
+    # registry points all of them at it at once, without touching agent.py, execution.py,
+    # orchestrator.py or the other eleven files. Fewer edits, far less risk, same result: one
+    # resolution path.
+    #
+    # The registry's precedence chains were written to reproduce exactly what the hand-written
+    # expressions did, and tests/test_decision_registry_parity.py proved them identical
+    # against both a fresh database and the live deployment BEFORE this switch was made. That
+    # is why this is a safe change rather than a hopeful one.
+    #
+    # Imported inside the function deliberately: decision_registry imports _policy_map and
+    # _parse_value from this module, so a module-level import here would be circular.
+    from .decision_registry import BY_NAME as _DECISIONS_BY_NAME
+    from .decision_registry import resolve as _resolve_decision
+
+    # No broker overrides at this level. TradingPolicy carries the GLOBAL value; the per-broker
+    # ones are applied later by position_cap_for/min_stop_loss_pct_for from the two dicts
+    # below. Passing an empty broker map keeps that separation explicit.
+    _sources = {"risk": risk, "investment": investment, "broker": {}}
+
+    def _decided(name: str) -> Any:
+        return _resolve_decision(
+            _DECISIONS_BY_NAME[name], policies=_sources, guardrails=guardrails, auto_trade=auto_trade
+        ).value
+
     return TradingPolicy(
         auto_trading_enabled=bool(getattr(auto_trade, "enabled", False)),
         paper_trading_only=bool(getattr(guardrails, "paper_trading_only", True)),
-        max_capital_allocation_pct=float(risk.get("maximum_capital_allocation_pct", 0.25)),
-        max_position_size_pct=float(risk.get("maximum_position_size_pct", 0.05)),
+        max_capital_allocation_pct=_decided("max_capital_allocation_pct"),
+        max_position_size_pct=_decided("max_position_size_pct"),
         # Falls back to AutoTradeConfig.crypto_max_trade_pct so the crypto ceiling has ONE
         # authority: set it in models.py and it flows here, rather than a second literal
         # drifting out of step (the exact bug fixed in config.py on 2026-08-22).
-        crypto_max_position_size_pct=float(
-            risk.get(
-                "crypto_maximum_position_size_pct",
-                getattr(auto_trade, "crypto_max_trade_pct", 0.10),
-            )
-        ),
-        equities_leverage_multiplier=float(risk.get("equities_leverage_multiplier", 1.0)),
-        max_concurrent_exposure_pct=float(risk.get("maximum_concurrent_exposure_pct", 0.30)),
-        risk_per_trade_pct=float(risk.get("risk_per_trade_pct", getattr(guardrails, "max_risk_per_trade_pct", 0.01))),
-        max_daily_loss_pct=float(risk.get("maximum_daily_loss_pct", getattr(guardrails, "max_daily_loss_pct", 0.03))),
-        max_weekly_loss_pct=float(risk.get("maximum_weekly_loss_pct", 0.06)),
-        max_monthly_loss_pct=float(risk.get("maximum_monthly_loss_pct", 0.10)),
-        emergency_shutdown_balance=float(risk.get("emergency_shutdown_balance", 0.0)),
+        crypto_max_position_size_pct=_decided("crypto_max_position_size_pct"),
+        equities_leverage_multiplier=_decided("equities_leverage_multiplier"),
+        max_concurrent_exposure_pct=_decided("max_concurrent_exposure_pct"),
+        risk_per_trade_pct=_decided("risk_per_trade_pct"),
+        max_daily_loss_pct=_decided("max_daily_loss_pct"),
+        max_weekly_loss_pct=_decided("max_weekly_loss_pct"),
+        max_monthly_loss_pct=_decided("max_monthly_loss_pct"),
+        emergency_shutdown_balance=_decided("emergency_shutdown_balance"),
         # 2026-09-02, Founder-directed, REVERSING the 2026-08-30 decision below:
         # "move the confidence bar to the database. it's not an environment variable."
         #
@@ -718,25 +742,23 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         #
         # A note for whoever reads this next: render.yaml is NOT what is running. Check the
         # dashboard or the API, never the file.
-        min_ai_confidence=float(
-            investment.get("minimum_overall_confidence", getattr(guardrails, "min_confidence_score", 0.75))
-        ),
-        min_investment_policy_fit=float(investment.get("minimum_investment_policy_score", getattr(auto_trade, "min_philosophy_fit", 0.85))),
-        default_stop_loss_pct=float(risk.get("default_stop_loss_pct", getattr(auto_trade, "default_stop_loss_pct", 0.03))),
-        max_stop_loss_pct=float(risk.get("maximum_stop_loss_pct", getattr(auto_trade, "max_stop_loss_pct", 0.05))),
-        trailing_stop_enabled=bool(risk.get("trailing_stop_enabled", False)),
-        trailing_stop_pct=float(risk.get("trailing_stop_pct", 0.02)),
-        max_trade_pct_of_available_cash=float(risk.get("max_trade_pct_of_available_cash", 0.20)),
-        max_trade_absolute_gbp=float(risk.get("max_trade_absolute_gbp", 0.0)),
-        take_profit_required=bool(risk.get("take_profit_required", True)),
-        max_concurrent_positions=int(risk.get("maximum_concurrent_positions", getattr(guardrails, "max_open_positions", 3))),
+        min_ai_confidence=_decided("min_ai_confidence"),
+        min_investment_policy_fit=_decided("min_investment_policy_fit"),
+        default_stop_loss_pct=_decided("default_stop_loss_pct"),
+        max_stop_loss_pct=_decided("max_stop_loss_pct"),
+        trailing_stop_enabled=_decided("trailing_stop_enabled"),
+        trailing_stop_pct=_decided("trailing_stop_pct"),
+        max_trade_pct_of_available_cash=_decided("max_trade_pct_of_available_cash"),
+        max_trade_absolute_gbp=_decided("max_trade_absolute_gbp"),
+        take_profit_required=_decided("take_profit_required"),
+        max_concurrent_positions=_decided("max_concurrent_positions"),
         broker_position_caps={k: int(v) for k, v in broker_position_caps.items() if str(v).strip() not in ("", "None")},
-        min_stop_loss_pct=float(risk.get("minimum_stop_loss_pct", 0.0) or 0.0),
-        min_reward_risk=float(risk.get("minimum_reward_risk", 0.0) or 0.0),
+        min_stop_loss_pct=_decided("min_stop_loss_pct"),
+        min_reward_risk=_decided("min_reward_risk"),
         broker_min_stop_loss_pct={
             k: float(v) for k, v in broker_min_stop_loss_pct.items() if str(v).strip() not in ("", "None")
         },
-        max_drawdown_pct=float(risk.get("maximum_drawdown_pct", 0.15)),
+        max_drawdown_pct=_decided("max_drawdown_pct"),
         crypto_enabled=bool(investment.get("crypto_enabled", False)) or _kraken_crypto_policy_approved(),
         equities_enabled=bool(investment.get("equities_enabled", True)),
         broker_enabled=brokers,

@@ -19,6 +19,20 @@ reach production, so it says nothing about whether the live database holds the v
 expects -- that is checked separately by running resolve_all against the hosted deployment and
 comparing with /admin/trading-policy. Both checks are needed; neither substitutes for the
 other.
+
+2026-09-02, AFTER P4 -- READ THIS BEFORE TRUSTING test_every_decision_matches_the_running_code.
+P4 rewired load_trading_policy to build TradingPolicy FROM the registry, so that test now
+compares the registry with itself. It is tautological and can no longer catch a wrong
+precedence chain. It is kept because it still guards the wiring -- a field left unconnected,
+renamed, or coerced to the wrong type will fail it -- but the independent check it used to be
+was consumed the moment it passed, which is exactly what it was for: it proved the two agreed
+BEFORE the old path was removed.
+
+The real protection now lives in the tests below that pin specific VALUES and SOURCES
+(test_confidence_now_comes_from_the_database, test_a_broker_override_wins_and_says_so,
+test_a_broker_without_an_override_falls_through) and in test_settings_moved_home.py, which
+pins the seeded numbers to the live Render snapshot. Those assert facts, not equalities
+between two expressions of the same code.
 """
 
 from __future__ import annotations
