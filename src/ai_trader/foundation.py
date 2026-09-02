@@ -168,81 +168,6 @@ CREATE TABLE IF NOT EXISTS CRYPTO_MARKET_DATA (
     payload_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS CRYPTO_DAILY_UPDATES (
-    update_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    update_date TEXT NOT NULL,
-    summary TEXT,
-    material_change INTEGER NOT NULL DEFAULT 0,
-    source TEXT,
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS CRYPTO_PROJECT_ANALYSIS (
-    analysis_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    project_summary TEXT,
-    use_case_summary TEXT,
-    team_summary TEXT,
-    ecosystem_summary TEXT,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS CRYPTO_TOKENOMICS (
-    tokenomics_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    supply_summary TEXT,
-    utility_summary TEXT,
-    emissions_summary TEXT,
-    concentration_risk TEXT,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS CRYPTO_ONCHAIN_METRICS (
-    onchain_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    active_addresses REAL,
-    transaction_count REAL,
-    network_fees_usd REAL,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS CRYPTO_SENTIMENT (
-    sentiment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    sentiment_score REAL,
-    sentiment_summary TEXT,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS CRYPTO_RISK (
-    risk_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    assessed_at TEXT NOT NULL,
-    risk_score REAL,
-    custody_risk TEXT,
-    liquidity_risk TEXT,
-    regulatory_risk TEXT,
-    protocol_risk TEXT,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS CRYPTO_NEWS (
     news_id INTEGER PRIMARY KEY AUTOINCREMENT,
     crypto_id INTEGER,
@@ -256,31 +181,7 @@ CREATE TABLE IF NOT EXISTS CRYPTO_NEWS (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS CRYPTO_BENCHMARK_ALIGNMENT (
-    alignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    crypto_id INTEGER,
-    symbol TEXT NOT NULL,
-    assessed_at TEXT NOT NULL,
-    benchmark_name TEXT,
-    alignment_summary TEXT,
-    confidence REAL,
-    source TEXT,
-    payload_json TEXT NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS CRYPTO_TRADING_HISTORY (
-    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    broker TEXT,
-    side TEXT,
-    quantity REAL,
-    price REAL,
-    notional REAL,
-    order_id TEXT,
-    result TEXT,
-    payload_json TEXT NOT NULL
-);
 """
 
 

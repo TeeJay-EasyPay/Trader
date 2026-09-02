@@ -47,17 +47,6 @@ CREATE TABLE IF NOT EXISTS PORTFOLIO_EXPOSURE_SNAPSHOTS (
     plain_english TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS PORTFOLIO_CORRELATION_WARNINGS (
-    warning_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    symbols_json TEXT NOT NULL,
-    correlation REAL,
-    sample_size INTEGER NOT NULL,
-    warning TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    payload_json TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS PORTFOLIO_RISK_CONTRIBUTIONS (
     contribution_id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -72,16 +61,7 @@ CREATE TABLE IF NOT EXISTS PORTFOLIO_RISK_CONTRIBUTIONS (
     payload_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS PORTFOLIO_STRESS_TESTS (
-    stress_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    scenario_name TEXT NOT NULL,
-    estimated_impact REAL,
-    vulnerable_positions_json TEXT NOT NULL,
-    uncertainty TEXT NOT NULL,
-    assumptions_json TEXT NOT NULL,
-    explanation TEXT NOT NULL
-);
+
 """
 
 

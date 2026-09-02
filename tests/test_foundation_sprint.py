@@ -124,7 +124,12 @@ class FoundationSprintTests(unittest.TestCase):
 
             self.assertIn("DUE_DILIGENCE_ASSESSMENTS", tables)
             self.assertIn("INVESTMENT_SCORES", tables)
-            self.assertIn("CRYPTO_TOKENOMICS", tables)
+            # 2026-09-02: CRYPTO_TOKENOMICS was removed along with nine other tables that were
+            # declared, never written and never read -- all zero rows in production. Asserting
+            # its ABSENCE now, because a schema test that demands an unused table is what kept
+            # the clutter alive. The idea behind it is recorded in governance/DEFERRED_IDEAS.md
+            # rather than as empty schema; see tests/test_unused_tables_removed.py.
+            self.assertNotIn("CRYPTO_TOKENOMICS", tables)
             self.assertGreater(investment_count, 0)
             self.assertGreater(risk_count, 0)
 
