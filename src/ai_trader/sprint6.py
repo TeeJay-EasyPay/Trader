@@ -1495,7 +1495,7 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
         # measured zero, so TRADE_EXCURSIONS accumulated 22 rows in production every one of
         # which read 0.00%. The table looked populated and contained nothing.
         #
-        # The price history it needs was there the whole time, in HISTORICAL_CANDLES.
+        # The price history it needs was there the whole time -- in MARKET_DATA_OBSERVATIONS.
         "observations": _observations_for_trade(db_path, trade),
         # Recorded so nobody over-reads the result -- see the docstring on the loader.
         "data_granularity": "1d",
@@ -1504,6 +1504,19 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
 
 def _observations_for_trade(db_path: Path, trade: dict[str, Any]) -> list[dict[str, Any]]:
     """Daily candles covering the life of one trade, for the excursion measurement.
+
+    READS MARKET_DATA_OBSERVATIONS, and getting that right took two attempts. The first
+    version of this function read HISTORICAL_CANDLES, which is the obvious name and the wrong
+    table: it holds 91 rows for a single ETF, last written 2026-08-13, because crypto
+    ingestion into it was explicitly deferred (see research_service's note about needing a
+    Kraken OHLC client). The candles the app actually fetches every cycle land in
+    MARKET_DATA_OBSERVATIONS via record_market_observations -- 103 symbols, 20,127 rows,
+    current to today.
+
+    So the first fix was correct code pointed at an empty table: it would have shipped, looked
+    done, and changed nothing. That is the fourth time in a week the same trap has caught this
+    codebase, and the second time it caught me while I was fixing the trap itself. Verify the
+    table has rows before believing a query against it.
 
     ONLY candles that fall INSIDE the holding window are returned, and that restriction is
     the important part. A daily candle's high and low span the whole day, so using the day's
@@ -1528,11 +1541,12 @@ def _observations_for_trade(db_path: Path, trade: dict[str, Any]) -> list[dict[s
         with closing(connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT observed_at, open, high, low, close
-                   FROM HISTORICAL_CANDLES
-                   WHERE UPPER(symbol) = UPPER(?) AND asset_type = ? AND timeframe = '1d'
-                     AND observed_at >= ? AND (? = '' OR observed_at <= ?)
-                   ORDER BY observed_at ASC""",
+                """SELECT observation_time, open, high, low, close
+                   FROM MARKET_DATA_OBSERVATIONS
+                   WHERE UPPER(normalized_symbol) = UPPER(?) AND asset_type = ?
+                     AND timeframe = '1d'
+                     AND observation_time >= ? AND (? = '' OR observation_time <= ?)
+                   ORDER BY observation_time ASC""",
                 (symbol, asset_type, opened_at, closed_at, closed_at or opened_at),
             ).fetchall()
     except Exception:  # noqa: BLE001 - a missing measurement must never block the learning loop

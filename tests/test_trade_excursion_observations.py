@@ -10,7 +10,14 @@ always measured zero, so production accumulated 22 TRADE_EXCURSIONS rows every o
 read 0.00%. The table looked populated and contained nothing, which is worse than being empty:
 a row count suggests data.
 
-The price history was there the whole time, in HISTORICAL_CANDLES.
+The price history was there the whole time -- in MARKET_DATA_OBSERVATIONS.
+
+IT TOOK TWO ATTEMPTS TO GET THE TABLE RIGHT, which is why the last test here exists. The
+first fix read HISTORICAL_CANDLES: the obvious name, holding 91 rows for a single ETF and
+last written three weeks earlier, because crypto was never ingested into it. Correct code
+pointed at an empty table would have shipped, looked finished, and measured exactly as much
+as the bug it replaced. Fourth time this week for that trap, second time it caught me while
+I was fixing the trap itself.
 
 THE TRAP THESE TESTS EXIST FOR. A daily candle's high and low span the whole day. Using the
 day's range for a trade held 91 seconds -- JNJ on 2026-09-01 -- would report a 2% excursion
@@ -31,12 +38,16 @@ import pytest
 from ai_trader.sprint6 import _learning_payload_from_canonical_trade, _observations_for_trade
 
 CANDLES = """
-CREATE TABLE IF NOT EXISTS HISTORICAL_CANDLES (
-    candle_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol TEXT NOT NULL, asset_type TEXT NOT NULL, timeframe TEXT NOT NULL,
-    observed_at TEXT NOT NULL, open REAL, high REAL, low REAL, close REAL NOT NULL,
-    volume REAL, source TEXT NOT NULL, payload_json TEXT NOT NULL,
-    UNIQUE(symbol, asset_type, timeframe, observed_at)
+CREATE TABLE IF NOT EXISTS MARKET_DATA_OBSERVATIONS (
+    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL, provider TEXT NOT NULL,
+    original_symbol TEXT NOT NULL, normalized_symbol TEXT NOT NULL,
+    exchange TEXT, asset_type TEXT NOT NULL, timeframe TEXT NOT NULL,
+    observation_time TEXT NOT NULL, retrieval_time TEXT NOT NULL,
+    freshness TEXT NOT NULL, completeness TEXT NOT NULL,
+    adjusted_status TEXT NOT NULL, source_quality_status TEXT NOT NULL,
+    payload_provenance TEXT NOT NULL,
+    open REAL, high REAL, low REAL, close REAL, volume REAL, payload_json TEXT NOT NULL
 );
 """
 
@@ -58,11 +69,15 @@ def db():
                 conn.executescript(CANDLES)
                 for observed_at, o, h, l, c in DAYS:
                     conn.execute(
-                        """INSERT INTO HISTORICAL_CANDLES
-                           (symbol, asset_type, timeframe, observed_at, open, high, low, close,
-                            volume, source, payload_json)
-                           VALUES ('BTC','crypto','1d',?,?,?,?,?,0,'test','{}')""",
-                        (observed_at, o, h, l, c),
+                        """INSERT INTO MARKET_DATA_OBSERVATIONS
+                           (created_at, provider, original_symbol, normalized_symbol, exchange,
+                            asset_type, timeframe, observation_time, retrieval_time, freshness,
+                            completeness, adjusted_status, source_quality_status,
+                            payload_provenance, open, high, low, close, volume, payload_json)
+                           VALUES (?, 'kraken', 'XBTGBP', 'BTC', 'KRAKEN', 'crypto', '1d', ?, ?,
+                                   'fresh','complete','unadjusted','pass','kraken_ohlc_api',
+                                   ?,?,?,?,0,'{}')""",
+                        (observed_at, observed_at, observed_at, o, h, l, c),
                     )
         yield path
 
@@ -133,3 +148,29 @@ def test_the_payload_now_carries_observations_and_its_granularity(db):
 def test_a_still_open_trade_uses_everything_up_to_now(db):
     """closed_at is empty until a trade settles. It must not collapse the window to nothing."""
     assert len(_observations_for_trade(db, _trade(closed_at=""))) >= 4
+
+
+def test_the_query_targets_the_table_that_actually_holds_candles():
+    """A guard against the mistake that was made writing this file.
+
+    The first version of the fix read HISTORICAL_CANDLES: right-looking code, empty table,
+    zero behaviour change. Nothing in a unit test would have caught it, because a test fixture
+    populates whatever table the test creates. So this asserts the production table by name,
+    and the name is the thing that was wrong.
+    """
+    import pathlib as _pathlib
+
+    source = (_pathlib.Path(__file__).resolve().parents[1] / "src" / "ai_trader" / "sprint6.py")
+    body = source.read_text(encoding="utf-8")
+    start = body.index("def _observations_for_trade")
+    end = body.index("\ndef ", start + 1)
+    query = "\n".join(
+        line for line in body[start:end].splitlines() if not line.strip().startswith("#")
+    )
+    assert "MARKET_DATA_OBSERVATIONS" in query, (
+        "excursions must read MARKET_DATA_OBSERVATIONS -- the table the hourly refresh "
+        "actually writes to"
+    )
+    assert "FROM HISTORICAL_CANDLES" not in query, (
+        "HISTORICAL_CANDLES holds equities only and has not been written since 2026-08-13"
+    )
