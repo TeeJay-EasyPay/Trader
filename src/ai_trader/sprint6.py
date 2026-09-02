@@ -959,7 +959,7 @@ def normalize_broker_events(
             db_path,
             logical_trade_id=logical_trade_id,
             broker=broker,
-            payload=_learning_payload_from_canonical_trade(trade),
+            payload=_learning_payload_from_canonical_trade(db_path, trade),
         )
         for logical_trade_id, trade in terminal_trades.items()
     ]
@@ -1447,7 +1447,7 @@ def _canonical_broker_event(broker: str, event: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _learning_payload_from_canonical_trade(trade: dict[str, Any]) -> dict[str, Any]:
+def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any]) -> dict[str, Any]:
     try:
         stored_context = json.loads(trade.get("decision_context_json") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -1486,8 +1486,66 @@ def _learning_payload_from_canonical_trade(trade: dict[str, Any]) -> dict[str, A
             "net_realized_pnl": trade.get("net_pnl"),
         },
         "decision_context": decision_context,
-        "observations": [],
+        # 2026-09-02, Founder-directed: "fix the observations line."
+        #
+        # This was hardcoded to [] and that one empty list defeated an entire measurement
+        # system. calculate_mae_mfe walks these observations to find how far a trade moved
+        # AGAINST the entry before it closed -- the maximum adverse excursion -- which is the
+        # single fact that answers "was the stop too tight?". With no observations it always
+        # measured zero, so TRADE_EXCURSIONS accumulated 22 rows in production every one of
+        # which read 0.00%. The table looked populated and contained nothing.
+        #
+        # The price history it needs was there the whole time, in HISTORICAL_CANDLES.
+        "observations": _observations_for_trade(db_path, trade),
+        # Recorded so nobody over-reads the result -- see the docstring on the loader.
+        "data_granularity": "1d",
     }
+
+
+def _observations_for_trade(db_path: Path, trade: dict[str, Any]) -> list[dict[str, Any]]:
+    """Daily candles covering the life of one trade, for the excursion measurement.
+
+    ONLY candles that fall INSIDE the holding window are returned, and that restriction is
+    the important part. A daily candle's high and low span the whole day, so using the day's
+    range for a trade held 91 seconds would report a 2% excursion where the real one was
+    0.19% -- an answer far worse than no answer, because it would look authoritative while
+    arguing to loosen a stop that was never actually tested.
+
+    So the honest consequence is that this measures multi-day positions (Kraken's, which is
+    what the 22 existing rows are) and returns nothing for intraday equity trades. Those need
+    intraday candles, which the app does not store. Better to report nothing than to report a
+    number that is wrong in the direction that costs money.
+    """
+    symbol = str(trade.get("symbol") or "").strip()
+    opened_at = str(trade.get("created_at") or "")
+    closed_at = str(trade.get("closed_at") or "")
+    if not symbol or not opened_at:
+        return []
+    asset_type = str(trade.get("asset_type") or "").strip().lower()
+    if asset_type not in {"crypto", "stock"}:
+        asset_type = "crypto" if str(trade.get("broker") or "").lower() == "kraken" else "stock"
+    try:
+        with closing(connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT observed_at, open, high, low, close
+                   FROM HISTORICAL_CANDLES
+                   WHERE UPPER(symbol) = UPPER(?) AND asset_type = ? AND timeframe = '1d'
+                     AND observed_at >= ? AND (? = '' OR observed_at <= ?)
+                   ORDER BY observed_at ASC""",
+                (symbol, asset_type, opened_at, closed_at, closed_at or opened_at),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a missing measurement must never block the learning loop
+        return []
+    return [
+        {
+            "observed_at": row[0],
+            "high": row[2] if row[2] is not None else row[4],
+            "low": row[3] if row[3] is not None else row[4],
+            "price": row[4],
+        }
+        for row in rows
+    ]
 
 
 def _stage_from_status(status: str, event: dict[str, Any]) -> str:
