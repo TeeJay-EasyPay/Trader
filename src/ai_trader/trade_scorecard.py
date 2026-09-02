@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .database import connect
+from .expectancy import expectancy_summary
 
 
 _PERIODS: dict[str, float] = {
@@ -182,6 +183,13 @@ def trade_scorecard(db_path: Path, *, now_epoch: float | None = None) -> dict[st
         "lessons": why or deterministic_lessons_line(buckets),
         "lessons_source": "driver_analysis" if why else "counts",
         "fees": fee_summary(trades),
+        # 2026-09-03, Founder-directed. TRADE_R_MULTIPLES was written for weeks and read by
+        # nothing. Read naively it claimed the average trade returned +1.30R while this very
+        # scorecard, from the same trades, showed the month down 5.08 -- three trades that
+        # risked four pence each were carrying the average. See expectancy.py for the whole
+        # story. This is the one number that answers "does the system make money over time",
+        # so it belongs next to the counts rather than in a screen of its own.
+        "expectancy": expectancy_summary(db_path),
         "closed_trades_considered": len(trades),
     }
 
