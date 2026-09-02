@@ -151,6 +151,8 @@ class InvestmentOrchestrator:
             context.guardrails,
             now=context.now,
             max_open_positions=position_cap,
+            min_confidence_score=policy.min_ai_confidence,
+            take_profit_required=policy.take_profit_required,
         )
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=guardrails_validated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         due_diligence = create_due_diligence_assessment(self.db_path, p)
@@ -165,18 +167,26 @@ class InvestmentOrchestrator:
         )
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=capital_allocation_calculated elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
         failures: list[str] = []
+        # 2026-09-02, P6: the numbers behind the orchestrator's own gates, merged with the
+        # ones guardrails recorded. See ValidationResult.evidence for why.
+        gate_evidence: dict[str, Any] = dict(getattr(validation, "evidence", {}) or {})
         if selected is None:
             failures.append("no_configured_broker_supports_asset")
         if not asset_available:
             failures.append("asset_unavailable")
         if not market_open:
             failures.append("market_closed")
-        if not policy.paper_trading_only:
-            failures.append("paper_trading_only_failed")
+        # 2026-09-02, P5: removed, and it was a latent bug rather than a harmless duplicate.
+        # It read `if not policy.paper_trading_only` -- firing when live trading is ALLOWED,
+        # which is backwards. Dormant only because PAPER_TRADING_ONLY is true today; the first
+        # time it was set false to go live, this would have refused every trade.
+        # guardrails.py has the correct test: paper-only ON, a live account, and not crypto.
         if selected and selected.name in policy.broker_enabled and not policy.broker_enabled[selected.name] and not context.auto_trade.enabled:
             failures.append("broker_disabled_by_policy")
-        if p.side == "sell" and not context.guardrails.allow_short_selling:
-            failures.append("short_selling_disabled")
+        # 2026-09-02, P5: removed, also a latent bug. It refused EVERY sell when short selling
+        # is off, including closing a position we actually hold -- so the app could open a
+        # trade and then be blocked from exiting it. guardrails.py checks what short selling
+        # actually means: selling something not held (`not has_existing_position`).
         # 2026-08-29, Founder-directed: four checks collapsed to two.
         #
         # These were two questions asked twice each, and the duplication cost real money in
@@ -199,8 +209,10 @@ class InvestmentOrchestrator:
         # The seven-dimension investment score is still computed and recorded as evidence --
         # its macro, behavioural and risk terms are real -- it simply no longer acts as a
         # second gate on numbers already tested here.
-        if p.confidence_score < policy.min_ai_confidence:
-            failures.append("confidence_below_minimum")
+        # 2026-09-02, P5: the confidence bar is checked once, in guardrails.py, against the
+        # registry-resolved policy value passed in above. It used to be checked here against
+        # policy.min_ai_confidence AND there against the Render variable -- two gates, two
+        # sources, one decision.
         # Permission, not preference. A company absent from the Founder-approved universe has
         # no rating and therefore scores 0.0 (TradeProposal's default), so it can never pass --
         # which is what enforces the Shariah screen. See models.py philosophy_fit.
@@ -208,13 +220,17 @@ class InvestmentOrchestrator:
             failures.append("not_in_permitted_universe")
         if due_diligence["overall_status"] != "completed":
             failures.append("due_diligence_incomplete")
-        if p.stop_loss <= 0:
-            failures.append("stop_loss_mandatory")
-        if policy.take_profit_required and p.take_profit <= 0:
-            failures.append("take_profit_mandatory")
+        # 2026-09-02, P5: both removed. stop_loss_mandatory was character-for-character
+        # identical to the guardrails check. take_profit_mandatory was the more interesting
+        # one: this was the ONLY place honouring policy.take_profit_required, while
+        # guardrails.py required a target unconditionally -- so the policy flag was
+        # decorative. guardrails.py now takes the flag and applies it.
         stop_loss_pct = _stop_loss_pct(p)
         if stop_loss_pct > policy.max_stop_loss_pct:
             failures.append("max_stop_loss_pct_exceeded")
+            gate_evidence["max_stop_loss_pct_exceeded"] = {
+                "actual": round(stop_loss_pct, 5), "limit": round(float(policy.max_stop_loss_pct), 5),
+            }
         # 2026-09-01, Founder-directed. Only the maximum was ever checked, so a stop could be
         # arbitrarily tight and nothing objected -- JNJ was bought with a stop 0.19% below
         # entry and sold 91 seconds later, inside the ordinary bid/ask jiggle of a large-cap.
@@ -223,6 +239,9 @@ class InvestmentOrchestrator:
         min_stop_pct = min_stop_loss_pct_for(policy, selected.name if selected else None)
         if min_stop_pct > 0 and stop_loss_pct < min_stop_pct:
             failures.append("stop_loss_too_tight")
+            gate_evidence["stop_loss_too_tight"] = {
+                "actual": round(stop_loss_pct, 5), "limit": round(float(min_stop_pct), 5),
+            }
         # The shape of the bet, not its direction: below 1.0 the target is nearer than the
         # stop, so every win is smaller than every loss and the trade must be right more than
         # half the time merely to break even. NVDA the same morning risked 3.71 dollars a
@@ -231,6 +250,9 @@ class InvestmentOrchestrator:
         reward_risk = reward_risk_ratio(p)
         if policy.min_reward_risk > 0 and reward_risk is not None and reward_risk < policy.min_reward_risk:
             failures.append("reward_risk_below_minimum")
+            gate_evidence["reward_risk_below_minimum"] = {
+                "actual": round(float(reward_risk), 3), "limit": round(float(policy.min_reward_risk), 3),
+            }
         if context.account.equity <= policy.emergency_shutdown_balance:
             failures.append("emergency_shutdown_balance_breached")
         # 2026-09-01, P1: the duplicate position-cap check that used to live here is GONE.
@@ -276,6 +298,10 @@ class InvestmentOrchestrator:
                 failures.append("maximum_concurrent_exposure_exceeded")
             if prospective_exposure_pct > policy.max_capital_allocation_pct:
                 failures.append("maximum_capital_allocation_exceeded")
+                gate_evidence["maximum_capital_allocation_exceeded"] = {
+                    "actual": round(prospective_exposure_pct, 4),
+                    "limit": round(float(policy.max_capital_allocation_pct), 4),
+                }
         failures.extend(validate_investment_universe(self.db_path, p, policy))
         failures.extend(validation.failures)
         print(f"[evaluate_recommendation] proposal_id={p.proposal_id} stage=pre_governance_checks_done elapsed={time.monotonic() - _eval_t0:.1f}s", flush=True)
@@ -404,6 +430,9 @@ class InvestmentOrchestrator:
                     "production_gate": production_packet,
                     "allocation": allocation,
                     "guardrails": validation.to_dict(),
+                    # P6: what each gate measured, so "why isn't it trading?" is answerable
+                    # from the record instead of by reading the code.
+                    "gate_evidence": gate_evidence,
                     "account_equity": context.account.equity,
                 },
             )

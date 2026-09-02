@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from typing import Any
+
 from .models import AccountContext, GuardrailConfig, TradeProposal, ValidationResult
 
 
@@ -14,9 +16,14 @@ def validate_trade_proposal(
     now: datetime | None = None,
     ai_managed_symbols: set[str] | list[str] | None = None,
     max_open_positions: int | None = None,
+    min_confidence_score: float | None = None,
+    take_profit_required: bool | None = None,
 ) -> ValidationResult:
     p = proposal.normalized()
     failures: list[str] = []
+    # 2026-09-02, P6: what each numeric gate actually measured, so a refusal can explain
+    # itself. See ValidationResult.evidence.
+    evidence: dict[str, Any] = {}
 
     if config.paper_trading_only and p.asset_type != "crypto" and not account.is_paper:
         failures.append("paper_trading_only_failed")
@@ -33,11 +40,25 @@ def validate_trade_proposal(
     if p.stop_loss <= 0:
         failures.append("stop_loss_mandatory")
 
-    if p.take_profit <= 0:
+    # 2026-09-02, P5. This used to be unconditional here while orchestrator.py made the same
+    # check conditional on policy.take_profit_required -- so the policy flag was decorative:
+    # turning it off changed nothing, because this check fired anyway. One check now, and it
+    # honours the policy. Opt-in like the other overrides, so a caller without policy context
+    # keeps the old always-required behaviour.
+    if (True if take_profit_required is None else take_profit_required) and p.take_profit <= 0:
         failures.append("take_profit_mandatory")
 
-    if p.confidence_score < config.min_confidence_score:
+    # 2026-09-02, P5. Checked here against the Render value AND in orchestrator.py against the
+    # policy value -- two gates, two sources, one decision. The orchestrator now passes the
+    # registry-resolved number and its own check is gone.
+    effective_min_confidence = (
+        config.min_confidence_score if min_confidence_score is None else float(min_confidence_score)
+    )
+    if p.confidence_score < effective_min_confidence:
         failures.append("confidence_below_minimum")
+        evidence["confidence_below_minimum"] = {
+            "actual": round(float(p.confidence_score), 4), "limit": round(float(effective_min_confidence), 4),
+        }
 
     if account.equity <= 0:
         failures.append("account_equity_must_be_positive")
@@ -55,6 +76,9 @@ def validate_trade_proposal(
         max_daily_loss = account.equity * config.max_daily_loss_pct
         if account.daily_realized_pnl <= -max_daily_loss:
             failures.append("maximum_daily_loss_exceeded")
+            evidence["maximum_daily_loss_exceeded"] = {
+                "actual": round(float(account.daily_realized_pnl), 2), "limit": round(-float(max_daily_loss), 2),
+            }
 
     # 2026-09-01, P1 of the "one home per decision" work. This used to be one of TWO position
     # caps. The other lived in orchestrator.py, was per broker, and emitted a different name
@@ -74,6 +98,9 @@ def validate_trade_proposal(
     )
     if len(account.open_positions) >= effective_max_open_positions:
         failures.append("maximum_open_positions_exceeded")
+        evidence["maximum_open_positions_exceeded"] = {
+            "actual": len(account.open_positions), "limit": int(effective_max_open_positions),
+        }
 
     existing_symbols = {position.symbol.upper() for position in account.open_positions}
     has_existing_position = p.symbol in existing_symbols
@@ -117,7 +144,7 @@ def validate_trade_proposal(
     if p.asset_type not in {"crypto"} and not is_us_equity_trading_hours(now):
         failures.append("outside_regular_trading_hours")
 
-    return ValidationResult(passed=not failures, failures=failures)
+    return ValidationResult(passed=not failures, failures=failures, evidence=evidence)
 
 
 def us_equity_market_hours_between(start: datetime, end: datetime) -> timedelta:

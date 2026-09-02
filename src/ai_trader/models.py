@@ -161,6 +161,14 @@ class ValidationResult:
     passed: bool
     failures: list[str] = field(default_factory=list)
     checked_at: str = field(default_factory=utc_now_iso)
+    # 2026-09-02, P6: the numbers behind each refusal, keyed by gate name. A refusal used to
+    # record only that a rule fired -- "maximum_open_positions_exceeded" -- which meant
+    # answering "why isn't it trading?" required reading the code and then querying the
+    # database by hand. Twice in one week that cost the Founder most of a session. Each entry
+    # is {"actual": x, "limit": y} so the app can say "9 open, limit 9" without anyone digging.
+    #
+    # Defaulted, so every existing construction of this class is unaffected.
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
