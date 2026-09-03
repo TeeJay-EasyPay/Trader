@@ -310,7 +310,7 @@ function AskAiTrader({ messages, setMessages, request }) {
     <View>
       <Section title="Ask AI Trader">
         <Text style={styles.bodyText}>
-          Ask about anything AI Trader knows, by typing or by pressing Speak - spoken questions get spoken answers. I can also run a cycle, re-check what we hold, or refresh prices if you ask. I cannot place or approve a trade, change a threshold, or turn trading on or off.
+          Ask anything AI Trader knows - type it, or tap the microphone and speak. Spoken questions get spoken answers, and the conversation is kept so you can scroll back. I can run a cycle, re-check what we hold, or refresh prices if you ask. I cannot place or approve a trade, change a threshold, or turn trading on or off.
         </Text>
         <Metric label="Ask Status" value={askStatus} />
         {/* 2026-09-01, Founder-directed: "can we remove the 5 buttons that are questions. I
