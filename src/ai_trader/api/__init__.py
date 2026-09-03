@@ -280,6 +280,37 @@ def _slim_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+
+# How many previous turns travel with a question. Deliberately small -- see the note at the
+# call site. Each turn is also truncated: a long past answer is context, not the subject.
+_ASK_HISTORY_TURNS = 6
+_ASK_HISTORY_CHARS = 600
+
+
+def _ask_conversation_history(db_path: Path, body: dict[str, Any]) -> list[dict[str, Any]]:
+    """The recent exchange, oldest first, trimmed for the prompt.
+
+    Never raises and never blocks an answer: a conversation that has lost its history is
+    slightly worse than one that has it, which is a far smaller problem than no answer at all.
+    """
+    try:
+        turns = recent_turns(db_path, limit=_ASK_HISTORY_TURNS)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for turn in turns:
+        text = str(turn.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > _ASK_HISTORY_CHARS:
+            text = text[:_ASK_HISTORY_CHARS] + "..."
+        out.append({
+            "who": "founder" if str(turn.get("role")) == "founder" else "you",
+            "said": text,
+        })
+    return out
+
+
 def configure_logging(output_dir: Path) -> None:
     root = logging.getLogger()
     if root.handlers:
@@ -1205,8 +1236,17 @@ class LocalApiService:
         explainer = OpenAIReadOnlyExplainer(
             self.settings.openai_api_key, self.settings.openai_reasoning_model, timeout_seconds=remaining
         )
+        # 2026-09-04, Founder-directed: "I want to be able to talk to the app like I'm talking
+        # to you." Every question used to arrive completely alone -- just the question and a
+        # data snapshot -- so "what about crypto?" had nothing to say what "what about" meant,
+        # and every question had to be self-contained.
+        #
+        # Six turns, not sixty: enough for a follow-up and a "why?", small enough that the
+        # transcript never crowds out the evidence. The rate-limit fix left ~8,600 tokens of a
+        # 30,000 allowance in use, and this costs roughly 1,500 more.
+        history = _ask_conversation_history(self.settings.db_path, body)
         try:
-            answer = explainer.answer(question, context)
+            answer = explainer.answer(question, context, history=history)
         except Exception as exc:
             logger.exception("Ask AI Trader OpenAI explanation failed; returning deterministic fallback.")
             return {

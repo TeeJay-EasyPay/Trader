@@ -331,6 +331,7 @@ function AskAiTrader({ messages, setMessages, request }) {
         <View style={styles.buttonGrid}>
           <Button label={askLoading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={askLoading || !question.trim()} />
           <Button
+            icon
             label={askLoading || voiceState === 'transcribing' ? thinkingFrame(thinkTick) : micButtonLabel(voiceState)}
             accessibilityLabel={micButtonAccessibilityLabel(askLoading ? 'thinking' : voiceState)}
             tone={voiceState === 'recording' ? 'warn' : 'neutral'}

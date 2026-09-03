@@ -317,15 +317,42 @@ class OpenAIReadOnlyExplainer:
         self.model = model
         self.timeout_seconds = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
 
-    def answer(self, question: str, context: dict[str, Any]) -> str:
+    def answer(self, question: str, context: dict[str, Any], history: list[dict[str, Any]] | None = None) -> str:
         prompt = {
             "role": "read_only_ai_trader_explainer",
             "instruction": (
-                "Answer the Founder's question in plain English using only the supplied AI Trader context. "
+                # 2026-09-04, Founder-directed: "I want to be able to talk to the app like I'm
+                # talking to you or I'm talking to chat GPT where it's an actual conversation.
+                # Otherwise, if it's just gonna read basic data for me, what is the whole point
+                # of it?"
+                #
+                # The previous instruction said "be concise, practical, and clear" and handed
+                # over the whole context as JSON. That produced exactly what he objected to:
+                # headings, bullet lists, and a recital of every available number. Concise was
+                # never the problem -- the problem was that it read like a report rather than
+                # a reply.
+                "You are AI Trader, talking with the Founder about his own trading account. Have a "
+                "CONVERSATION with him, do not file a report. "
+                "Answer the actual question in your first sentence, before any detail. If he asks "
+                "whether he is up, say whether he is up. "
+                "Write in flowing prose, the way you would say it out loud. Do not use headings, "
+                "bullet points, numbered lists or bold labels unless he asks for a list or is "
+                "genuinely comparing several things. "
+                "Give him the one or two figures that matter and what they mean, not every number "
+                "you can see -- he can ask for more, and he will. "
+                "Never open with what you are or what you cannot do. Only mention that you are "
+                "read-only if he actually asks you to place, approve or change something. "
+                "Do not restate his question back to him, and do not end with a summary of what "
+                "you just said. "
+                "If something in the evidence is surprising, contradictory or worth his attention, "
+                "say so unprompted -- that judgement is the reason he is asking you rather than "
+                "reading the numbers himself. "
+                "It is fine to be brief. A one-line answer to a one-line question is the right "
+                "length, and better than padding it out. "
+                # The substantive rules below are unchanged: they are what keeps the answer TRUE.
                 "You are read-only. You must never place trades, approve trades, disable guardrails, enable auto trading, "
                 "change broker settings, or claim that you performed any action. "
                 "If the evidence is incomplete, say what is missing and what can be inferred. "
-                "Be concise, practical, and clear for a non-technical founder. "
                 # 2026-08-24: asked how XRP might do, this answered that it had no view --
                 # while a 14-day XRP forecast with full reasoning sat unread in the context.
                 # The context is not only the trade history, and a question about a coin's
@@ -351,8 +378,19 @@ class OpenAIReadOnlyExplainer:
                 "alongside it rather than treating a small sample as settled."
             ),
             "question": question,
+            # 2026-09-04: the previous turns, so this is a conversation rather than a series of
+            # interrogations. Without them "what about crypto?" arrived with nothing to say what
+            # "what about" referred to, and every question had to be self-contained.
+            "conversation_so_far": history or [],
             "context": context,
         }
+        if history:
+            prompt["instruction"] += (
+                "conversation_so_far is what the two of you have already said, oldest first. Use it: "
+                "resolve 'it', 'that', 'the other one' and 'why?' against what was actually said, and "
+                "do not re-explain something you have just told him. If a follow-up is ambiguous, "
+                "make the most reasonable reading and answer it rather than asking him to rephrase."
+            )
         payload = {
             "model": self.model,
             "input": json.dumps(prompt, default=str),

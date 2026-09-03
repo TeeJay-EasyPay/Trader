@@ -256,6 +256,18 @@ export const styles = StyleSheet.create({
   neutral: {
     backgroundColor: '#57606a',
   },
+  // An emoji paints its own colours and ignores buttonText, so an icon needs a LIGHT ground to
+  // be legible -- on the dark neutral button only the microphone's blue tip showed.
+  iconButton: {
+    backgroundColor: '#e6eefb',
+    borderWidth: 1,
+    borderColor: '#b9cdea',
+    paddingHorizontal: 16,
+  },
+  iconButtonText: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
   buttonText: {
     color: '#ffffff',
     fontSize: 13,
