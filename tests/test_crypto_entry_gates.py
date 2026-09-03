@@ -255,13 +255,56 @@ class VolatilityScaledStopTests(unittest.TestCase):
         def current_prices(self, pairs):
             return {pairs[0]: {"c": ["100.0", "1.0"]}}
 
-    def test_higher_volatility_widens_the_stop_distance(self):
+    def _seed_candles(self, db_path, symbol, daily_range_pct):
+        """Daily candles with a controlled swing, so ATR comes out where the test wants it."""
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as conn:
+            with conn:
+                conn.execute("""CREATE TABLE IF NOT EXISTS MARKET_DATA_OBSERVATIONS (
+                    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL, provider TEXT NOT NULL,
+                    original_symbol TEXT NOT NULL, normalized_symbol TEXT NOT NULL,
+                    exchange TEXT, asset_type TEXT NOT NULL, timeframe TEXT NOT NULL,
+                    observation_time TEXT NOT NULL, retrieval_time TEXT NOT NULL,
+                    freshness TEXT NOT NULL, completeness TEXT NOT NULL,
+                    adjusted_status TEXT NOT NULL, source_quality_status TEXT NOT NULL,
+                    payload_provenance TEXT NOT NULL,
+                    open REAL, high REAL, low REAL, close REAL, volume REAL, payload_json TEXT NOT NULL)""")
+                for day in range(1, 41):
+                    stamp = f"2026-07-{day:02d}T00:00:00Z" if day <= 31 else f"2026-08-{day - 31:02d}T00:00:00Z"
+                    close = 100.0
+                    half = close * daily_range_pct / 2
+                    conn.execute(
+                        """INSERT INTO MARKET_DATA_OBSERVATIONS
+                           (created_at, provider, original_symbol, normalized_symbol, exchange,
+                            asset_type, timeframe, observation_time, retrieval_time, freshness,
+                            completeness, adjusted_status, source_quality_status,
+                            payload_provenance, open, high, low, close, volume, payload_json)
+                           VALUES (?,'kraken',?,?,'KRAKEN','crypto','1d',?,?,'fresh','complete',
+                                   'unadjusted','pass','test',?,?,?,?,0,'{}')""",
+                        (stamp, symbol, symbol, stamp, stamp, close, close + half, close - half, close),
+                    )
+
+    def test_a_more_volatile_coin_gets_a_wider_stop(self):
+        """2026-09-03, Founder-directed: "it also will vary from coin to coin. The smaller cap
+        coins will fluctuate much harder and broader than the large cap coins."
+
+        This test previously asserted the OLD formula -- default stop times a 1.0-2.0 multiplier
+        taken from a stored "volatility" score. That formula could only ever produce 1.5%-3.0%
+        however the coin behaved, and it scaled on a score that rated BTC as more volatile than
+        ADA. The stop is now sized from ATR measured on the coin's own candles.
+
+        What the test asserts is unchanged in spirit: a wilder coin must get more room.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
             initialize_foundation_schema(db_path)
             audit = AuditDatabase(db_path, None)
             _seed_score(db_path, symbol="CALM", volatility=0.0)
             _seed_score(db_path, symbol="WILD", volatility=1.0)
+            self._seed_candles(db_path, "CALM", 0.02)   # 2% daily range
+            self._seed_candles(db_path, "WILD", 0.08)   # 8% daily range
 
             proposals = propose_crypto_trades(
                 db_path,
@@ -278,11 +321,13 @@ class VolatilityScaledStopTests(unittest.TestCase):
             self.assertEqual(len(proposals), 2)
             calm = next(p for p in proposals if p.symbol == "CALM")
             wild = next(p for p in proposals if p.symbol == "WILD")
-            calm_stop_distance = calm.entry_price - calm.stop_loss
-            wild_stop_distance = wild.entry_price - wild.stop_loss
-            # volatility=0.0 -> multiplier 1.0 (base 2% stop); volatility=1.0 -> multiplier
-            # 2.0 (4% stop) -- the volatile coin's stop must be exactly twice as wide.
-            self.assertAlmostEqual(wild_stop_distance, calm_stop_distance * 2, places=6)
+            calm_distance = (calm.entry_price - calm.stop_loss) / calm.entry_price
+            wild_distance = (wild.entry_price - wild.stop_loss) / wild.entry_price
+            self.assertGreater(wild_distance, calm_distance,
+                               "the coin that swings four times as far must get more room")
+            self.assertGreaterEqual(calm_distance, 0.015,
+                                    "no stop may sit inside the noise floor -- a 0.4% stop is what "
+                                    "blocked crypto for a week")
 
 
 if __name__ == "__main__":

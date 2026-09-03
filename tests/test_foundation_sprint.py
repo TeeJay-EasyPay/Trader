@@ -360,9 +360,18 @@ class FoundationSprintTests(unittest.TestCase):
             self.assertIn("Reference material:", proposal.plain_english_reasoning)
             self.assertIn("Momentum vs. Mean-Reversion", proposal.plain_english_reasoning)
             self.assertEqual(proposal.entry_price, 50000.0)
-            # volatility=0.2 -> multiplier 1.2 -> effective stop pct 0.024 (base 0.02 * 1.2).
-            self.assertEqual(proposal.stop_loss, round(50000.0 * (1 - 0.024), 8))
-            self.assertEqual(proposal.take_profit, round(50000.0 * (1 + 0.024 * 2), 8))
+            # 2026-09-03: the stop is sized from ATR measured on the coin's own candles now,
+            # not from the stored "volatility" score times a 1.0-2.0 multiplier. That formula
+            # could only ever produce 1.5%-3.0% however the coin behaved, and rated BTC as more
+            # volatile than ADA. See volatility_stops.
+            #
+            # This fixture seeds no candles, so ATR cannot be measured and the sizing falls back
+            # to default_stop_loss_pct (0.02) -- deliberately the cautious middle rather than an
+            # extreme, because a stop sized from no data is a guess. What this test is really
+            # about is the REASONING text, and that is unchanged; the trade shape simply moved
+            # from 2.4% to the 2.0% fallback.
+            self.assertEqual(proposal.stop_loss, round(50000.0 * (1 - 0.02), 8))
+            self.assertEqual(proposal.take_profit, round(50000.0 * (1 + 0.02 * 2), 8))
             self.assertEqual(proposal.position_size, 5.0 / 50000.0)
 
     def test_unavailable_kraken_pair_does_not_abort_crypto_research(self):

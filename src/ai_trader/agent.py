@@ -20,6 +20,7 @@ from .liquidity_map import liquidity_map_for_pair
 from .sprint6 import _ai_managed_symbols
 from .symbol_track_record import symbol_track_record
 from .market_intelligence_platform import load_recent_observations_batch
+from .volatility_stops import volatility_stop_pct
 from .technical_discretion import (
     clears_fee_hurdle,
     risk_based_notional,
@@ -576,9 +577,24 @@ def propose_crypto_trades(
             # coin being held to one flat percentage regardless of its own behaviour.
             # take_profit keeps the same 2:1 reward:risk ratio against whatever the effective
             # stop distance ends up being.
-            volatility_score = row["volatility"]
-            volatility_multiplier = 1.0 + max(0.0, min(1.0, float(volatility_score))) if volatility_score is not None else 1.0
-            effective_stop_pct = default_stop_loss_pct * volatility_multiplier
+            # 2026-09-03, Founder-directed: "it also will vary from coin to coin. The smaller
+            # cap coins will fluctuate much harder and broader than the large cap coins."
+            #
+            # The old line was: default (1.5%) x a 1.0-2.0 multiplier, so it could only ever
+            # produce 1.5%-3.0% whatever the coin did. GRT swings 10.3% on a normal day and got
+            # a 1.6% stop. It also scaled on a "volatility" score that gave BTC a WIDER stop
+            # than ADA, when ADA is nearly twice as volatile.
+            #
+            # ATR is the right measure and the app was already computing it below without using
+            # it here. See volatility_stops for why 0.6x, and for why fees are NOT part of this
+            # decision.
+            symbol_candles = crypto_candle_history.get(symbol.upper()) or []
+            symbol_metrics = analyze_price_series(symbol_candles) if symbol_candles else {}
+            effective_stop_pct = volatility_stop_pct(
+                symbol_metrics.get("atr_pct"),
+                cap=max_stop_loss_pct,
+                fallback=default_stop_loss_pct,
+            )
             # Phase 5.5 (2026-08-20, Founder-requested): place the stop/target at REAL
             # technical levels from the price history Phase 1/2 now provide, instead of a
             # flat percentage -- but clamped so the result can never be riskier than the
@@ -586,8 +602,6 @@ def propose_crypto_trades(
             # authority to rewrite it (see technical_discretion.py's module docstring).
             # max_stop_loss_pct here is the effective volatility-scaled distance, so this
             # can only ever tighten the stop relative to today's behavior, never widen it.
-            symbol_candles = crypto_candle_history.get(symbol.upper()) or []
-            symbol_metrics = analyze_price_series(symbol_candles) if symbol_candles else {}
             atr_absolute = symbol_metrics.get("atr_pct") * price if symbol_metrics.get("atr_pct") else None
             # 2026-08-20 live verification caught a real bug here: this originally passed
             # effective_stop_pct as BOTH the ceiling and the default, so the clamp ceiling
@@ -608,6 +622,14 @@ def propose_crypto_trades(
                 max_stop_loss_pct=max(effective_stop_pct, max_stop_loss_pct),
                 default_stop_loss_pct=effective_stop_pct,
             )
+            # 2026-09-03: technical_stop_loss places the stop at a real support level and is
+            # only allowed to TIGHTEN -- with no floor, which is exactly how a 0.4% stop reached
+            # the final gate and was refused. Support sitting just under the entry is not a
+            # reason to risk less than the coin's own noise; it is a reason to be suspicious of
+            # the level. The volatility-sized distance is now a floor as well as the fallback.
+            volatility_floor_price = price * (1.0 - effective_stop_pct)
+            if stop_loss > volatility_floor_price:
+                stop_loss = volatility_floor_price
             take_profit = technical_take_profit(
                 entry_price=price,
                 stop_loss=stop_loss,
