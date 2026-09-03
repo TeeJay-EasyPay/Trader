@@ -37,6 +37,32 @@ from .database import connect
 # should stop being held against it once the evidence ages out.
 LOOKBACK_DAYS = 45
 
+# 2026-09-03, Founder-directed: "do the first item please" -- only judge the current rules by
+# trades taken under the current rules.
+#
+# WHY THIS EXISTS. Crypto had stopped trading entirely. Research ran every cycle and ideas were
+# generated, but every one was refused with confidence_below_minimum. The cause was this file:
+# a coin that has lost money loses up to MAX_CONFIDENCE_PENALTY of confidence, so a coin
+# scoring 0.72 arrived at the 0.70 bar on 0.47 and was refused. ADA, LINK and SOL were 0 from
+# 2, 0 from 3 and 0 from 6, which is the full penalty each.
+#
+# Those losses were the FEE PROBLEM, not bad coin selection: trades aiming at moves smaller
+# than the 1.54% round trip cost, so they lost whether the call was right or wrong. That defect
+# is fixed -- a proposal must now clear its own costs before it can be made. But the penalty
+# kept punishing the app for losses made under rules that no longer exist, and it could never
+# recover, because the penalty only lifts when a coin wins and a coin cannot win if it is never
+# traded. A doom loop with no exit.
+#
+# THE DATE IS 31 AUGUST, NOT 20 AUGUST, and the difference matters. The fee gate shipped on
+# 2026-08-20, but it measures the fee rate from settled trades and defaults to INACTIVE when it
+# cannot measure one (see trade_scorecard.estimate_round_trip_fee_pct). The first trade with a
+# recorded fee settled 2026-08-31, so the gate could not have refused anything before then. The
+# honest boundary is when the rule started working, not when it was written.
+#
+# Older trades are NOT deleted and still appear everywhere else. They simply stop driving this
+# one penalty.
+FEE_GATE_EFFECTIVE_FROM = "2026-08-31T00:00:00+00:00"
+
 # Below this, a record is an anecdote. Three losses could be one bad week.
 MIN_TRADES_FOR_SIGNAL = 3
 
@@ -95,33 +121,67 @@ def normalize_symbol(symbol: str) -> str:
     return aliases.get(text, text)
 
 
+def _at_or_after(observed_at: Any, cutoff_iso: str) -> bool:
+    """Is this trade at or after the cutoff, whatever format its timestamp is stored in?
+
+    NOT a string comparison, and that is deliberate. 26 of the 66 rows in
+    PERFORMANCE_ATTRIBUTION store an epoch integer ("1787586949") rather than an ISO date, and
+    "1787586949" sorts BEFORE "2026-08-31" because "1" < "2". A plain SQL >= would therefore
+    have silently dropped every epoch-stamped trade -- which is most of the recent ones -- and
+    the change would have looked like it worked while measuring something else entirely.
+    """
+    if observed_at is None:
+        return False
+    text = str(observed_at).strip()
+    if not text:
+        return False
+    try:
+        cutoff_dt = datetime.fromisoformat(cutoff_iso)
+    except ValueError:
+        return True
+    # Epoch seconds, stored as a number or a numeric string.
+    if text.replace(".", "", 1).isdigit():
+        try:
+            return datetime.fromtimestamp(float(text), tz=timezone.utc) >= cutoff_dt
+        except (OverflowError, OSError, ValueError):
+            return False
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment >= cutoff_dt
+
+
 def symbol_track_record(db_path: Path, symbol: str, *, now: datetime | None = None) -> SymbolRecord:
     """This system's realised record on one coin, over the recent window."""
     coin = normalize_symbol(symbol)
     moment = now or datetime.now(timezone.utc)
-    cutoff = (moment - timedelta(days=LOOKBACK_DAYS)).isoformat()
+    window_start = (moment - timedelta(days=LOOKBACK_DAYS)).isoformat()
+    # Whichever is LATER: the rolling window, or the day the fee rule started working.
+    cutoff = max(window_start, FEE_GATE_EFFECTIVE_FROM)
     rows: list[tuple[Any, Any]] = []
     try:
         with closing(connect(db_path)) as conn:
             rows = [
-                (row[0], row[1])
+                (row[0], row[1], row[2])
                 for row in conn.execute(
                     """
-                    SELECT symbol, profit_loss
+                    SELECT symbol, profit_loss, COALESCE(closed_at, created_at)
                     FROM PERFORMANCE_ATTRIBUTION
-                    WHERE COALESCE(closed_at, created_at) >= ?
                     """,
-                    (cutoff,),
                 ).fetchall()
             ]
     except Exception:  # noqa: BLE001 - a missing history must never block a proposal
         rows = []
+    rows = [row for row in rows if _at_or_after(row[2], cutoff)]
 
     # Matched in Python rather than SQL: the normalisation above is the whole point, and
     # no SQL predicate can express "XBTGBP and BTC are the same coin".
     wins = losses = 0
     net = 0.0
-    for row_symbol, profit_loss in rows:
+    for row_symbol, profit_loss, _observed_at in rows:
         if normalize_symbol(row_symbol) != coin:
             continue
         try:

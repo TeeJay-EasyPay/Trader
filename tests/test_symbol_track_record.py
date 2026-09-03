@@ -17,7 +17,19 @@ from ai_trader.symbol_track_record import (
     symbol_track_record,
 )
 
-NOW = datetime(2026, 8, 24, 17, 0, tzinfo=timezone.utc)
+# 2026-09-03: moved forward from 2026-08-24. These tests exercise the PENALTY MECHANISM --
+# that a losing record lowers conviction, that a winning one never raises it, that aliases
+# collapse to one coin. All of that is unchanged and still asserted below.
+#
+# What changed is that symbol_track_record now ignores trades made before the fee rule started
+# working (FEE_GATE_EFFECTIVE_FROM, 2026-08-31), because the app was being punished for losses
+# caused by a defect that has since been fixed and could never escape the penalty. Every
+# fixture here dated itself one day before NOW, which put it in August and therefore outside
+# the qualifying window -- so the mechanism tests stopped seeing any trades at all.
+#
+# Moving NOW into September keeps the fixtures qualifying and leaves what they assert intact.
+# The cutoff itself is covered separately in test_track_record_fee_gate_cutoff.py.
+NOW = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
 
 
 def _record(db_path: Path, symbol: str, profit_loss: float, *, days_ago: int = 1) -> None:
