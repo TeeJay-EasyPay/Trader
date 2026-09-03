@@ -40,6 +40,21 @@ def schema_key(db_path: Path, namespace: str) -> str:
     return f"sqlite:{namespace}:{Path(db_path).resolve()}"
 
 
+def _clear_schema_cache() -> None:
+    """Drop cached table structure after a schema change.
+
+    Imported lazily: database.py is a low-level module and importing it at the top of this
+    one risks a cycle. A failure here must never break schema creation -- a stale cache is
+    a performance problem, a crashed migration is an outage.
+    """
+    try:
+        from ..database import clear_schema_cache
+
+        clear_schema_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def ensure_schema_once(db_path: Path, namespace: str, init_fn: Callable[[], None]) -> None:
     """Run init_fn at most once per (namespace, backend/db_path) combination per process.
 
@@ -57,10 +72,18 @@ def ensure_schema_once(db_path: Path, namespace: str, init_fn: Callable[[], None
     if key in _INITIALIZED:
         return
     with _LOCK:
+        _clear_schema_cache()
         if key in _INITIALIZED:
             return
         init_fn()
         _INITIALIZED.add(key)
+        # 2026-09-03: init_fn has just created or altered tables, so any cached description
+        # of this database's structure is now potentially stale -- and worse, a table that
+        # did not exist a moment ago may have been looked up and found missing. The schema
+        # cache only stores successful lookups precisely so that case cannot be poisoned,
+        # but clearing here is the belt to that braces: after a schema change, describe
+        # afresh. This runs at most once per module per process, so the cost is nil.
+        _clear_schema_cache()
 
 
 def reset_for_tests() -> None:

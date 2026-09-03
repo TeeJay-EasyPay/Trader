@@ -135,6 +135,40 @@ class PostgresCursor:
             yield _hybrid(row)
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-03, Founder-reported: Supabase egress running at 1-1.9 GB per DAY on a free plan.
+#
+# pg_stat_statements named the culprits, and they were not trading data at all:
+#
+#     611,816 calls   SELECT ... FROM information_schema.columns ...   700 seconds
+#   5,731,823 calls   SELECT pg_get_serial_sequence(...) ...           596 seconds
+#
+# 6.3 million round trips asking the database to describe its own structure. The
+# SQLite/Postgres compatibility layer re-derived a table's columns and its primary-key
+# sequence on EVERY query and EVERY insert, rather than once. A schema does not change
+# between two inserts a millisecond apart, so essentially all of that work was repeated
+# for an answer it already had.
+#
+# Cached per (database, table). Two rules make the cache safe:
+#
+#   * ONLY SUCCESSFUL LOOKUPS ARE CACHED. A table that does not exist yet returns nothing,
+#     and caching that "nothing" would make a table created later permanently invisible --
+#     which matters here because schema creation and use are interleaved all over this
+#     codebase (initialize_*_schema is called lazily from dozens of places).
+#   * KEYED BY DATABASE, not just table name, so two different databases in one process
+#     cannot read each other's schema. The test suite runs many temporary databases in a
+#     single process, which is exactly how that would have gone unnoticed.
+# ---------------------------------------------------------------------------
+_TABLE_INFO_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
+_SEQUENCE_NAME_CACHE: dict[tuple[str, str], str] = {}
+
+
+def clear_schema_cache() -> None:
+    """Forget cached table structure. Call after creating or altering tables."""
+    _TABLE_INFO_CACHE.clear()
+    _SEQUENCE_NAME_CACHE.clear()
+
+
 class PostgresConnection:
     def __init__(self, url: str):
         try:
@@ -152,6 +186,11 @@ class PostgresConnection:
             options=f"-c statement_timeout={statement_timeout}",
         )
         self._row_factory = None
+        # Identity for the schema cache: two databases in one process must never share it.
+        try:
+            self._schema_key = str(self._conn.info.dbname or "") + "@" + str(self._conn.info.host or "")
+        except Exception:  # noqa: BLE001 - identity is an optimisation, never a hard requirement
+            self._schema_key = url
 
     @property
     def row_factory(self):
@@ -236,6 +275,10 @@ class PostgresConnection:
         return False
 
     def _table_info(self, table: str) -> MemoryCursor:
+        cache_key = (self._schema_key, table.lower())
+        cached = _TABLE_INFO_CACHE.get(cache_key)
+        if cached is not None:
+            return MemoryCursor(dict(row) for row in cached)
         rows = self._conn.execute(
             """
             SELECT column_name, data_type, is_nullable, column_default
@@ -257,7 +300,7 @@ class PostgresConnection:
                 (table.lower(),),
             ).fetchall()
         }
-        return MemoryCursor(
+        described = [
             {
                 "cid": index,
                 "name": row["column_name"],
@@ -267,7 +310,11 @@ class PostgresConnection:
                 "pk": 1 if row["column_name"] in primary else 0,
             }
             for index, row in enumerate(rows)
-        )
+        ]
+        # Positive results only -- see the note above the cache.
+        if described:
+            _TABLE_INFO_CACHE[cache_key] = described
+        return MemoryCursor(dict(row) for row in described)
 
     def _last_insert_id(self, statement: str) -> int | None:
         if not re.match(r"^\s*INSERT\s+INTO\b", statement, flags=re.IGNORECASE):
@@ -276,6 +323,11 @@ class PostgresConnection:
         if not table_match:
             return None
         table = table_match.group(1)
+        cache_key = (self._schema_key, table.lower())
+        sequence_name = _SEQUENCE_NAME_CACHE.get(cache_key)
+        if sequence_name:
+            row = self._conn.execute("SELECT currval(%s) AS id", (sequence_name,)).fetchone()
+            return int(row["id"]) if row and row.get("id") is not None else None
         sequence_row = self._conn.execute(
             """
             SELECT pg_get_serial_sequence(%s, a.attname) AS sequence_name
@@ -290,6 +342,7 @@ class PostgresConnection:
         sequence_name = sequence_row.get("sequence_name") if sequence_row else None
         if not sequence_name:
             return None
+        _SEQUENCE_NAME_CACHE[cache_key] = sequence_name
         row = self._conn.execute("SELECT currval(%s) AS id", (sequence_name,)).fetchone()
         return int(row["id"]) if row and row.get("id") is not None else None
 

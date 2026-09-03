@@ -168,9 +168,18 @@ def symbol_track_record(db_path: Path, symbol: str, *, now: datetime | None = No
                 (row[0], row[1], row[2])
                 for row in conn.execute(
                     """
+                    -- 2026-09-03: a COARSE filter, deliberately. The precise cutoff is
+                    -- applied in Python by _at_or_after, because 26 of these rows store an
+                    -- epoch integer and "1787586949" sorts before "2026-08-31" as text. But
+                    -- fetching the whole table and filtering entirely in Python is the exact
+                    -- pattern behind this month's Supabase egress bill, so the window still
+                    -- narrows here on the rows that ARE ISO-dated.
                     SELECT symbol, profit_loss, COALESCE(closed_at, created_at)
                     FROM PERFORMANCE_ATTRIBUTION
+                    WHERE COALESCE(closed_at, created_at) >= ?
+                       OR COALESCE(closed_at, created_at) NOT LIKE '20%'
                     """,
+                    (window_start,),
                 ).fetchall()
             ]
     except Exception:  # noqa: BLE001 - a missing history must never block a proposal
