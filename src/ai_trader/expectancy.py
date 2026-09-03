@@ -32,6 +32,25 @@ So this module fixes the READING, not the writing:
 AND THE NUMBER THAT MATTERS MOST. Every trade carries a fee cost of roughly 1.0R -- the fees
 alone consume the entire amount risked. That is the plainest statement of the crypto problem
 anywhere in this app, and it has been sitting in an unread table the whole time.
+
+A CORRECTION WORTH READING BEFORE ACTING ON THAT. The first version of this module said the fee
+burden was "a function of position size". That is wrong, and it was checked only because the
+Founder asked what it all meant in plain terms. Fees and risk BOTH scale with position size, so
+fee-as-R is identical at 25 pounds and at 500:
+
+    position   stop    risked     fees   fee as R
+    £25        1.5%    £0.38     £0.39      1.03
+    £500       1.5%    £7.50     £7.70      1.03
+
+The real lever is the STOP DISTANCE, because fees do not scale with it:
+
+    £25        1.5%    £0.38     £0.39      1.03
+    £25        3.0%    £0.75     £0.39      0.51
+    £25        5.0%    £1.25     £0.39      0.31
+
+fee_R is simply (round-trip fee %) / (stop %) -- 1.54 / 1.5 = 1.03, which is exactly what the
+measured data shows. Trading bigger changes nothing. Aiming at bigger moves changes everything.
+The app has been trying to capture moves barely larger than the cost of capturing them.
 """
 
 from __future__ import annotations
@@ -154,9 +173,11 @@ def _verdict(r: dict[str, Any]) -> str:
     if fee is not None and fee >= 0.5:
         parts.append(
             f"Fees alone cost {fee:.2f} times the amount risked on the average trade, so a trade "
-            "must clear that before it earns anything. That is the single biggest thing standing "
-            "between these trades and a profit, and it is a function of position size, not of "
-            "how good the ideas are."
+            "must clear that before it earns anything. This is NOT about trading bigger: fees and "
+            "risk both scale with position size, so the ratio is identical at 25 pounds and at "
+            "500. It is about how far the stop sits from the entry. A round trip costs about "
+            "1.54%, so a 1.5% stop means aiming at a move barely larger than the cost of making "
+            "it. Widening the stop, and holding for a bigger move, is the lever."
         )
 
     if e is not None and weighted is not None and abs(e - weighted) >= 0.4:

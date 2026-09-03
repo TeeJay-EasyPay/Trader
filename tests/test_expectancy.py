@@ -116,7 +116,26 @@ def test_it_says_plainly_that_the_strategy_does_not_pay_for_itself():
     """The Founder is not an engineer. A number without a sentence is not an answer."""
     text = expectancy(ROWS)["plain_english"].lower()
     assert "does not pay for itself" in text
-    assert "%" not in text and "expectancy_r" not in text
+    # Ban field names and code, not arithmetic. An earlier version of this test banned the "%"
+    # character outright, and it fired the moment the wording was corrected to explain that a
+    # 1.54% round trip against a 1.5% stop is the actual problem -- which is the single most
+    # useful sentence in the whole output. A percentage is plain English; "expectancy_r" is not.
+    for jargon in ("expectancy_r", "net_r", "fee_impact", "initial_monetary_risk", "none"):
+        assert jargon not in text, f"the verdict leaked {jargon!r}"
+
+
+def test_the_verdict_names_the_right_lever():
+    """Guards a mistake I made and had to correct.
+
+    The first wording said the fee burden was "a function of position size". It is not: fees
+    and risk both scale with size, so fee-as-R is 1.03 at 25 pounds and 1.03 at 500. The lever
+    is the stop distance, because fees do not scale with it. Getting this backwards would have
+    sent the Founder to increase real-money position sizes for no benefit whatsoever.
+    """
+    text = expectancy(ROWS)["plain_english"].lower()
+    assert "not about trading bigger" in text
+    assert "stop" in text
+    assert "function of position size" not in text
 
 
 def test_a_thin_sample_is_labelled_as_early_rather_than_a_verdict():
