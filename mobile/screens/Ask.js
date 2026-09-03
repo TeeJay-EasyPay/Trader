@@ -57,6 +57,7 @@ function loadAudioModules() {
 const { micButtonLabel, micButtonAccessibilityLabel, thinkingFrame, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
 const { mergeTurns, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
+const { askStatusLine, isModelAnswer } = require('../lib/askStatus');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -288,8 +289,11 @@ function AskAiTrader({ messages, setMessages, request }) {
         ...prev.filter((m) => !m.pending),
         { role: 'assistant', text: normalizeChatText(`${answerText}${note}`) },
       ]);
-      setAskStatus(`Answered using ${result.model || 'local evidence'}.`);
-      if (shouldSpeak({ askedByVoice: spoken, ok: true, answer: answerText })) {
+      // 2026-09-04: only claim a model answered when a model answered. See lib/askStatus.
+      setAskStatus(askStatusLine(result));
+      // Reading a canned table dump aloud is worse than saying nothing, so a fallback
+      // answer is shown but not spoken.
+      if (isModelAnswer(result) && shouldSpeak({ askedByVoice: spoken, ok: true, answer: answerText })) {
         speakAnswer(answerText);
       }
     } catch (error) {

@@ -166,7 +166,7 @@ _ASK_FORECAST_TEXT_LIMIT = 400
 _ASK_RECOMMENDATION_FIELDS = (
     "proposal_id", "symbol", "company", "sector", "country", "confidence",
     "suggested_broker", "exchange", "asset_type", "market_open", "asset_available",
-    "strategy_name", "market_regime", "created_at", "expires_at",
+    "strategy_name", "created_at", "expires_at",
     "freshness_status", "freshness_note", "already_executed", "guardrails_passed",
     "guardrail_summary", "guardrail_failures", "auto_trade_eligible", "auto_trade_reason",
     "orchestrator_decision", "orchestrator_rejection_reason", "due_diligence_status",
@@ -180,7 +180,83 @@ _ASK_RECOMMENDATION_FIELDS = (
 # once the research sections were added, because prompt size is what OpenAI charges time
 # for: the same question went 20.8s -> 45.0s against a 55s app timeout.
 _ASK_RECOMMENDATION_TEXT_LIMIT = 300
-_ASK_RECOMMENDATION_LIMIT = 10
+_ASK_RECOMMENDATION_LIMIT = 5
+
+# 2026-09-04, Founder-reported: every Ask answer was a canned evidence summary rather than a
+# real reply. The cause was not the model or the prompt -- it was that the model never ran.
+# OpenAI returned 429 on every request, and the account's actual limit is:
+#
+#     x-ratelimit-limit-tokens: 30000     (per minute)
+#
+# while one question was sending ~25,400 tokens of context. A single question consumed 85% of
+# the minute, so a second question -- or a research cycle's own OpenAI calls landing in the
+# same window -- was refused. The app then fell back to the hardcoded summary AND reported
+# "Answered using gpt-4.1", so a failure was displayed as a success.
+#
+# The August trimming (see the note above) took this from 102KB to about half, and it crept
+# straight back as the research sections were added. So this is a BUDGET, enforced after the
+# context is built, rather than another set of per-section limits that the next addition can
+# quietly exceed. 8,000 tokens leaves room for three questions a minute alongside the
+# scheduled research calls that share the same allowance.
+_ASK_CONTEXT_TOKEN_BUDGET = 8000
+# Rough but stable: OpenAI averages ~4 characters per token for English and JSON alike. An
+# exact tokeniser would be a new dependency for a number that only needs to be roughly right.
+_CHARS_PER_TOKEN = 4
+
+
+def _estimated_tokens(value: Any) -> int:
+    try:
+        return len(json.dumps(value, default=str)) // _CHARS_PER_TOKEN
+    except Exception:  # noqa: BLE001 - a size estimate must never break an answer
+        return 0
+
+
+def enforce_context_budget(context: dict[str, Any], *, budget: int = _ASK_CONTEXT_TOKEN_BUDGET) -> dict[str, Any]:
+    """Shrink the largest sections until the whole context fits the per-minute allowance.
+
+    Trims the BIGGEST section first and repeatedly, rather than applying a flat cut, because
+    the problem is always one or two sections that have grown -- on 2026-09-04 a single global
+    market_regime string was being repeated inside all ten recommendations.
+
+    Lists lose their oldest entries; long strings are truncated. Nothing is removed entirely:
+    a section that vanishes reads to the model as "there is none", which is exactly the
+    mistake that had Ask inventing a week of stopped research. Every trim is marked so the
+    model can see it was shortened rather than empty.
+    """
+    if _estimated_tokens(context) <= budget:
+        return context
+    trimmed = dict(context)
+    for _ in range(40):  # bounded: this runs on every question
+        if _estimated_tokens(trimmed) <= budget:
+            break
+        sizes = sorted(
+            ((key, _estimated_tokens(value)) for key, value in trimmed.items()),
+            key=lambda row: -row[1],
+        )
+        if not sizes or sizes[0][1] <= 0:
+            break
+        key, _ = sizes[0]
+        value = trimmed[key]
+        if isinstance(value, list) and len(value) > 1:
+            keep = max(1, len(value) // 2)
+            trimmed[key] = value[:keep]
+            trimmed[f"{key}_note"] = f"Showing the {keep} most recent of {len(value)}; older entries omitted for length."
+        elif isinstance(value, dict) and value:
+            inner = sorted(((k, _estimated_tokens(v)) for k, v in value.items()), key=lambda r: -r[1])
+            biggest = inner[0][0]
+            shrunk = dict(value)
+            candidate = shrunk[biggest]
+            if isinstance(candidate, list) and len(candidate) > 1:
+                shrunk[biggest] = candidate[: max(1, len(candidate) // 2)]
+            else:
+                shrunk[biggest] = str(candidate)[:400] + "... (shortened for length)"
+            trimmed[key] = shrunk
+        elif isinstance(value, str) and len(value) > 400:
+            trimmed[key] = value[:400] + "... (shortened for length)"
+        else:
+            # Nothing left to shrink in the biggest section; stop rather than loop forever.
+            break
+    return trimmed
 
 
 def _seconds_left(deadline: float | None) -> float:
@@ -1317,7 +1393,7 @@ class LocalApiService:
                 "cannot see them yet and that the Founder should ask again in a moment."
             )
             return fast
-        context = self._build_ask_ai_context(deadline=deadline)
+        context = enforce_context_budget(self._build_ask_ai_context(deadline=deadline))
         self._ask_context_cache = (time.monotonic(), context)
         return self._stamped_context(context, 0.0)
 
