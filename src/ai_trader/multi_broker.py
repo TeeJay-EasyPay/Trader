@@ -509,9 +509,29 @@ def _backfill_epoch_timestamps(conn: Any) -> int:
     converted = 0
     try:
         for column in ("updated_at", "opened_at", "closed_at"):
+            # 2026-09-03 Supabase egress finding. This is a backfill that converts bare epoch
+            # timestamps to ISO, and the docstring above says it costs nothing after the first
+            # call. pg_stat_statements disagreed: 6,162 calls returning 2,954,746 rows from a
+            # 751-row table -- roughly 480 rows every time, almost all of them already ISO and
+            # discarded by the Python check below.
+            #
+            # Rather than chase why the once-per-process guard is not holding, the query is now
+            # cheap even when it runs often: an ISO timestamp always contains "-" and ":", so
+            # excluding those in SQL means only genuine epoch-style values come back. Once the
+            # backfill has done its work this returns nothing at all, which is the correct cost
+            # for a job with nothing left to do.
+            #
+            # The Python guard below is unchanged and still authoritative -- this only stops
+            # rows it would reject from crossing the network first.
+            # The LIKE patterns are BOUND, never inlined. An inlined '%-%' is a hard 500 on
+            # Postgres, which reads % as a format placeholder -- caught here by
+            # test_no_sql_statement_inlines_a_percent_like_pattern, which exists because this
+            # exact mistake has shipped before.
             rows = conn.execute(
                 f"SELECT trade_history_id, {column} FROM BROKER_TRADE_HISTORY "
-                f"WHERE {column} IS NOT NULL AND {column} != ''"
+                f"WHERE {column} IS NOT NULL AND {column} != '' "
+                f"AND {column} NOT LIKE ? AND {column} NOT LIKE ?",
+                ("%-%", "%:%"),
             ).fetchall()
             for row in rows:
                 row_id, raw = row[0], row[1]

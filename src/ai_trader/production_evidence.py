@@ -761,7 +761,24 @@ def _load_founder_evidence_rows(
                        freshness_status, data_quality_status, no_action_reason, summary
                 FROM PRODUCTION_RESEARCH_EVIDENCE
                 WHERE completed_at >= {x} ORDER BY completed_at DESC LIMIT 100""", (since,)),
-            ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 100", ()),
+            # 2026-09-03 Supabase egress finding, and the same lesson as the 2026-08-10 note
+            # just below -- this query was simply missed that time. Measured via
+            # pg_stat_statements: 4,409 calls returning 440,466 rows and 654 seconds of database
+            # time. payload_json on this table averages 30,814 BYTES per row, so LIMIT 100 was
+            # moving roughly 3 MB per call and about 13 GB over the period. It was by far the
+            # largest single source of egress, on a free plan whose exhaustion also halted the
+            # Founder's other project.
+            #
+            # The mobile app keeps MAX_CACHED_RECOMMENDATION_STUBS = 10 of these
+            # (mobile/lib/founderEvidenceCache.js), so 90 of every 100 rows were fetched with
+            # their full 30 KB intelligence packet and thrown away. LIMIT 12 leaves a margin
+            # over the app's own cap and cuts the volume by ~88%.
+            #
+            # NOT switched to explicit columns: payload_json genuinely feeds ten summary fields,
+            # including plain_english_reasoning and reason_for_recommendation, which are shown to
+            # the Founder. Checked against production before deciding -- dropping the column
+            # would have silently emptied them.
+            ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 12", ()),
             # 2026-08-10 Supabase egress finding: this result feeds straight into
             # _latest_per(snapshots_all, "broker") a few lines below the call site, which keeps
             # only the single newest row per broker (2 brokers today) and discards the rest --
