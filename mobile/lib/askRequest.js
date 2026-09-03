@@ -26,10 +26,14 @@ const RENDER_PROXY_LIMIT_MS = 60000;
 const ASK_BACKEND_BUDGET_MS = 50000;
 const ASK_REQUEST_TIMEOUT_MS = 55000;
 
-function askRequestOptions(question) {
+function askRequestOptions(question, spoken = false) {
   return {
     method: 'POST',
-    body: JSON.stringify({ question }),
+    // 2026-09-03: `spoken` travels with the question so the stored transcript records how it
+    // was asked. The backend uses it for nothing else -- whether the ANSWER is spoken is
+    // decided on the phone by shouldSpeak, which is where the Founder's "only when you asked
+    // by voice" rule lives.
+    body: JSON.stringify({ question, spoken: Boolean(spoken) }),
     // Must be passed explicitly. Without it the shared client silently applies the 25s
     // dashboard default, which is shorter than the backend's own budget.
     timeoutMs: ASK_REQUEST_TIMEOUT_MS,

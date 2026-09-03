@@ -47,10 +47,33 @@ test('a permission refusal points at the phone settings, not at an error', () =>
   assert.ok(message.includes('settings'), message);
 });
 
-test('the button says what pressing it will do', () => {
-  assert.strictEqual(micButtonLabel('idle'), 'Speak');
-  assert.strictEqual(micButtonLabel('recording'), 'Stop');
-  assert.strictEqual(micButtonLabel('transcribing'), 'Working...');
+test('the button shows an icon rather than a word', () => {
+  // 2026-09-03, Founder-directed: "can the button have a microphone icon on it instead of the
+  // word speak". The words move to the accessibility label, so nothing is lost for a screen
+  // reader -- which is the part a glyph would otherwise break.
+  const { MIC_GLYPH, STOP_GLYPH, micButtonAccessibilityLabel, thinkingFrame } = require('./voiceQuestion');
+  assert.strictEqual(micButtonLabel('idle'), MIC_GLYPH);
+  assert.strictEqual(micButtonLabel('recording'), STOP_GLYPH);
+  assert.ok(micButtonAccessibilityLabel('idle').toLowerCase().includes('spoken question'));
+  assert.ok(micButtonAccessibilityLabel('recording').toLowerCase().includes('stop'));
+});
+
+test('the working state animates instead of sitting still', () => {
+  // "while it is checking the speak button should show an animated icon." A still glyph cannot
+  // tell "thinking" from "frozen", which is the same complaint that produced the recording
+  // indicator in August.
+  const { thinkingFrame, THINKING_FRAMES } = require('./voiceQuestion');
+  const frames = [0, 1, 2].map(thinkingFrame);
+  assert.strictEqual(new Set(frames).size, THINKING_FRAMES.length, 'every frame must differ');
+  assert.strictEqual(thinkingFrame(3), thinkingFrame(0), 'and then cycle');
+  assert.strictEqual(thinkingFrame(NaN), thinkingFrame(0), 'a bad tick must not blank the button');
+});
+
+test('every state keeps the button the same width so it cannot jump under a thumb', () => {
+  const { MIC_GLYPH, STOP_GLYPH } = require('./voiceQuestion');
+  for (const label of [MIC_GLYPH, STOP_GLYPH, micButtonLabel('transcribing')]) {
+    assert.ok(label.length > 0 && label.length <= 3, JSON.stringify(label));
+  }
 });
 
 test('the status line is always a real sentence', () => {

@@ -54,8 +54,9 @@ function loadAudioModules() {
   }
 }
 
-const { micButtonLabel, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
+const { micButtonLabel, micButtonAccessibilityLabel, thinkingFrame, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
+const { mergeTurns, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
 
 
 function AskAiTrader({ messages, setMessages, request }) {
@@ -70,6 +71,46 @@ function AskAiTrader({ messages, setMessages, request }) {
   const audioRef = React.useRef(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const tickRef = React.useRef(null);
+  // 2026-09-03, Founder-directed: "can all the discussions be stored... that way I can scroll
+  // back to previous discussions if I want to." Loaded once when the card mounts and merged
+  // with anything said since -- see lib/chatBubbles.mergeTurns for why both are needed.
+  const [storedTurns, setStoredTurns] = useState([]);
+  // Drives the animated dots on the button while the app is working. A counter rather than an
+  // animation library: thinkingFrame turns it into a glyph, and that stays testable.
+  const [thinkTick, setThinkTick] = useState(0);
+  const thinkRef = React.useRef(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const payload = await request('/ask-history');
+        if (!cancelled && payload && Array.isArray(payload.turns)) setStoredTurns(payload.turns);
+      } catch (error) {
+        // History is a convenience. Failing to load it must never stop a question being asked,
+        // so this stays silent rather than showing an error for something nobody requested.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // The button animates whenever the app is busy, whichever way the question arrived.
+  React.useEffect(() => {
+    const busy = askLoading || voiceState === 'transcribing';
+    if (busy && !thinkRef.current) {
+      thinkRef.current = setInterval(() => setThinkTick((n) => n + 1), 400);
+    } else if (!busy && thinkRef.current) {
+      clearInterval(thinkRef.current);
+      thinkRef.current = null;
+      setThinkTick(0);
+    }
+    return () => {
+      if (thinkRef.current && !(askLoading || voiceState === 'transcribing')) {
+        clearInterval(thinkRef.current);
+        thinkRef.current = null;
+      }
+    };
+  }, [askLoading, voiceState]);
 
   const stopRecording = async () => {
     if (tickRef.current) {
@@ -235,7 +276,7 @@ function AskAiTrader({ messages, setMessages, request }) {
     // applies its own AbortController and overrides any signal passed in, so a local
     // controller here would be silently ignored (it was, until 2026-08-24). See
     // lib/askRequest.js for the full reasoning and the tests that pin it.
-    const options = askRequestOptions(finalQuestion);
+    const options = askRequestOptions(finalQuestion, spoken);
     try {
       const result = await withTimeout(
         request('/ask-ai-trader', options),
@@ -286,7 +327,8 @@ function AskAiTrader({ messages, setMessages, request }) {
         <View style={styles.buttonGrid}>
           <Button label={askLoading ? 'Thinking...' : 'Ask'} onPress={() => ask()} disabled={askLoading || !question.trim()} />
           <Button
-            label={micButtonLabel(voiceState)}
+            label={askLoading || voiceState === 'transcribing' ? thinkingFrame(thinkTick) : micButtonLabel(voiceState)}
+            accessibilityLabel={micButtonAccessibilityLabel(askLoading ? 'thinking' : voiceState)}
             tone={voiceState === 'recording' ? 'warn' : 'neutral'}
             onPress={toggleVoice}
             disabled={askLoading || voiceState === 'transcribing' || voiceState === 'requesting'}
@@ -302,14 +344,14 @@ function AskAiTrader({ messages, setMessages, request }) {
             needs no scrolling to find. */}
         {messages.length ? (
           <View style={styles.askConversation}>
-            {chatTurnsNewestFirst(messages).map((turn, turnIndex) => (
-              <View key={`turn-${turnIndex}`} style={styles.chatTurn}>
-                {turn.map((item, messageIndex) => (
-                  <View key={`${item.role}-${turnIndex}-${messageIndex}`} style={[styles.chatBubble, item.role === 'user' ? styles.chatUser : styles.chatAssistant]}>
-                    <Text style={styles.metricLabel}>{item.role === 'user' ? 'You' : 'AI Trader'}</Text>
-                    <Text style={styles.bodyText} selectable>{chatMessageText(item.text)}</Text>
-                  </View>
-                ))}
+            {/* 2026-09-03, Founder-directed: "my request once transcribed shouldn't have to
+                have 'You' above it... it should just be on the right of the box and then when
+                the AI replies the reply should be on the left."
+                The label is gone because position and colour already say who spoke -- it was a
+                caption explaining something the eye had understood. See lib/chatBubbles. */}
+            {mergeTurns(storedTurns, messages).map((turn) => (
+              <View key={turn.key} style={bubbleStyle(turn)}>
+                <Text style={bubbleTextStyle(turn)} selectable>{chatMessageText(turn.text)}</Text>
               </View>
             ))}
           </View>

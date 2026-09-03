@@ -25,7 +25,10 @@ test('Ask asks for an explicit timeout, because the shared client ignores everyt
   const options = askRequestOptions('How do you think XRP will do?');
   assert.strictEqual(options.timeoutMs, ASK_REQUEST_TIMEOUT_MS);
   assert.strictEqual(options.method, 'POST');
-  assert.deepStrictEqual(JSON.parse(options.body), { question: 'How do you think XRP will do?' });
+  // 2026-09-03: `spoken` travels with the question so the stored transcript records how it was
+  // asked. It defaults to false, so a typed question is unchanged from the app's point of view.
+  assert.deepStrictEqual(JSON.parse(options.body), { question: 'How do you think XRP will do?', spoken: false });
+  assert.deepStrictEqual(JSON.parse(askRequestOptions('spoken one', true).body), { question: 'spoken one', spoken: true });
 });
 
 test('Ask waits longer than a dashboard refresh', () => {

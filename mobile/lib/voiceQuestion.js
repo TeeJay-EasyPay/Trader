@@ -48,10 +48,36 @@ function recordingIndicator(elapsedSeconds, maxSeconds = MAX_RECORDING_SECONDS) 
   return `${pulse} Recording ${elapsed}s - press Stop when finished`;
 }
 
+// 2026-09-03, Founder-directed: "can the button have a microphone icon on it instead of the
+// word speak", and "while it is checking the speak button should show an animated icon".
+//
+// Glyphs rather than an icon font: nothing new has to be installed, they render identically on
+// every phone, and the button keeps the same footprint in all three states so the layout never
+// jumps under the Founder's thumb mid-tap.
+const MIC_GLYPH = '\u{1F3A4}';   // microphone -- idle, tap to speak
+const STOP_GLYPH = '■';     // filled square -- recording, tap to stop
+const THINKING_FRAMES = ['●○○', '○●○', '○○●'];
+
 function micButtonLabel(state) {
-  if (state === 'recording') return 'Stop';
-  if (state === 'transcribing') return 'Working...';
-  return 'Speak';
+  if (state === 'recording') return STOP_GLYPH;
+  if (state === 'transcribing' || state === 'thinking') return thinkingFrame(0);
+  return MIC_GLYPH;
+}
+
+// The animation is a pure function of a tick counter, so the screen owns the timer and this
+// stays testable. Cycling dots rather than a spinner: it reads as "still going" at a glance
+// and costs nothing to draw.
+function thinkingFrame(tick) {
+  const index = Math.abs(Number.isFinite(tick) ? Math.trunc(tick) : 0) % THINKING_FRAMES.length;
+  return THINKING_FRAMES[index];
+}
+
+// The button is a glyph now, so the words it used to carry have to live somewhere a screen
+// reader can still reach.
+function micButtonAccessibilityLabel(state) {
+  if (state === 'recording') return 'Stop recording';
+  if (state === 'transcribing' || state === 'thinking') return 'AI Trader is working on your question';
+  return 'Ask a spoken question';
 }
 
 // A microphone failure has to say what the Founder can do next, not what went wrong inside.
@@ -96,6 +122,11 @@ function resolveTranscription(payload) {
 }
 
 module.exports = {
+  thinkingFrame,
+  micButtonAccessibilityLabel,
+  MIC_GLYPH,
+  STOP_GLYPH,
+  THINKING_FRAMES,
   VOICE_STATES,
   MAX_RECORDING_SECONDS,
   voiceStatusText,

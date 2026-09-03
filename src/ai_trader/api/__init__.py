@@ -71,6 +71,7 @@ from ..experience_engine import initialize_experience_engine_schema
 from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..trade_scorecard import trade_scorecard
+from ..conversations import record_turn, recent_turns
 from ..decline_reasons import recent_decline_reasons
 from ..intelligence import InvestmentIntelligenceDatabase
 from ..models import AccountContext, Position, TradeProposal, utc_now_iso
@@ -623,6 +624,10 @@ class LocalApiService:
         if path == "/decline-reasons":
             limit = max(1, min(_int_or_default(_first(query, "limit"), 8), 25))
             return 200, recent_decline_reasons(self.settings.db_path, limit=limit)
+        if path == "/ask-history":
+            # Bounded on purpose: the app wants a screenful, and returning everything would
+            # make this the expensive query the rest of the week was spent removing.
+            return 200, {"turns": recent_turns(self.settings.db_path, limit=60)}
         if path == "/trade-scorecard":
             return 200, trade_scorecard(self.settings.db_path)
         if path == "/admin/trading-policy":
@@ -873,7 +878,19 @@ class LocalApiService:
                 period_end=body.get("period_end"),
             )
         if path == "/ask-ai-trader":
-            return 200, self.ask_ai_trader(body)
+            answer = self.ask_ai_trader(body)
+            # 2026-09-03, Founder-directed: "can all the discussions be stored... that way I
+            # can scroll back to previous discussions if I want to." Recorded AFTER the answer
+            # so a storage failure can never cost him the reply -- record_turn swallows its own
+            # errors for the same reason.
+            conversation_id = str(body.get("conversation_id") or "default")
+            spoken = bool(body.get("spoken"))
+            record_turn(self.settings.db_path, conversation_id=conversation_id, role="founder",
+                        text=str(body.get("question") or ""), spoken=spoken)
+            record_turn(self.settings.db_path, conversation_id=conversation_id, role="assistant",
+                        text=str(answer.get("answer") or ""), spoken=spoken,
+                        model=answer.get("model"), status=answer.get("status"))
+            return 200, answer
         if path == "/transcribe-question":
             return 200, self.transcribe_question(body)
         if path == "/speak":
