@@ -256,6 +256,34 @@ GUARDRAIL_CHECKS: list[tuple[str, str, str]] = [
 ]
 
 
+# 2026-09-03, Founder-reported and serious. Asked why crypto had not traded for a week, the
+# app answered: "There is no evidence of recent crypto recommendations, trades, or research
+# activity after August 25th... it's a deliberate pause until better trading opportunities
+# emerge." Every sentence was false. Crypto research had run 82 minutes earlier, scoring 40
+# coins, 4 of which cleared the confidence bar, with FIL top at 0.82.
+#
+# The cause was this file handing the model an EMPTY LIST for the crypto sections while the
+# full context loaded in the background. An empty list does not read as "not loaded yet"; it
+# reads as "I looked, and there is nothing" -- so the model did what models do with a gap and
+# built a plausible story around it. No research visible became "research stopped on 25
+# August" became "a deliberate, risk-conscious pause". Confident, coherent, and invented.
+#
+# The Founder was making decisions about real money on that answer.
+#
+# So a withheld section is now explicitly LABELLED as withheld rather than silently empty.
+# The distinction between "no data exists" and "data not fetched yet" is the whole fix.
+_NOT_LOADED_YET = {
+    "status": "not_loaded_yet",
+    "meaning": (
+        "This section was NOT fetched for this answer because AI Trader had just restarted "
+        "and answered quickly from balances and trades only. It is NOT empty and it does NOT "
+        "mean there is no recent activity. You must not infer that research stopped, that "
+        "trading paused, or that anything is missing. Say you cannot see this yet and suggest "
+        "asking again in a moment."
+    ),
+}
+
+
 class LocalApiService:
     def __init__(self, settings: Settings, *, initialize_runtime: bool = True):
         self.settings = settings
@@ -1265,8 +1293,11 @@ class LocalApiService:
             fast["evidence_status"] = "warming"
             fast["evidence_note"] = (
                 "AI Trader has just restarted. This answer uses balances, trades and reports "
-                "only; research and recommendations are still loading. Ask again in a moment "
-                "for the full picture."
+                "ONLY. Research, recommendations, crypto scores and news were NOT fetched -- "
+                "each is marked status=not_loaded_yet. Absence here is NOT evidence: do NOT "
+                "conclude that research stopped, that trading was paused, or that no activity "
+                "happened. If the question depends on any of those, say plainly that you "
+                "cannot see them yet and that the Founder should ask again in a moment."
             )
             return fast
         context = self._build_ask_ai_context(deadline=deadline)
@@ -1404,7 +1435,7 @@ class LocalApiService:
             # Measured at ~11s in production -- by far the most expensive section here, and
             # the reason a cold Ask could not answer inside the phone's timeout. Skipped on
             # the warming path; the background build fills it in for the next question.
-            "latest_recommendations": [] if fast_only else [
+            "latest_recommendations": _NOT_LOADED_YET if fast_only else [
                 _slim_recommendation(row) for row in self.recommendations(limit=_ASK_RECOMMENDATION_LIMIT)
             ],
             "latest_orchestrator_decisions": [
@@ -1424,9 +1455,9 @@ class LocalApiService:
         # forecast with reasoning sat in the database unread. These are the three research
         # products it was blind to. All are plain table reads.
         # ~6s and ~2s respectively against production, so both wait for the warm build.
-        context["market_forecasts"] = [] if fast_only else self._ask_market_forecasts()
-        context["crypto_research_scores"] = [] if fast_only else self._ask_crypto_research_scores()
-        context["recent_crypto_news"] = [] if fast_only else self._ask_recent_crypto_news()
+        context["market_forecasts"] = _NOT_LOADED_YET if fast_only else self._ask_market_forecasts()
+        context["crypto_research_scores"] = _NOT_LOADED_YET if fast_only else self._ask_crypto_research_scores()
+        context["recent_crypto_news"] = _NOT_LOADED_YET if fast_only else self._ask_recent_crypto_news()
         # The Founder's own realised record per coin -- the only evidence here that is
         # not published free to every other trader. See symbol_track_record.py.
         context["own_track_record_by_coin"] = all_symbol_track_records(self.settings.db_path)
