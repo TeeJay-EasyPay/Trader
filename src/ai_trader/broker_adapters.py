@@ -13,6 +13,7 @@ from urllib import parse, request
 
 from .alpaca import AlpacaCredentials, AlpacaPaperClient
 from .models import OrderRequest
+from .entry_drift import should_abandon_entry
 
 
 class BrokerAdapter(Protocol):
@@ -726,6 +727,47 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             self._private_request("/0/private/CancelOrder", {"txid": order_id})
         except Exception:  # noqa: BLE001 - best-effort; if it already filled or is already gone, cancellation legitimately fails
             pass
+
+        # 2026-09-03, Founder-directed: "if the price moves substantially, then that changes the
+        # whole nature of the trade. And so, yes, it's better to abandon that trade than to risk
+        # the money."
+        #
+        # This is the market fallback: the patient order did not fill, so we are about to buy at
+        # whatever the market asks. That is right when the price drifted a little and wrong when
+        # it ran away -- after up to 300 seconds on coins that swing a median 5.6% a day, the
+        # trade on offer may not be the trade that was analysed. Its entry is worse, its target
+        # is further off, and the reward-to-risk that justified it has quietly become something
+        # else.
+        #
+        # Checked against the CURRENT price, not the one from five minutes ago. A price that
+        # moved in our favour is never a reason to abandon -- see entry_drift.
+        try:
+            latest = self.current_prices([pair]) if hasattr(self, "current_prices") else {}
+            current_price = _kraken_last_price(latest, pair)
+        except Exception:  # noqa: BLE001 - a price read must never crash order placement
+            current_price = None
+        # OrderRequest carries no entry price of its own -- notional/quantity IS the price
+        # the proposal was sized against, the same derivation _limit_entry_price uses.
+        try:
+            intended_entry = float(order_request.notional_amount or 0.0) / float(order_request.quantity or 0.0)
+        except (TypeError, ValueError, ZeroDivisionError):
+            intended_entry = 0.0
+        if current_price and intended_entry > 0:
+            abandon, why = should_abandon_entry(
+                intended_entry=intended_entry,
+                current_price=current_price,
+                side=order_request.side,
+            )
+            if abandon:
+                return {
+                    "status": "abandoned",
+                    "broker": self.name,
+                    "pair": pair,
+                    "reason": why,
+                    "intended_entry_price": intended_entry,
+                    "price_when_abandoned": current_price,
+                    "abandoned_from_unfilled_limit_order_id": order_id,
+                }
         market_payload = {
             "pair": pair,
             "type": order_request.side.lower(),

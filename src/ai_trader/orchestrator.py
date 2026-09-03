@@ -24,6 +24,7 @@ from .foundation import (
     record_execution_decision,
     validate_investment_universe,
 )
+from .entry_drift import rebased_exits
 from .guardrails import validate_trade_proposal
 from .kraken_reconciliation import (
     reconciliation_control,
@@ -516,6 +517,34 @@ class InvestmentOrchestrator:
                 # Kraken-only: it writes KRAKEN_AI_ORDER_OWNERSHIP, which is Kraken's
                 # reconciliation ledger and has no meaning for an Alpaca order.
                 if selected.name in {"kraken", "alpaca"}:
+                    # 2026-09-03, Founder-directed: "even though we may be looking to enter a
+                    # trade at a certain price point, if we feel that when the order gets
+                    # filled, it's moved, then we can always adjust the stop loss accordingly."
+                    #
+                    # The stop and target are ABSOLUTE prices worked out from the INTENDED
+                    # entry. Kraken entries rest as post-only limit orders for up to 300
+                    # seconds to earn the maker fee, and these coins swing a median 5.6% a day,
+                    # so the fill is often not the price the analysis used. Decide to buy at
+                    # 100 with a stop at 95, fill at 97, and the stop is 2% below the real
+                    # entry rather than the 5% that was sized against the coin's volatility --
+                    # tightest exactly when the price has been falling, which is when a trade
+                    # most needs room.
+                    #
+                    # Re-applying the PERCENTAGES to the price actually paid keeps the shape
+                    # the analysis approved. Falls back to the originals whenever the fill
+                    # price is unusable: an unadjusted stop is far better than a wrong one.
+                    filled_at = (
+                        order.get("average_fill_price")
+                        or order.get("filled_avg_price")
+                        or order.get("fill_price")
+                        or order.get("price")
+                    )
+                    exits = rebased_exits(
+                        intended_entry=p.entry_price,
+                        actual_fill=filled_at if filled_at else p.entry_price,
+                        stop_loss=p.stop_loss,
+                        take_profit=p.take_profit,
+                    )
                     managed = record_managed_trade_exit(
                         self.db_path,
                         broker=selected.name,
@@ -523,10 +552,11 @@ class InvestmentOrchestrator:
                         side=p.side,
                         quantity=float(order.get("quantity") or order_request.quantity),
                         entry_order_id=order_id,
-                        entry_price=p.entry_price,
-                        stop_loss=p.stop_loss,
-                        take_profit=p.take_profit,
-                        payload={**order, "proposal_id": p.proposal_id, "entry_reason": p.plain_english_reasoning},
+                        entry_price=float(filled_at) if filled_at else p.entry_price,
+                        stop_loss=exits["stop_loss"],
+                        take_profit=exits["take_profit"],
+                        payload={**order, "proposal_id": p.proposal_id, "entry_reason": p.plain_english_reasoning,
+                                 "intended_entry_price": p.entry_price, "exit_rebasing": exits},
                         trailing_stop_pct=policy.trailing_stop_pct if policy.trailing_stop_enabled else None,
                     )
                     if selected.name == "kraken":

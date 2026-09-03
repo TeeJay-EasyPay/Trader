@@ -119,12 +119,26 @@ def _base_env(**extra):
     return env
 
 
-def _place(env, fake, *, side="buy"):
+def _place(env, fake, *, side="buy", price_when_fallback_considered=100.0):
+    """Place an order against a fake Kraken.
+
+    2026-09-03: `price_when_fallback_considered` is new. Before taking the market fallback the
+    adapter now re-reads the live price and abandons the entry if it has moved more than 1.5%
+    against us -- a trade that has already lost a whole round trip in fees before it starts is
+    not the trade that was analysed.
+
+    These tests never mocked current_prices, so the adapter made a REAL network call and
+    compared Bitcoin's actual price against a fixture entry of 100. That looked like a
+    catastrophic adverse move and abandoned every fallback. Defaults to the intended entry so
+    the existing fallback tests keep testing the fallback; the abandonment case sets it.
+    """
     from ai_trader import broker_adapters as ba
 
     adapter = ba.KrakenAdapter()
+    prices = {"XXBTZGBP": {"c": [str(price_when_fallback_considered), "1"]}}
     with mock.patch.dict("os.environ", env), \
          mock.patch.object(adapter, "_private_request", side_effect=fake), \
+         mock.patch.object(adapter, "current_prices", return_value=prices), \
          mock.patch.object(ba.time, "sleep", return_value=None), \
          mock.patch.object(adapter, "_validate_live_order", return_value={"passed": True, "pair": "XBTGBP", "volume": 0.1, "notional": 10.0, "failures": []}):
         return adapter.place_order(request(side=side))
@@ -230,6 +244,31 @@ class LimitEntryFallbackTests(unittest.TestCase):
         self.assertEqual(result["order_id"], "OMARKET-2")
         self.assertEqual(result["fallback_from_unfilled_limit_order_id"], "OLIMIT-1")
 
+    def test_an_entry_that_ran_away_is_abandoned_rather_than_bought_at_market(self):
+        """2026-09-03, Founder-directed: "if the price moves substantially, then that changes
+        the whole nature of the trade. And so, yes, it's better to abandon that trade."
+
+        The patient order rests for up to 300 seconds on coins that swing a median 5.6% a day.
+        If the price has run 3% away while it waited, buying at market enters a trade whose
+        entry, target and reward-to-risk are all different from the one that was approved.
+        """
+        fake = FakeKraken(statuses=["open"] * 10)
+        result = _place(_base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true"), fake,
+                        price_when_fallback_considered=103.0)
+        self.assertEqual(result["status"], "abandoned")
+        self.assertEqual(len(fake.add_order_calls()), 1,
+                         "Only the original limit order -- no market order may be placed.")
+        self.assertEqual(len(fake.cancel_order_calls()), 1, "The dead limit order is still cancelled.")
+        self.assertIn("abandoned", result["reason"].lower())
+
+    def test_a_price_that_moved_in_our_favour_still_takes_the_fallback(self):
+        """A cheaper entry is a better trade. Abandoning it would be the wrong lesson."""
+        fake = FakeKraken(statuses=["open"] * 10)
+        result = _place(_base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true"), fake,
+                        price_when_fallback_considered=95.0)
+        self.assertEqual(result["order_id"], "OMARKET-2")
+        self.assertEqual(len(fake.add_order_calls()), 2)
+
     def test_an_order_kraken_already_cancelled_falls_back_immediately_without_exhausting_the_poll_budget(self):
         fake = FakeKraken(statuses=["canceled"])
         result = _place(_base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true"), fake)
@@ -252,6 +291,7 @@ class LimitEntryFallbackTests(unittest.TestCase):
         env = _base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true")
         with mock.patch.dict("os.environ", env), \
              mock.patch.object(adapter, "_private_request", side_effect=flaky_cancel), \
+             mock.patch.object(adapter, "current_prices", return_value={"XBTGBP": {"c": ["100.0", "1"]}}), \
              mock.patch.object(ba.time, "sleep", return_value=None), \
              mock.patch.object(adapter, "_validate_live_order", return_value={"passed": True, "pair": "XBTGBP", "volume": 0.1, "notional": 10.0, "failures": []}):
             result = adapter.place_order(request())
@@ -270,6 +310,7 @@ class LimitEntryFallbackTests(unittest.TestCase):
         env = _base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true")
         with mock.patch.dict("os.environ", env), \
              mock.patch.object(adapter, "_private_request", side_effect=raising_status), \
+             mock.patch.object(adapter, "current_prices", return_value={"XBTGBP": {"c": ["100.0", "1"]}}), \
              mock.patch.object(ba.time, "sleep", return_value=None), \
              mock.patch.object(adapter, "_validate_live_order", return_value={"passed": True, "pair": "XBTGBP", "volume": 0.1, "notional": 10.0, "failures": []}):
             result = adapter.place_order(request())
