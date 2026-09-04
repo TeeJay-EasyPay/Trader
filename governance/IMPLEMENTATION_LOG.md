@@ -1,5 +1,218 @@
 # Implementation Log
 
+## 2026-09-04 (Option B) — a thin order book now sizes the trade down instead of refusing it
+
+Founder-directed, after working through the alternatives together. The blocker established
+earlier today: every coin clearing the 0.70 research bar was marked down below it by the
+order-book penalty, and the markdown exceeded the coin's entire headroom in every case. Since
+26 August exactly one crypto proposal cleared guardrails.
+
+**The Founder's reasoning for this shape of fix.** Thin liquidity is not a prediction that the
+price will fall -- the stop loss already covers direction. It means the exit costs more in
+slippage. The right response to a cost is to risk less, not to skip an otherwise-good idea.
+Sizing is self-correcting too: worse liquidity buys a smaller position, so less money is
+exposed to the slippage that is the actual threat.
+
+**It needed almost no new machinery.** `conviction_scaled_notional` already sizes every trade
+between 50% and 100% of the approved ceiling from `proposal.confidence_score`, and
+`foundation.calculate_capital_allocation` already calls it. The markdown was ALREADY reaching
+position size through that path -- it was simply also crossing the bar and vetoing the trade on
+the way. Flooring the marked-down score at the bar keeps the sizing effect and drops the veto.
+The hard `avoid` vetoes are untouched.
+
+Live run against production data immediately after the change, all 19 Kraken coins:
+
+| | before | after |
+|---|---|---|
+| proposals generated | 0 | **4** (DOT, FIL, SUI, XRP) |
+| hard-vetoed on a broken book | - | 1 (ALGO, support 0.0%) |
+| below the research bar | 13 | 13 |
+| refused on fees | 1 | 1 |
+
+All four size at 50% of the ceiling, which on this deployment is about GBP 25 against a GBP 50
+cap -- five times Kraken's real per-pair minimum, measured at GBP 1.71-4.83 across all 19 pairs,
+so the reduced size is always tradeable.
+
+**Why sizing is not a volume problem.** The Founder needs roughly USD 2,500 of 30-day volume for
+the Kraken fee tier. Corrected for the two sizing eras in the data (GBP 2-5 before 23 August,
+GBP 20-50 after), the recent era ran at GBP 20.69 average across 29 trades. The target needs
+about 1.6 trades a day at that size. Volume is driven by trade count, not trade size, and this
+change raises count from zero.
+
+Also captured today: `governance/BACKLOG.md`, holding five deferred items the Founder asked to
+park -- the position cap counting the raw wallet, USD pairs being unreachable (do not convert
+GBP yet), phantom rows in `logical_trades`, how much the AI is genuinely contributing, and
+whether the system learns at all.
+
+Validation: **1,398 backend tests plus 21 subtests passed.** Two tests written this morning that
+pinned the old veto were rewritten for the new semantics; a third now asserts a genuinely broken
+book is still refused outright.
+
+## 2026-09-04 (later) — End-to-end crypto test against production, and two corrections
+
+Ran the real `propose_crypto_trades` against the live production database and live Kraken
+public market data, with a fake audit injected so no proposal could be written and no order
+could be triggered. This is the first end-to-end trace of the crypto path rather than an
+inference from logs. Two of the earlier entry's conclusions were wrong and are corrected here.
+
+**CORRECTION (same day, after the Founder challenged the number): there was no 0.85 bar in
+production.** An earlier version of this entry claimed the research gate ran at 0.70 while the
+guardrail ran at 0.85, and that the gap was the drought's cause. That was wrong. The 0.85 came
+from the `.env` file on the development laptop, which `load_settings()` read when the end-to-end
+harness was run locally; it never applied on the worker. The Founder's consolidation work held.
+
+Verified against production rather than inferred: `guardrails.py` records
+`evidence={actual, limit}` on every confidence failure. Across all 364 crypto proposals that
+failed this check since 26 August, there is exactly **one distinct limit: 0.70**. Examples --
+FIL `{actual: 0.6479, limit: 0.7}`, XRP `{actual: 0.6181, limit: 0.7}`, DOT
+`{actual: 0.6524, limit: 0.7}`.
+
+**The real cause is that the liquidity markdown is bigger than the headroom above the bar.**
+The original diagnosis in the entry below was right and this correction restores it: the bar is
+0.70 on both sides, and the order-book markdown applied in between is what pushes coins under
+it. What the production numbers add is the scale of the problem. For every coin that cleared
+the 0.70 research bar on 4 September, the markdown exceeded its entire headroom:
+
+| coin | raw score | headroom above 0.70 | markdown | result |
+|---|---|---|---|---|
+| DOT  | 0.8024 | 0.1024 | 0.1500 | refused |
+| SUI  | 0.7956 | 0.0956 | 0.1500 | refused |
+| XLM  | 0.7759 | 0.0759 | 0.1633 | refused |
+| ALGO | 0.7366 | 0.0366 | 0.1000 | refused |
+| FIL  | 0.7279 | 0.0279 | 0.0800 | refused |
+| XRP  | 0.7181 | 0.0181 | 0.1500 | refused |
+
+This is a calibration mismatch, not a bug. `MAX_CONFIDENCE_PENALTY` in `liquidity_map.py` is
+0.20, and the markdown tiers are 0.08 / 0.10 / 0.15 / 0.20. But research scores that clear the
+bar at all only reach about 0.80, so the most headroom any coin ever has is roughly 0.10. A
+scale of 0-0.20 is being subtracted from a usable range of 0-0.10, so any markdown above the
+mildest tier is automatically fatal. Since 26 August exactly **one** crypto proposal has cleared
+guardrails: AAVE on 28 August at 0.75.
+
+A secondary gate is also active: 105 of the 400 proposals in the window failed
+`duplicate_open_position`, 35 of them on that alone -- candidates refused because the position
+was already held.
+
+**Consequence for today's two fixes.** Passing the policy bar into `validate_trade_proposal` is
+correct hygiene but is a **no-op in production**, because both sides were already 0.70. The
+judge-once change alters the recorded reason, not the outcome -- which is what the original
+entry said before this correction overreached.
+
+**The final gate is the AI reviewer, and it is working correctly.** ALGO reached it and was
+declined with genuine, specific reasoning (conflicting weekly-vs-daily technicals, no breakout
+above resistance, unclear macro regime). That is judgment, not a malfunction.
+
+**The liquidity markdown is volatile and often decisive.** Across two runs minutes apart, DOT
+went 0.8024 -> 0.6524 (a 0.15 markdown) and then to a hard `liquidity_structure_unfavourable`
+veto. It is recomputed each cycle from a live order book, so a candidate's fate genuinely
+changes hour to hour. Measured across all 19 live Kraken GBP books, 10 pairs carry no markdown
+and 9 do, so it discriminates rather than blanketing the venue.
+
+### Correction 1: the track-record doom-loop theory was wrong
+
+The earlier entry today said the 0.10 markdown was "most likely the per-coin track record" and
+that the doom loop was still running. **It is not, for two independent reasons.**
+
+First, `symbol_track_record` was **crashing on every call in production**. Its query filtered on
+a NOT-LIKE against a literal percent sign; psycopg parses that percent as the start of a bind
+placeholder and raises `ProgrammingError` before the query runs. The surrounding bare `except`
+turned the crash into `rows = []`, which is indistinguishable from "this coin has no history".
+So the feature described as "the one input no other trader has" has returned nothing, for every
+coin, for as long as this app has run on Postgres.
+
+Second, even with the query fixed it still returns nothing: the newest row in
+`PERFORMANCE_ATTRIBUTION` is dated **25 August** and the module's cutoff is 31 August, so no row
+qualifies. This also corrects the handoff brief, which states there are "26 closed trades, all
+since the 31 Aug fee fix" — there are no closed trades after 31 August at all.
+
+Fixed both queries with `SUBSTR`, which is valid on SQLite and Postgres alike. The same defect
+was present in `operational.py`'s crypto-category lookup, also silently swallowed. Added
+`tests/test_postgres_like_placeholder_guard.py`, a repo-wide scan that fails if a literal
+percent sign appears inside any LIKE pattern outside the two SQLite-only maintenance modules.
+
+The track-record fix is a correctness fix with **no behaviour change today** — it fails open
+either way. It will begin applying markdowns and `avoid` vetoes once trades close again, which
+is a tightening, not a loosening.
+
+### Correction 2: `broker_policies.kraken.enabled = false` is not a blocker
+
+Worth recording because it looks alarming. Kraken execution reads
+`broker_auto_trading_settings.kraken.auto_trading_enabled`, which is **1**. The
+`broker_policies` flag feeds `policy.broker_enabled`, enforced in exactly one place
+(`orchestrator.py:185`) and bypassed when auto-trade is on. It does not gate the autonomous path.
+
+### Where crypto stands
+
+The mechanical path works. After the bar fix it yields real candidates. What now decides whether
+a trade happens is (a) how many coins clear a 0.70 research bar — 8 of 19 today, and the whole
+scored universe of 60-plus symbols peaks at 0.80 — (b) a volatile order-book markdown, and
+(c) the reviewer's judgment. **None of this reaches production until the fix is deployed;** no
+push has been made.
+
+Validation: **1,397 backend tests plus 21 subtests passed.**
+
+## 2026-09-04 — The confidence bar was being applied twice, with the score cut in between
+
+No Kraken position opened between 25 August and 4 September. The handoff named
+`ai_review_declined` as the last remaining gate; that was wrong. On the 13:19 UTC cycle it
+accounted for 1 of 19 coins. Thirteen were genuinely below the research bar, one failed on
+fees (BTC), one on thin liquidity (ALGO), and **three — FIL, SUI, XRP — cleared the research
+bar and were then refused for having a confidence score below the bar they had just cleared.**
+
+The cause was structural. `propose_crypto_trades` checked the score against the bar, then
+subtracted the track-record and liquidity markdowns, then let `validate_trade_proposal` check
+the *reduced* score against the same bar. A coin passed a test, was marked down, and failed
+the test it had just passed — surfaced as `confidence_below_minimum`, which reads as "the
+research score was too low" when the research score was fine. Every one of the 59
+`guardrails_failed` lines on the worker from 28 August onward named that one failure and
+nothing else; no other guardrail failed once in the window. Only one proposal was generated
+in ten days (AAVE, 28 August), so the drought was a research-stage problem, not execution.
+
+Measured live: FIL scored 0.7479 in research, took a 0.10 markdown, and was refused at 0.6479
+against a 0.70 bar. Reproduced locally before any change — two runs identical but for the
+presence of an order book produced `proposal_generated` and
+`guardrails_failed failures=['confidence_below_minimum']`, with 0.7479 - 0.10 = 0.6479 matching
+production to the digit.
+
+This also contradicted the markdown's own stated design. `MAX_CONFIDENCE_PENALTY` is capped
+precisely so a bad record can "never be the whole decision", but re-applying the bar afterwards
+made any markdown at all a hard veto for any coin within 0.25 of it. It is the third time this
+shape has shipped: `philosophy_fit=confidence` was the same bug, fixed 29 August.
+
+**Fixed (Founder-directed: "judge once, after penalties").** One check, on the final score,
+before the proposal is built. The early check stays and is not a second judgement — markdowns
+only ever lower a score, so a coin already under the bar can never clear it later; it is a cheap
+early exit that saves the order-book and candle calls. The refusal now records
+`penalised_below_confidence_bar` with the raw score, the markdown, and the bar, and is worded
+for the Founder in both decline maps. A refused coin no longer records a proposal that could
+never execute. `validate_trade_proposal` is now passed the same policy bar the research gate
+used, closing a second divergence: it had been falling back to the Render environment variable
+while every other confidence decision reads the database-first policy value.
+
+**This fix does not by itself produce a trade, and was not expected to.** FIL, SUI and XRP are
+genuinely under the bar once marked down. What it removes is the double-count and a rejection
+reason that misdescribed the cause for ten days.
+
+**What is actually holding those coins down — strongly indicated, not yet confirmed.** The 0.10
+markdown is the per-coin track record, not the order book. FIL read exactly 0.6479 for thirteen
+consecutive hours (02:22 to 15:22 UTC) while its live Kraken order book measured *supportive*
+with a zero markdown at 15:00. A book does not hold still for thirteen hours; a win/loss record
+does. `0.25 x (1 - win_rate) = 0.10` puts FIL at a 60% win rate with a net loss. If that is
+right, the track-record doom loop is still running: losing records mark coins down, the markdown
+puts them under the bar, no trade is taken, and the record can never improve. The 31 August
+cutoff narrowed it but did not exit it — all 26 closed trades fall after that cutoff and their
+expectancy is negative. Confirming this needs the `PERFORMANCE_ATTRIBUTION` rows read directly.
+
+One theory tested and **refuted**: that the liquidity markdown blankets the venue rather than
+discriminating. Measured against all 19 live Kraken GBP order books, 10 pairs carry no markdown
+at all and 9 do. It discriminates.
+
+Validation: **1,396 backend tests plus 21 subtests passed** (up 5). The five new tests are in
+`tests/test_crypto_entry_gates.py::ConfidenceJudgedOnceTests`; three of them were confirmed to
+fail against the pre-fix code and pass after, so they pin the fix rather than describe it. Not
+deployed — no push was made, per the standing note that rapid pushes starve the worker's ~15
+minute startup.
+
 ## 2026-08-06 — Supabase Egress and Database Growth Remediation
 
 Production diagnosis measured one normal `/founder-evidence` response at **4,785,850 bytes

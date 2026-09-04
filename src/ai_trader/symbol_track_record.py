@@ -176,8 +176,16 @@ def symbol_track_record(db_path: Path, symbol: str, *, now: datetime | None = No
                     -- narrows here on the rows that ARE ISO-dated.
                     SELECT symbol, profit_loss, COALESCE(closed_at, created_at)
                     FROM PERFORMANCE_ATTRIBUTION
+                    -- 2026-09-04: this was a NOT-LIKE against a literal percent sign, and it
+                    -- CRASHED on Postgres.
+                    -- psycopg reads the % as the start of a placeholder and raises
+                    -- ProgrammingError before the query ever runs. The bare `except` below
+                    -- then swallowed it, so this function returned zero trades for every
+                    -- coin, on every call, for as long as the app has run on Postgres --
+                    -- silently, and indistinguishably from "this coin has no history".
+                    -- SUBSTR expresses the same test and is valid on both backends.
                     WHERE COALESCE(closed_at, created_at) >= ?
-                       OR COALESCE(closed_at, created_at) NOT LIKE '20%'
+                       OR SUBSTR(COALESCE(closed_at, created_at), 1, 2) <> '20'
                     """,
                     (window_start,),
                 ).fetchall()

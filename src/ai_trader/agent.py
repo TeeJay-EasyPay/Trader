@@ -704,6 +704,10 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
+            # The score as research measured it, kept so the penalties below can be reported
+            # as what they are -- a markdown off a real number -- rather than vanishing into
+            # a single figure that no longer matches anything the Founder can see.
+            raw_confidence = confidence
             if track_record.confidence_penalty:
                 confidence = max(0.0, round(confidence - track_record.confidence_penalty, 4))
             # 2026-08-24, Founder-directed: where the real money is actually resting, and
@@ -733,6 +737,80 @@ def propose_crypto_trades(
                     continue
                 if liquidity.confidence_penalty:
                     confidence = max(0.0, round(confidence - liquidity.confidence_penalty, 4))
+            # 2026-09-04, Founder-directed (Option B): a thin order book SIZES THE TRADE
+            # DOWN, it does not refuse it.
+            #
+            # WHY. No Kraken position opened between 25 August and 4 September. Every coin
+            # that cleared the 0.70 research bar was then marked down below it by the
+            # order-book penalty and refused. Measured live on 4 September, the markdown
+            # exceeded the coin's ENTIRE headroom above the bar in every single case:
+            #
+            #   DOT  0.8024  headroom 0.1024  markdown 0.1500  refused
+            #   SUI  0.7956  headroom 0.0956  markdown 0.1500  refused
+            #   XLM  0.7759  headroom 0.0759  markdown 0.1633  refused
+            #   ALGO 0.7366  headroom 0.0366  markdown 0.1000  refused
+            #   FIL  0.7279  headroom 0.0279  markdown 0.0800  refused
+            #   XRP  0.7181  headroom 0.0181  markdown 0.1500  refused
+            #
+            # That is a calibration mismatch, not a judgement. The markdown scale runs to
+            # 0.20 while research scores that clear the bar at all only reach about 0.80, so
+            # the most headroom any coin ever has is roughly 0.10. Subtracting a 0-0.20 scale
+            # from a 0-0.10 budget makes any markdown above the mildest tier automatically
+            # fatal, whatever the coin. Since 26 August exactly ONE crypto proposal cleared
+            # guardrails.
+            #
+            # The Founder's reasoning for the fix: thin liquidity is not a prediction that
+            # the price will fall -- the stop loss already covers direction. It means the
+            # EXIT will cost more in slippage. The right response to a cost is to risk less,
+            # not to skip an otherwise-good idea. Sizing is also self-correcting: worse
+            # liquidity buys a smaller position, so less money is exposed to the very
+            # slippage that is the actual threat.
+            #
+            # HOW, and why this needs no new machinery. `conviction_scaled_notional`
+            # (technical_discretion.py, called from foundation.calculate_capital_allocation)
+            # already sizes every trade between 50% and 100% of the approved ceiling based on
+            # `proposal.confidence_score`. The markdown was ALREADY reaching position size
+            # through that path -- it was simply also crossing the bar and vetoing the trade
+            # on the way. Flooring the marked-down score at the bar keeps the sizing effect
+            # and removes the veto. A coin at the floor takes 50% of the ceiling, which on
+            # this deployment is GBP 25 against a GBP 50 cap -- five times Kraken's real
+            # per-pair minimum (GBP 1.71-4.83 measured across all 19 pairs), so the smaller
+            # size is always still tradeable.
+            #
+            # The hard `avoid` vetoes above are untouched: a genuinely broken book (support
+            # ending 0.0% below the price) still refuses outright. This widens what may be
+            # traded and shrinks what is risked on the marginal ones; it never increases
+            # exposure, because the scaler cannot return more than 100% of a ceiling every
+            # other policy check already approved.
+            marked_down_confidence = confidence
+            confidence = max(min_confidence, marked_down_confidence)
+            total_markdown = round(raw_confidence - marked_down_confidence, 4)
+            if total_markdown > 0:
+                size_fraction = 0.5 + 0.5 * (
+                    (confidence - min_confidence) / (1.0 - min_confidence) if min_confidence < 1.0 else 1.0
+                )
+                audit.record_execution_event(
+                    proposal_id=f"liquidity-sized-{symbol}",
+                    event_type="agent_position_sized_down",
+                    payload={
+                        "symbol": symbol,
+                        "reason": "marked_down_for_execution_risk",
+                        "raw_confidence": raw_confidence,
+                        "marked_down_confidence": marked_down_confidence,
+                        "sizing_confidence": confidence,
+                        "total_markdown": total_markdown,
+                        "track_record_penalty": track_record.confidence_penalty,
+                        "liquidity_penalty": liquidity.confidence_penalty if liquidity is not None else 0.0,
+                        "approx_size_fraction": round(size_fraction, 4),
+                    },
+                )
+                print(
+                    f"[crypto-research] symbol={symbol} stage=sizing raw={raw_confidence:.4f} "
+                    f"markdown={total_markdown:.4f} sizing_confidence={confidence:.4f} "
+                    f"size~{size_fraction:.0%} (was a refusal before 2026-09-04)",
+                    flush=True,
+                )
+
             quantity = sized_notional / price if price > 0 else 0.0
             risk_amount = quantity * abs(price - stop_loss)
             risk_percentage = risk_amount / account.equity if account.equity > 0 else 0.0
@@ -801,6 +879,14 @@ def propose_crypto_trades(
                 # system opened, and must not block it from entering. See
                 # guardrails.validate_trade_proposal for the measured effect.
                 ai_managed_symbols=_ai_managed_symbols(db_path, "kraken"),
+                # 2026-09-04: pass the SAME bar the check above used. Without this the
+                # guardrail silently fell back to config.min_confidence_score -- the Render
+                # environment variable -- while every other confidence decision in this path
+                # reads the database-first policy value (decision_registry's min_ai_confidence
+                # resolves INVESTMENT_POLICY -> GUARDRAIL_ENV -> 0.75). Two homes for one
+                # number is the defect the 2 September registry work exists to remove, and
+                # this call site was still on the old one. orchestrator.py already does this.
+                min_confidence_score=min_confidence,
             )
             proposal = replace(
                 proposal,

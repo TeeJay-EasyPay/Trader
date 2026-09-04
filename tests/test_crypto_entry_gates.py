@@ -3,9 +3,11 @@ four deterministic gates layered onto propose_crypto_trades's entry heuristic.
 See agent.py's module-level comment for why these are plain constants rather
 than settings-plumbed config, and the four CRYPTO_* constants themselves."""
 
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -328,6 +330,154 @@ class VolatilityScaledStopTests(unittest.TestCase):
             self.assertGreaterEqual(calm_distance, 0.015,
                                     "no stop may sit inside the noise floor -- a 0.4% stop is what "
                                     "blocked crypto for a week")
+
+
+class ConfidenceJudgedOnceTests(unittest.TestCase):
+    """2026-09-04: the confidence bar must be applied ONCE, on the final score.
+
+    No Kraken position opened between 25 August and 4 September. The bar was being
+    checked before the track-record/liquidity penalties and again after, so a coin
+    passed on its raw research score, was marked down, and then failed the same bar --
+    surfacing as `confidence_below_minimum`, which reads as "the research score was too
+    low" when it was fine. Live on 4 September: FIL scored 0.7479 in research, took a
+    0.10 markdown for thin bid support, and was refused at 0.6479 against a 0.70 bar.
+
+    This is the third time this shape has shipped (philosophy_fit=confidence was the
+    same bug, fixed 29 August), hence a test rather than only a fix.
+    """
+
+    PRICE = 100.0
+
+    class _Adapter:
+        """Mid-range price so the 24h-range gate stays out of the way."""
+
+        def __init__(self, price: float, *, with_book: bool, broken_book: bool = False):
+            self.price = price
+            self.broken_book = broken_book
+            if with_book:
+                self.order_book = self._order_book
+
+        def current_prices(self, pairs):
+            return {pairs[0]: {"c": [str(self.price), "1.0"], "h": ["105.0", "110.0"],
+                               "l": ["95.0", "90.0"], "o": "100.0"}}
+
+        def _order_book(self, pair):
+            """Real support to 2.0% down and a cliff beneath it -> 'caution', 0.10 penalty.
+            broken_book instead leaves nothing under the price at all -> 'avoid'."""
+            if self.broken_book:
+                return {
+                    "bids": [[str(self.price * 0.999), "0.01", 0]],
+                    "asks": [[str(self.price * (1 + d / 100.0)), "100.0", 0] for d in (0.5, 1.0, 1.5)],
+                }
+            bids = [[str(self.price * (1 - d / 100.0)), "100.0", 0] for d in (0.5, 1.0, 1.5, 2.0)]
+            bids += [[str(self.price * (1 - d / 100.0)), "0.01", 0] for d in (2.5, 3.0, 3.5, 4.0)]
+            asks = [[str(self.price * (1 + d / 100.0)), "100.0", 0] for d in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)]
+            return {"bids": bids, "asks": asks}
+
+    def _run(self, *, with_book: bool, raw_score: float = 0.7479, bar: float = 0.70,
+             guardrail_bar: float | None = None, broken_book: bool = False):
+        """Returns (proposals, no_trade_reasons, proposal_rows_recorded)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            audit = AuditDatabase(db_path, None)
+            record_crypto_research_score(
+                db_path,
+                symbol="BTC",
+                category="Top 20 by market cap",
+                metrics={
+                    "technical_trend_score": 0.75,
+                    "momentum_score": 0.6,
+                    "volatility": 0.2,
+                    "liquidity": 0.8,
+                    "risk_score": 0.8,
+                    "overall_due_diligence_score": raw_score,
+                    "confidence_score": raw_score,
+                },
+                source="test",
+            )
+            proposals = propose_crypto_trades(
+                db_path,
+                self._Adapter(self.PRICE, with_book=with_book, broken_book=broken_book),
+                ["BTC"],
+                AccountContext(equity=1000, daily_realized_pnl=0, open_positions=[], is_paper=False),
+                GuardrailConfig(
+                    min_confidence_score=bar if guardrail_bar is None else guardrail_bar,
+                    paper_trading_only=False,
+                ),
+                audit,
+                min_confidence=bar,
+                requested_notional=50.0,
+                default_stop_loss_pct=0.02,
+            )
+            with closing(audit.connect()) as conn:
+                reasons = [
+                    json.loads(row[0]).get("reason")
+                    for row in conn.execute(
+                        "SELECT payload_json FROM execution_events "
+                        "WHERE event_type IN ('agent_no_trade', 'agent_position_sized_down')"
+                    )
+                ]
+                recorded = conn.execute(
+                    "SELECT COUNT(*) FROM trade_audit "
+                    "WHERE symbol = 'BTC' AND event_type = 'agent_proposal'"
+                ).fetchone()[0]
+            return proposals, reasons, recorded
+
+    def test_a_coin_clearing_the_bar_with_no_penalty_still_proposes(self):
+        """The control: without an order book there is no markdown, so it must trade."""
+        proposals, _, _ = self._run(with_book=False)
+        self.assertEqual(len(proposals), 1)
+
+    def test_a_markdown_that_crosses_the_bar_now_sizes_down_instead_of_refusing(self):
+        """Option B, Founder-directed 2026-09-04. 0.7479 - 0.10 = 0.6479 is under the 0.70
+        bar, and until today that refused the trade outright -- which is what stopped every
+        Kraken entry between 25 August and 4 September.
+
+        A thin order book is a reason to risk LESS, not a reason to skip a good idea: the
+        stop loss already covers direction, and thin liquidity costs money on the exit. So
+        the coin must now trade, and its sizing confidence must be floored at the bar rather
+        than dropped below it.
+        """
+        proposals, reasons, _ = self._run(with_book=True)
+        self.assertEqual(len(proposals), 1, f"markdown must size down, not veto; reasons={reasons}")
+        self.assertAlmostEqual(proposals[0].confidence_score, 0.70, places=6,
+                               msg="a marked-down coin sizes at the floor, not below it")
+        self.assertNotIn("penalised_below_confidence_bar", reasons)
+
+    def test_the_markdown_is_recorded_even_though_it_no_longer_refuses(self):
+        """The discount must stay visible. It changes how much real money is committed, so
+        it cannot become an invisible adjustment inside the sizing maths."""
+        _, reasons, _ = self._run(with_book=True)
+        self.assertIn("marked_down_for_execution_risk", reasons)
+
+    def test_a_genuinely_broken_order_book_is_still_refused_outright(self):
+        """Option B widens what may be traded; it does not remove the hard veto. A book with
+        no real bid support beneath the price at all is still a no."""
+        proposals, reasons, _ = self._run(with_book=True, broken_book=True)
+        self.assertEqual(proposals, [])
+        self.assertIn("liquidity_structure_unfavourable", reasons)
+
+    def test_a_penalty_that_does_not_cross_the_bar_still_proposes(self):
+        """The penalty must lower conviction, not act as a veto. 0.85 - 0.10 = 0.75 is still
+        over the bar, so the coin must survive its markdown -- MAX_CONFIDENCE_PENALTY is
+        capped precisely so a markdown can never be the whole decision."""
+        proposals, _, _ = self._run(with_book=True, raw_score=0.85)
+        self.assertEqual(len(proposals), 1)
+
+    def test_the_guardrail_is_given_the_same_bar_the_research_gate_used(self):
+        """The guardrail used to fall back to GuardrailConfig.min_confidence_score -- the
+        Render environment variable -- while the research gate read the database-first policy
+        value (decision_registry's min_ai_confidence). Where the two disagreed, a coin over
+        the policy bar was silently refused by a stricter copy of the same threshold.
+
+        Here the policy bar is 0.70 and the environment bar is 0.85. A 0.72 coin is over the
+        bar the app actually shows the Founder, so it must trade.
+        """
+        proposals, reasons, _ = self._run(with_book=False, raw_score=0.72, bar=0.70,
+                                          guardrail_bar=0.85)
+        self.assertEqual(len(proposals), 1,
+                         f"refused by a second copy of the bar; reasons={reasons}")
 
 
 if __name__ == "__main__":

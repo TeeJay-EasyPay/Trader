@@ -169,6 +169,7 @@ def _mechanical_decline_summary(rows: list[Any]) -> list[dict[str, Any]]:
         "fee_hurdle_not_cleared": "profit would not have covered Kraken's fees",
         "own_track_record_negative": "our own past trades in it have lost money",
         "liquidity_structure_unfavourable": "order book too thin to trade cleanly",
+        "penalised_below_confidence_bar": "scored well enough, but was marked down below the bar by its own record and the order book",
         "btc_weak_regime": "Bitcoin was weak, so the whole market looked risky",
         "recently_stopped_out": "stopped out of it recently, still cooling off",
         "kraken_pair_unavailable": "not tradeable on Kraken at the time",

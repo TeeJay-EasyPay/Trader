@@ -417,8 +417,13 @@ def seed_kraken_first_universe(db_path: Path, *, always_include: set[str] | None
     try:
         with closing(connect(db_path)) as conn:
             for row in conn.execute(
+                # 2026-09-04: a LIKE against a literal percent sign raised on Postgres
+                # (psycopg parses the percent
+                # as a placeholder even with no parameters bound), and the bare `except`
+                # below turned that into "no labels found". Same defect as the one fixed
+                # in symbol_track_record.py the same day.
                 """SELECT symbol, category FROM CRYPTO_ASSET_MASTER
-                   WHERE category LIKE 'Top 20%'"""
+                   WHERE SUBSTR(category, 1, 6) = 'Top 20'"""
             ).fetchall():
                 category_by_symbol.setdefault(str(row[0]).upper(), str(row[1]))
     except Exception:  # noqa: BLE001 - labels are a nicety, the listing is the substance

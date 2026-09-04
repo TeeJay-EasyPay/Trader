@@ -232,6 +232,7 @@ _DROP_REASONS = {
     "fee_hurdle_not_cleared": "profit would not cover Kraken's fees",
     "own_track_record_negative": "our own past trades in it have lost money",
     "liquidity_structure_unfavourable": "order book too thin to trade cleanly",
+    "penalised_below_confidence_bar": "scored well enough, but marked down below the bar by its own record and the order book",
     "btc_weak_regime": "Bitcoin is weak, so the whole market is risky",
     "recently_stopped_out": "stopped out of it recently, still cooling off",
     "kraken_pair_unavailable": "not tradeable on Kraken right now",
