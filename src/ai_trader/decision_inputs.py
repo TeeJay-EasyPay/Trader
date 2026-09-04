@@ -122,13 +122,18 @@ class InputStatus:
     rows: int          # -1 when the table does not exist at all
     wired: bool
 
+    # A file-backed source counted in "rows" reads as a database table that is fine, which
+    # is the wrong mental model for anyone later asking why it is empty -- they would go
+    # looking for a table that does not exist. Name the unit the source actually has.
+    unit: str = "rows"
+
     @property
     def headline(self) -> str:
         if self.rows < 0:
-            return f"{self.name}: NOT WIRED - table {self.table} does not exist"
+            return f"{self.name}: NOT WIRED - {self.table} does not exist"
         if self.rows == 0:
             return f"{self.name}: NOT WIRED - {self.table} is empty"
-        return f"{self.name}: ok ({self.rows} rows)"
+        return f"{self.name}: ok ({self.rows} {self.unit})"
 
 
 def _row_count(db_path: Path, table: str) -> int:
@@ -181,6 +186,7 @@ def check_decision_inputs(db_path: Path) -> list[InputStatus]:
                 kind=declared.kind,
                 rows=rows,
                 wired=rows > 0,
+                unit="files" if declared.source == "knowledge_files" else "rows",
             )
         )
     return statuses

@@ -167,6 +167,25 @@ def test_the_startup_report_prints_even_when_everything_is_healthy():
     assert "RUNNING BLIND" not in report
 
 
+def test_the_knowledge_library_is_reported_in_files_not_rows():
+    """It was first logged as "reference_material: ok (7 rows)". Anyone later asking why
+    it was empty would go hunting for a database table that does not exist -- the same
+    wrong-mental-model failure this module exists to prevent."""
+    statuses = {s.name: s for s in check_decision_inputs(_db_with(None))}
+    assert statuses["reference_material"].unit == "files"
+    assert "files" in statuses["reference_material"].headline
+    assert statuses["backtest_evidence"].unit == "rows"
+
+
+def test_the_worker_entry_point_reports_decision_inputs():
+    """2026-09-04: the report was first wired into run_server() only, which is the WEB
+    service. The worker is the process that proposes and reviews trades, so the check
+    was absent from the only process that reads these sources."""
+    source = (Path(__file__).resolve().parents[1] / "src" / "ai_trader" / "cli.py").read_text(encoding="utf-8")
+    marker = source.index('args.command == "run-worker"')
+    assert "startup_report(" in source[marker:marker + 2000], "the worker must report its evidence sources at boot"
+
+
 def test_every_declared_input_names_what_it_feeds():
     """A source listed without a consequence is one nobody will prioritise fixing."""
     for declared in DECISION_INPUTS:

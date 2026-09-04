@@ -19,6 +19,7 @@ from .alpaca import AlpacaCredentials, AlpacaPaperClient, MockAlpacaPaperClient
 from .audit import AuditDatabase
 from .benchmark import BenchmarkIntelligenceDatabase
 from .briefing import generate_daily_briefing, generate_session_brief
+from .decision_inputs import startup_report
 from .config import Settings, load_settings
 from .database import selected_backend
 from .execution import ExecutionEngine
@@ -253,6 +254,15 @@ def main(argv: list[str] | None = None) -> int:
 
         _raise_if_invalid_hosted_runtime(settings)
         service = LocalApiService(settings)
+        # 2026-09-04: this report was first added to run_server() only, which is the WEB
+        # service. The worker is the process that actually proposes and reviews trades, so
+        # the check built to catch a blind evidence source was not running on the process
+        # that reads them -- the exact shape of defect it exists to prevent, committed
+        # while fixing that defect. It belongs on both entry points, not one.
+        try:
+            print(startup_report(settings.db_path), flush=True)
+        except Exception as exc:  # noqa: BLE001 - reporting must never stop the worker booting
+            print(f"[decision-inputs] check failed: {exc}", flush=True)
         # 2026-08-14 incident: nothing in the production run-worker startup path ever called
         # seed_initial_data() -- it only ran once, manually, via the standalone
         # `intelligence-init` CLI command when this deployment was first set up. Editing
