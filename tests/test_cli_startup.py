@@ -72,6 +72,13 @@ def test_api_binds_socket_before_service_initialization(monkeypatch, tmp_path) -
             self.hosted_read_only = False
             self.api_token_configured = False
 
+        def _refresh_ask_context_in_background(self) -> None:
+            # 2026-09-04: run_server warms the Ask evidence at boot so the first
+            # question after a deploy does not time out. This double only exists to
+            # assert the socket binds before service init, so the warm-up is a no-op
+            # here -- but it must EXIST, or the ordering assertion below never runs.
+            return None
+
     monkeypatch.setattr(api, "load_settings", lambda: settings)
     monkeypatch.setattr(api, "configure_logging", lambda output_dir: None)
     monkeypatch.setattr(api, "ThreadingHTTPServer", FakeServer)

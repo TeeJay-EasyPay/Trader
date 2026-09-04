@@ -72,6 +72,7 @@ from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..trade_scorecard import trade_scorecard
 from ..conversations import record_turn, recent_turns
+from ..decision_inputs import startup_report
 from ..decline_reasons import recent_decline_reasons
 from ..intelligence import InvestmentIntelligenceDatabase
 from ..models import AccountContext, Position, TradeProposal, utc_now_iso
@@ -2547,6 +2548,15 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, api_token: str | None 
     # the app right after a deploy is exactly when he asks -- observed on the emulator,
     # where the first question timed out at 55s.
     service._refresh_ask_context_in_background()
+    # 2026-09-04, Founder-directed: "we can't be making these basic misses." An evidence
+    # source that is empty currently produces a polite sentence in the AI's prompt and
+    # nothing anywhere else, so a source that was never wired looks exactly like a
+    # source with nothing to say. Printed unconditionally -- a silent log then means the
+    # check stopped running, rather than everything being fine.
+    try:
+        print(startup_report(settings.db_path), flush=True)
+    except Exception as exc:  # noqa: BLE001 - reporting must never keep the app from booting
+        print(f"[decision-inputs] check failed: {exc}", flush=True)
     if not worker_owns_runtime:
         service.intelligence.seed_initial_data()
         service.benchmark.seed_initial_data()

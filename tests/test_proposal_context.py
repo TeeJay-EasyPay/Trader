@@ -20,7 +20,13 @@ class BuildProposalContextTests(unittest.TestCase):
             db_path = Path(tmp) / "audit.sqlite3"
             context = build_proposal_context(db_path, symbol="ZZZZ", asset_type="stock")
         self.assertIn("No historical analogues", context["historical_analogues"])
-        self.assertIn("No prior backtest", context["backtest_evidence"])
+        # 2026-09-04: this used to assert "No prior backtest", which was the bug rather
+        # than the behaviour. STRATEGY_BACKTEST_RESULTS is empty here (and in
+        # production), so that sentence was emitted for every symbol on every cycle and
+        # read as a finding about the symbol. An unwired source now says so explicitly;
+        # the "No prior backtest on record" wording is reserved for the case where
+        # backtests genuinely exist but none match, which is real information.
+        self.assertIn("BACKTEST EVIDENCE UNAVAILABLE", context["backtest_evidence"])
         self.assertIn("No external intelligence", context["external_intelligence"])
         # position_sizing_discipline.md etc. apply broadly to "stock" -- a
         # brand-new symbol should still get real reference material, since

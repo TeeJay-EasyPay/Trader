@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import connect
+from .decision_inputs import is_wired
 from .experience_engine import find_historical_analogues
 from .knowledge_base import record_knowledge_gap, relevant_excerpts
 from .trading_intelligence import initialize_trading_intelligence_schema
@@ -96,8 +97,20 @@ def _serialize_historical_analogues(analogues: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _serialize_backtest(backtest: dict[str, Any] | None) -> str:
+def _serialize_backtest(backtest: dict[str, Any] | None, *, source_wired: bool = True) -> str:
     if backtest is None:
+        # 2026-09-04: these two cases used to read identically, and the difference
+        # matters more than anything else in this block. "No prior backtest for this
+        # symbol" is a finding -- it says something about the symbol. But
+        # STRATEGY_BACKTEST_RESULTS has held zero rows since it was created, so the
+        # same sentence was being emitted for every symbol, forever, and the model
+        # was reading a missing pipe as evidence of absence. Say which one it is.
+        if not source_wired:
+            return (
+                "BACKTEST EVIDENCE UNAVAILABLE: this system holds no backtest results for any "
+                "symbol, so the absence says nothing about this trade. Do not treat it as a "
+                "negative signal; treat this input as missing."
+            )
         return "No prior backtest on record for this symbol/strategy."
     return (
         f"Most recent backtest ({backtest.get('created_at')}, {backtest.get('trades')} trades): "
@@ -107,8 +120,18 @@ def _serialize_backtest(backtest: dict[str, Any] | None) -> str:
     )
 
 
-def _serialize_knowledge(excerpts: list[dict[str, Any]]) -> str:
+def _serialize_knowledge(excerpts: list[dict[str, Any]], *, source_wired: bool = True) -> str:
     if not excerpts:
+        # Same distinction as _serialize_backtest. The knowledge-base tables do not
+        # exist in production at all, so "no matching reference material for this
+        # asset type" was describing a library that was never built as though it were
+        # a library that had been searched.
+        if not source_wired:
+            return (
+                "REFERENCE MATERIAL UNAVAILABLE: the curated knowledge base is not populated in "
+                "this deployment, so nothing was searched. This is a missing input, not a "
+                "finding about this asset type."
+            )
         return "No matching curated reference material for this asset type/sector."
     blocks = []
     for entry in excerpts:
@@ -201,9 +224,15 @@ def build_proposal_context(
 
     return {
         "historical_analogues": _serialize_historical_analogues(analogues),
-        "backtest_evidence": _serialize_backtest(backtest),
+        # Whether the SOURCE holds anything at all, not just whether it held something
+        # for this symbol -- see the comment in each serializer.
+        "backtest_evidence": _serialize_backtest(
+            backtest, source_wired=is_wired(db_path, "backtest_evidence")
+        ),
         "external_intelligence": _serialize_external_intelligence(db_path, symbol=symbol),
-        "reference_material": _serialize_knowledge(excerpts),
+        "reference_material": _serialize_knowledge(
+            excerpts, source_wired=is_wired(db_path, "reference_material")
+        ),
         "market_forecast": _serialize_market_forecast(db_path, symbol=symbol),
     }
 

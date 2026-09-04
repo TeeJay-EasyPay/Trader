@@ -3944,3 +3944,60 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   learning from running.
 - Kraken entries remain paused when startup reconciliation does not complete;
   no broker permission or trading guardrail was weakened.
+
+## 2026-09-04 - Decision Input Truthfulness and the First Real Backtest
+
+- Founder challenge: "how are we making such basic mistakes here?", after a
+  curated knowledge library and backtest evidence were both found to be absent
+  from the AI's reasoning despite being believed present.
+- Audited all seventeen evidence sources that feed a trade decision against the
+  hosted database rather than inferring availability from source code.
+- Confirmed one genuine gap: `STRATEGY_BACKTEST_RESULTS` holds zero rows.
+- Corrected an incorrect earlier finding in the same session: the curated
+  reference library is NOT missing. It is seven markdown files under
+  `knowledge/`, read from disk rather than from a table, and is reaching the
+  model. A first draft of the new checker looked for a database table and
+  would have reported a working input as missing; the existing suite caught it.
+- Identified the mechanism behind this class of defect. When an evidence source
+  is empty, `proposal_context` writes a sentence into the AI prompt phrased as a
+  finding ("No prior backtest on record for this symbol/strategy"). Because the
+  table has always been empty, that sentence was emitted for every symbol on
+  every cycle and was indistinguishable from a real observation about the coin.
+  A missing pipe and a genuine absence produced identical text.
+- An unwired source now states that it is unwired, and explicitly instructs the
+  model not to treat the absence as a negative signal. The original wording is
+  retained for the case where the source holds data but none matches, which is
+  real information.
+- Added `decision_inputs.py`: every evidence source declared once, checked where
+  it actually lives (table or knowledge files), and reported at every worker
+  boot whether or not anything is wrong, so a silent log means the check itself
+  stopped rather than that all is well.
+- Added `backtest.py`: replays the live crypto entry rules over stored daily
+  candles at the measured 1.54% round-trip Kraken fee. Three deliberately
+  pessimistic modelling choices - real fees, stop-first when one bar spans both
+  stop and target, and no lookahead - because a backtest that flatters the
+  strategy is worse than none once the model begins citing it.
+- Replay window is limited to 47 days, not the two years of candles held. The
+  entry rules read stored research scores rather than candles, and only 47 days
+  of scores are retained. Extending backwards requires recomputing historical
+  scores and validating them against the retained ones first.
+- First result, 385 replayed trades across 19 Kraken pairs: 44% win rate,
+  -0.65R expectancy after fees. Buy-and-hold over the identical window averaged
+  +20.2% (BTC +23.8%, ETH +30.8%, SOL +32.6%), so the loss is not attributable
+  to market conditions.
+- Two findings recorded for decision: raising the confidence bar makes results
+  worse (0.60 -> -0.46R, 0.80 -> -0.63R), indicating the due-diligence score is
+  anti-predictive over this window; and no reward:risk setting between 1.0 and
+  5.0 reaches break-even.
+- Results were deliberately NOT written to `STRATEGY_BACKTEST_RESULTS`. The AI
+  reviewer reads that table, and negative expectancy would cause it to veto
+  every candidate, recreating the track-record doom loop that halted crypto
+  trading for a week. Founder decision required before the model is given the
+  verdict.
+- Complete Python suite passed 1,373 tests, plus 21 subtests. Thirty-one tests
+  are new across the two modules.
+- No broker permission, risk limit, allocation limit, stop, target, confidence
+  threshold or governance gate was changed. The additions are measurement and
+  reporting only.
+- Not yet deployed. A push restarts the worker into a fifteen-minute startup,
+  so this is being held to bundle with the pending model-tier change.
