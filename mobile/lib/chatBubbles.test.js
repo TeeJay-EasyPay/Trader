@@ -104,3 +104,54 @@ test('the server role name survives normalisation', () => {
   assert.equal(normalizeTurn({ role: 'assistant', text: 'x' }).role, 'assistant');
   assert.equal(normalizeTurn({ role: 'user', text: 'x' }).role, 'founder');
 });
+
+test('the newest exchange appears first', () => {
+  // 2026-09-04, Founder-directed: "the newest should be at the top... I don't have to scroll
+  // all the way down to see the answer."
+  const { newestExchangesFirst } = require('./chatBubbles');
+  const turns = mergeTurns([
+    { turn_id: 1, role: 'founder', text: 'older question' },
+    { turn_id: 2, role: 'assistant', text: 'older answer' },
+    { turn_id: 3, role: 'founder', text: 'newer question' },
+    { turn_id: 4, role: 'assistant', text: 'newer answer' },
+  ], []);
+  const exchanges = newestExchangesFirst(turns);
+  assert.equal(exchanges[0][0].text, 'newer question');
+  assert.equal(exchanges[1][0].text, 'older question');
+});
+
+test('within an exchange the question still sits above its answer', () => {
+  // Reversing the individual turns instead of the exchanges would put every reply above the
+  // thing it replies to, which reads as nonsense.
+  const { newestExchangesFirst } = require('./chatBubbles');
+  const turns = mergeTurns([
+    { turn_id: 1, role: 'founder', text: 'the question' },
+    { turn_id: 2, role: 'assistant', text: 'the answer' },
+  ], []);
+  assert.deepEqual(newestExchangesFirst(turns)[0].map((t) => t.text), ['the question', 'the answer']);
+});
+
+test('an acknowledgement stays attached to the question that produced it', () => {
+  // "let me check that" arrives before the real answer; both belong to the same exchange.
+  const { newestExchangesFirst } = require('./chatBubbles');
+  const turns = mergeTurns([], [
+    { role: 'founder', text: 'am I up' },
+    { role: 'assistant', text: 'Let me check that.', pending: true },
+    { role: 'assistant', text: 'Yes, up 79 pounds.' },
+  ]);
+  const exchanges = newestExchangesFirst(turns);
+  assert.equal(exchanges.length, 1);
+  assert.equal(exchanges[0].length, 3);
+});
+
+test('an answer with no question before it does not crash the grouping', () => {
+  const { newestExchangesFirst } = require('./chatBubbles');
+  const turns = mergeTurns([{ turn_id: 1, role: 'assistant', text: 'orphan answer' }], []);
+  assert.equal(newestExchangesFirst(turns).length, 1);
+});
+
+test('an empty conversation produces no exchanges', () => {
+  const { newestExchangesFirst } = require('./chatBubbles');
+  assert.deepEqual(newestExchangesFirst([]), []);
+  assert.deepEqual(newestExchangesFirst(null), []);
+});

@@ -284,6 +284,24 @@ export const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
   },
+  // 2026-09-04, Founder-directed: "the conversations and the questions and answers should also
+  // be scrollable because this list is gonna get long, and it's gonna be very tedious scrolling
+  // up and down the screen."
+  //
+  // A fixed height, not maxHeight: on Android a nested ScrollView with no height of its own
+  // grows to fit its content and never scrolls, which is the bug this is meant to fix. 420
+  // shows roughly one full exchange, so the newest answer is readable without the card taking
+  // over the screen.
+  askConversationScroll: {
+    height: 420,
+    marginTop: 4,
+  },
+  chatExchange: {
+    marginBottom: 10,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eef1f6',
+  },
   brokerStandingBlock: { marginTop: 14 },
   cardTitle: {
     fontSize: 16,

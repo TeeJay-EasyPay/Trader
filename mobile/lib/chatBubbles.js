@@ -100,7 +100,28 @@ function mergeTurns(stored, live) {
   return out;
 }
 
+// 2026-09-04, Founder-directed: "the newest should be at the top... that way every time I ask a
+// question I don't have to scroll all the way down to see the answer. And then if I want to ask
+// a follow-up question, scroll all the way back up to ask a question."
+//
+// The EXCHANGES are reversed, not the individual turns. Within one exchange the question must
+// still sit above its answer, or the reply appears before the thing it replies to and the whole
+// card becomes unreadable. So: newest exchange first, and question-then-answer inside each.
+function newestExchangesFirst(turns) {
+  const exchanges = [];
+  for (const turn of turns || []) {
+    // A founder turn starts a new exchange; anything else belongs to the one in progress.
+    if (turn.role === 'founder' || exchanges.length === 0) {
+      exchanges.push([turn]);
+    } else {
+      exchanges[exchanges.length - 1].push(turn);
+    }
+  }
+  return exchanges.reverse();
+}
+
 module.exports = {
+  newestExchangesFirst,
   isFounder,
   bubbleAlignment,
   bubbleColours,

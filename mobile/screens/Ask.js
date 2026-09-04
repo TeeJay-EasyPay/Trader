@@ -10,7 +10,7 @@
 
 const React = require('react');
 const { useState } = React;
-const { Text, TextInput, View } = require('react-native');
+const { ScrollView, Text, TextInput, View } = require('react-native');
 const { styles } = require('../styles');
 const { Section, Metric, Button } = require('../components/shared');
 const { withTimeout, normalizeChatText, chatMessageText, chatTurnsNewestFirst } = require('../lib/chat');
@@ -56,7 +56,7 @@ function loadAudioModules() {
 
 const { micButtonLabel, micButtonAccessibilityLabel, thinkingFrame, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
-const { mergeTurns, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
+const { mergeTurns, newestExchangesFirst, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
 const { askStatusLine, isModelAnswer } = require('../lib/askStatus');
 
 
@@ -354,11 +354,29 @@ function AskAiTrader({ messages, setMessages, request }) {
                 the AI replies the reply should be on the left."
                 The label is gone because position and colour already say who spoke -- it was a
                 caption explaining something the eye had understood. See lib/chatBubbles. */}
-            {mergeTurns(storedTurns, messages).map((turn) => (
-              <View key={turn.key} style={bubbleStyle(turn)}>
-                <Text style={bubbleTextStyle(turn)} selectable>{chatMessageText(turn.text)}</Text>
-              </View>
-            ))}
+            {/* 2026-09-04, Founder-directed: "the newest should be at the top... I don't have
+                to scroll all the way down to see the answer. And then if I want to ask a
+                follow-up question, scroll all the way back up." Newest EXCHANGE first, with
+                the question still above its own answer inside each one.
+
+                And in its own scroll area: "this list is gonna get long, and it's gonna be
+                very tedious scrolling up and down the screen." nestedScrollEnabled is required
+                on Android for a ScrollView inside a ScrollView to receive the gesture at all. */}
+            <ScrollView
+              style={styles.askConversationScroll}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+            >
+              {newestExchangesFirst(mergeTurns(storedTurns, messages)).map((exchange, index) => (
+                <View key={exchange[0].key || `exchange-${index}`} style={styles.chatExchange}>
+                  {exchange.map((turn) => (
+                    <View key={turn.key} style={bubbleStyle(turn)}>
+                      <Text style={bubbleTextStyle(turn)} selectable>{chatMessageText(turn.text)}</Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </ScrollView>
           </View>
         ) : null}
       </Section>
