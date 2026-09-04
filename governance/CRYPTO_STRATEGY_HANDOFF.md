@@ -9,6 +9,31 @@ it does not, that is a more valuable result than agreeing.
 
 ---
 
+## 0. START HERE - added after the rest of this brief was written
+
+**No new Kraken position has been opened since 25 August. Ten days, zero entries.**
+
+The outgoing session got this wrong twice in one day and the correction matters. It saw
+26 trades with September close dates and read that as trading resuming. Those trades were
+all OPENED between 11 and 20 August and closed within a ten-minute window during a worker
+restart on 4 September. That is reconciliation clearing a backlog, not the system
+entering positions. Exits work. Entries do not.
+
+So answer this before anything else:
+
+> **What stops a Kraken entry today?** Take one candidate through the whole path and find
+> where it dies. The last known gate was `ai_review_declined`, the LLM reviewer choosing
+> not to trade - but that was observed, not confirmed as the current cause, and this
+> system has a documented history of layered blockers where fixing one reveals another.
+
+This reorders the brief. The backtest finding below is a theory about a strategy that is
+not currently running, so it is worth less than knowing why it is not running. Verify the
+blocker first, the backtest second.
+
+Note also: 8 `logical_trades` rows still store a raw epoch (e.g. `1787150542.70311`)
+rather than an ISO date, despite a backfill on 19 August. Small, but raw epochs break
+date filters silently and this codebase has been bitten by exactly that before.
+
 ## 1. The claim you are testing
 
 A replay of the live crypto entry rules over stored daily candles returned:
@@ -126,10 +151,26 @@ The pattern is asserting before verifying. Whatever else you do, verify first.
 
 ---
 
-## The question to answer
+## The questions to answer, in this order
 
-Not "why isn't crypto trading" - that is largely answered and the remaining gate may be
-correct. The question is:
+The Founder framed these himself, and the framing is correct - one functional, two
+architectural:
+
+1. **Functional, and first: why is no Kraken entry going through?** Ten days, zero new
+   positions. See section 0. Everything else is downstream of this.
+2. **Architectural: how is the AI actually being used?** Today: Kraken gets veto-only
+   review (decline or lower confidence, never authors price, size, stop or target);
+   Alpaca gets full model-authored proposals. Both run `gpt-4.1-mini`, the budget tier,
+   and the equity proposals it authors are rejected for an unusable stop roughly two
+   times in three. The Founder's own challenge is worth carrying: if the model can only
+   veto, a threshold could do the same job - so what is the model actually adding?
+3. **Architectural: is the app getting better?** No mechanism currently makes next month
+   better than this one. One outcome-driven feedback loop exists (the per-coin track
+   record) and it created a doom loop that had to be reversed. `LEARNING_OUTBOX`,
+   `EXPERIENCE_LESSONS` and `STRATEGY_PROMOTION_DECISIONS` are written and read by
+   nothing. There are 26 closed outcomes in total.
+
+And underneath all three:
 
 > **Is this strategy actually losing money, and if so, is it the stops, the entry signal,
 > or the fee structure?**
