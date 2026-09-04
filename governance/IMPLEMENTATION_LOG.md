@@ -3945,6 +3945,267 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
 - Kraken entries remain paused when startup reconciliation does not complete;
   no broker permission or trading guardrail was weakened.
 
+## 2026-07-28 to 2026-07-31 - Autonomous Trading Enabled, Worker Timeout Budgets
+
+- Reconstructed from git history on 2026-09-04. This log lapsed after 27 July
+  while development continued; the entries from here to 3 September were written
+  retrospectively from the commit record and are therefore summaries of what
+  changed, not contemporaneous notes on why each decision was taken.
+- Phase 0 safety gate: exit-order locking, a Postgres schema fix, deduplicated
+  scheduling, timeout root causes and push notifications.
+- AT-ED-002 enabled autonomous Alpaca paper trading and governed live Kraken
+  trading; Phase 1 autonomous intelligence workflows were integrated.
+- Removed redundant inline auto-execution from the worker and restored log
+  visibility.
+- Split broker-poll and auto-execution per broker, and corrected the broker
+  auto-trading status data contract.
+- Guarded Kraken reconciliation seed inserts that were deadlocking across
+  processes.
+- Gave evidence-snapshot, research and equity jobs their own timeout budgets so
+  a single slow job could no longer starve the worker loop.
+- Completed the AT-ED-003 mobile pass across Activity, Recommendations,
+  Portfolio and Learning.
+
+## 2026-08-01 - Guardrail Defects Blocking Every Kraken Trade
+
+- Fixed two guardrail bugs that were permanently blocking every Kraken trade.
+- Added a read-only `GET /broker-decisions` endpoint to expose real rejection
+  reasons rather than inferring them.
+- Added a Founder-override endpoint to release the Kraken entry hold.
+- Cached schema initialisation per process in foundation, production_spine,
+  operational and multi_broker paths - the same defect in four places.
+- Corrected a `research_job_timeout_seconds` default mismatch where 300s was
+  live despite the configured value, then raised research and auto-execution
+  timeouts against measured durations.
+- Added stage-level tracing to auto-execution and recommendation evaluation.
+
+## 2026-08-02 to 2026-08-03 - API and Mobile Modularisation
+
+- Modularisation Stage 0 resolved safety unknowns, fully fixed a schema-reinit
+  bug and added API characterisation tests before any extraction began.
+- Phases 1 to 8 extracted the HTTP handler, query executor, reporting, founder
+  presentation, research, broker, operations, administration and execution
+  services out of the API module.
+- Phase 9 audited compatibility wrappers, shared helpers and dead code.
+- Extracted the mobile `App.js` into `lib/`, `api/` and `components/shared`,
+  then completed per-screen refresh ownership.
+- Root-caused `/status` and `/phase5-status` hanging: unbounded incident writes,
+  not query cost.
+- Hotfix: semicolons inside SQL comments were breaking Postgres schema init.
+
+## 2026-08-04 to 2026-08-05 - Executive Briefing and Forecast Engine
+
+- AT-ED-011 through AT-ED-017 rebuilt the Founder-facing communication layer:
+  the Chief Investment Officer workspace, adaptive forecasting, the Executive
+  Briefing and the Forecast Engine.
+- Fixed an Executive Briefing white-screen production regression and documented
+  its root cause.
+- A sequence of live-review fixes driven by emulator screenshots: raw internal
+  reason codes leaking into Founder-facing text, NaN percentages, double
+  periods, run-together sentences, a double-signed negative total, and 'R'
+  trading jargon shown without explanation.
+- Never show a committee-rejected trade as an opportunity.
+- Stopped blending USD and GBP into a single figure.
+- Fixed Kraken position sizing sitting consistently below the exchange's own
+  minimum order size.
+- Fixed the Kraken daily-loss guardrail comparing whole-account P&L against the
+  AI's isolated equity, which had been blocking every live trade.
+
+## 2026-08-05 to 2026-08-08 - External Intelligence, Knowledge Base, Egress and Retention
+
+- Phase A wired real external market, news and macro data into six intelligence
+  tables that had been declared but never populated.
+- Phase B added the local curated knowledge library and tag-based retrieval.
+- Phase C fed history, backtest, intelligence and knowledge context into the
+  Alpaca proposal call; Phase D added news-coverage scoring for crypto.
+- Shipped a Supabase egress remediation that had been implemented but never
+  deployed.
+- Added Postgres database-size diagnostics, a guarded VACUUM action, and
+  retention for the decision and audit log tables that were the bulk of size.
+- Fixed a retention defect that had deleted all 13,230 `BROKER_TRADE_HISTORY`
+  rows through an epoch-timestamp comparison bug, and a prune routine that
+  deadlocked against live traffic on its first real run.
+- Fixed four compounding bugs that made every Kraken trade after the first
+  unapprovable.
+
+## 2026-08-10 to 2026-08-13 - Exits, Exchange Minimums and Structural Deadlocks
+
+- Fixed Alpaca positions never exiting: bracket exit legs used `day` instead of
+  `gtc`.
+- Added a real close-position capability; no Founder or AI path had existed to
+  exit an Alpaca position.
+- Floored Kraken orders to the real per-pair minimum instead of a flat GBP
+  guess, and corrected the exchange-minimum check so `costmin` and `ordermin`
+  apply together rather than as alternatives.
+- Fixed the two real reasons nothing was trading: a wrong risk denominator, and
+  an inline job that starved itself.
+- Fixed two structural deadlocks stopping autonomous trading on both brokers,
+  and reverted a `BROKER_DECISIONS` early-skip that hung both brokers in
+  production.
+- Reduced egress: auto-execution had been fetching full proposal payloads
+  before cheap filtering, and broker-snapshot fetched 100 rows to use 2.
+
+## 2026-08-14 to 2026-08-16 - Equity Universe, Shariah Screening, and Four Disagreeing Position Caps
+
+- Gave Alpaca real, Shariah-screened US-listed equity candidates to research.
+- Fixed equity research silently evaluating one symbol instead of thirty.
+- Added a real daily trading strategy, decided each morning and tracked to
+  outcome.
+- Fixed Kraken exits stuck forever on a definite API rejection, and the matching
+  entry-side crash.
+- Found and fixed the real cause of Kraken self-locking: three disagreeing
+  "max open positions" values, then a fourth from a stale DB-seeded
+  `RISK_POLICIES` row. This is the defect the September decision registry work
+  was later built to make structurally impossible.
+- Added a nightly job that checks whether rejecting each crypto coin was right.
+- Fixed `/recommendations` opening roughly 75 fresh Postgres connections per
+  request.
+
+## 2026-08-17 to 2026-08-19 - Realised P&L, Trailing Stops and Learning Visibility
+
+- Computed realised P&L that Alpaca's API never reports; Alpaca exits had been
+  showing $0 profit.
+- Fixed `ai_decided` reading true for every legacy trade, the opposite of
+  correct, and separated the AI's own trading record from legacy and manual
+  positions.
+- Added native Kraken trailing-stop orders, and fixed a reconciliation crash
+  that had been silently blocking all learning.
+- Backfilled malformed Kraken epoch timestamps; the write-time fix alone would
+  never have healed the existing rows.
+- Gave evidence-snapshot its own independent schedule, off the shared worker
+  loop.
+
+## 2026-08-20 - CIO-Level Forecasting, Fee-Aware Sizing, and Three Inert Features
+
+- Phases 1 to 7 of CIO-level forecasting: real Kraken OHLC candle ingestion,
+  candle history fed into live trades, the forecast engine itself, the forecast
+  as a genuine trade-selection input, real AI judgment for crypto trades
+  (review-only: veto or lower confidence, never author price, size, stop or
+  target), bounded technical discretion, and the Forecast Centre replaced.
+- Sized crypto from money at risk, and refused trades that cannot pay their own
+  costs.
+- Began tracking the commission actually paid, per leg and per round trip.
+- Added patient maker limit entries to earn Kraken's maker fee - recorded at the
+  time as shipped inert.
+- Fixed three separate features that had shipped inert: the Phase 5.5 technical
+  stop clamped straight back to the flat default, forecast-refresh which had
+  never once completed since it shipped, and an order cap that reported a
+  retired flat fallback rather than the enforced value.
+- Fixed trade sizing computed off a stale GBP 100 ledger.
+- Stopped capping the researched crypto universe at ten coins.
+
+## 2026-08-21 to 2026-08-24 - Fees, Three Screens, and the Ask Timeout
+
+- Lowered crypto trading fees through larger trades and maker-fee limit orders;
+  fixed limit orders being rejected for price precision, which had been blocking
+  every buy.
+- Fixed the GBP 50 sizing increase being inert in production, and made the
+  Kraken order ceiling and limit-entry switch verifiable rather than assumed.
+- Gave crypto its own percentage size guardrail instead of inheriting the
+  equities one, and kept crypto and equities learning as two separate tracks.
+- Added native Alpaca trailing stops, and leverage for the equities track gated
+  behind them.
+- Cut the app to three screens and lightened the palette; deleted the
+  Recommendations and Market screens and the Investment Rhythm card.
+- A sustained effort to make Ask answer inside Render's 60-second proxy timeout:
+  bounded per-broker account paths, priced the whole Kraken wallet in one
+  Ticker call, batched broker trade-history writes, stopped rebuilding broker
+  panels per caller, trimmed the prompt, and added `/timing-diagnostics` so slow
+  paths could be measured rather than guessed at.
+- Stopped one hanging broker taking down every account-backed endpoint.
+- Read the order book and executed tape before entering a crypto trade.
+- Let each coin's own realised record influence whether it is traded again -
+  the mechanism later found to have created a doom loop, corrected 3 September.
+
+## 2026-08-25 to 2026-08-26 - Voice, Model Split, and Trustworthy Measurement
+
+- Voice questions: recorded on the phone, transcribed on the backend, with a
+  live recording indicator and a safer Ask budget.
+- Loaded audio modules on demand and never touched `expo-av` unless the native
+  module was registered, so an older install could not break.
+- Split the model used for judgement from the one used for scanning.
+- Phase 1: make measurement trustworthy before changing behaviour - counted
+  distinct orders rather than the events that compose them, reconciled broker
+  fills into evidence instead of trusting a change detector, and never rendered
+  a governance count that was not measured.
+- Judged a duplicate buy by the AI's own trades rather than the wallet's
+  contents.
+- Stopped the concentration rule blocking the very trades that would fix
+  concentration.
+
+## 2026-08-27 to 2026-08-28 - Crypto Scoring Made Real
+
+- Fixed the bug that had killed every learning run the app ever attempted.
+- Computed the five indicator columns that had never once been populated.
+- Made the crypto score measure something, so the bar to trade could be met on
+  merit; scored crypto hourly from candles the job already fetched, and from
+  Kraken's own candles when CoinGecko went dark.
+- Scored liquidity from Kraken's real order book rather than a CoinGecko ratio,
+  and refused a carried-forward liquidity whose scale is unknowable.
+- Stopped an unmeasured dimension voting zero in the investment score.
+- Stopped the universe bootstrap inventing the research it is meant to seed.
+- Kept stablecoins out of the trading universe.
+- Recorded why each trade opened and closed, instead of a constant.
+
+## 2026-08-29 to 2026-08-30 - Permission Versus Quality, and the Confidence Bar's Four Homes
+
+- Established that permission is membership of a screened universe, not a
+  quality rating, and stopped crypto being permission-gated on its own
+  confidence score. The Shariah screen is now stated as a rule and enforced at
+  permission time.
+- Reduced four gates to two and stopped the crypto flag contradicting itself.
+- Found the confidence bar living in a third home, then a fourth, each blocking
+  crypto trades; Render was made the owner and the code stopped competing.
+- Read drop-reason rows by index rather than tuple unpacking - the Postgres and
+  SQLite row-shape difference that a SQLite-only test suite cannot catch.
+- Run a full cycle on demand from the app, narrated step by step, with the whole
+  plan shown up front and a running cycle visible from every screen.
+
+## 2026-08-31 to 2026-09-01 - Kraken-Built Universe and a Conversational Ask
+
+- Built the crypto universe from Kraken rather than CoinGecko, and scored wider
+  than we trade so "would more coins help?" became answerable.
+- Trade History shows trades, not resting exit orders; status decides whether a
+  row is a trade, not which table it came from.
+- Ask: answers in a second from cold instead of timing out, never waits for an
+  evidence rebuild, strips markdown, answers out loud, and stopped claiming to
+  be read-only when it is not.
+- Each broker gets its own cycle, triggerable independently.
+- Refused trades that are cut off too early or shaped to lose - the minimum stop
+  distance and reward:risk floor.
+
+## 2026-09-01 to 2026-09-03 - The Decision Registry, and Honest Measurement
+
+- P1 to P3: one position cap, a decision registry declaring each trading
+  decision once with an explicit precedence chain, and homes for settings that
+  had existed only in Render.
+- P4: every trading number now resolves through the registry.
+- P5 to P8: one enforcement point, refusals that explain themselves, and the
+  lock.
+- Moved the confidence bar into the database, settled a single position-cap
+  value, and aligned the Kraken pair list.
+- Removed ten tables that were declared, never written and never read.
+- Pointed the excursion measurement at the table that actually holds candles -
+  a fix that was itself first written against an empty table.
+- Read the R-multiples honestly: expectancy, and what fees actually cost.
+- Corrected a materially wrong claim made earlier in the same work: the lever on
+  fee burden is the stop distance, not the position size. Fees and risk both
+  scale with size, so fee_R is identical at GBP 25 and GBP 500.
+- Stopped punishing crypto for losses caused by a defect already fixed - the
+  track-record penalty had created a loop a coin could not escape, because a
+  coin cannot win a trade it is never allowed to take.
+- Stopped Ask inventing an explanation from a section it was never given.
+- Cut the two largest remaining egress sources, and stopped asking the database
+  to describe itself roughly six million times.
+- Rebased the stop on the price actually paid, and abandoned an entry that ran
+  away before filling.
+- Sized each coin's stop from its own volatility rather than a number chosen for
+  a calmer market.
+- Rebuilt the Ask card as a conversation: chat bubbles, a microphone button, a
+  saved transcript, six turns of memory, newest exchange first, and a fix for
+  the rate limit that had been silently replacing every AI answer with a canned
+  readout.
+
 ## 2026-09-04 - Decision Input Truthfulness and the First Real Backtest
 
 - Founder challenge: "how are we making such basic mistakes here?", after a
