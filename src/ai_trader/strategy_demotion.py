@@ -45,13 +45,45 @@ from pathlib import Path
 from typing import Any
 
 from .database import connect
-from .strategy_performance import CONFIDENT_SAMPLE, strategy_records
+from .strategy_performance import strategy_records, strategy_symbol_records
 
-# Expectancy at or below this, on a confident sample, costs a strategy its real-money
-# permission. Zero would demote on the first penny of loss and thrash on noise; -0.25R is a
-# quarter of the risk budget lost per trade on average, which is a genuine verdict rather
-# than a wobble.
-DEMOTION_EXPECTANCY_R = -0.25
+# 2026-09-05, second Founder challenge, and it changed what this module is for.
+#
+# The first version demoted at -0.25R -- underperformance. He pushed back: "shouldn't the AI be
+# able to look at the strategies for a specific trade and say, in the past these strategies
+# worked, these didn't work for this specific coin... if some have been demoted and they don't
+# even come across the desk of the AI, then we're already limiting its knowledge base."
+#
+# He is right, and the evidence is unambiguous. Split by coin, crypto_trend_following_2r runs
+# from -0.15R on BCH to -1.77R on XRP -- a tenfold spread inside a single -1.17R average.
+# Demoting on the average removes the strategy from BCH, where it nearly breaks even, on the
+# strength of what it did to XRP. The option never reaches the model, so the model can never
+# make the judgement it exists to make.
+#
+# It was also inconsistent with a decision already taken. On the liquidity question the Founder
+# and I agreed a thin order book should SIZE A TRADE DOWN rather than veto it, because a
+# mechanical gate discarding a good idea is worse than a smaller position. This module then
+# built a mechanical veto one layer up. Same mistake, and he caught it twice.
+#
+# So demotion is no longer a performance judgement. It is a catastrophic backstop, and the bar
+# is deliberately at -1.0R: losing MORE than the money the trade said it would risk, on
+# average. That is not underperformance, it is the risk model failing to hold -- stops not
+# containing losses -- and it is the one case where a bound that does not depend on the model
+# behaving is worth having.
+#
+# Preference now belongs to the model (Phase 5): it sees every strategy with its per-coin
+# record and chooses, and position sizing carries the risk rather than a veto.
+DEMOTION_EXPECTANCY_R = -1.0
+
+# Catastrophe needs a bigger sample than underperformance did. 30 was enough to notice a
+# strategy was weak; taking a permission away entirely should need more.
+CATASTROPHIC_SAMPLE = 50
+
+# If ANY coin with a meaningful sample is doing acceptably, the strategy is not broken -- it is
+# being used on the wrong coins, which is a selection problem for the model, not grounds for
+# removing the tool. This is the Founder's BCH point expressed as a rule.
+COIN_RESCUE_EXPECTANCY_R = -0.5
+COIN_RESCUE_MINIMUM_SAMPLE = 10
 
 # 2026-09-05, Founder challenge, and it caught a real defect in the first version of this
 # module: "does it ever get promoted again? otherwise we end up having just one or two
@@ -121,6 +153,13 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
     inspected before it changes what trades.
     """
     records = strategy_records(db_path, window_days=EVALUATION_WINDOW_DAYS)
+    per_coin = strategy_symbol_records(db_path, window_days=EVALUATION_WINDOW_DAYS)
+    # Real money gives at most a dozen closed trades per strategy/coin pair -- far too thin for
+    # the rescue test below to ever fire. Settled shadow trades give hundreds, and that is where
+    # the per-coin picture that the Founder is asking about actually lives.
+    from .shadow_outcomes import shadow_symbol_records
+
+    per_coin_shadow = shadow_symbol_records(db_path, window_days=EVALUATION_WINDOW_DAYS)
     if not records:
         return {"status": "stood_down",
                 "reason": "no trustworthy outcome record, so nothing is demoted",
@@ -145,16 +184,54 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
     try:
         with closing(connect(db_path)) as conn:
             for strategy_id, record in records.items():
-                if record.verdict != "confident" or record.sample_size < CONFIDENT_SAMPLE:
+                if record.sample_size < CATASTROPHIC_SAMPLE:
                     continue
                 if record.expectancy_r is None or record.expectancy_r > DEMOTION_EXPECTANCY_R:
                     continue
+                # Read the registry before the rescue test, because the hold record below needs
+                # the strategy's current stage too.
                 row = conn.execute(
                     "SELECT current_stage, permitted_modes_json FROM STRATEGY_MATURITY_REGISTRY "
                     "WHERE strategy_id = ?",
                     (strategy_id,),
                 ).fetchone()
                 if row is None:
+                    continue
+                # The Founder's BCH point as a rule: if the strategy still works acceptably on
+                # any coin with a real sample, it is not broken -- it is being pointed at the
+                # wrong coins, and that is the model's job to fix, not grounds for taking the
+                # tool away everywhere.
+                rescued_by = sorted({
+                    symbol for (sid, symbol), coin_record in per_coin.items()
+                    if sid == strategy_id
+                    and coin_record.sample_size >= COIN_RESCUE_MINIMUM_SAMPLE
+                    and coin_record.expectancy_r is not None
+                    and coin_record.expectancy_r > COIN_RESCUE_EXPECTANCY_R
+                } | {
+                    symbol for (sid, symbol), stats in per_coin_shadow.items()
+                    if sid == strategy_id
+                    and stats["sample_size"] >= COIN_RESCUE_MINIMUM_SAMPLE
+                    and stats["expectancy_r"] > COIN_RESCUE_EXPECTANCY_R
+                })
+                if rescued_by:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO STRATEGY_PROMOTION_DECISIONS (
+                                created_at, strategy_id, current_stage, proposed_stage, decision,
+                                evidence_gate_status, reason, payload_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (now, strategy_id, str(row[0]), str(row[0]), "hold",
+                             "catastrophic_in_aggregate_but_workable_on_some_coins",
+                             f"{strategy_id} averages {record.expectancy_r:+.2f}R overall, but "
+                             f"still performs acceptably on {', '.join(sorted(rescued_by))}. It is "
+                             f"being applied to the wrong coins rather than being broken, so the "
+                             f"tool is kept and the choice is left to selection.",
+                             json.dumps({"expectancy_r": record.expectancy_r,
+                                         "sample_size": record.sample_size,
+                                         "workable_on": sorted(rescued_by)}, sort_keys=True)),
+                        )
                     continue
                 try:
                     modes = [str(m) for m in (json.loads(row[1] or "[]") or [])]
@@ -240,7 +317,18 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
                                          "sample_size": demotion.sample_size,
                                          "win_rate": demotion.win_rate,
                                          "net_profit_loss": round(demotion.net_profit_loss, 2),
-                                         "threshold_expectancy_r": DEMOTION_EXPECTANCY_R},
+                                         "threshold_expectancy_r": DEMOTION_EXPECTANCY_R,
+                                         # Founder-directed: a catastrophic demotion is a
+                                         # finding, not a filing. Something has to explain what
+                                         # made it catastrophic and over what span, or the same
+                                         # failure is simply repeated by the next strategy.
+                                         "post_mortem_required": True,
+                                         "post_mortem_questions": [
+                                             "what made this catastrophic rather than merely weak",
+                                             "over how many trades and how long did it degrade",
+                                             "was it the entry signal, the stop, or the fees",
+                                             "which coins and regimes drove it",
+                                         ]},
                                         sort_keys=True)),
                         )
     except Exception as exc:  # noqa: BLE001 - a failed review must never stop the worker

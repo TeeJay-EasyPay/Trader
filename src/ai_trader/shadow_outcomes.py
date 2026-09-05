@@ -260,6 +260,47 @@ def shadow_strategy_records(db_path: Path, *, window_days: int = 45) -> dict[str
     }
 
 
+def shadow_symbol_records(db_path: Path, *, window_days: int = 45) -> dict[tuple[str, str], dict[str, Any]]:
+    """Settled shadow results split by strategy AND coin, keyed (strategy, symbol).
+
+    This is where the per-coin picture actually has coverage. Real money gives at most a dozen
+    closed trades for any one strategy/coin pair -- too thin to judge -- while settled shadow
+    trades give hundreds. Measured 2026-09-05: crypto_trend_following_2r ran -0.15R on BCH over
+    43 candidates against -1.77R on XRP over 165, which is the spread that makes judging the
+    strategy on its average wrong.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    grouped: dict[tuple[str, str], list[float]] = {}
+    try:
+        with closing(connect(db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT strategy, symbol, estimated_net_r, created_at FROM SHADOW_TRADES
+                WHERE outcome_status <> 'pending' AND estimated_net_r IS NOT NULL
+                """
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    for row in rows:
+        stamp = _parse_stamp(row[3])
+        if stamp is not None and stamp < cutoff:
+            continue
+        strategy = str(row[0] or "").strip()
+        symbol = str(row[1] or "").strip().upper()
+        value = _as_float(row[2])
+        if strategy and symbol and value is not None:
+            grouped.setdefault((strategy, symbol), []).append(value)
+    return {
+        key: {
+            "sample_size": len(values),
+            "expectancy_r": round(sum(values) / len(values), 4),
+            "win_rate": round(sum(1 for v in values if v > 0) / len(values), 4),
+            "basis": "shadow_simulation",
+        }
+        for key, values in grouped.items()
+    }
+
+
 def _as_float(value: Any) -> float | None:
     try:
         return float(value)

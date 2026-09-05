@@ -97,7 +97,8 @@ def _float(value: Any) -> float | None:
     return result
 
 
-def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[str, StrategyRecord]:
+def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
+                      by_symbol: bool = False) -> dict[Any, StrategyRecord]:
     """Per-strategy live results, or {} when the outcome record cannot be trusted.
 
     `window_days` judges a strategy on the market it is actually in rather than on its whole
@@ -119,7 +120,7 @@ def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[s
             outcomes = conn.execute(
                 """
                 SELECT proposal_id, profit_loss, entry_price, exit_price, quantity,
-                       closed_at, created_at
+                       closed_at, created_at, symbol
                 FROM PERFORMANCE_ATTRIBUTION
                 """
             ).fetchall()
@@ -161,12 +162,13 @@ def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[s
         if strategy_id:
             context[row[0]] = (strategy_id, _float(proposal.get("stop_loss")))
 
-    grouped: dict[str, list[tuple[float, float | None]]] = {}
+    grouped: dict[Any, list[tuple[float, float | None]]] = {}
     for row in outcomes:
         linked = context.get(row[0])
         if not linked:
             continue
         strategy_id, stop_loss = linked
+        key = (strategy_id, str(row[7] or "").upper()) if by_symbol else strategy_id
         profit_loss = _float(row[1])
         if profit_loss is None:
             continue
@@ -178,12 +180,13 @@ def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[s
             distance = abs(entry - stop_loss) * quantity
             # The floor, not merely > 0: see MINIMUM_RISK_FOR_R.
             risk = distance if distance >= MINIMUM_RISK_FOR_R else None
-        grouped.setdefault(strategy_id, []).append(
+        grouped.setdefault(key, []).append(
             (profit_loss, (profit_loss / risk) if risk else None)
         )
 
-    records: dict[str, StrategyRecord] = {}
-    for strategy_id, entries in grouped.items():
+    records: dict[Any, StrategyRecord] = {}
+    for key, entries in grouped.items():
+        strategy_id = key[0] if by_symbol else key
         sample = len(entries)
         wins = sum(1 for profit_loss, _r in entries if profit_loss > 0)
         net = sum(profit_loss for profit_loss, _r in entries)
@@ -194,7 +197,7 @@ def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[s
             verdict = "provisional"
         else:
             verdict = "confident"
-        records[strategy_id] = StrategyRecord(
+        records[key] = StrategyRecord(
             strategy_id=strategy_id,
             sample_size=sample,
             wins=wins,
@@ -207,6 +210,24 @@ def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[s
             verdict=verdict,
         )
     return records
+
+
+def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[str, StrategyRecord]:
+    """Live results per strategy, across every coin."""
+    return _grouped_outcomes(db_path, window_days=window_days, by_symbol=False)
+
+
+def strategy_symbol_records(db_path: Path, *, window_days: int | None = None) -> dict[tuple[str, str], StrategyRecord]:
+    """Results split by strategy AND coin, keyed (strategy_id, symbol).
+
+    Founder-raised 2026-09-05: "shouldn't the AI be able to look at the strategies for a
+    specific trade and say, in the past these strategies worked, these didn't work for this
+    specific coin." An aggregate hides exactly that. Measured the same day on settled shadow
+    trades, crypto_trend_following_2r ranged from -0.15R on BCH to -1.77R on XRP -- a tenfold
+    spread inside one -1.17R average. Judging the strategy on the average removes it from BCH
+    on the strength of what it did to XRP.
+    """
+    return _grouped_outcomes(db_path, window_days=window_days, by_symbol=True)
 
 
 def historical_statistics_for(db_path: Path, strategy_id: str) -> dict[str, Any] | None:

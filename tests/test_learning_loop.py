@@ -31,6 +31,7 @@ from ai_trader.learning_readiness import (
     assess_learning_readiness,
 )
 from ai_trader.strategy_demotion import (
+    CATASTROPHIC_SAMPLE,
     DEMOTION_EXPECTANCY_R,
     EVALUATION_WINDOW_DAYS,
     MINIMUM_LIVE_STRATEGIES,
@@ -194,8 +195,11 @@ class StrategyDemotionTests(unittest.TestCase):
             # Enough other live strategies that the erosion floor is not what stops this.
             for spare in range(MINIMUM_LIVE_STRATEGIES):
                 self._registry(db, f"spare{spare}")
-            for i in range(35):
-                _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-2.0,
+            # Catastrophic, not merely weak: -3.0 against GBP 2.00 of risk is -1.5R, i.e.
+            # losing more than the trade said it would risk. That is the risk model failing to
+            # hold, which is the only case this backstop exists for.
+            for i in range(CATASTROPHIC_SAMPLE + 5):
+                _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-3.0,
                             entry=100.0, stop=98.0, quantity=1.0)
             result = review_strategies_for_demotion(db)
             self.assertEqual(result["status"], "applied")
@@ -212,12 +216,26 @@ class StrategyDemotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = _new_db(tmp)
             self._registry(db, "momentum")
-            for i in range(35):
+            for i in range(CATASTROPHIC_SAMPLE + 5):
                 _seed_trade(db, proposal_id=f"good{i}", strategy_id="momentum", pnl=3.0,
                             entry=100.0, stop=98.0, quantity=1.0)
             result = review_strategies_for_demotion(db)
             self.assertEqual(result["status"], "no_change")
             self.assertEqual(result["demoted"], [])
+
+    def test_a_merely_unprofitable_strategy_is_no_longer_demoted(self):
+        """Founder challenge 2026-09-05: demotion should fire only on a catastrophic failure,
+        not on underperformance. Losing 0.5R per trade is weak, and weakness is a reason for
+        the model to choose something else -- not a reason to take the option away."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            self._registry(db, "momentum")
+            for spare in range(MINIMUM_LIVE_STRATEGIES):
+                self._registry(db, f"spare{spare}")
+            for i in range(CATASTROPHIC_SAMPLE + 5):
+                _seed_trade(db, proposal_id=f"weak{i}", strategy_id="momentum", pnl=-1.0,
+                            entry=100.0, stop=98.0, quantity=1.0)
+            self.assertEqual(review_strategies_for_demotion(db)["demoted"], [])
 
     def test_a_small_sample_never_demotes_however_bad(self):
         """Three bad trades is a bad week, not a verdict. Demoting on it would recreate the
@@ -246,8 +264,8 @@ class StrategyDemotionTests(unittest.TestCase):
             self._registry(db, "momentum")
             for spare in range(MINIMUM_LIVE_STRATEGIES):
                 self._registry(db, f"spare{spare}")
-            for i in range(35):
-                _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-2.0)
+            for i in range(CATASTROPHIC_SAMPLE + 5):
+                _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-3.0)
             review_strategies_for_demotion(db)
             with closing(connect(db)) as conn:
                 row = conn.execute(
@@ -269,8 +287,8 @@ class StrategyDemotionTests(unittest.TestCase):
             db = _new_db(tmp)
             for n in range(MINIMUM_LIVE_STRATEGIES):
                 self._registry(db, f"bad{n}")
-                for i in range(35):
-                    _seed_trade(db, proposal_id=f"s{n}t{i}", strategy_id=f"bad{n}", pnl=-2.0)
+                for i in range(CATASTROPHIC_SAMPLE + 5):
+                    _seed_trade(db, proposal_id=f"s{n}t{i}", strategy_id=f"bad{n}", pnl=-3.0)
             result = review_strategies_for_demotion(db)
             self.assertEqual(result["demoted"], [],
                              "demoting any of them would breach the floor")
@@ -287,10 +305,10 @@ class StrategyDemotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = _new_db(tmp)
             self._registry(db, "momentum")
-            for i in range(40):
+            for i in range(CATASTROPHIC_SAMPLE + 5):
                 _seed_trade(db, proposal_id=f"old{i}", strategy_id="momentum", pnl=-5.0,
                             days_ago=EVALUATION_WINDOW_DAYS + 30)
-            for i in range(35):
+            for i in range(CATASTROPHIC_SAMPLE + 5):
                 _seed_trade(db, proposal_id=f"new{i}", strategy_id="momentum", pnl=3.0,
                             days_ago=2)
             self.assertEqual(review_strategies_for_demotion(db)["demoted"], [],
