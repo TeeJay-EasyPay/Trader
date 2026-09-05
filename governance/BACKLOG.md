@@ -95,3 +95,20 @@ universe, so it grows and shrinks on its own. Crypto should be equivalent: any K
 above a turnover floor, screened by rule rather than typed by hand. He rates this a nice-to-have,
 and that is right -- 19 pairs is not the constraint when only 8 clear the score bar. The
 env-versus-database duplication is worth fixing sooner than the dynamic universe itself.
+
+### 8. Twelve of nineteen coins can never pass due diligence
+Found 2026-09-05 immediately after the entitlement gate was cleared. LTC's rejection reason
+changed from `strategy_entitlement_blocked` to `due_diligence_incomplete`, which is a different
+gate doing its job on missing data.
+
+`create_due_diligence_assessment` requires all six statuses to read "completed", and for crypto
+the behavioural one needs a CRYPTO_SENTIMENT_SCORES row for that symbol from today. Measured
+across the 19 Kraken pairs, only **7 carry a sentiment score from the last two days**: BTC, ETH,
+LINK, SAND, SOL, XLM, XRP. The other twelve -- AAVE, ADA, ALGO, ATOM, BCH, DOT, FIL, GRT, KSM,
+LTC, MINA, SUI -- cannot pass, however good the setup. LTC has never had one at all.
+
+That is why XRP got a live order on 5 September and LTC did not: XRP happens to be one of the
+seven. This does not block trading, it caps it at roughly a third of the universe. Either the
+sentiment scoring needs to cover every allowed pair, or the behavioural dimension needs an
+honest "insufficient_data" path that does not fail the whole assessment -- the same question as
+whether a missing input should read as a negative finding.
