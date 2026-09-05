@@ -53,6 +53,44 @@ from .strategy_performance import CONFIDENT_SAMPLE, strategy_records
 # than a wobble.
 DEMOTION_EXPECTANCY_R = -0.25
 
+# 2026-09-05, Founder challenge, and it caught a real defect in the first version of this
+# module: "does it ever get promoted again? otherwise we end up having just one or two
+# strategies, which then makes the app weaker at trading anyway."
+#
+# He was right twice over. Demotion sends a strategy to Paper, but crypto only ever trades
+# LIVE on Kraken -- there is no paper Kraken -- so a demoted crypto strategy stopped trading
+# altogether, generated no new outcomes, and could never accumulate the evidence needed to
+# earn its permission back. That is the August per-coin doom loop rebuilt in a new place: an
+# input that can only fall, where the only route to recovery is the thing now forbidden.
+#
+# Two guards below. The route BACK is shadow evidence -- SHADOW_TRADES already records every
+# candidate the app would have taken, with its strategy and regime, so a demoted strategy can
+# keep proving itself on paper at no risk. Those 2,312 rows are all outcome_status='pending'
+# because nothing resolves them; resolving them is Phase 3, and re-promotion is gated on it
+# rather than being faked from nothing here.
+
+# Never leave the app with fewer than this many strategies holding real-money permission.
+# A demotion that would breach it is recorded as a concern and not applied: an app down to one
+# or two strategies cannot adapt when the regime turns, which is a larger risk than one
+# underperforming strategy continuing at GBP 25 a trade.
+MINIMUM_LIVE_STRATEGIES = 3
+
+# Judge a strategy on the market it is actually in, not on its whole history. 45 days matches
+# symbol_track_record's lookback, chosen there for the same reason: a strategy that behaved
+# badly in a different regime should stop being condemned for it once the evidence ages out.
+# Without this, -1.37R earned in a flat market would bar a trend strategy for good, however
+# well it would do when the trend returns.
+EVALUATION_WINDOW_DAYS = 45
+
+# Stated on every run so the one-way-ratchet risk stays visible rather than being rediscovered
+# later. Nothing in this module can restore a permission it removes.
+_RE_PROMOTION_NOTE = (
+    "Demotion is currently one-way. The route back is shadow evidence -- SHADOW_TRADES records "
+    "every candidate this app would have taken -- but those rows are still "
+    "outcome_status='pending' because nothing resolves them. Until that exists, a demoted "
+    "strategy can only be restored by the Founder."
+)
+
 PAPER_STAGE = "Paper"
 MICRO_LIVE_MODE = "micro_live"
 
@@ -82,11 +120,13 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
     `apply=False` reports what would happen without touching anything, so the decision can be
     inspected before it changes what trades.
     """
-    records = strategy_records(db_path)
+    records = strategy_records(db_path, window_days=EVALUATION_WINDOW_DAYS)
     if not records:
         return {"status": "stood_down",
                 "reason": "no trustworthy outcome record, so nothing is demoted",
-                "demoted": [], "considered": 0}
+                "demoted": [], "considered": 0,
+                "minimum_live_strategies": MINIMUM_LIVE_STRATEGIES,
+                "re_promotion": _RE_PROMOTION_NOTE}
 
     # Both tables belong to other modules -- the registry to sprint6, the decision log to
     # production_spine -- so ensure them rather than assume a boot order, exactly as
@@ -127,6 +167,43 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
                     expectancy_r=record.expectancy_r, sample_size=record.sample_size,
                     win_rate=record.win_rate, net_profit_loss=record.net_profit_loss,
                 ))
+
+            # The erosion guard. Count what currently holds real-money permission and refuse
+            # to drop below the floor, worst performer demoted first so the one that leaves is
+            # the one that most deserves to.
+            live_now = conn.execute(
+                "SELECT COUNT(*) FROM STRATEGY_MATURITY_REGISTRY "
+                "WHERE suspended = 0 AND current_stage <> ?",
+                (PAPER_STAGE,),
+            ).fetchone()
+            live_count = int(live_now[0]) if live_now else 0
+            candidates.sort(key=lambda d: d.expectancy_r)
+            allowed = max(0, live_count - MINIMUM_LIVE_STRATEGIES)
+            if len(candidates) > allowed:
+                withheld = candidates[allowed:]
+                candidates = candidates[:allowed]
+                for held in withheld:
+                    with conn:
+                        conn.execute(
+                            """
+                            INSERT INTO STRATEGY_PROMOTION_DECISIONS (
+                                created_at, strategy_id, current_stage, proposed_stage, decision,
+                                evidence_gate_status, reason, payload_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (now, held.strategy_id, held.from_stage, held.from_stage, "hold",
+                             "failed_on_live_evidence_but_withheld",
+                             f"{held.strategy_id} qualifies for demotion at "
+                             f"{held.expectancy_r:+.2f}R, but demoting it would leave fewer than "
+                             f"{MINIMUM_LIVE_STRATEGIES} strategies able to trade real money. An "
+                             f"app down to one or two strategies cannot adapt when the regime "
+                             f"turns, which is the larger risk. Left live and flagged.",
+                             json.dumps({"expectancy_r": held.expectancy_r,
+                                         "sample_size": held.sample_size,
+                                         "live_strategies_before": live_count,
+                                         "minimum_live_strategies": MINIMUM_LIVE_STRATEGIES},
+                                        sort_keys=True)),
+                        )
             if apply:
                 for demotion in candidates:
                     row = conn.execute(
@@ -173,6 +250,10 @@ def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict
     return {
         "status": "applied" if (apply and candidates) else ("would_demote" if candidates else "no_change"),
         "considered": len(records),
+        "minimum_live_strategies": MINIMUM_LIVE_STRATEGIES,
+        # Stated on every run so the one-way-ratchet risk stays visible rather than being
+        # rediscovered later: nothing here can restore a permission it removes.
+        "re_promotion": _RE_PROMOTION_NOTE,
         "demoted": [
             {"strategy_id": d.strategy_id, "from_stage": d.from_stage, "expectancy_r": d.expectancy_r,
              "sample_size": d.sample_size, "reason": d.reason}

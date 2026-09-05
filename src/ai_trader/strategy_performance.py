@@ -39,10 +39,12 @@ from __future__ import annotations
 import json
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .database import connect
+from .learning_readiness import _parse as _parse_stamp
 from .learning_readiness import assess_learning_readiness
 
 # Below this a per-strategy figure is an anecdote. Reported as evidence, never as a verdict.
@@ -95,20 +97,37 @@ def _float(value: Any) -> float | None:
     return result
 
 
-def strategy_records(db_path: Path) -> dict[str, StrategyRecord]:
-    """Per-strategy live results, or {} when the outcome record cannot be trusted."""
+def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[str, StrategyRecord]:
+    """Per-strategy live results, or {} when the outcome record cannot be trusted.
+
+    `window_days` judges a strategy on the market it is actually in rather than on its whole
+    history. Founder-raised 2026-09-05: regimes rotate, so a strategy that lost money in a flat
+    market should not be condemned for it once a trending one arrives. Filtering happens in
+    Python, not SQL, because 26 of 66 rows store a raw epoch and "1787586949" sorts before
+    "2026-08-31" as text -- a SQL date predicate would silently drop the newest trades.
+    """
     readiness = assess_learning_readiness(db_path)
     if not readiness.ready:
         return {}
+
+    cutoff = None
+    if window_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
 
     try:
         with closing(connect(db_path)) as conn:
             outcomes = conn.execute(
                 """
-                SELECT proposal_id, profit_loss, entry_price, exit_price, quantity
+                SELECT proposal_id, profit_loss, entry_price, exit_price, quantity,
+                       closed_at, created_at
                 FROM PERFORMANCE_ATTRIBUTION
                 """
             ).fetchall()
+            if cutoff is not None:
+                outcomes = [
+                    row for row in outcomes
+                    if (_parse_stamp(row[5]) or _parse_stamp(row[6]) or cutoff) >= cutoff
+                ]
             proposal_ids = [row[0] for row in outcomes if row[0]]
             if not proposal_ids:
                 return {}

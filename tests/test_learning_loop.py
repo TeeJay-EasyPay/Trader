@@ -30,7 +30,12 @@ from ai_trader.learning_readiness import (
     STALENESS_LIMIT_DAYS,
     assess_learning_readiness,
 )
-from ai_trader.strategy_demotion import DEMOTION_EXPECTANCY_R, review_strategies_for_demotion
+from ai_trader.strategy_demotion import (
+    DEMOTION_EXPECTANCY_R,
+    EVALUATION_WINDOW_DAYS,
+    MINIMUM_LIVE_STRATEGIES,
+    review_strategies_for_demotion,
+)
 from ai_trader.strategy_performance import MINIMUM_RISK_FOR_R, strategy_records
 
 
@@ -186,6 +191,9 @@ class StrategyDemotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = _new_db(tmp)
             self._registry(db, "momentum")
+            # Enough other live strategies that the erosion floor is not what stops this.
+            for spare in range(MINIMUM_LIVE_STRATEGIES):
+                self._registry(db, f"spare{spare}")
             for i in range(35):
                 _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-2.0,
                             entry=100.0, stop=98.0, quantity=1.0)
@@ -236,6 +244,8 @@ class StrategyDemotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = _new_db(tmp)
             self._registry(db, "momentum")
+            for spare in range(MINIMUM_LIVE_STRATEGIES):
+                self._registry(db, f"spare{spare}")
             for i in range(35):
                 _seed_trade(db, proposal_id=f"bad{i}", strategy_id="momentum", pnl=-2.0)
             review_strategies_for_demotion(db)
@@ -248,6 +258,50 @@ class StrategyDemotionTests(unittest.TestCase):
             payload = json.loads(row[2])
             self.assertLessEqual(payload["expectancy_r"], DEMOTION_EXPECTANCY_R)
             self.assertGreaterEqual(payload["sample_size"], 30)
+
+
+    def test_the_app_is_never_eroded_below_a_minimum_of_live_strategies(self):
+        """Founder challenge, 2026-09-05: "otherwise we end up having just one or two
+        strategies, which then makes the app weaker at trading anyway." An app down to one or
+        two cannot adapt when the regime turns, which is the larger risk. The worst performer
+        is demoted first, and the rest are recorded as held rather than silently ignored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            for n in range(MINIMUM_LIVE_STRATEGIES):
+                self._registry(db, f"bad{n}")
+                for i in range(35):
+                    _seed_trade(db, proposal_id=f"s{n}t{i}", strategy_id=f"bad{n}", pnl=-2.0)
+            result = review_strategies_for_demotion(db)
+            self.assertEqual(result["demoted"], [],
+                             "demoting any of them would breach the floor")
+            with closing(connect(db)) as conn:
+                held = conn.execute(
+                    "SELECT COUNT(*) FROM STRATEGY_PROMOTION_DECISIONS WHERE decision='hold'"
+                ).fetchone()[0]
+            self.assertEqual(held, MINIMUM_LIVE_STRATEGIES,
+                             "each withheld demotion must still be recorded as a concern")
+
+    def test_a_strategy_is_judged_on_the_recent_market_not_its_whole_history(self):
+        """Regimes rotate. A strategy that lost money in a flat market months ago should not be
+        condemned for it once that evidence ages out of the window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            self._registry(db, "momentum")
+            for i in range(40):
+                _seed_trade(db, proposal_id=f"old{i}", strategy_id="momentum", pnl=-5.0,
+                            days_ago=EVALUATION_WINDOW_DAYS + 30)
+            for i in range(35):
+                _seed_trade(db, proposal_id=f"new{i}", strategy_id="momentum", pnl=3.0,
+                            days_ago=2)
+            self.assertEqual(review_strategies_for_demotion(db)["demoted"], [],
+                             "recent profitable trades must outweigh an aged-out bad patch")
+
+    def test_the_one_way_ratchet_is_declared_on_every_run(self):
+        """Nothing here can restore a permission it removes, and that must stay visible rather
+        than being rediscovered later."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            self.assertIn("one-way", review_strategies_for_demotion(db)["re_promotion"])
 
 
 if __name__ == "__main__":
