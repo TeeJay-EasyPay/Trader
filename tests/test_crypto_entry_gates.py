@@ -42,7 +42,24 @@ def _account() -> AccountContext:
     return AccountContext(equity=1000, daily_realized_pnl=0, open_positions=[], is_paper=False)
 
 
-class RangePositionGateTests(unittest.TestCase):
+class RangePositionIsEvidenceNotAGateTests(unittest.TestCase):
+    """2026-09-05, Founder-directed: where a coin sits in its 24h range stopped being a gate.
+
+    It used to refuse any entry above 0.75 of the day's range. His objection, made for the
+    third time about a hardcoded threshold and correct each time: "the AI itself should be
+    looking at the movement, looking at the candles that have been returned from Kraken, and
+    deciding itself whether that trade is worth taking, and not necessarily relying on a gate."
+
+    A percentage cannot tell a breakout from an exhausted spike; it refuses both. On the day it
+    was removed it was the last thing between the app and a trade -- DOT was the only coin to
+    clear the score bar and was refused twice purely for having risen.
+
+    He also declined a softer backstop at 0.98: "how do we know what point nine eight of a
+    range is? That's just a guess." So there is no hard limit at all, and no mechanical
+    markdown either -- the reviewer can only lower confidence, and position size is scaled from
+    confidence, so a model that judges an entry stretched shrinks the position by saying so.
+    """
+
     class _AdapterAtRangePosition:
         """Fixed 24h range [90, 110]; `current` decides where price sits in it."""
 
@@ -52,16 +69,15 @@ class RangePositionGateTests(unittest.TestCase):
         def current_prices(self, pairs):
             return {pairs[0]: {"c": [str(self.current), "1.0"], "h": ["105.0", "110.0"], "l": ["95.0", "90.0"], "o": "100.0"}}
 
-    def test_entry_near_the_24h_high_is_skipped(self):
+    def _propose(self, current: float):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
             initialize_foundation_schema(db_path)
             audit = AuditDatabase(db_path, None)
             _seed_score(db_path)
-
-            proposals = propose_crypto_trades(
+            return propose_crypto_trades(
                 db_path,
-                self._AdapterAtRangePosition(109.0),  # range_position = (109-90)/(110-90) = 0.95
+                self._AdapterAtRangePosition(current),
                 ["BTC"],
                 _account(),
                 GuardrailConfig(),
@@ -71,28 +87,35 @@ class RangePositionGateTests(unittest.TestCase):
                 default_stop_loss_pct=0.02,
             )
 
-            self.assertEqual(proposals, [])
+    def test_an_entry_near_the_24h_high_is_no_longer_refused(self):
+        """THE CHANGE. 0.95 of the range was an automatic refusal; it is now a judgement."""
+        self.assertEqual(len(self._propose(109.0)), 1)
 
-    def test_entry_mid_range_is_not_skipped_by_this_gate(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "audit.sqlite3"
-            initialize_foundation_schema(db_path)
-            audit = AuditDatabase(db_path, None)
-            _seed_score(db_path)
+    def test_an_entry_mid_range_is_unaffected(self):
+        self.assertEqual(len(self._propose(100.0)), 1)
 
-            proposals = propose_crypto_trades(
-                db_path,
-                self._AdapterAtRangePosition(100.0),  # range_position = (100-90)/(110-90) = 0.5
-                ["BTC"],
-                _account(),
-                GuardrailConfig(),
-                audit,
-                min_confidence=0.85,
-                requested_notional=5.0,
-                default_stop_loss_pct=0.02,
-            )
+    def test_the_range_reading_reaches_the_reviewer_as_evidence(self):
+        """Removing the gate is only safe if the model is actually given what the gate used to
+        act on. Position in range, plus the levels it was measured against."""
+        from ai_trader.agent import _kraken_day_range, _kraken_range_position, _review_candidate
 
-            self.assertEqual(len(proposals), 1)
+        prices = self._AdapterAtRangePosition(109.0).current_prices(["XBTGBP"])
+        position = _kraken_range_position(prices, "XBTGBP")
+        day_range = _kraken_day_range(prices, "XBTGBP")
+        self.assertAlmostEqual(position, 0.95, places=2)
+        self.assertEqual(day_range["high_24h"], 110.0)
+        self.assertEqual(day_range["low_24h"], 90.0)
+        self.assertIsNotNone(day_range["range_width_pct"])
+        self.assertIsNotNone(day_range["change_from_open_pct"])
+
+        proposals = self._propose(109.0)
+        candidate = _review_candidate(
+            proposals[0], {"technical_trend_score": 0.75, "momentum_score": 0.6, "volatility": 0.2,
+                           "liquidity": 0.8, "risk_score": 0.8, "overall_due_diligence_score": 0.9},
+            range_position=position, day_range=day_range,
+        )
+        self.assertAlmostEqual(candidate["position_in_24h_range"], 0.95, places=2)
+        self.assertEqual(candidate["day_range"]["high_24h"], 110.0)
 
 
 class BtcRegimeGateTests(unittest.TestCase):

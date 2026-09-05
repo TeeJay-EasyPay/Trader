@@ -175,7 +175,21 @@ class CryptoTradeReviewer:
             "role": "crypto_trade_reviewer",
             "instruction": (
                 "You are reviewing a crypto trade candidate that has already passed this system's mechanical "
-                "screens (due-diligence score, trend, 24h-range position, BTC regime, re-entry cooldown). "
+                "screens (due-diligence score, trend, BTC regime, re-entry cooldown). "
+                # 2026-09-05, Founder-directed: the 24h-range check used to be one of those
+                # mechanical screens, refusing any entry above 0.75 of the day's range. It is
+                # now this model's judgement instead -- a percentage cannot tell a breakout from
+                # an exhausted spike, and it was refusing both.
+                "Where the price sits in its 24h range is now YOURS to judge, not a screen it has "
+                "already passed. position_in_24h_range runs 0.0 at the day's low to 1.0 at the day's "
+                "high, and day_range gives the actual high, low, open, how wide the day has been and "
+                "how far price has moved from the open. A high position can mean a genuine breakout "
+                "worth joining or a move already spent -- decide which from the evidence here, "
+                "including the trend and momentum scores and the market forecast. Buying near the top "
+                "of a narrow, directionless day is usually poor; buying strength on a decisive "
+                "expansion can be sound. If you judge the entry stretched but still worth taking, "
+                "LOWER the confidence rather than refusing: position size is scaled from confidence, "
+                "so a reduced number is how you take a smaller bite. "
                 "Your job is judgment, not arithmetic: decide whether this is genuinely worth taking right now. "
                 "Return only JSON with fields: proceed, confidence, reasoning, concerns, "
                 "strategy_fit, better_suited_strategy. "

@@ -36,7 +36,14 @@ from .trading_intelligence import analyze_price_series, evaluate_trade_intellige
 # has no live LLM call to reason over that text directly). Kept as plain module constants,
 # not full settings-plumbed config, matching the scope of a real-but-shallow first pass --
 # revisit as config if they need per-environment tuning later.
-CRYPTO_MAX_ENTRY_RANGE_POSITION = 0.75  # knowledge/momentum_vs_mean_reversion.md: don't buy into the top of a 24h range.
+# 2026-09-05, Founder-directed: RETIRED as a gate, kept only so the number that used to
+# refuse a trade is still readable next to the code that no longer applies it. Nothing reads
+# it. Where a coin sits in its 24h range is now evidence passed to the reviewer, which can
+# lower confidence (and therefore position size) rather than refusing outright.
+#
+# The Founder rejected a softer backstop at 0.98 for the same reason he rejected 0.75:
+# "how do we know what point nine eight of a range is? That's just a guess."
+CRYPTO_MAX_ENTRY_RANGE_POSITION_RETIRED = 0.75  # historical reference only
 CRYPTO_BTC_WEAK_REGIME_THRESHOLD_PCT = -0.03  # knowledge/sector_crypto_l1_defi_tokens.md: BTC-correlation risk factor.
 CRYPTO_RE_ENTRY_COOLDOWN_HOURS = 4.0  # Don't walk straight back into a symbol that just stopped this out.
 
@@ -394,6 +401,43 @@ def _kraken_range_position(prices: dict[str, Any], pair: str) -> float | None:
     return max(0.0, min(1.0, (current - low_24h) / (high_24h - low_24h)))
 
 
+def _kraken_day_range(prices: dict[str, Any], pair: str) -> dict[str, Any] | None:
+    """The actual 24h high, low, open and last, for the model to reason over.
+
+    2026-09-05: the position-in-range number alone was what the old 0.75 gate refused on, and
+    a single percentage cannot distinguish a breakout from a spent move. Handing over the raw
+    levels lets the model see how wide the day has been and where the price sits against the
+    open, not just how far up a band it has travelled. Read from the same Ticker payload
+    already fetched for the price -- no extra API call.
+    """
+    payload = prices.get(pair)
+    if not isinstance(payload, dict):
+        return None
+    high, low, last, opening = payload.get("h"), payload.get("l"), payload.get("c"), payload.get("o")
+    if not (isinstance(high, list) and len(high) > 1 and isinstance(low, list) and len(low) > 1):
+        return None
+    try:
+        high_24h, low_24h = float(high[1]), float(low[1])
+        current = float(last[0]) if isinstance(last, list) and last else None
+        open_price = float(opening[0]) if isinstance(opening, list) and opening else (
+            float(opening) if opening is not None else None
+        )
+    except (TypeError, ValueError, IndexError):
+        return None
+    if current is None or high_24h <= low_24h:
+        return None
+    return {
+        "high_24h": high_24h,
+        "low_24h": low_24h,
+        "current": current,
+        "open": open_price,
+        "range_width_pct": round((high_24h - low_24h) / low_24h * 100.0, 2) if low_24h else None,
+        "change_from_open_pct": (
+            round((current - open_price) / open_price * 100.0, 2) if open_price else None
+        ),
+    }
+
+
 def _kraken_btc_daily_change_pct(adapter: Any) -> float | None:
     """BTC's own same-session change (current price vs. today's Kraken-reported open),
     used as a simple crypto-market-regime proxy: a weak/volatile BTC session is a real
@@ -559,17 +603,35 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
+            # 2026-09-05, Founder-directed: where a coin sits in its 24h range is EVIDENCE the
+            # model weighs, no longer a gate that refuses the trade before anyone looks at it.
+            #
+            # This used to refuse any entry above 0.75 of the day's range. The Founder's
+            # objection, and it is the third time he has made the same argument and been right:
+            # "the AI itself should be looking at the movement, looking at the candles that
+            # have been returned from Kraken, and deciding itself whether that trade is worth
+            # taking, and not necessarily relying on a gate for a scope on how something has
+            # moved within twenty four hours."
+            #
+            # A single percentage cannot tell a healthy breakout from an exhausted spike. It
+            # only sees "up 80% of the range" and refuses both. On 5 September it was the last
+            # thing standing between the app and a trade: DOT was the only coin to clear the
+            # score bar and was refused twice purely for having gone up.
+            #
+            # He also declined a softer backstop at 0.98, on the grounds that 0.98 is as
+            # arbitrary as 0.75 -- which is correct, so there is no hard limit here at all.
+            #
+            # Deliberately NOT replaced with a mechanical markdown either. Adding a new constant
+            # immediately after removing one would be the same mistake in a smaller coat. The
+            # reviewer can only ever LOWER confidence, and conviction_scaled_notional sizes from
+            # confidence, so a model that judges an entry stretched shrinks the position by
+            # saying so. Judgement drives sizing; no new threshold.
+            #
+            # The original gate was added 2026-08-15 after real buy-high/sell-low entries, so
+            # the risk it addressed is real. range_position is now recorded on every candidate
+            # and carried into the review, so whether the model handles it better than the rule
+            # did is a measurable question rather than an opinion.
             range_position = _kraken_range_position(prices, pair)
-            if range_position is not None and range_position > CRYPTO_MAX_ENTRY_RANGE_POSITION:
-                audit.record_execution_event(
-                    proposal_id=f"no-trade-crypto-{symbol}",
-                    event_type="agent_no_trade",
-                    payload={"symbol": symbol, "reason": "entry_too_extended_in_24h_range", "range_position": range_position},
-                )
-                print(f"[crypto-research] symbol={symbol} stage=completed outcome=entry_too_extended range_position={range_position:.2f}", flush=True)
-                if on_symbol_complete:
-                    on_symbol_complete(symbol, [])
-                continue
             # Volatility-scaled stop distance (knowledge/stop_loss_and_take_profit_mechanics.md
             # + sector_crypto_l1_defi_tokens.md's note that crypto stops are more readily
             # triggered by ordinary liquidity gaps than in equities): a calmer coin keeps the
@@ -926,7 +988,15 @@ def propose_crypto_trades(
                 review = None
                 if reviewer is not None:
                     try:
-                        review = reviewer.review(symbol=symbol, candidate=_review_candidate(proposal, row), context=context)
+                        review = reviewer.review(
+                            symbol=symbol,
+                            candidate=_review_candidate(
+                                proposal, row,
+                                range_position=range_position,
+                                day_range=_kraken_day_range(prices, pair),
+                            ),
+                            context=context,
+                        )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[crypto-research] symbol={symbol} stage=review outcome=failed detail={exc}", flush=True)
                         review = None
@@ -999,12 +1069,21 @@ def propose_crypto_trades(
     return proposals
 
 
-def _review_candidate(proposal: TradeProposal, row: Any) -> dict[str, Any]:
+def _review_candidate(proposal: TradeProposal, row: Any, *,
+                      range_position: float | None = None,
+                      day_range: dict[str, Any] | None = None) -> dict[str, Any]:
     """The candidate as the reviewer sees it: real evidence plus the already-fixed
     risk-management numbers, clearly labelled as fixed so the model treats them as
-    context rather than something to negotiate."""
+    context rather than something to negotiate.
+
+    2026-09-05: range_position and day_range replace the hard 0.75 gate that used to refuse an
+    extended entry outright. The model gets the raw position in the day's range plus the high
+    and low it was measured against, so it can tell a breakout from a spent move instead of a
+    threshold refusing both."""
     return {
         "confidence_score": proposal.confidence_score,
+        "position_in_24h_range": range_position,
+        "day_range": day_range,
         "scores": {
             "technical_trend": row["technical_trend_score"],
             "momentum": row["momentum_score"],
