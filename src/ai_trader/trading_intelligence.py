@@ -294,7 +294,8 @@ def evaluate_trade_intelligence(
     p = proposal.normalized()
     market_intelligence = build_market_intelligence(p, market=market, news=news, crypto_score=crypto_score)
     regime = infer_market_regime(p, crypto_score=crypto_score, market=market, market_intelligence=market_intelligence)
-    strategy = select_strategy(p, source=source, market_intelligence=market_intelligence, regime=regime, crypto_score=crypto_score)
+    strategy = select_strategy(p, source=source, market_intelligence=market_intelligence, regime=regime,
+                               crypto_score=crypto_score, db_path=db_path)
     signals = build_signal_evidence(
         p,
         strategy,
@@ -349,19 +350,23 @@ def select_strategy(
     market_intelligence: dict[str, Any] | None = None,
     regime: dict[str, Any] | None = None,
     crypto_score: dict[str, Any] | None = None,
+    # 2026-09-05, Phase 1 of the learning work: without a db_path the strategy profiles carry
+    # no live results, so selection scores every strategy on its neutral defaults. Optional so
+    # existing callers and tests are unaffected; the live path passes it.
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     p = proposal.normalized()
     if "demo" in p.plain_english_reasoning.lower() or source == "demo":
-        selected = strategy_definition("paper_validation_2r")
+        selected = strategy_definition("paper_validation_2r", db_path)
         selected["selection_reason"] = "Demo/test proposal selected the paper validation strategy."
         selected["candidate_scores"] = [{"strategy_id": "paper_validation_2r", "score": 1.0, "reason": "Operational validation path."}]
         selected["rejected_strategies"] = []
         return selected
     candidates = _candidate_strategy_ids(p)
-    scored = [_score_strategy_candidate(strategy_definition(strategy_id), p, market_intelligence or {}, regime or {}, crypto_score) for strategy_id in candidates]
+    scored = [_score_strategy_candidate(strategy_definition(strategy_id, db_path), p, market_intelligence or {}, regime or {}, crypto_score) for strategy_id in candidates]
     scored.sort(key=lambda item: item["score"], reverse=True)
-    winner = scored[0] if scored else _score_strategy_candidate(strategy_definition("equity_conservative_ai_assisted"), p, market_intelligence or {}, regime or {}, crypto_score)
-    selected = strategy_definition(winner["strategy_id"])
+    winner = scored[0] if scored else _score_strategy_candidate(strategy_definition("equity_conservative_ai_assisted", db_path), p, market_intelligence or {}, regime or {}, crypto_score)
+    selected = strategy_definition(winner["strategy_id"], db_path)
     selected["selection_reason"] = winner["reason"]
     selected["candidate_scores"] = scored
     selected["rejected_strategies"] = [
@@ -381,14 +386,33 @@ def select_strategy(
     return selected
 
 
-def strategy_definition(strategy_id: str) -> dict[str, Any]:
+def strategy_definition(strategy_id: str, db_path: Path | None = None) -> dict[str, Any]:
     base = dict(STRATEGIES.get(strategy_id, STRATEGIES["equity_conservative_ai_assisted"]))
     base.setdefault("entry_conditions", list(base.get("minimum_evidence", [])))
     base.setdefault("exit_conditions", [base.get("exit_methodology", "Defined stop and target.")])
     base.setdefault("position_sizing_assumptions", "Sizing remains controlled by Investment Orchestrator capital allocation.")
     base.setdefault("ideal_regime", list(base.get("supported_regimes", [])))
     base.setdefault("poor_regime", ["bear", "crisis", "high_volatility"])
-    base.setdefault("historical_statistics", {"sample_size": 0, "win_rate": None, "average_r": None, "expectancy_r": None})
+    # 2026-09-05, Phase 1 of the learning work. This used to be a pure setdefault, so every
+    # strategy reported sample_size 0 and win_rate None forever -- which made the
+    # `sample_size >= minimum_sample_size` check below unpassable and left the win-rate term in
+    # _score_strategy_candidate permanently at its neutral 0.5 fallback. The machinery for past
+    # results to influence strategy choice existed and was wired to a constant.
+    #
+    # Real figures now come from closed trades (strategy_performance.py), which refuses to
+    # answer at all when learning_readiness says the outcome record cannot be trusted. When it
+    # returns nothing the old placeholder stands, so a strategy with no record is treated as
+    # unproven rather than as average -- and never as good.
+    live_statistics = None
+    if db_path is not None:
+        try:
+            from .strategy_performance import historical_statistics_for
+
+            live_statistics = historical_statistics_for(db_path, strategy_id)
+        except Exception:  # noqa: BLE001 - a missing lesson must never block a proposal
+            live_statistics = None
+    base.setdefault("historical_statistics", live_statistics or
+                    {"sample_size": 0, "win_rate": None, "average_r": None, "expectancy_r": None})
     base.setdefault("required_evidence", list(base.get("minimum_evidence", [])))
     base.setdefault("invalidating_evidence", list(base.get("invalid_conditions", [])))
     base.setdefault("minimum_reward_risk", 1.5)

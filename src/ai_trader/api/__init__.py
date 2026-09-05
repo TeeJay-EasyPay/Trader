@@ -68,6 +68,9 @@ from ..foundation import (
     set_risk_policy_value,
 )
 from ..experience_engine import initialize_experience_engine_schema
+from ..learning_readiness import assess_learning_readiness
+from ..strategy_demotion import review_strategies_for_demotion
+from ..strategy_performance import strategy_records
 from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..trade_scorecard import trade_scorecard
@@ -2001,12 +2004,30 @@ class LocalApiService:
         benchmark_lessons = _benchmark_learning_lessons(benchmark.get("items") or [])
         recommendations = _learning_recommendations(attribution, rejected, benchmark.get("items") or [])
         calibration = update_calibration_from_attribution(self.settings.db_path)
+        # 2026-09-05, Phases 0-2 of the learning work. Until now this job summarised what
+        # happened and changed nothing -- every learning table it filled was read only by the
+        # app's display layer. These three lines are the first time a daily review can alter
+        # what the app is permitted to trade tomorrow.
+        #
+        # readiness runs first and gates the rest: if the outcome record is incomplete or
+        # stale, strategy_records returns nothing and the demotion review stands down rather
+        # than acting on a partial picture. Learning from a corrupted record is worse than not
+        # learning, because it looks like it is working.
+        readiness = assess_learning_readiness(self.settings.db_path)
+        live_strategy_records = {
+            strategy_id: record.to_statistics()
+            for strategy_id, record in strategy_records(self.settings.db_path).items()
+        }
+        demotions = review_strategies_for_demotion(self.settings.db_path)
         return {
             "date": learning_date,
             "summary": (
                 f"Reviewed {len(attribution)} closed trade outcome(s), {len(approved)} approved decision(s), "
                 f"{len(rejected)} rejected decision(s), and {len(benchmark.get('items') or [])} benchmark learning note(s)."
             ),
+            "learning_readiness": readiness.to_dict(),
+            "strategy_live_results": live_strategy_records,
+            "strategy_demotions": demotions,
             "trade_outcomes": {
                 "closed_trades": len(attribution),
                 "wins": len(wins),
