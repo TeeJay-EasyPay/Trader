@@ -4475,3 +4475,51 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   reporting only.
 - Not yet deployed. A push restarts the worker into a fifteen-minute startup,
   so this is being held to bundle with the pending model-tier change.
+
+## 2026-09-05 (evening) - The 24h range gate removed; Kraken pair-name bug found and fixed
+
+- Founder-directed, and the third time he has made the same argument about a
+  hardcoded threshold: "the AI itself should be looking at the movement, looking
+  at the candles that have been returned from Kraken, and deciding itself whether
+  that trade is worth taking, and not necessarily relying on a gate." The rule
+  refused any entry above 0.75 of the day's range.
+- No backstop, on his explicit instruction: "how do we know what point nine eight
+  of a range is? That's just a guess." Straight to live, not shadow-first.
+- Deliberately not replaced with a mechanical markdown either. The reviewer can
+  only lower confidence, and `conviction_scaled_notional` sizes from confidence,
+  so a model that judges an entry stretched shrinks the position by saying so.
+- The model now receives `position_in_24h_range` plus `day_range` (high, low,
+  open, current, range width %, change from open %), read from the Ticker payload
+  already fetched. No extra API call, so no egress cost.
+- Found while verifying against live Kraken: both range helpers read the ticker by
+  the pair name the code ASKED for, and Kraken answers under its own canonical
+  name for legacy assets. Measured across all nineteen GBP pairs, three missed -
+  BTC (XBTGBP -> XXBTZGBP), ETH (ETHGBP -> XETHZGBP) and XLM (XLMGBP -> XXLMZGBP).
+  The range evidence was silently blank for those three, and so was the 0.75 gate
+  that read the same number, from the day it was added on 2026-08-15.
+- No visible symptom, because `_kraken_last_price` carries a `next(iter(...))`
+  fallback that made the PRICE work while the range did not. The same trap is
+  already documented in `order_book`. `_kraken_ticker_payload` now resolves by
+  exact key, then normalised name, then sole payload - in that order, so a batched
+  read can never hand one coin another coin's range.
+- Live verification, cycle 354afe3fa20b, 17:37-17:55 UTC on the deployed build.
+  Forty coins scored; six cleared the 0.70 bar; three of those are GBP-tradable.
+  ZERO range-position rejections - the reason no longer exists.
+- All three GBP candidates reached the AI reviewer. It declined all three, on its
+  own reasoning, citing the raw levels rather than a percentage: DOT was "85% up a
+  wide 7.7% daily range while gaining only 1.59% from the open, and no breakout is
+  identified". ATOM was declined at 89.6% of range on a 3.91% day. That is the
+  breakout-versus-spent-move distinction a single threshold cannot make.
+- LTC cleared the score bar and was stopped by the fee hurdle at a measured 1.5774%
+  round-trip. ATOM was marked down for liquidity 0.7186 -> 0.6186, floored at the
+  0.70 bar and sized at ~50% - the Option B behaviour working as designed.
+- Worth recording for the Founder's judgement: today fourteen of nineteen coins sit
+  above 0.75 of their 24h range, so the removed gate would have refused three
+  quarters of the universe this afternoon.
+- Every decline cited "no coin-specific strategy record" and the trend strategy's
+  -1.37R across 53 real trades. The binding constraint is now the track-record doom
+  loop, not a gate. That is the next thing to address.
+- 1,443 tests plus 21 subtests pass. Both Render services deployed and confirmed
+  live on 7c794dc3.
+- No broker permission, risk limit, allocation limit, stop, target or confidence
+  threshold was changed other than the removal described above.
