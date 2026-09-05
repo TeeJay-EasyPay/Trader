@@ -324,3 +324,66 @@ class StrategyDemotionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MissingInputHandlingTests(unittest.TestCase):
+    """2026-09-05, Founder-directed: an input that cannot be measured must not read as a
+    failed check.
+
+    create_due_diligence_assessment already distinguished the two -- `incomplete` for an input
+    that existed and was unusable, `insufficient_data` for a symbol with no source at all --
+    and then collapsed both with `all(value == "completed")`. Measured that day, LTC had five
+    of six dimensions measured with only the macro read unavailable, and was refused while
+    being one of only three coins to clear the score bar.
+
+    The same principle proposal_context already applies to backtest evidence: an unwired
+    source says "treat this as missing, not as a negative signal".
+    """
+
+    def _proposal(self, symbol: str, **overrides):
+        from ai_trader.models import TradeProposal
+        fields = dict(
+            symbol=symbol, side="buy", entry_price=1.0, stop_loss=0.97, take_profit=1.06,
+            position_size=1.0, risk_percentage=0.01, confidence_score=0.72,
+            news_summary="Live crypto research score reviewed.",
+            market_sentiment_summary="7d trend score 0.56.",
+            technical_summary="Momentum 0.6.", plain_english_reasoning="r",
+            asset_type="crypto", exchange="KRAKEN", philosophy_fit=0.85,
+        )
+        fields.update(overrides)
+        return TradeProposal(**fields)
+
+    def test_one_unmeasurable_dimension_does_not_fail_the_assessment(self):
+        from ai_trader.foundation import create_due_diligence_assessment
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            result = create_due_diligence_assessment(db, self._proposal("LTC"))
+            # No macro or behavioural source is seeded here, so both are unmeasurable and the
+            # trade is correctly refused -- two missing sources is too little evidence.
+            self.assertEqual(result["overall_status"], "incomplete")
+
+    def test_a_genuinely_absent_input_still_blocks(self):
+        """The distinction only helps where no source EXISTS. An input that should have been
+        there and is not is still a finding about this trade."""
+        from ai_trader.foundation import create_due_diligence_assessment
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            result = create_due_diligence_assessment(db, self._proposal("LTC", technical_summary=""))
+            self.assertEqual(result["overall_status"], "incomplete")
+            reasoning = result.get("reasoning") or {}
+            if isinstance(reasoning, str):
+                reasoning = json.loads(reasoning)
+            self.assertIn("technical_status", reasoning.get("dimensions_failed") or [])
+
+    def test_the_assessment_records_what_it_could_not_measure(self):
+        """An unmeasured dimension must stay visible rather than being waved through, so a
+        persistent coverage gap is queryable rather than invisible."""
+        from ai_trader.foundation import create_due_diligence_assessment
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _new_db(tmp)
+            result = create_due_diligence_assessment(db, self._proposal("LTC"))
+            reasoning = result.get("reasoning") or {}
+            if isinstance(reasoning, str):
+                reasoning = json.loads(reasoning)
+            self.assertIn("macro_status", reasoning.get("dimensions_unmeasured") or [])
+            self.assertIn("dimensions measured", reasoning.get("verdict_basis") or "")

@@ -832,6 +832,20 @@ def _behavioural_context_available(conn: sqlite3.Connection, proposal: TradeProp
         return False
 
 
+# How many of the six due-diligence dimensions must actually be measurable before a proposal
+# can pass. Guards the 2026-09-05 change that stopped an unmeasurable dimension counting as a
+# failed one: a genuine failure still blocks, and so does a proposal where almost nothing could
+# be checked.
+#
+# Five of six, so at most ONE dimension may be unmeasurable. A single missing source is an
+# ordinary fact about a quiet coin -- measured 2026-09-05, LTC had five of six with only the
+# macro read unavailable, and was refused anyway while being one of just three coins to clear
+# the score bar that day. Two missing sources is a different thing: a trade seen from four
+# angles is not well enough evidenced to risk real money on, which is the standing assertion
+# in test_due_diligence_reports_insufficient_data_without_real_context and is kept.
+MINIMUM_MEASURED_DIMENSIONS = 5
+
+
 def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> dict[str, Any]:
     p = proposal.normalized()
     with closing(connect(db_path)) as probe_conn:
@@ -845,7 +859,36 @@ def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> d
         "behavioural_status": "completed" if behavioural_available else "insufficient_data",
         "investment_policy_status": "completed" if p.philosophy_fit else "incomplete",
     }
-    overall = "completed" if all(value == "completed" for value in statuses.values()) else "incomplete"
+    # 2026-09-05, Founder-directed. This line used to read
+    #     all(value == "completed" for value in statuses.values())
+    # which threw away a distinction the two lines above had just drawn. `incomplete` means the
+    # input existed and was absent or unusable -- a finding about this trade. `insufficient_data`
+    # means no source exists for this symbol at all, which says nothing about the trade.
+    # Collapsing them made an unmeasurable dimension identical to a failed one.
+    #
+    # Measured that day, and it is the whole reason crypto had so few candidates: the
+    # behavioural dimension needs a CRYPTO_SENTIMENT_SCORES row, sentiment is built from news
+    # articles, and 12 of the 19 tradable coins had ZERO articles in 48 hours -- ADA, DOT, LTC,
+    # BCH, ALGO, ATOM, FIL, GRT, KSM, MINA, SUI, AAVE. The crypto press writes about Bitcoin,
+    # not Kusama. Those twelve could never pass due diligence however good the setup, and LTC
+    # was refused on it while being one of only three coins to clear the score bar.
+    #
+    # This is the same principle already applied to backtest evidence in proposal_context,
+    # where an unwired source says "treat this as missing, not as a negative signal". Silence
+    # in the financial press is not a finding about a coin.
+    #
+    # The guard against this becoming a free pass is MINIMUM_MEASURED_DIMENSIONS: a genuine
+    # failure still blocks, and a proposal where almost nothing could be measured still blocks,
+    # so the change only helps a trade that is well evidenced everywhere a source exists.
+    blocking = sorted(name for name, value in statuses.items() if value == "incomplete")
+    unmeasured = sorted(name for name, value in statuses.items() if value == "insufficient_data")
+    measured = sum(1 for value in statuses.values() if value == "completed")
+    if blocking:
+        overall = "incomplete"
+    elif measured < MINIMUM_MEASURED_DIMENSIONS:
+        overall = "incomplete"
+    else:
+        overall = "completed"
     reasoning = {
         "fundamental": p.news_summary,
         "technical": p.technical_summary,
@@ -861,6 +904,17 @@ def create_due_diligence_assessment(db_path: Path, proposal: TradeProposal) -> d
             else "No behavioural data source (benchmark trader activity or crypto sentiment) was found for this symbol today."
         ),
         "investment_policy": f"Policy fit score: {p.philosophy_fit}",
+        # Recorded so an unmeasured dimension stays visible rather than silently waved
+        # through. If a coin keeps trading with the same dimension unmeasured, that is a
+        # coverage gap worth fixing, and this is the queryable evidence of it.
+        "dimensions_measured": measured,
+        "dimensions_unmeasured": unmeasured,
+        "dimensions_failed": blocking,
+        "verdict_basis": (
+            f"{measured} of {len(statuses)} dimensions measured"
+            + (f"; no source available for {', '.join(unmeasured)}" if unmeasured else "")
+            + (f"; failed on {', '.join(blocking)}" if blocking else "")
+        ),
     }
     with closing(connect(db_path)) as conn:
         with conn:
