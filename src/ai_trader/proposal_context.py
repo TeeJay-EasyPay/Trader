@@ -198,6 +198,52 @@ def _safe_json_loads(value: Any) -> Any:
         return None
 
 
+# The library tags its files with topics like [momentum, mean_reversion, market_regime,
+# risk_management, position_sizing, drawdown]. A strategy_id and a regime_id are not those
+# words, so they are translated here rather than passed through raw and matching nothing.
+# Nothing is included unconditionally. An earlier version always added risk_management and
+# position_sizing, and those two score so highly that they filled every slot -- leaving the
+# situational file, the one that actually distinguishes a crypto trend trade from an equity
+# value trade, permanently outside the top three. The generic discipline files still surface
+# whenever the strategy genuinely calls for them.
+_STRATEGY_TOPICS: dict[str, tuple[str, ...]] = {
+    "momentum": ("momentum",),
+    "trend_following": ("momentum", "market_regime"),
+    "crypto_trend_following_2r": ("momentum", "market_regime", "crypto"),
+    "crypto_infrastructure_trend": ("momentum", "crypto", "sector_analysis"),
+    "swing_continuation": ("momentum", "market_regime"),
+    "breakout": ("momentum", "market_regime"),
+    "volatility_expansion": ("market_regime", "drawdown"),
+    "mean_reversion": ("mean_reversion",),
+    "range_trading": ("mean_reversion", "market_regime"),
+    "pullback": ("mean_reversion", "momentum"),
+    "value_pullback": ("mean_reversion", "fundamentals"),
+    "quality_growth": ("fundamentals",),
+    "institutional_accumulation": ("market_regime", "fundamentals"),
+    "equity_conservative_ai_assisted": ("risk_management", "fundamentals"),
+}
+
+_REGIME_TOPICS: dict[str, tuple[str, ...]] = {
+    "trending": ("momentum", "market_regime"),
+    "ranging": ("mean_reversion", "market_regime"),
+    "range_bound": ("mean_reversion", "market_regime"),
+    "high_volatility": ("drawdown", "risk_management"),
+    "crisis": ("drawdown", "risk_management", "correlation"),
+    "bear": ("drawdown", "risk_management"),
+}
+
+
+def _knowledge_topics(*, strategy_id: str | None, regime_id: str | None) -> list[str]:
+    """The library's own tag vocabulary, derived from what this trade actually is."""
+    topics: list[str] = []
+    for value, table in ((strategy_id, _STRATEGY_TOPICS), (regime_id, _REGIME_TOPICS)):
+        key = str(value or "").strip().lower()
+        for topic in table.get(key, ()):
+            if topic not in topics:
+                topics.append(topic)
+    return topics
+
+
 def build_proposal_context(
     db_path: Path,
     *,
@@ -218,9 +264,24 @@ def build_proposal_context(
     """
     analogues = find_historical_analogues(db_path, {"symbol": symbol, "strategy_id": strategy_id, "regime_id": regime_id})
     backtest = _most_relevant_backtest(db_path, symbol=symbol, strategy_id=strategy_id)
-    excerpts = relevant_excerpts(asset_type=asset_type, sector=sector, limit=3)
+    # 2026-09-05, Phase 4 of the learning work. `relevant_excerpts` has always accepted a
+    # `topics` argument and this call never passed one, so selection fell back to asset type
+    # alone -- and with a seven-file library that returns the SAME three files for every trade.
+    # Measured that day: the reference_material block was byte-for-byte identical for XRP, AAVE
+    # and NVDA. It was not a library being consulted, it was a constant being pasted, and the
+    # model could not tell one situation from another by reading it.
+    #
+    # The strategy chosen and the regime detected are what actually make one trade different
+    # from another, and both are already resolved by the time this runs. Mapping them onto the
+    # library's own declared tags is what turns a fixed passage into relevant reading.
+    # Deliberately still three. Raising it to four to make room was tried and made things
+    # worse: with a seven-file library the fourth slot pulled in "Sector Notes: Airlines" for an
+    # NVDA trade, and irrelevant reading is worse than less reading -- it invites the model to
+    # draw an analogy that does not hold. Relevance beats volume.
+    topics = _knowledge_topics(strategy_id=strategy_id, regime_id=regime_id)
+    excerpts = relevant_excerpts(asset_type=asset_type, sector=sector, topics=topics, limit=3)
     if not excerpts:
-        record_knowledge_gap(db_path, asset_type=asset_type, sector=sector, topics_searched=None)
+        record_knowledge_gap(db_path, asset_type=asset_type, sector=sector, topics_searched=topics)
 
     return {
         "historical_analogues": _serialize_historical_analogues(analogues),

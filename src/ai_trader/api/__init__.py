@@ -70,6 +70,7 @@ from ..foundation import (
 from ..experience_engine import initialize_experience_engine_schema
 from ..learning_readiness import assess_learning_readiness
 from ..strategy_demotion import review_strategies_for_demotion
+from ..shadow_outcomes import resolve_shadow_trades, shadow_strategy_records
 from ..strategy_performance import strategy_records
 from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
@@ -2019,6 +2020,20 @@ class LocalApiService:
             for strategy_id, record in strategy_records(self.settings.db_path).items()
         }
         demotions = review_strategies_for_demotion(self.settings.db_path)
+        # Phase 3: settle the candidates the app decided against, so declining a trade still
+        # teaches it something. Bounded per run so one job cannot consume the worker's budget;
+        # whatever is left stays pending and is picked up next time.
+        shadow_settlement = resolve_shadow_trades(self.settings.db_path, limit=500)
+        shadow_by_strategy = shadow_strategy_records(self.settings.db_path)
+        # A demoted strategy earns its way back on shadow evidence, but the promotion itself
+        # stays a Founder decision -- a simulation is not a trading record, and auto-promoting
+        # on one would put real money behind a number no money was ever risked on.
+        repromotion_candidates = [
+            {"strategy_id": strategy_id, **stats}
+            for strategy_id, stats in shadow_by_strategy.items()
+            if stats["sample_size"] >= 30 and stats["expectancy_r"] > 0
+            and strategy_id not in live_strategy_records
+        ]
         return {
             "date": learning_date,
             "summary": (
@@ -2028,6 +2043,9 @@ class LocalApiService:
             "learning_readiness": readiness.to_dict(),
             "strategy_live_results": live_strategy_records,
             "strategy_demotions": demotions,
+            "shadow_settlement": shadow_settlement,
+            "shadow_strategy_results": shadow_by_strategy,
+            "repromotion_candidates": repromotion_candidates,
             "trade_outcomes": {
                 "closed_trades": len(attribution),
                 "wins": len(wins),

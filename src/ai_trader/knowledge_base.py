@@ -157,6 +157,18 @@ def relevant_excerpts(
         score = 0.0
         if entry_sectors and sector_normalized and sector_normalized in entry_sectors:
             score += 2.0
+        elif entry_sectors and sector_normalized:
+            # 2026-09-05: a sector-specific file whose sector does NOT match now ranks below
+            # every general one instead of competing on equal terms. The comment above called
+            # such a file "still broadly relevant, just less targeted", and that held while
+            # nothing passed `topics` -- but once the caller started passing real ones,
+            # "Sector Notes: Airlines" began winning a slot on an NVDA trade through a generic
+            # `fundamentals` tag. Irrelevant reading is worse than less reading: it invites the
+            # model to draw an analogy that does not hold.
+            #
+            # Still eligible, not excluded, so it can fill a slot when genuinely nothing else
+            # applies -- which is what the original comment was protecting.
+            score -= 1.0
         if topics_normalized:
             score += len(topics_normalized.intersection(entry["topics"]))
         scored.append((score, entry))
