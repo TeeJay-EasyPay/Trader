@@ -378,6 +378,53 @@ def _news_summary(news: dict) -> str:
     return " | ".join(headlines)
 
 
+def _kraken_ticker_payload(prices: dict[str, Any], pair: str) -> dict[str, Any] | None:
+    """The Ticker block for `pair`, whatever name Kraken chose to answer under.
+
+    Kraken accepts the altname you ask for (XBTGBP, ETHGBP, XLMGBP) and replies keyed by
+    its own canonical name (XXBTZGBP, XETHZGBP, XXLMZGBP) for the legacy X/Z-prefixed
+    assets, while newer listings echo the altname back unchanged. A plain
+    `prices.get(pair)` therefore returns None for exactly three coins in the tradable
+    universe -- BTC, ETH and XLM -- and measured against live Kraken on 2026-09-05 those
+    are the only three of nineteen that miss.
+
+    This trap is already recorded twice in broker_adapters: order_book takes the single
+    payload rather than the requested name, noting it is "the same trap that made the
+    batched Ticker read silently price nothing", and _kraken_last_price carries a
+    next(iter(...)) fallback. Both range helpers were reading the requested key, so the
+    24h evidence was silently blank for BTC, ETH and XLM -- and so, before today, was the
+    0.75 gate that read the same number, which means it never applied to those three.
+
+    Resolution order: the exact key, then a name-normalised match (X/Z prefixes stripped,
+    XBT read as BTC), then the sole payload when only one pair was requested -- which is
+    how the crypto research path calls it, one pair at a time.
+    """
+    if not isinstance(prices, dict) or not prices:
+        return None
+    payload = prices.get(pair)
+    if isinstance(payload, dict):
+        return payload
+
+    def _normalize(name: str) -> str:
+        text = str(name or "").upper()
+        for prefix in ("XX", "X", "Z"):
+            if text.startswith(prefix) and len(text) > 6:
+                text = text[len(prefix):]
+                break
+        text = text.replace("ZGBP", "GBP").replace("ZUSD", "USD").replace("ZEUR", "EUR")
+        return text.replace("XBT", "BTC")
+
+    wanted = _normalize(pair)
+    for key, value in prices.items():
+        if isinstance(value, dict) and _normalize(key) == wanted:
+            return value
+    if len(prices) == 1:
+        only = next(iter(prices.values()))
+        if isinstance(only, dict):
+            return only
+    return None
+
+
 def _kraken_range_position(prices: dict[str, Any], pair: str) -> float | None:
     """Where the current price sits within Kraken's own reported 24h high/low range:
     0.0 = at the 24h low, 1.0 = at the 24h high. None if range data is unavailable or
@@ -385,7 +432,7 @@ def _kraken_range_position(prices: dict[str, Any], pair: str) -> float | None:
     [today, last24h] pairs alongside the `c` (last trade) field this module already
     reads for the current price -- this is the same payload already being fetched for
     every symbol, not an extra API call."""
-    payload = prices.get(pair)
+    payload = _kraken_ticker_payload(prices, pair)
     if not isinstance(payload, dict):
         return None
     high, low, last = payload.get("h"), payload.get("l"), payload.get("c")
@@ -410,7 +457,7 @@ def _kraken_day_range(prices: dict[str, Any], pair: str) -> dict[str, Any] | Non
     open, not just how far up a band it has travelled. Read from the same Ticker payload
     already fetched for the price -- no extra API call.
     """
-    payload = prices.get(pair)
+    payload = _kraken_ticker_payload(prices, pair)
     if not isinstance(payload, dict):
         return None
     high, low, last, opening = payload.get("h"), payload.get("l"), payload.get("c"), payload.get("o")

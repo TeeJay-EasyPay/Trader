@@ -118,6 +118,53 @@ class RangePositionIsEvidenceNotAGateTests(unittest.TestCase):
         self.assertEqual(candidate["day_range"]["high_24h"], 110.0)
 
 
+class KrakenCanonicalPairNameTests(unittest.TestCase):
+    """Kraken answers under ITS name, not the one you asked for.
+
+    You request XBTGBP / ETHGBP / XLMGBP and the Ticker result comes back keyed
+    XXBTZGBP / XETHZGBP / XXLMZGBP, while newer listings echo the altname unchanged.
+    Measured against live Kraken on 2026-09-05: exactly three of the nineteen tradable
+    coins miss on a plain dict lookup, and they are BTC, ETH and XLM.
+
+    Both range helpers read the requested key, so the 24h evidence was blank for those
+    three - and so, before it was removed, was the 0.75 gate that read the same number.
+    It never applied to BTC, ETH or XLM at all.
+
+    broker_adapters already records this trap twice (order_book's comment, and
+    _kraken_last_price's next(iter(...)) fallback), which is why the price still worked
+    while the range did not.
+    """
+
+    LEGACY = {
+        "XXBTZGBP": {"c": ["109.0", "1"], "h": ["105.0", "110.0"], "l": ["95.0", "90.0"], "o": "100.0"},
+    }
+
+    def test_a_canonical_reply_resolves_to_the_altname_that_was_requested(self):
+        from ai_trader.agent import _kraken_day_range, _kraken_range_position
+
+        self.assertAlmostEqual(_kraken_range_position(self.LEGACY, "XBTGBP"), 0.95, places=2)
+        self.assertEqual(_kraken_day_range(self.LEGACY, "XBTGBP")["high_24h"], 110.0)
+
+    def test_an_exact_key_still_wins_over_the_fallback(self):
+        from ai_trader.agent import _kraken_range_position
+
+        prices = {
+            "DOTGBP": {"c": ["91.0", "1"], "h": ["105.0", "110.0"], "l": ["95.0", "90.0"], "o": "100.0"},
+            "XXBTZGBP": self.LEGACY["XXBTZGBP"],
+        }
+        self.assertAlmostEqual(_kraken_range_position(prices, "DOTGBP"), 0.05, places=2)
+
+    def test_an_unrelated_batch_does_not_borrow_another_coins_range(self):
+        """The sole-payload fallback must not fire when several pairs came back."""
+        from ai_trader.agent import _kraken_range_position
+
+        prices = {
+            "DOTGBP": {"c": ["91.0", "1"], "h": ["105.0", "110.0"], "l": ["95.0", "90.0"], "o": "100.0"},
+            "SOLGBP": {"c": ["99.0", "1"], "h": ["105.0", "110.0"], "l": ["95.0", "90.0"], "o": "100.0"},
+        }
+        self.assertIsNone(_kraken_range_position(prices, "XLMGBP"))
+
+
 class BtcRegimeGateTests(unittest.TestCase):
     class _AdapterWithBtcChange:
         """BTC's own ticker reflects btc_change_pct; any other pair returns a flat price
