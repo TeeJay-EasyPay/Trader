@@ -272,9 +272,15 @@ class LimitEntryFallbackTests(unittest.TestCase):
     def test_an_order_kraken_already_cancelled_falls_back_immediately_without_exhausting_the_poll_budget(self):
         fake = FakeKraken(statuses=["canceled"])
         result = _place(_base_env(KRAKEN_LIMIT_ENTRIES_ENABLED="true"), fake)
-        # Exactly one status check before giving up and falling back, not the whole budget's
-        # worth of polling against an order that is already known to be gone.
-        self.assertEqual(len(fake.query_orders_calls()), 1)
+        # One poll to notice the order is gone, plus one read after cancelling, and nothing
+        # like the whole budget's worth of polling -- which is what this test is really about.
+        #
+        # 2026-09-05: this asserted exactly 1. The second read was added after a real-money
+        # incident where a partially filled order was treated as unfilled and the market
+        # fallback re-bought the whole position. A cancelled order can still carry a non-zero
+        # vol_exec, so it needs netting off here too -- if anything this is the case where
+        # reading it matters most, because Kraken cancelled it mid-fill rather than us.
+        self.assertLessEqual(len(fake.query_orders_calls()), 2)
         self.assertEqual(len(fake.add_order_calls()), 2)
         self.assertEqual(result["fallback_from_unfilled_limit_order_id"], "OLIMIT-1")
 

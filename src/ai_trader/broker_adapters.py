@@ -709,10 +709,12 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
         poll_interval = max(1.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_INTERVAL_SECONDS", 30.0))
         poll_budget = max(0.0, _float_env("KRAKEN_LIMIT_ENTRY_POLL_BUDGET_SECONDS", 300.0))
         deadline = time.monotonic() + poll_budget
+        requested_volume = _float_or_zero(check.get("volume"))
+        filled_volume = 0.0
         while time.monotonic() < deadline:
             time.sleep(poll_interval)
             try:
-                status = self._order_status(order_id)
+                status, filled_volume = self._order_fill_state(order_id)
             except Exception:  # noqa: BLE001 - a status-check failure must not crash order placement
                 status = None
             if status == "closed":
@@ -727,6 +729,47 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             self._private_request("/0/private/CancelOrder", {"txid": order_id})
         except Exception:  # noqa: BLE001 - best-effort; if it already filled or is already gone, cancellation legitimately fails
             pass
+        # 2026-09-05: re-read AFTER cancelling, not before. The order stays live during the
+        # final poll interval and through the cancel round trip, and on a thin book that is
+        # ample time for more of it to fill. Sizing the fallback off the last poll would
+        # re-buy whatever landed in that gap -- a smaller version of the same over-buy this
+        # whole block exists to prevent.
+        try:
+            _final_status, final_filled = self._order_fill_state(order_id)
+            filled_volume = max(filled_volume, final_filled)
+        except Exception:  # noqa: BLE001 - fall back to the last figure we did read
+            pass
+        # The price the proposal was sized against; used to express volumes as money below.
+        unit_price = _float_or_zero(check.get("notional")) / requested_volume if requested_volume else 0.0
+        remaining_volume = requested_volume - filled_volume
+        if requested_volume > 0 and remaining_volume <= 0:
+            # The patient order filled after all, between the last poll and the cancel.
+            filled_response = dict(limit_response)
+            filled_response["quantity"] = filled_volume
+            filled_response["filled_quantity"] = filled_volume
+            filled_response["patient_limit_fully_filled_before_fallback"] = True
+            return filled_response
+        if filled_volume > 0:
+            # A partial fill is a real position. The remainder may now be too small for the
+            # exchange to accept, and submitting it would be an order known to fail -- the
+            # same reasoning as _kraken_min_order_floor_notional in orchestrator.py.
+            try:
+                minimum_notional = self.pair_minimum_notional(pair, unit_price) if unit_price > 0 else None
+            except Exception:  # noqa: BLE001 - an unavailable minimum must not block the decision below
+                minimum_notional = None
+            remaining_notional = remaining_volume * unit_price
+            if minimum_notional is not None and remaining_notional < minimum_notional:
+                partial_response = dict(limit_response)
+                partial_response["quantity"] = filled_volume
+                partial_response["filled_quantity"] = filled_volume
+                partial_response["notional"] = filled_volume * unit_price
+                partial_response["patient_limit_partially_filled"] = True
+                partial_response["remainder_below_exchange_minimum"] = {
+                    "remaining_volume": remaining_volume,
+                    "remaining_notional": remaining_notional,
+                    "exchange_minimum_notional": minimum_notional,
+                }
+                return partial_response
 
         # 2026-09-03, Founder-directed: "if the price moves substantially, then that changes the
         # whole nature of the trade. And so, yes, it's better to abandon that trade than to risk
@@ -768,11 +811,16 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
                     "price_when_abandoned": current_price,
                     "abandoned_from_unfilled_limit_order_id": order_id,
                 }
+        # 2026-09-05: the REMAINDER, never the original volume. This line previously read
+        # check["volume"], so anything the limit order had already filled was bought a second
+        # time. remaining_volume equals the original whenever nothing filled, so the ordinary
+        # "patient order never rested" case is unchanged.
+        fallback_volume = remaining_volume if filled_volume > 0 else check["volume"]
         market_payload = {
             "pair": pair,
             "type": order_request.side.lower(),
             "ordertype": "market",
-            "volume": _format_decimal(check["volume"]),
+            "volume": _format_decimal(fallback_volume),
             "validate": "false" if _bool_env("KRAKEN_SUBMIT_REAL_ORDERS", False) else "true",
         }
         userref = _userref(order_request.client_order_id)
@@ -787,6 +835,10 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             }
         fallback_txids = fallback_result.get("result", {}).get("txid", [])
         fallback_order_id = fallback_txids[0] if fallback_txids else None
+        # The position is what the limit order filled PLUS what the fallback just bought, so
+        # that is what gets reported downstream -- the exit manager and the ledger must size
+        # against the real holding, not against the fallback leg alone.
+        total_quantity = filled_volume + fallback_volume
         return {
             "status": "accepted" if fallback_order_id else "submitted",
             "broker": self.name,
@@ -794,22 +846,51 @@ class KrakenAdapter(PlaceholderBrokerAdapter):
             "order_id": fallback_order_id,
             "pair": pair,
             "side": order_request.side.lower(),
-            "quantity": check["volume"],
-            "notional": check["notional"],
+            "quantity": total_quantity,
+            "notional": total_quantity * unit_price if unit_price else check["notional"],
             "kraken_result": fallback_result.get("result", {}),
             "fallback_from_unfilled_limit_order_id": order_id,
+            "patient_limit_filled_quantity": filled_volume,
+            "market_fallback_quantity": fallback_volume,
         }
 
     def _order_status(self, order_id: str) -> str | None:
         """The real Kraken status string ("open", "closed", "canceled", "expired", ...) for
         one order, or None if it cannot be determined -- treated as "assume gone" by the
         caller so a status-check failure can never leave a patient entry waiting forever."""
+        return self._order_fill_state(order_id)[0]
+
+    def _order_fill_state(self, order_id: str) -> tuple[str | None, float]:
+        """Status AND how much of the order has already executed.
+
+        2026-09-05 incident, real money. Reading `status` alone is not enough, and the
+        difference cost roughly GBP 19 on the first live trade in eleven days.
+
+        Kraken reports a PARTIALLY filled order that is still resting as "open" -- the same
+        string as one that has not filled at all. `_await_fill_or_fallback_to_market` only
+        returned early on "closed" (fully filled), so a limit order that had quietly filled
+        most of the way still looked untouched when the patience budget expired. It was then
+        cancelled and a market order was placed for the ORIGINAL volume, buying the whole
+        position a second time.
+
+        Measured on XRPGBP: the limit entry filled ~17.99 XRP in small pieces (Kraken's own
+        minimum-sized chunks, which is simply how a thin GBP book fills), then the fallback
+        bought a further 24.14 at market. Intended 24.14, actually acquired ~42.1 -- about
+        1.75x the authorised size, with a stop loss sized for the smaller one.
+
+        `vol_exec` is the field that was never read. Returning it alongside the status is the
+        whole fix; the caller now nets it off.
+        """
         result = self._private_request("/0/private/QueryOrders", {"txid": order_id})
         orders = result.get("result", {})
         order = orders.get(order_id)
         if not isinstance(order, dict):
-            return None
-        return order.get("status")
+            return None, 0.0
+        try:
+            filled = float(order.get("vol_exec") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        return order.get("status"), filled
 
     def place_bracket_order(self, order_request: OrderRequest) -> dict[str, Any]:
         result = self.place_order(order_request)
@@ -1211,6 +1292,18 @@ def _balance_amount(balances: dict[str, Any], keys: tuple[str, ...]) -> float | 
 def _format_decimal(value: float) -> str:
     text = f"{value:.10f}"
     return text.rstrip("0").rstrip(".")
+
+
+def _float_or_zero(value: Any) -> float:
+    """A number from a broker payload, or 0.0 when it is missing or unparseable.
+
+    Used where a bad value must not raise mid-order-placement: an exception between a
+    resting limit order and its fallback is how a partial fill gets orphaned.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 

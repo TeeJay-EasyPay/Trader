@@ -112,3 +112,28 @@ seven. This does not block trading, it caps it at roughly a third of the univers
 sentiment scoring needs to cover every allowed pair, or the behavioural dimension needs an
 honest "insufficient_data" path that does not fail the whole assessment -- the same question as
 whether a missing input should read as a negative finding.
+
+### 9. URGENT - `broker-poll-kraken` times out on every single run, so the app is blind to its own fills
+Found 2026-09-05 while trying to confirm whether the first live order had filled. The job is
+registered with a 180s timeout and hits it **every time**: 22:34, 22:50, 22:59, 23:21, 23:52,
+00:06, 00:41, 00:54, 01:07, 01:31 -- ten runs out of ten, each at exactly 180.0s.
+`broker-poll-alpaca` completes normally in the same group, so this is Kraken-specific.
+
+This is PRE-EXISTING, not caused by the 4-5 September changes: it was already failing at 22:34,
+before the first deploy at 22:58.
+
+**Consequence.** This is the job that reconciles order state and fills. Order
+`OBJ3IU-4AUJR-QVTI3Y` (XRP, GBP 25, accepted 01:31:52) still reads `state=accepted
+filled=0.0` at 01:53, 27 minutes later and well past the 600s limit-entry window, with no
+further lifecycle event. The order may well have filled on Kraken and this system would not
+know. It also explains the app's own line, "246 old unfilled order records are being tracked
+separately".
+
+So the entry path works and the *reporting* of it does not. Until this is fixed, Kraken fills
+must be confirmed on Kraken directly, not from this app -- which also undermines every
+downstream number that depends on knowing what is actually held: the capital ledger, the track
+record, expectancy, and any future demotion-on-evidence work.
+
+Likely worth checking first: whether it is one slow Kraken API call (per-pair minimums, closed
+orders history) inside a loop over all pairs, and whether 180s is simply too short for a job
+that has 246 stale order records to walk.
