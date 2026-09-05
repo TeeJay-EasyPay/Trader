@@ -424,9 +424,22 @@ def strategy_definition(strategy_id: str, db_path: Path | None = None) -> dict[s
     return base
 
 
+def candidate_strategy_ids_for(asset_type: str) -> list[str]:
+    """The candidate list for an asset type, without needing a whole proposal.
+
+    Added 2026-09-05 so proposal_context can build the strategy scoreboard: it knows the
+    symbol and asset type but has no TradeProposal to hand.
+    """
+    return _candidate_strategy_ids_by_asset(str(asset_type or "").strip().lower())
+
+
 def _candidate_strategy_ids(proposal: TradeProposal) -> list[str]:
     p = proposal.normalized()
-    if p.asset_type == "crypto":
+    return _candidate_strategy_ids_by_asset(p.asset_type)
+
+
+def _candidate_strategy_ids_by_asset(asset_type: str) -> list[str]:
+    if asset_type == "crypto":
         return [
             "crypto_trend_following_2r",
             "crypto_infrastructure_trend",

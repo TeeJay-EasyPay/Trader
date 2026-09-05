@@ -29,7 +29,8 @@ from .database import connect
 from .decision_inputs import is_wired
 from .experience_engine import find_historical_analogues
 from .knowledge_base import record_knowledge_gap, relevant_excerpts
-from .trading_intelligence import initialize_trading_intelligence_schema
+from .strategy_scoreboard import serialize_strategy_evidence, strategy_evidence_for
+from .trading_intelligence import candidate_strategy_ids_for, initialize_trading_intelligence_schema
 
 
 def _most_relevant_backtest(db_path: Path, *, symbol: str, strategy_id: str | None) -> dict[str, Any] | None:
@@ -295,7 +296,30 @@ def build_proposal_context(
             excerpts, source_wired=is_wired(db_path, "reference_material")
         ),
         "market_forecast": _serialize_market_forecast(db_path, symbol=symbol),
+        # Phase 5, 2026-09-05. The model was being shown one already-chosen candidate and
+        # asked yes or no; it never saw the field, so it could not weigh which approach
+        # actually suits this coin. This block is that evidence, per coin, real money and
+        # simulation labelled separately. It rides in calls that already happen -- about 163
+        # a day -- and costs roughly 280 tokens each, so it adds judgement without adding
+        # spend. See strategy_scoreboard.py for the caching that keeps the egress flat.
+        "strategy_evidence": _serialize_strategy_evidence(
+            db_path, symbol=symbol, asset_type=asset_type
+        ),
     }
+
+
+def _serialize_strategy_evidence(db_path: Path, *, symbol: str, asset_type: str) -> str:
+    """Best-effort: an unavailable scoreboard must never block a proposal."""
+    try:
+        evidence = strategy_evidence_for(
+            db_path, symbol=symbol, candidates=candidate_strategy_ids_for(asset_type)
+        )
+        return serialize_strategy_evidence(evidence)
+    except Exception:  # noqa: BLE001
+        return (
+            "STRATEGY EVIDENCE UNAVAILABLE: the per-strategy record could not be read. Treat "
+            "this as a missing input, not as evidence that all strategies are equal."
+        )
 
 
 def _serialize_market_forecast(db_path: Path, *, symbol: str) -> str:

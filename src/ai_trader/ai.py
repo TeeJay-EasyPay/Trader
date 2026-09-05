@@ -177,13 +177,31 @@ class CryptoTradeReviewer:
                 "You are reviewing a crypto trade candidate that has already passed this system's mechanical "
                 "screens (due-diligence score, trend, 24h-range position, BTC regime, re-entry cooldown). "
                 "Your job is judgment, not arithmetic: decide whether this is genuinely worth taking right now. "
-                "Return only JSON with fields: proceed, confidence, reasoning, concerns. "
+                "Return only JSON with fields: proceed, confidence, reasoning, concerns, "
+                "strategy_fit, better_suited_strategy. "
                 "proceed must be true or false. confidence must be a decimal fraction between 0 and 1 and must "
                 "NOT exceed the supplied candidate confidence -- you may lower it, never raise it. "
                 "reasoning must be 2-4 sentences in plain English a non-technical founder can follow, citing the "
                 "actual evidence supplied. concerns must be an array of at most 3 short strings. "
                 "Set proceed=false when the evidence genuinely does not support entering now -- a thin or "
                 "contradictory case is a real reason to pass, and passing costs nothing. "
+                # Phase 5, 2026-09-05, Founder-directed. Until now this reviewer saw one
+                # already-chosen strategy and could only accept or refuse the trade. It now
+                # receives strategy_evidence: how every candidate strategy has actually
+                # performed ON THIS COIN and overall. That distinction is the point -- the same
+                # strategy measured -0.15R on BCH and -1.77R on XRP, so a per-strategy average
+                # is the wrong basis for a per-coin decision.
+                "strategy_evidence shows how each candidate strategy has performed on THIS coin and "
+                "overall, separating this system's own closed trades (real_money) from simulated "
+                "outcomes of candidates it recorded but did not take (shadow_simulation). Weigh the "
+                "record on this specific coin above the general one: the same strategy can work on one "
+                "coin and fail badly on another, and a thin sample is an anecdote, not a finding. "
+                "strategy_fit must be one of 'good', 'poor' or 'unproven', judging whether the strategy "
+                "actually assigned to this candidate suits this coin on that evidence. "
+                "better_suited_strategy must be the id of a listed strategy you judge a better fit, or "
+                "null when none is clearly better -- naming one does not change this trade's stop or "
+                "target, it is recorded so selection can improve. Do NOT prefer a strategy merely "
+                "because it has no losing record; absent evidence is not good evidence. "
                 "You are NOT setting the entry price, position size, stop-loss or take-profit; those are fixed by "
                 "risk management and are shown only as context."
             ),
@@ -484,11 +502,22 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         confidence = None
     if confidence is not None and not 0.0 <= confidence <= 1.0:
         confidence = None
+    # Phase 5, 2026-09-05. Both fields are optional on purpose: a model that omits them still
+    # produces a usable review, so this cannot become a new way for a trade to be lost. The
+    # strategy judgement is recorded and used to improve selection -- it never alters this
+    # trade's price, size, stop or target, which stay deterministic risk management.
+    strategy_fit = str(data.get("strategy_fit") or "").strip().lower()
+    if strategy_fit not in {"good", "poor", "unproven"}:
+        strategy_fit = None
+    better = data.get("better_suited_strategy")
+    better_suited = str(better).strip() if isinstance(better, str) and better.strip() else None
     return {
         "proceed": bool(data.get("proceed")),
         "confidence": confidence,
         "reasoning": reasoning,
         "concerns": _string_list(data.get("concerns")),
+        "strategy_fit": strategy_fit,
+        "better_suited_strategy": better_suited,
     }
 
 

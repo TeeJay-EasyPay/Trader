@@ -931,6 +931,30 @@ def propose_crypto_trades(
                         print(f"[crypto-research] symbol={symbol} stage=review outcome=failed detail={exc}", flush=True)
                         review = None
                 if review is not None:
+                    # Phase 5, 2026-09-05: the reviewer now also judges whether the strategy
+                    # assigned to this candidate actually suits this coin, and may name one it
+                    # thinks fits better. Recorded rather than acted on: it must not change
+                    # this trade's price, size, stop or target, which stay deterministic. It
+                    # accumulates as evidence that selection is or is not choosing well, which
+                    # is the only honest basis for later letting the model choose outright.
+                    if review.get("strategy_fit") or review.get("better_suited_strategy"):
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="ai_strategy_judgement",
+                            payload={
+                                "symbol": symbol,
+                                "assigned_strategy": proposal.strategy_id,
+                                "strategy_fit": review.get("strategy_fit"),
+                                "better_suited_strategy": review.get("better_suited_strategy"),
+                                "reviewer_confidence": review.get("confidence"),
+                            },
+                        )
+                        print(
+                            f"[crypto-research] symbol={symbol} stage=strategy_judgement "
+                            f"assigned={proposal.strategy_id} fit={review.get('strategy_fit')} "
+                            f"better={review.get('better_suited_strategy')}",
+                            flush=True,
+                        )
                     proposal = _apply_crypto_review(proposal, review)
                     if not review["proceed"]:
                         audit.record_execution_event(
