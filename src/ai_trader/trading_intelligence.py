@@ -4,7 +4,7 @@ import json
 import math
 import sqlite3
 import threading
-from .database import connect, selected_backend
+from .database import connect, selected_backend, row_values
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -1789,6 +1789,20 @@ def calculate_performance_metrics(db_path: Path, strategy_id: str, asset_type: s
 
 
 def _seed_strategy_registry(conn: sqlite3.Connection) -> None:
+    # 2026-09-06 Supabase egress finding -- see _policy_seed_is_complete in foundation.py for
+    # the full diagnosis. Short version: cli.py runs every worker job in its own subprocess, so
+    # every in-memory "seed once per process" guard in this codebase actually means "once per
+    # job", and this re-inserted all 15 strategies on a ~60s cycle. One COUNT replaces fifteen
+    # INSERT OR IGNOREs and the BEGIN/sequence-lookup/currval/COMMIT/DISCARD each drags along.
+    #
+    # COUNT rather than a "seeded" flag so that ADDING a strategy to STRATEGIES still seeds it:
+    # the count falls below len(STRATEGIES) and the seed runs again. A flag would strand it.
+    try:
+        counts = row_values(conn.execute("SELECT COUNT(*) FROM STRATEGY_REGISTRY").fetchone())
+        if counts and int(counts[0]) >= len(STRATEGIES):
+            return
+    except Exception:  # noqa: BLE001 - a failed check must seed, never skip
+        pass
     now = utc_now_iso()
     for item in STRATEGIES.values():
         conn.execute(

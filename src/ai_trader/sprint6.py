@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from .database import POSTGRES_BACKENDS, connect
+from .database import POSTGRES_BACKENDS, connect, row_values
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -274,6 +274,23 @@ def _maturity_registry_bootstrap_row(
 
 def seed_default_strategy_registry(db_path: Path) -> None:
     _ensure_sprint6_schema(db_path)
+    # 2026-09-06 Supabase egress finding -- see _policy_seed_is_complete in foundation.py.
+    # This wrote one bootstrap row plus one row per strategy on every worker job, because
+    # cli.py gives each job its own subprocess and so defeats every in-memory guard. Measured
+    # at ~28,700 writes a day against 16 rows that have not changed since July.
+    #
+    # The expected count is the bootstrap row plus one per strategy, so adding a strategy
+    # still re-seeds rather than being silently stranded by a "seeded" flag.
+    expected_rows = 1 + len(STRATEGIES)
+    try:
+        with closing(connect(db_path)) as probe:
+            counts = row_values(
+                probe.execute("SELECT COUNT(*) FROM STRATEGY_MATURITY_REGISTRY").fetchone()
+            )
+        if counts and int(counts[0]) >= expected_rows:
+            return
+    except Exception:  # noqa: BLE001 - a failed check must seed, never skip
+        pass
     now = utc_now_iso()
     next_review = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     with closing(connect(db_path)) as conn:

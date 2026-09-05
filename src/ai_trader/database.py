@@ -163,6 +163,38 @@ _TABLE_INFO_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
 _SEQUENCE_NAME_CACHE: dict[tuple[str, str], str] = {}
 
 
+def row_values(row: Any) -> list[Any]:
+    """Every value of one result row, in column order, whatever the row factory is.
+
+    2026-09-06: rows reach callers in three different shapes depending on backend and caller
+    -- a plain tuple from a bare sqlite3 connection, a sqlite3.Row where one has been set, and
+    a dict from psycopg's dict_row, which is what the hosted Postgres path always uses. Code
+    that reads a COUNT by name works on Postgres and raises TypeError on a bare SQLite tuple;
+    code that reads row[0] does the reverse. A guard written either way therefore passes its
+    own tests on one backend and silently fails closed on the other -- which is exactly how a
+    seeding guard added to cut egress could have gone on re-seeding in production forever
+    while every test agreed it worked.
+
+    dict and psycopg's dict_row both preserve column order, so positional access after this
+    is safe on all three shapes.
+    """
+
+    if row is None:
+        return []
+    if isinstance(row, dict):
+        return list(row.values())
+    keys = getattr(row, "keys", None)
+    if callable(keys):
+        try:
+            return [row[key] for key in keys()]
+        except Exception:  # noqa: BLE001 - fall through to sequence handling
+            pass
+    try:
+        return list(row)
+    except TypeError:
+        return []
+
+
 def clear_schema_cache() -> None:
     """Forget cached table structure. Call after creating or altering tables."""
     _TABLE_INFO_CACHE.clear()

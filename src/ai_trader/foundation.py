@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect, selected_backend
+from .database import connect, selected_backend, row_values
 from .models import TradeProposal, utc_now_iso
 from .operational import safe_score
 from .technical_discretion import cash_capped_notional, conviction_scaled_notional
@@ -1331,7 +1331,65 @@ def _decode_latest_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _policy_seed_is_complete(conn: sqlite3.Connection) -> bool:
+    """True when every default policy row is already present, in ONE round trip.
+
+    2026-09-06 Supabase egress finding, and the missing half of a diagnosis this file has
+    carried since 2026-08-01. initialize_foundation_schema's docstring already named the cost
+    -- "_seed_policies re-inserting the full default policy set (INSERT OR IGNORE against
+    every row) on every call rather than only when the tables are genuinely empty" -- and the
+    fix applied then was an in-memory once-per-process guard.
+
+    That guard is correct and it holds. It just does not help, because cli.py runs every
+    worker job in its OWN SUBPROCESS (see run_jobs' "own isolated subprocess, own timeout,
+    own status" comment). A new process has an empty _INITIALIZED_SCHEMA_KEYS, so "once per
+    process" means "once per job". Measured against production: 88 RISK_POLICIES inserts in
+    240 seconds -- one complete re-seed of all 23 rows every single minute, matching the
+    worker's 60s cycle exactly. Across the four seeded tables that was ~105,000 writes a day
+    to 70 rows of configuration that had not changed since July.
+
+    The rows themselves are tiny; that was never the point. Each INSERT drags a BEGIN, a
+    pg_get_serial_sequence lookup, a currval, a COMMIT and a DISCARD ALL behind it, and on a
+    pooled hosted database the per-request overhead dwarfs the payload. This was roughly 70%
+    of ALL database traffic on an otherwise idle system.
+
+    A COUNT rather than a marker row deliberately: it stays correct when a future release ADDS
+    a default policy. A bare "have we seeded before?" flag would silently skip the new key
+    forever, which is exactly the kind of quiet, permanent breakage this codebase has been
+    bitten by before. >= not ==, so a Founder-added custom policy does not force a re-seed on
+    every job either.
+    """
+
+    expected_broker = sum(len(values) for values in DEFAULT_BROKER_POLICIES.values())
+    try:
+        row = conn.execute(
+            """
+            SELECT (SELECT COUNT(*) FROM INVESTMENT_POLICIES) AS investment_count,
+                   (SELECT COUNT(*) FROM RISK_POLICIES) AS risk_count,
+                   (SELECT COUNT(*) FROM LEARNING_POLICIES) AS learning_count,
+                   (SELECT COUNT(*) FROM BROKER_POLICIES) AS broker_count
+            """
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - a failed check must re-seed, never skip
+        return False
+    counts = row_values(row)
+    if len(counts) < 4:
+        return False
+    try:
+        investment, risk, learning, broker = (int(value) for value in counts[:4])
+    except (TypeError, ValueError):
+        return False
+    return (
+        investment >= len(DEFAULT_INVESTMENT_POLICIES)
+        and risk >= len(DEFAULT_RISK_POLICIES)
+        and learning >= len(DEFAULT_LEARNING_POLICIES)
+        and broker >= expected_broker
+    )
+
+
 def _seed_policies(conn: sqlite3.Connection) -> None:
+    if _policy_seed_is_complete(conn):
+        return
     now = utc_now_iso()
     for key, (value, value_type, description) in DEFAULT_INVESTMENT_POLICIES.items():
         _insert_policy(conn, "INVESTMENT_POLICIES", key, value, value_type, "investment", description, now)
