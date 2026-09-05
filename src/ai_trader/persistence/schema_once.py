@@ -72,9 +72,18 @@ def ensure_schema_once(db_path: Path, namespace: str, init_fn: Callable[[], None
     if key in _INITIALIZED:
         return
     with _LOCK:
-        _clear_schema_cache()
+        # 2026-09-05: this clear used to sit ABOVE the double-check, so a thread that lost the
+        # race -- and therefore ran no DDL at all -- still wiped the whole process's schema
+        # cache on its way to returning. clear_schema_cache() is all-or-nothing across every
+        # table and every database, so one needless call there forces every table in the app to
+        # be re-described from information_schema on next use. That is the other half of why
+        # the 2026-09-03 cache only cut information_schema traffic 2.4x instead of near-zero.
+        # Nothing is lost by moving it: the only reason to clear BEFORE init_fn is a stale
+        # description of a table init_fn is about to alter, and a thread that returns here
+        # never reaches init_fn.
         if key in _INITIALIZED:
             return
+        _clear_schema_cache()
         init_fn()
         _INITIALIZED.add(key)
         # 2026-09-03: init_fn has just created or altered tables, so any cached description

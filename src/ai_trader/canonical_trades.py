@@ -506,7 +506,22 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
             "SELECT * FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id",
             (logical_trade_id,),
         ).fetchall()
-        trade_row = active.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
+        # 2026-09-05 Supabase egress finding: SELECT * here cost the whole row, and
+        # decision_context_json on LOGICAL_TRADES averages 45,433 of its ~50,000 bytes. This
+        # function reads exactly two fields off trade_row -- `side` just below and `state` a
+        # few lines further down -- so 91% of every fetch was discarded unread. Measured via
+        # pg_stat_statements: SELECT * on this table ran 72,487 times for ~63 MB/day, and this
+        # call site is half of them (the other half is the canonical_trade() call at the end
+        # of this same function).
+        #
+        # Deliberately NOT narrowed at that second call site or in canonical_trade() itself:
+        # its result is public and genuinely carries decision_context_json onward into
+        # _learning_payload_from_canonical_trade (sprint6.py) and the Kraken reconciliation
+        # payload, both of which read that exact field. Dropping it there would empty the
+        # AI's own record of why a trade was taken -- silently, and only in production.
+        trade_row = active.execute(
+            "SELECT side, state FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)
+        ).fetchone()
         if not trade_row:
             return None
         entries = [row for row in fills if row["fill_role"] == "entry"]

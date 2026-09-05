@@ -19,7 +19,7 @@
 const React = require('react');
 const { useCallback, useEffect, useMemo, useRef, useState } = React;
 const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-const { Alert, Linking } = require('react-native');
+const { Alert, AppState, Linking } = require('react-native');
 const {
   unavailableStatus,
   unavailableActivity,
@@ -60,12 +60,30 @@ const FOUNDER_EVIDENCE_CACHE_KEY = 'ai-trader:last-founder-evidence';
 // AT-ED-010 requirement 3 ("continue normal scheduled refreshes" / "automatically recover
 // to LIVE mode as soon as a successful refresh occurs"): there was previously no periodic
 // refresh at all, only manual pull-to-refresh and the initial mount fetch, so a stale/cached
-// state could persist indefinitely with nothing to trigger auto-recovery. This is a new
-// mechanism, not a re-tuned existing value - 2 minutes is a conservative starting point,
-// not a measured figure (that measurement work is a separate, parallel task; production
-// /founder-evidence latency was independently sampled at a consistent 3-3.75s, so this
-// interval is not expected to cause request overlap in practice).
-const AUTO_REFRESH_INTERVAL_MS = 120000;
+// state could persist indefinitely with nothing to trigger auto-recovery.
+//
+// 2026-09-05: the original 2 minutes was explicitly "a conservative starting point, not a
+// measured figure (that measurement work is a separate, parallel task)". That measurement has
+// now been done, against a Supabase account sitting at 408% of its egress allowance:
+//
+//   * one /founder-evidence refresh reads ONE row of PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS,
+//     and payload_json on that row averages 459,280 BYTES -- the whole Founder view for five
+//     screens in a single blob
+//   * the worker only REBUILDS that row every production_snapshot_interval_seconds = 600s
+//
+// So at 120000ms four of every five refreshes re-downloaded roughly half a megabyte of
+// byte-identical data. Left open for a day that is ~360 MB, against a 5 GB MONTHLY allowance.
+//
+// 600000 is not a round number picked for comfort -- it is the snapshot's own rebuild
+// interval, so every refresh now lands on data that has actually changed, and it stays
+// inside FOUNDER_SNAPSHOT_MAX_AGE_SECONDS (900s, production_evidence.py), which is what
+// decides whether the Founder is shown a "stale" warning. Slower than this -- the half hour
+// or hour that looks tempting -- would sit the app the wrong side of that 900s bar for most
+// of every cycle and push the Founder into pulling to refresh by hand, which costs the same
+// half megabyte anyway. Nothing about trading depends on this: the worker trades on its own
+// 60s loop whether the app is open or shut. This interval only decides how soon the Founder
+// SEES it.
+const AUTO_REFRESH_INTERVAL_MS = 600000;
 
 async function loadCachedRecommendations() {
   try {
@@ -214,6 +232,9 @@ function useFounderEvidence() {
   // into the single already-running attempt instead of issuing duplicate network requests.
   const isMountedRef = useRef(true);
   const refreshInFlightRef = useRef(false);
+  // When the last automatic refresh ran, so returning to the foreground cannot fire one
+  // that the timer would have skipped anyway. See the AppState effect below.
+  const lastAutoRefreshRef = useRef(Date.now());
   // AT-ED-011.9: guards against overlapping AsyncStorage writes to the same key (e.g. the
   // 2-minute auto-refresh firing again while the previous refresh's background cache write is
   // still in flight) - a second write is simply skipped rather than interleaved, matching
@@ -545,11 +566,40 @@ function useFounderEvidence() {
   // Failed state had no path back to Live without the Founder opening the app and pulling
   // to refresh themselves. refresh() itself now no-ops via refreshInFlightRef if a refresh
   // is already running, so this no longer needs its own `loading` check to avoid overlap.
+  // 2026-09-05: setInterval keeps firing while the app is backgrounded, so an app merely
+  // sitting in the Founder's pocket went on pulling the ~459 KB founder-evidence snapshot
+  // around the clock -- data spent rendering nothing anybody was looking at, charged against
+  // a 5 GB monthly egress allowance already at 408%.
+  //
+  // Refreshing on RETURN to the foreground rather than while away is also strictly better for
+  // the Founder: what he sees a second after opening the app is fetched then, not up to ten
+  // minutes earlier. lastAutoRefreshRef stops that becoming its own leak -- flicking between
+  // apps would otherwise fire a fresh half-megabyte read on every single switch back, which
+  // would be worse than the timer ever was.
   useEffect(() => {
-    const interval = setInterval(() => {
+    const runRefresh = () => {
+      lastAutoRefreshRef.current = Date.now();
       refresh();
+    };
+    const interval = setInterval(() => {
+      if (AppState.currentState !== 'active') {
+        return;
+      }
+      runRefresh();
     }, AUTO_REFRESH_INTERVAL_MS);
-    return () => clearInterval(interval);
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') {
+        return;
+      }
+      if (Date.now() - lastAutoRefreshRef.current < AUTO_REFRESH_INTERVAL_MS) {
+        return;
+      }
+      runRefresh();
+    });
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+    };
   }, [refresh]);
 
   const command = async (path, body = {}, fallbackPath = null) => {
