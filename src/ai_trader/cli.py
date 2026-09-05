@@ -36,6 +36,7 @@ from .always_on import (
     record_worker_heartbeat,
 )
 from .sprint6 import process_learning_outbox
+from .strategy_promotions import apply_founder_crypto_micro_live_promotions
 from .production_evidence import record_learning_evidence
 from .kraken_reconciliation import replay_persisted_kraken_evidence
 
@@ -282,6 +283,19 @@ def main(argv: list[str] | None = None) -> int:
         # database would have had an empty BENCHMARK_TRADERS table with no automatic recovery.
         # Same idempotent-upsert safety as the call above.
         service.benchmark.seed_initial_data()
+        # 2026-09-04, Founder-authorised: promote the crypto strategies to Micro Live so Kraken
+        # can execute at all. Every Kraken trade was being refused as strategy_entitlement_blocked
+        # because the strategies the crypto path assigns sat at the Sprint 6 bootstrap default of
+        # Paper. Recorded in code rather than typed into the database on purpose: the one strategy
+        # already at Micro Live had been set by hand, with no promotion record and evidence text
+        # that still said paper-only, and nobody could later explain it. Idempotent -- a strategy
+        # already carrying micro_live is skipped and writes nothing, so this is safe on every boot.
+        # See src/ai_trader/strategy_promotions.py for the full reasoning and what is still missing.
+        try:
+            promotions = apply_founder_crypto_micro_live_promotions(settings.db_path)
+            print(f"[strategy-promotions] {json.dumps(promotions, sort_keys=True)}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - this must never stop the worker booting
+            print(f"[strategy-promotions] failed: {exc}", flush=True)
         worker_id = default_worker_id("background-worker")
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
         with (

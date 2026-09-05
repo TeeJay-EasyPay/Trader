@@ -413,6 +413,14 @@ def _candidate_strategy_ids(proposal: TradeProposal) -> list[str]:
             "range_trading",
             "mean_reversion",
             "institutional_accumulation",
+            # 2026-09-04: both of these are permitted for crypto in STRATEGY_MATURITY_REGISTRY
+            # and in STRATEGY_REGISTRY, but this hardcoded list never offered them to a coin, so
+            # neither could be chosen however well it fitted -- a third place where two sources
+            # of truth disagreed and the code silently won. On the merits both belong here:
+            # volatility expansion after compression is if anything more characteristic of crypto
+            # than of equities, and continuing an established swing is ordinary coin behaviour.
+            "swing_continuation",
+            "volatility_expansion",
         ]
     return [
         "trend_following",

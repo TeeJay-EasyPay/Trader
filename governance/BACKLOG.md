@@ -63,3 +63,35 @@ Also unresolved from the handoff: is the strategy actually losing money, and if 
 stops, the entry signal, or the fee structure? A backtest suggested **-0.65R expectancy against
 +20.2% buy-and-hold** over 20 Jul - 4 Sep, but that finding is unverified and the entry rule it
 replayed may not match the live one.
+
+### 6. Demotion on live evidence - the missing half of the maturity ladder
+Eleven crypto strategies were promoted to Micro Live on 2026-09-04 on Founder authorisation,
+because the `Paper` stage they sat at was a bootstrap default rather than an earned position:
+no strategy carried any `sample_size`, `expectancy`, `win_rate`, `profit_factor` or
+`max_drawdown`, and `STRATEGY_PROMOTION_DECISIONS` and `STRATEGY_BACKTEST_RESULTS` were both
+empty.
+
+Promotion is now one-way. The ladder's real value is not blocking untested strategies -- it is
+automatically pulling one that starts losing real money. Needs per-strategy live expectancy
+measured from closed trades, and an automatic demotion when it deteriorates.
+`production_spine.strategy_promotion_decision` already has the gate logic and a drawdown-based
+demotion branch, but nothing computes the evidence to feed it and nothing applies its verdict
+to the registry. This is the same question as item 5.
+
+### 7. The tradable coin list is static, and lives in two places
+`KRAKEN_ALLOWED_PAIRS`, a Render environment variable defaulting to `XBTGBP,ETHGBP,SOLGBP`, is
+what actually gates which coins may be traded (`research_service.py:1316`,
+`broker_service.py:770`). `broker_policies.allowed_pairs` in the database holds the same list
+but is only used for display. Two homes for one value, and this one contradicts the standing
+rule that trading variables live in the database and only infrastructure lives in Render.
+
+Discovery, by contrast, IS dynamic: `crypto_asset_master` is refreshed from Kraken's live
+`AssetPairs/Ticker` feed and ranked on real 24h turnover (154 coins classified on 4 Sep). So a
+new Kraken GBP pair would be seen and measured but never traded until someone hand-edits an
+environment variable.
+
+Founder's framing: equities already work the right way -- a business-activity rule decides the
+universe, so it grows and shrinks on its own. Crypto should be equivalent: any Kraken GBP pair
+above a turnover floor, screened by rule rather than typed by hand. He rates this a nice-to-have,
+and that is right -- 19 pairs is not the constraint when only 8 clear the score bar. The
+env-versus-database duplication is worth fixing sooner than the dynamic universe itself.
