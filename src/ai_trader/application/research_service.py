@@ -810,7 +810,18 @@ class ResearchService:
             # Phase 5 (2026-08-20): real qualitative review for crypto candidates that
             # clear every mechanical gate. None when no OpenAI key is configured, which
             # simply leaves the existing deterministic behavior untouched.
-            reviewer=CryptoTradeReviewer(self.settings.openai_api_key, self.settings.openai_model) if self.settings.openai_api_key else None,
+            #
+            # 2026-09-05, Founder-directed: the REASONING model, not the bulk one. This was
+            # sharing gpt-4.1-mini with the 148-a-day equity scan and the per-cycle news
+            # classifier purely because nobody had split them, and the three do entirely
+            # different work. This call is now the most judgement-heavy in the app -- since the
+            # strategy scoreboard landed it weighs each candidate strategy's record ON THIS COIN
+            # against liquidity, the forecast and the news, then decides whether real money goes
+            # in. It is also what stood between the Founder and a trade for a fortnight.
+            #
+            # And it is affordable: about 15 calls a day against the scan's 148, so the better
+            # model lands on the decision that matters without moving the bill that matters.
+            reviewer=CryptoTradeReviewer(self.settings.openai_api_key, self.settings.openai_reasoning_model) if self.settings.openai_api_key else None,
         )
         print(f"[crypto-research] stage=research status=completed proposals_generated={len(proposals)}", flush=True)
         # Deliberately does not call auto_execute_recommendations() here. The dedicated,
