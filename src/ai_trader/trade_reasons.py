@@ -367,32 +367,43 @@ def _number_or_none(value: Any) -> float | None:
 
 
 def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
-    """Work out, for exits already closed, why they ended -- then let the existing repair run.
+    """Say why already-closed exits ended, then push that through to attribution.
 
-    2026-09-06. Two separate gaps met here and produced the Founder-visible symptom "there's
-    no exit trigger documented, so it doesn't really know why":
+    2026-09-06. The Founder asked the app why it sold XRP at a loss; it answered that no exit
+    trigger was documented. True, and caused by two gaps meeting: nothing recorded a reason
+    when a stop resting AT KRAKEN filled unwatched, and backfill_trade_reasons -- the repair
+    that existed for exactly this -- had NO CALLERS ANYWHERE.
 
-      1. Nothing recorded a reason when a stop resting AT KRAKEN filled unwatched. Fixed
-         forward in _fill_missing_exit_reason; this handles the rows already closed that way.
-      2. backfill_trade_reasons, which repairs PERFORMANCE_ATTRIBUTION from
-         MANAGED_TRADE_EXITS, had NO CALLERS AT ALL. It was written and never wired in, so
-         every placeholder it existed to clear simply stayed. Running it is step two here.
+    Two deliberate steps, because they fail independently:
 
-    Order matters and is the whole point: attribution reads its reason from the managed exit,
-    so filling the managed exits FIRST is what makes the second step able to do anything.
+      STEP 1 fills a blank exit_reason on a closed managed exit, from infer_exit_reason.
+      STEP 2 copies every managed-exit reason onto attribution rows still holding the
+             placeholder, matched on PROPOSAL ID.
 
-    Idempotent and additive -- only ever fills a blank, never overwrites a reason recorded at
-    the time, which is always the better evidence.
+    Step 2 covers every reason, not only the ones step 1 just wrote, because the two can be
+    out of step -- reasons recorded correctly at exit time still need propagating, and a
+    step-1 write in an earlier run must not be stranded because step 2 failed then.
+
+    ON THE KEY, NOT THE CLOCK. nearest_exit_reason matches a reason to a trade by timestamp
+    within six hours, which is a heuristic this function can itself perturb: the first version
+    stamped updated_at = now while writing reasons onto 30 trades that had closed days
+    earlier, and the six-hour window then matched none of them. The attribution count did not
+    move and the fix looked like it had worked. Ownership gives an exact key --
+    managed exit -> KRAKEN_AI_ORDER_OWNERSHIP -> logical trade -> proposal_id -- so it is used
+    instead, and updated_at is left strictly alone.
+
+    Idempotent and additive throughout: only ever fills a blank or replaces the placeholder,
+    never overwrites a reason recorded at the moment of the decision.
     """
 
-    filled = 0
+    outcome = {"managed_exits_filled": 0, "attribution_rows_updated": 0}
     with closing(connect(db_path)) as conn:
         with conn:
             rows = conn.execute(
                 """
                 SELECT m.managed_exit_id, m.entry_price, m.stop_loss, m.take_profit, m.side,
                        m.native_stop_order_id, m.exit_reason,
-                       t.average_exit_price AS exit_price,
+                       t.average_exit_price AS exit_price, t.proposal_id AS proposal_id,
                        (SELECT o2.broker_order_id FROM KRAKEN_AI_ORDER_OWNERSHIP o2
                         WHERE o2.managed_exit_id = m.managed_exit_id AND o2.order_role = 'exit'
                         LIMIT 1) AS filled_exit_order_id
@@ -400,36 +411,55 @@ def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> d
                 LEFT JOIN KRAKEN_AI_ORDER_OWNERSHIP o ON o.managed_exit_id = m.managed_exit_id
                 LEFT JOIN LOGICAL_TRADES t ON t.logical_trade_id = o.logical_trade_id
                 WHERE m.broker = ? AND m.status = 'closed'
-                  AND (m.exit_reason IS NULL OR m.exit_reason = '')
                 """,
                 (broker.lower(),),
             ).fetchall()
+
             seen: set[Any] = set()
             for raw in rows:
                 row = dict(raw)
                 exit_id = row.get("managed_exit_id")
-                if exit_id in seen:  # the join can repeat a managed exit per owned order
+                if exit_id in seen:  # the join repeats a managed exit per owned order
                     continue
                 seen.add(exit_id)
-                reason = infer_exit_reason(
-                    exit_price=row.get("exit_price"),
-                    stop_loss=row.get("stop_loss"),
-                    take_profit=row.get("take_profit"),
-                    entry_price=row.get("entry_price"),
-                    side=row.get("side"),
-                    native_stop_order_id=row.get("native_stop_order_id"),
-                    filled_exit_order_id=row.get("filled_exit_order_id"),
-                )
+
+                reason = row.get("exit_reason")
+                if is_placeholder(reason) or not reason:
+                    reason = infer_exit_reason(
+                        exit_price=row.get("exit_price"),
+                        stop_loss=row.get("stop_loss"),
+                        take_profit=row.get("take_profit"),
+                        entry_price=row.get("entry_price"),
+                        side=row.get("side"),
+                        native_stop_order_id=row.get("native_stop_order_id"),
+                        filled_exit_order_id=row.get("filled_exit_order_id"),
+                    )
+                    if reason:
+                        # updated_at untouched on purpose -- see the docstring.
+                        conn.execute(
+                            "UPDATE MANAGED_TRADE_EXITS SET exit_reason = ? WHERE managed_exit_id = ?",
+                            (reason, exit_id),
+                        )
+                        outcome["managed_exits_filled"] += 1
                 if not reason:
                     continue
-                conn.execute(
-                    "UPDATE MANAGED_TRADE_EXITS SET exit_reason = ?, updated_at = ? WHERE managed_exit_id = ?",
-                    (reason, utc_now_iso(), exit_id),
-                )
-                filled += 1
 
-    propagated = backfill_trade_reasons(db_path, broker=broker)
-    return {"managed_exits_filled": filled, "attribution": propagated}
+                proposal_id = row.get("proposal_id")
+                if not proposal_id:
+                    continue
+                cursor = conn.execute(
+                    """
+                    UPDATE PERFORMANCE_ATTRIBUTION SET exit_reason = ?
+                    WHERE proposal_id = ?
+                      AND (exit_reason IS NULL OR exit_reason = '' OR exit_reason = ?)
+                    """,
+                    (reason, proposal_id, UNRECORDED_EXIT),
+                )
+                changed = getattr(cursor, "rowcount", 0) or 0
+                outcome["attribution_rows_updated"] += max(0, int(changed))
+
+    outcome["attribution"] = backfill_trade_reasons(db_path, broker=broker)
+    return outcome
 
 
 def backfill_trade_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
