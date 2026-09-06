@@ -52,7 +52,9 @@ _FEEDS: tuple[tuple[str, str, str], ...] = (
     ("NEWS_CATALYST_EVIDENCE", "created_at", "news catalysts attached to a symbol"),
     ("MARKET_REGIME_EVIDENCE", "created_at", "market regime an entry is judged against"),
     ("CRYPTO_SENTIMENT_SCORES", "created_at", "per-coin behavioural score"),
-    ("CRYPTO_MARKET_DATA", "created_at", "crypto prices and ranges"),
+    # observed_at, not created_at. Getting this wrong is what cascaded on the first real
+    # run -- see _scalar. test_every_feed_column_exists is the guard against it drifting again.
+    ("CRYPTO_MARKET_DATA", "observed_at", "crypto prices and ranges"),
     ("PERFORMANCE_ATTRIBUTION", "closed_at", "completed trades the learning loop reads"),
     ("STRATEGY_BACKTEST_RESULTS", "created_at", "backtest evidence behind a strategy"),
     ("PRODUCTION_RESEARCH_EVIDENCE", "completed_at", "research runs"),
@@ -88,9 +90,31 @@ def initialize_self_assessment_schema(db_path: Path) -> None:
 
 
 def _scalar(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
+    """One value, or None if the query cannot be answered -- WITHOUT poisoning what follows.
+
+    2026-09-06, caught on the very first real run and worth the scar tissue. Postgres aborts
+    the whole transaction on any failed statement, and every later query on that connection
+    then fails too until it is rolled back. The census probes eleven feeds in sequence, so a
+    single bad probe did not report one missing feed -- it reported EVERY REMAINING FEED as
+    missing.
+
+    CRYPTO_MARKET_DATA has no created_at column. That one failure cascaded, and the AI was
+    handed a census claiming PERFORMANCE_ATTRIBUTION, the backtests, the research evidence,
+    the recommendations, macro and fundamentals were all absent. It then reasoned perfectly
+    from that and concluded "the learning-loop attribution table is missing" -- about a table
+    holding 27 clean rows verified an hour earlier.
+
+    A wrong census is far worse than no census: it produces confident, specific, wrong
+    findings, which is exactly what this job exists to avoid.
+    """
+
     try:
         values = row_values(conn.execute(sql, params).fetchone())
-    except Exception:  # noqa: BLE001 - a missing table is a FINDING for the census, not a crash
+    except Exception:  # noqa: BLE001 - an unanswerable probe is a FINDING, not a crash
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001 - SQLite needs no rollback here; nothing to recover
+            pass
         return None
     return values[0] if values else None
 

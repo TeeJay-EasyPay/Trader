@@ -113,3 +113,42 @@ class QuestionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeedColumnTests(unittest.TestCase):
+    """Every feed's declared date column must actually exist on that table.
+
+    2026-09-06. The census probes eleven feeds on one connection. Postgres aborts the whole
+    transaction on a failed statement, so ONE wrong column name did not mark one feed
+    unreadable -- it marked every feed after it as missing, and the AI was handed a census
+    claiming the attribution table, the backtests, the research evidence, the recommendations,
+    macro and fundamentals had all vanished. It reasoned impeccably from that and reported the
+    learning loop as gone, about a table holding 27 verified rows.
+
+    _scalar now rolls back so a bad probe cannot cascade. This test stops the bad probe.
+    """
+
+    def test_every_feed_column_exists(self):
+        import re
+
+        from ai_trader.self_assessment import _FEEDS
+
+        src = Path(__file__).resolve().parents[1] / "src" / "ai_trader"
+        schema_text = "\n".join(
+            p.read_text(encoding="utf-8", errors="replace") for p in src.rglob("*.py")
+        )
+        missing = []
+        for table, column, _purpose in _FEEDS:
+            block = re.search(
+                r"CREATE TABLE IF NOT EXISTS\s+" + table + r"\s*\((.*?)\n\)",
+                schema_text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not block:
+                continue  # table defined elsewhere or by migration; not this test's business
+            if not re.search(r"\b" + re.escape(column) + r"\b", block.group(1), re.IGNORECASE):
+                missing.append(
+                    table + " has no column '" + column + "' -- the census would report every "
+                    "LATER feed as missing too"
+                )
+        self.assertEqual(missing, [], "\n".join(missing))
