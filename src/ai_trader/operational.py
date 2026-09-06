@@ -512,20 +512,36 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
     with closing(connect(db_path)) as conn:
         with conn:
             if assets:
-                for asset in assets:
-                    conn.execute(
-                        """
-                        INSERT INTO CRYPTO_ASSET_MASTER (
-                            symbol, name, category, market_cap_rank, source, active, notes, last_updated
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(symbol, category) DO UPDATE SET
-                            name = excluded.name,
-                            market_cap_rank = excluded.market_cap_rank,
-                            source = excluded.source,
-                            active = excluded.active,
-                            notes = excluded.notes,
-                            last_updated = excluded.last_updated
-                        """,
+                # 2026-09-06: batched, and that is the fix for a six-day gap in crypto prices,
+                # not a tidy-up. This ran one round trip per asset across ~192 assets to a
+                # remote Postgres, and crypto-universe-refresh had TIMED OUT 237 times against
+                # its 180s budget, last completing 2026-08-31 17:24 -- the exact hour
+                # CRYPTO_MARKET_DATA stopped being written.
+                #
+                # The order of writes is why the symptom was so confusing: this loop comes
+                # FIRST, so CRYPTO_ASSET_MASTER kept looking fresh while the job died before
+                # ever reaching _populate_crypto_master_and_scores below, which is what writes
+                # the prices. A feed that says "last updated 20 minutes ago" sitting next to
+                # one six days stale, from the same job.
+                #
+                # The trading AI found this itself: "CRYPTO_MARKET_DATA: 739 rows, but nothing
+                # since August 31... that feed cannot support a current entry price or
+                # range-based stop."
+                now_iso = utc_now_iso()
+                conn.executemany(
+                    """
+                    INSERT INTO CRYPTO_ASSET_MASTER (
+                        symbol, name, category, market_cap_rank, source, active, notes, last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol, category) DO UPDATE SET
+                        name = excluded.name,
+                        market_cap_rank = excluded.market_cap_rank,
+                        source = excluded.source,
+                        active = excluded.active,
+                        notes = excluded.notes,
+                        last_updated = excluded.last_updated
+                    """,
+                    [
                         (
                             asset["symbol"],
                             asset["name"],
@@ -534,9 +550,11 @@ def seed_crypto_universe(db_path: Path, *, fetch_live: bool = False) -> dict[str
                             asset["source"],
                             1,
                             asset["notes"],
-                            utc_now_iso(),
-                        ),
-                    )
+                            now_iso,
+                        )
+                        for asset in assets
+                    ],
+                )
     if assets:
         _populate_crypto_master_and_scores(db_path, assets, market_rows)
         return {"inserted": len(assets), "source": source, "notes": notes}
@@ -584,22 +602,29 @@ def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:
-            for asset, raw_row in zip(assets, market_rows):
-                conn.execute(
-                    """
-                    INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, 1, ?, ?)
-                    ON CONFLICT(symbol, category) DO UPDATE SET
-                        active = 1, name = excluded.name, updated_at = excluded.updated_at
-                    """,
-                    (asset["symbol"], asset["name"], asset["category"], asset["source"], now, now),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO CRYPTO_MARKET_DATA (
-                        symbol, observed_at, price_usd, market_cap_usd, volume_24h_usd, source, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
+            # Batched for the same reason as CRYPTO_ASSET_MASTER above: two round trips per
+            # asset across ~192 assets is what pushed this job past its budget, and this half
+            # never ran at all as a result.
+            paired = list(zip(assets, market_rows))
+            conn.executemany(
+                """
+                INSERT INTO CRYPTO_MASTER (symbol, name, category, source, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(symbol, category) DO UPDATE SET
+                    active = 1, name = excluded.name, updated_at = excluded.updated_at
+                """,
+                [
+                    (asset["symbol"], asset["name"], asset["category"], asset["source"], now, now)
+                    for asset, _raw in paired
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO CRYPTO_MARKET_DATA (
+                    symbol, observed_at, price_usd, market_cap_usd, volume_24h_usd, source, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
                     (
                         asset["symbol"],
                         now,
@@ -608,8 +633,10 @@ def _populate_crypto_master_and_scores(db_path: Path, assets: list[dict[str, Any
                         safe_float(raw_row.get("total_volume")),
                         asset["source"],
                         json.dumps(raw_row, default=str),
-                    ),
-                )
+                    )
+                    for asset, raw_row in paired
+                ],
+            )
     # Indicators come from candles regardless of which provider supplied the price changes,
     # so the CoinGecko path gets them too -- otherwise rsi/macd/volume_trend would only ever
     # be populated on the fallback path, and the primary path would keep writing the empty

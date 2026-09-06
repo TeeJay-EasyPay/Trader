@@ -460,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
                                 # certainly not the default meant for single-query work. Given
                                 # it up front rather than after being caught by the same
                                 # silent-timeout trap that hid forecast-refresh and daily-report.
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment", "crypto-universe-refresh"}
                                 # 2026-08-23: external-intelligence-refresh timed out on the
                                 # shared 180s budget. It makes many small sequential HTTP
                                 # calls in one run -- SEC EDGAR per symbol, Alpaca News
