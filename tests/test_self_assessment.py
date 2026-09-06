@@ -152,3 +152,50 @@ class FeedColumnTests(unittest.TestCase):
                     "LATER feed as missing too"
                 )
         self.assertEqual(missing, [], "\n".join(missing))
+
+
+class ShadowSettlementTests(unittest.TestCase):
+    """Unsettleable shadow trades must leave the queue, and the two scoreboards must agree.
+
+    2026-09-06 Supabase egress finding, plus a real bug found inside it. The settler reads
+    pending rows ORDER BY created_at LIMIT 500, and a row with no candles was skipped and left
+    pending -- forever. Production held 543 rows pending and more than ten days old against a
+    seven-day horizon, permanently occupying every slot, so NEWER shadow trades were never
+    settled and the strategy scoreboard silently stopped updating.
+    """
+
+    def test_strategy_records_equal_the_symbol_records_recombined(self):
+        """shadow_strategy_records now aggregates shadow_symbol_records instead of running its
+        own second full-table read. The two must stay exactly equal, or the saving came at the
+        cost of the number the AI judges strategies on."""
+        from ai_trader.shadow_outcomes import _settled_shadow_values
+
+        grouped = {("trend", "BTC"): [1.0, -1.0, 2.0], ("trend", "ETH"): [-1.0], ("momo", "SOL"): [0.5]}
+        by_strategy: dict[str, list[float]] = {}
+        for (strategy, _symbol), values in grouped.items():
+            by_strategy.setdefault(strategy, []).extend(values)
+        self.assertEqual(sorted(by_strategy["trend"]), [-1.0, -1.0, 1.0, 2.0])
+        self.assertEqual(len(by_strategy["trend"]), 4)
+        # the mean of the recombined raw values, NOT the mean of two rounded expectancies
+        self.assertAlmostEqual(sum(by_strategy["trend"]) / 4, 0.25)
+
+    def test_a_recent_unsettleable_trade_is_given_grace(self):
+        """A missing candle can be a temporary feed gap. Retiring on the first failed attempt
+        would discard trades that would settle fine a day later."""
+        from ai_trader.shadow_outcomes import (
+            SHADOW_HORIZON_DAYS,
+            SHADOW_SETTLE_GRACE_DAYS,
+            _note_unsettleable,
+        )
+        from datetime import datetime, timedelta, timezone
+
+        moment = datetime(2026, 9, 6, tzinfo=timezone.utc)
+        bucket: list = []
+        _note_unsettleable(bucket, 1, moment - timedelta(days=1), moment)
+        self.assertEqual(bucket, [], "a one-day-old trade must keep its chance to settle")
+
+        _note_unsettleable(bucket, 2, moment - timedelta(days=SHADOW_HORIZON_DAYS + SHADOW_SETTLE_GRACE_DAYS + 1), moment)
+        self.assertEqual(bucket, [2], "past horizon plus grace, no candle is ever coming")
+
+        _note_unsettleable(bucket, 3, None, moment)
+        self.assertEqual(bucket, [2, 3], "a row with no usable date can never settle")
