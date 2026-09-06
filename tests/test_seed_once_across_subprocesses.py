@@ -123,3 +123,35 @@ class SeedOncePerDatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeanTradeColumnsTests(unittest.TestCase):
+    """The lean LOGICAL_TRADES column list must stay in step with the table.
+
+    2026-09-06. canonical_trade(include_decision_context=False) names its columns explicitly,
+    because SQL cannot say "everything except this one". That is fine until somebody adds a
+    column to LOGICAL_TRADES and it silently stops reaching every lean caller -- a whole field
+    missing from half the system, with nothing failing. This test is the thing that fails.
+    """
+
+    def test_lean_columns_are_exactly_the_schema_minus_decision_context(self):
+        from ai_trader.canonical_trades import _LEAN_TRADE_COLUMNS, _ensure_canonical_trade_schema
+
+        tmp = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp) / "audit.sqlite3"
+            _ensure_canonical_trade_schema(db_path)
+            with closing(connect(db_path)) as conn:
+                actual = [r[1] for r in conn.execute("PRAGMA table_info(LOGICAL_TRADES)").fetchall()]
+
+            lean = [c.strip() for c in _LEAN_TRADE_COLUMNS.split(",")]
+            expected = [c for c in actual if c != "decision_context_json"]
+
+            self.assertEqual(
+                lean, expected,
+                "LOGICAL_TRADES changed: decide whether lean callers need the new column, "
+                "then update _LEAN_TRADE_COLUMNS",
+            )
+            self.assertNotIn("decision_context_json", lean)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

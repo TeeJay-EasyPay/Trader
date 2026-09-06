@@ -1153,7 +1153,11 @@ def _record_case(
 
 
 def _refresh_reconciled_result(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any]:
-    trade = canonical_trade(db_path, logical_trade_id, conn=conn) or {}
+    # Reads fifteen named scalars off `trade` and never decision_context_json, which is 45 KB
+    # of the ~50 KB row. This runs on every reconciliation pass -- measured at roughly half of
+    # the 42,320 daily SELECT * reads of LOGICAL_TRADES. The sibling call at the terminal-trade
+    # site above keeps the full row, because _learning_payload genuinely reads that field.
+    trade = canonical_trade(db_path, logical_trade_id, conn=conn, include_decision_context=False) or {}
     with _connection(db_path, conn) as active:
         active.row_factory = sqlite3.Row
         fills = active.execute(

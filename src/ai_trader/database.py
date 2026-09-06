@@ -161,6 +161,10 @@ class PostgresCursor:
 # ---------------------------------------------------------------------------
 _TABLE_INFO_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
 _SEQUENCE_NAME_CACHE: dict[tuple[str, str], str] = {}
+# The auto-numbered primary-key column per (database, table), for RETURNING. Same
+# positive-only rule as the two caches above: a table that does not exist yet must never
+# be remembered as "has no key".
+_PRIMARY_KEY_CACHE: dict[tuple[str, str], str] = {}
 
 
 def row_values(row: Any) -> list[Any]:
@@ -199,6 +203,7 @@ def clear_schema_cache() -> None:
     """Forget cached table structure. Call after creating or altering tables."""
     _TABLE_INFO_CACHE.clear()
     _SEQUENCE_NAME_CACHE.clear()
+    _PRIMARY_KEY_CACHE.clear()
 
 
 class PostgresConnection:
@@ -252,6 +257,13 @@ class PostgresConnection:
             return self._table_info(pragma)
         statement = _postgres_sql(sql)
         try:
+            returning_column = self._returning_column(statement)
+            if returning_column is not None:
+                cursor = self._conn.execute(
+                    f'{statement.rstrip().rstrip(";")} RETURNING "{returning_column}"',
+                    params or (),
+                )
+                return PostgresCursor(cursor, lastrowid=_returned_id(cursor))
             cursor = self._conn.execute(statement, params or ())
             lastrowid = self._last_insert_id(statement)
             return PostgresCursor(cursor, lastrowid=lastrowid)
@@ -348,6 +360,72 @@ class PostgresConnection:
             _TABLE_INFO_CACHE[cache_key] = described
         return MemoryCursor(dict(row) for row in described)
 
+    def _returning_column(self, statement: str) -> str | None:
+        """The auto-numbered primary key to append RETURNING for, or None to use the old path.
+
+        2026-09-06 Supabase egress finding. SQLite hands back a new row's id for free via
+        lastrowid; Postgres has no equivalent, so this layer emulated it by asking TWO further
+        questions after every single INSERT -- pg_get_serial_sequence ("which sequence?") then
+        currval ("what value?"). Three round trips where Postgres offers one. Measured on
+        production: 42,320 and 32,995 calls a day respectively, and 5.8 MILLION and 2.8 million
+        cumulative. It ran unconditionally, including for the great majority of INSERTs whose
+        caller never reads .lastrowid at all.
+
+        RETURNING is not merely cheaper, it is more correct. currval answers "what did THIS
+        SESSION last put in that sequence", which is a fact about the connection rather than
+        about the row just written -- two inserts landing close together on one connection can
+        hand back the wrong number. RETURNING is answered by the insert itself and cannot.
+
+        DELIBERATELY DECLINED for ON CONFLICT statements, which is what INSERT OR IGNORE and
+        INSERT OR REPLACE translate into. There, RETURNING yields no row when the conflict
+        fires, so lastrowid would become None where today it returns whatever currval held.
+        None is arguably the truer answer -- nothing was inserted -- but it is a behaviour
+        change, and there are fourteen call sites reading .lastrowid. Those statements keep the
+        old path exactly; this change is strictly an optimisation, not a semantics edit.
+        """
+
+        if not re.match(r"^\s*INSERT\s+INTO\b", statement, flags=re.IGNORECASE):
+            return None
+        if re.search(r"\bRETURNING\b", statement, flags=re.IGNORECASE):
+            return None
+        if re.search(r"\bON\s+CONFLICT\b", statement, flags=re.IGNORECASE):
+            return None
+        table_match = re.match(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", statement, flags=re.IGNORECASE)
+        if not table_match:
+            return None
+        table = table_match.group(1)
+        cache_key = (getattr(self, "_schema_key", ""), table.lower())
+        cached = _PRIMARY_KEY_CACHE.get(cache_key)
+        if cached:
+            return cached
+        # Requiring a serial sequence keeps this exactly as selective as the currval path it
+        # replaces: a table whose primary key is not auto-numbered returned None before and
+        # still does, rather than RETURNING some unrelated text column.
+        # A failure here must never abort the INSERT it was about to help with -- this whole
+        # path is an optimisation. Falling back to the old currval route (or to no id at all)
+        # is always safe; letting a lookup error escape would turn a working write into an
+        # outage. This is also what keeps a stub or partly-built connection working.
+        try:
+            row = self._conn.execute(
+                """
+                SELECT a.attname AS pk_column
+                FROM pg_index i
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE i.indrelid = to_regclass(%s) AND i.indisprimary
+                  AND pg_get_serial_sequence(%s, a.attname) IS NOT NULL
+                ORDER BY a.attnum
+                LIMIT 1
+                """,
+                (table, table.lower()),
+            ).fetchone()
+        except Exception:  # noqa: BLE001 - see above; never break the write
+            return None
+        column = row.get("pk_column") if isinstance(row, dict) else (row_values(row)[0] if row_values(row) else None)
+        if not column:
+            return None
+        _PRIMARY_KEY_CACHE[cache_key] = str(column)
+        return str(column)
+
     def _last_insert_id(self, statement: str) -> int | None:
         if not re.match(r"^\s*INSERT\s+INTO\b", statement, flags=re.IGNORECASE):
             return None
@@ -377,6 +455,29 @@ class PostgresConnection:
         _SEQUENCE_NAME_CACHE[cache_key] = sequence_name
         row = self._conn.execute("SELECT currval(%s) AS id", (sequence_name,)).fetchone()
         return int(row["id"]) if row and row.get("id") is not None else None
+
+
+def _returned_id(cursor) -> int | None:
+    """The id from a RETURNING clause, matching sqlite3's lastrowid semantics.
+
+    sqlite reports the LAST row inserted, so a multi-row INSERT takes the last returned value.
+    Consuming the cursor here is safe: these are INSERTs whose RETURNING this layer added
+    itself, so no caller is expecting to read rows off them.
+    """
+
+    try:
+        rows = cursor.fetchall()
+    except Exception:  # noqa: BLE001 - never let an id lookup break the write it followed
+        return None
+    if not rows:
+        return None
+    values = row_values(rows[-1])
+    if not values or values[0] is None:
+        return None
+    try:
+        return int(values[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def _hybrid(row):

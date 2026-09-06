@@ -306,11 +306,43 @@ def resolve_logical_trade_id(
     return f"{broker.lower()}:{stable}"
 
 
-def canonical_trade(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any] | None:
+# Every LOGICAL_TRADES column EXCEPT decision_context_json, which is 45,433 of the row's
+# ~50,000 bytes. 2026-09-06 Supabase egress finding: SELECT * on this table ran 42,320 times
+# a day during Kraken reconciliation, and most of those callers read a handful of numbers off
+# it. Kept as an explicit list rather than "SELECT * minus one" (which SQL cannot express),
+# and test_canonical_trade_lean_columns_match_the_schema fails if a column is added to the
+# table without a decision about whether lean callers need it -- so a new field cannot go
+# silently missing from half the system.
+_LEAN_TRADE_COLUMNS = (
+    "logical_trade_id, proposal_id, recommendation_id, broker, symbol, asset_type, side, state, "
+    "intended_quantity, original_stop, intended_target, intended_entry_price, average_entry_price, "
+    "average_exit_price, entry_filled_quantity, exit_filled_quantity, remaining_quantity, broker_fee, "
+    "exchange_fee, gross_pnl, net_pnl, reconciliation_confidence, terminal, created_at, updated_at, closed_at"
+)
+
+
+def canonical_trade(
+    db_path: Path,
+    logical_trade_id: str,
+    *,
+    conn: Any = None,
+    include_decision_context: bool = True,
+) -> dict[str, Any] | None:
+    """One logical trade.
+
+    include_decision_context defaults to True so every existing caller is unchanged -- the AI's
+    own record of why a trade was taken flows from here into _learning_payload and
+    _learning_payload_from_canonical_trade, and silently emptying it would corrupt the learning
+    loop in production only. Callers that demonstrably read only scalars pass False.
+    """
+
     _ensure_canonical_trade_schema(db_path)
+    columns = "*" if include_decision_context else _LEAN_TRADE_COLUMNS
     with _connection(db_path, conn) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)).fetchone()
+        row = conn.execute(
+            f"SELECT {columns} FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)
+        ).fetchone()
     return dict(row) if row else None
 
 
@@ -495,7 +527,8 @@ def _fill_role_from_order(
             return "entry"
         if initial_order and str(initial_order[0] or "") == order_id:
             return "entry"
-    trade = canonical_trade(db_path, logical_trade_id) or {}
+    # Reads one number; no need to drag 45 KB of decision context across the wire for it.
+    trade = canonical_trade(db_path, logical_trade_id, include_decision_context=False) or {}
     return "entry" if not float(trade.get("entry_filled_quantity") or 0) else "exit"
 
 
