@@ -17,7 +17,7 @@ from ..benchmark_data import BENCHMARK_TRADERS
 from ..broker_adapters import _kraken_pair
 from ..config import Settings
 from ..daily_plan import record_daily_trading_plan
-from ..database import connect
+from ..database import connect, row_values
 from ..forecasting import generate_market_forecast
 from ..foundation import load_trading_policy
 from ..scoring_universe import build_scoring_universe, universe_summary
@@ -58,6 +58,18 @@ from .shared_helpers import _csv_env, _int_or_default
 from ..trade_scorecard import estimate_round_trip_fee_pct, load_closed_trades
 
 logger = logging.getLogger("ai_trader.api")
+
+
+def _research_cycle_start() -> str:
+    """A one-hour lookback, used where a caller has no explicit cycle timestamp.
+
+    Research runs hourly, so this scopes the drop reasons to the current cycle without
+    threading a timestamp through paths that never had one. The crypto path, which is the one
+    rejecting nineteen coins an hour, passes its real cycle start instead.
+    """
+
+    return (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
 
 
 # The following three helpers had exactly one call site each, all inside this cluster, so
@@ -664,6 +676,9 @@ class ResearchService:
     def run_crypto_analysis(self, symbols: list[str] | None = None, *, limit: int = 10) -> dict[str, Any]:
         started_at = utc_now_iso()
         _crypto_research_t0 = time.monotonic()
+        # Captured BEFORE any symbol is evaluated, so _drop_reasons_since picks up exactly this
+        # cycle's agent_no_trade events and not the previous hour's.
+        cycle_started_at = datetime.now(timezone.utc).isoformat()
         print("[crypto-research] stage=research status=started", flush=True)
         record_operational_event(
             self.settings.db_path,
@@ -879,6 +894,7 @@ class ResearchService:
             result={"status": "completed", "proposals": [p.to_dict() for p in proposals], "auto_execution": auto_execution},
             auto_execution=auto_execution,
             skipped_symbols=[],
+            cycle_started_at=cycle_started_at,
         )
         record_operational_event(
             self.settings.db_path,
@@ -1065,6 +1081,7 @@ class ResearchService:
                 result=result,
                 auto_execution={"status": "skipped", "message": result["message"]},
                 skipped_symbols=[],
+                cycle_started_at=_research_cycle_start(),
             )
             update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="idle", current_stage="complete")
             record_operational_event(
@@ -1091,6 +1108,7 @@ class ResearchService:
                 result=result,
                 auto_execution={"status": "blocked_configuration", "message": result["message"]},
                 skipped_symbols=[{"symbol": symbol, "reason": "alpaca_credentials_missing"} for symbol in symbols],
+                cycle_started_at=_research_cycle_start(),
             )
             update_broker_runtime(self.settings.db_path, broker_name, research_status="idle", due_diligence_status="blocked", current_stage="credentials", details={"last_error": result["message"]})
             record_operational_event(
@@ -1209,6 +1227,7 @@ class ResearchService:
             result=result,
             auto_execution=auto_execution,
             skipped_symbols=skipped_symbols,
+            cycle_started_at=_research_cycle_start(),
         )
         update_broker_runtime(
             self.settings.db_path,
@@ -1443,6 +1462,65 @@ class ResearchService:
             summary=result.get("message") or f"Research completed with {len(result.get('proposals', []))} recommendation(s).",
         )
 
+    def _drop_reasons_since(self, since_iso: str) -> tuple[list[str], dict[str, Any]]:
+        """Why each coin was dropped this cycle, read back from what the agent already wrote.
+
+        2026-09-06, Founder-directed: "please make the pipeline so that we can see why each
+        coin is also dropped."
+
+        The agent HAS been recording this all along -- 925 agent_no_trade events in 24 hours,
+        naming due diligence, weak trend, unfavourable liquidity, the fee hurdle, and the AI
+        reviewer's own declines. It writes them to execution_events. The research funnel, which
+        is what the Founder actually sees, recorded skipped_symbols as an empty list and a
+        primary_reason of "Handled by the independent per-broker auto-execution jobs".
+
+        So nineteen coins were rejected every hour for specific, recorded, sensible reasons and
+        none of it reached the surface. Nobody could tell a fee problem from a judgement call
+        without writing SQL -- and I got it wrong myself, reporting that the AI was never
+        consulted when it had declined 49 candidates in three hours.
+
+        Read back rather than threaded through on_symbol_complete: the events are already
+        written, correctly, by the time this runs. One query per research cycle (~41 a day)
+        against an indexed timestamp is the cheap way to surface them, and the account is
+        under an egress restriction that makes the cheap way matter.
+        """
+
+        counts: dict[str, int] = {}
+        symbols_by_reason: dict[str, list[str]] = {}
+        try:
+            with closing(connect(self.settings.db_path)) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT payload_json FROM execution_events
+                    WHERE event_type = 'agent_no_trade' AND created_at >= ?
+                    """,
+                    (since_iso,),
+                ).fetchall()
+        except Exception:  # noqa: BLE001 - reporting must never break the research cycle
+            return [], {}
+        for row in rows:
+            raw = row_values(row)
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw[0])
+            except Exception:  # noqa: BLE001
+                continue
+            reason = str(payload.get("reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+            symbol = payload.get("symbol")
+            if symbol:
+                symbols_by_reason.setdefault(reason, []).append(str(symbol))
+        ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+        readable = [
+            f"{reason}: {count} ({', '.join(sorted(set(symbols_by_reason.get(reason, [])))[:12])})"
+            for reason, count in ordered
+        ]
+        return readable, {
+            "drop_reason_counts": dict(ordered),
+            "drop_reason_symbols": {k: sorted(set(v)) for k, v in symbols_by_reason.items()},
+        }
+
     def _record_research_funnel_from_result(
         self,
         *,
@@ -1453,6 +1531,7 @@ class ResearchService:
         result: dict[str, Any],
         auto_execution: dict[str, Any],
         skipped_symbols: list[dict[str, Any]],
+        cycle_started_at: str,
     ) -> None:
         proposals = result.get("proposals") or []
         skipped = auto_execution.get("skipped") if isinstance(auto_execution, dict) else []
@@ -1462,6 +1541,12 @@ class ResearchService:
             for item in list(skipped_symbols or []) + list(skipped or [])
             if isinstance(item, dict) and (item.get("reason") or item.get("message"))
         ]
+        # 2026-09-06: surface why each coin was actually dropped. Without this the funnel
+        # recorded an empty skipped_symbols and a primary_reason of "Handled by the
+        # independent per-broker auto-execution jobs", which says nothing about the nineteen
+        # coins that were just rejected -- see _drop_reasons_since.
+        drop_reasons, drop_detail = self._drop_reasons_since(cycle_started_at)
+        secondary_reasons = secondary_reasons + drop_reasons
         primary_reason = (
             result.get("message")
             or (secondary_reasons[0] if secondary_reasons else None)
@@ -1493,6 +1578,7 @@ class ResearchService:
             primary_reason=primary_reason,
             secondary_reasons=secondary_reasons,
             payload={
+                **drop_detail,
                 "result_status": result.get("status"),
                 "auto_execution_status": auto_execution.get("status") if isinstance(auto_execution, dict) else None,
                 "auto_execution_message": auto_execution.get("message") if isinstance(auto_execution, dict) else None,
