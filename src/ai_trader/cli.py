@@ -455,12 +455,25 @@ def main(argv: list[str] | None = None) -> int:
                                 service.settings.forecast_refresh_timeout_seconds
                                 if job_name == "forecast-refresh"
                                 else service.settings.research_job_timeout_seconds
+                                # crypto-candle-refresh: 2026-09-06, and this one was doing
+                                # real damage. It makes ONE Kraken OHLC call per symbol across
+                                # 30-40 symbols and then scores them, and on the shared 180s
+                                # budget it had TIMED OUT 232 times, last completing
+                                # 2026-08-27 -- ten days. Its own event log shows it getting
+                                # through "1 symbol(s)" per run before dying.
+                                #
+                                # That is not a cosmetic failure. technical_trend_score is
+                                # computed from these candles, and the gate
+                                # crypto_due_diligence_below_threshold_or_negative_trend is
+                                # 723 of 961 rejections in 24 hours -- 75%. So the largest
+                                # single reason the system refuses to trade was being decided
+                                # on candles that stopped updating ten days ago.
                                 # self-assessment is one reasoning-model call over a measured
                                 # inventory -- comfortably inside the research budget, and
                                 # certainly not the default meant for single-query work. Given
                                 # it up front rather than after being caught by the same
                                 # silent-timeout trap that hid forecast-refresh and daily-report.
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment", "crypto-universe-refresh"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment", "crypto-universe-refresh", "crypto-candle-refresh"}
                                 # 2026-08-23: external-intelligence-refresh timed out on the
                                 # shared 180s budget. It makes many small sequential HTTP
                                 # calls in one run -- SEC EDGAR per symbol, Alpaca News
