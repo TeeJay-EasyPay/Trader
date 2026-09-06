@@ -6,6 +6,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+import logging
+
+from .. import trade_reasons
 from ..broker_adapters import _kraken_last_price, _kraken_pair
 from ..config import Settings
 from ..foundation import load_trading_policy
@@ -27,6 +30,9 @@ from ..kraken_reconciliation import register_kraken_order_ownership
 from ..operational import safe_float, safe_score
 from ..orchestrator import InvestmentOrchestrator, OrchestratorContext, json_safe
 from ..persistence.query_executor import QueryExecutor
+
+# Matches the sibling services; see broker_service.py and research_service.py.
+logger = logging.getLogger("ai_trader.api")
 from .shared_helpers import _int_or_default
 
 
@@ -610,6 +616,26 @@ class ExecutionService:
         return self.auto_execute_recommendations(broker_filter="kraken")
 
     def monitor_managed_exits(self) -> dict[str, Any]:
+        # 2026-09-06: repair exits that closed before anything recorded WHY, then propagate
+        # into PERFORMANCE_ATTRIBUTION. This job is the right host for three reasons: it is
+        # about exits, it runs every cycle, and -- unlike kraken-startup-reconciliation --
+        # it actually COMPLETES.
+        #
+        # Third home for this call, and the moves are the lesson. It began at the end of
+        # replay_persisted_kraken_evidence; that job times out on run after run against its
+        # 900s budget, so the tail was unreachable. Moved to the head of the same function;
+        # verified against production that the job then did not get scheduled in the new
+        # worker process AT ALL. Both looked correct in the diff. Neither ran.
+        #
+        # Which is the same failure being fixed: backfill_trade_reasons was correct code with
+        # no callers for weeks. Correctness is not the bar here -- being REACHED is.
+        #
+        # Cheap by construction: the query matches only rows whose exit_reason is still blank,
+        # so once the backlog clears it is a no-op on every later cycle.
+        try:
+            trade_reasons.backfill_missing_exit_reasons(self.settings.db_path, broker="kraken")
+        except Exception:  # noqa: BLE001 - a bookkeeping repair must never stop exit monitoring
+            logger.exception("Exit-reason backfill failed; managed-exit monitoring continues.")
         checked = []
         for item in open_managed_exits(self.settings.db_path):
             broker = item["broker"]
