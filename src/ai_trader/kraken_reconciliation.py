@@ -757,6 +757,22 @@ def replay_persisted_kraken_evidence(db_path: Path, *, limit: int = 1000) -> dic
     """Replay durable broker evidence without contacting Kraken or submitting orders."""
 
     _ensure_schema(db_path)
+    # 2026-09-06: FIRST, deliberately, and this placement is the whole point.
+    #
+    # This backfill repairs exits that closed before anything recorded why. The obvious home
+    # for it was the end of this function, and that is where it was written -- until the job
+    # history was checked: kraken-startup-reconciliation has TIMED OUT on run after run
+    # against its 900s budget (00:27, 00:10, 23:24 all timed_out). Anything after the replay
+    # loop would therefore almost never be reached.
+    #
+    # Which is precisely the failure being fixed here. backfill_trade_reasons was correct
+    # code with no callers for weeks; putting its replacement behind a job that does not
+    # finish would have been the same bug wearing a different hat. Cheap by construction --
+    # the query matches only rows whose exit_reason is still blank, so once the backlog is
+    # cleared it does nothing on every later run, and running before the replay costs the
+    # newest trade only one cycle's delay. New exits do not depend on this path at all:
+    # _fill_missing_exit_reason records them as they close.
+    backfilled = trade_reasons.backfill_missing_exit_reasons(db_path, broker="kraken")
     with _connection(db_path, None) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -782,15 +798,6 @@ def replay_persisted_kraken_evidence(db_path: Path, *, limit: int = 1000) -> dic
             payload.setdefault("updated_at", row["updated_at"] or row["closed_at"] or row["opened_at"])
             events.append(payload)
         result = replay_kraken_evidence(db_path, events=events, source="persisted_kraken_evidence_replay", conn=conn)
-    # 2026-09-06: repair exits that closed before anything recorded why, and propagate the
-    # result into PERFORMANCE_ATTRIBUTION. Cheap by construction -- the query only matches
-    # rows whose exit_reason is still blank, so once the backlog is cleared this does nothing
-    # on every subsequent cycle.
-    #
-    # Wired in HERE rather than left to be called by hand because that is exactly how the
-    # original backfill_trade_reasons failed: it was written, was correct, and had no callers
-    # at all, so every placeholder it existed to clear simply stayed there for weeks.
-    backfilled = trade_reasons.backfill_missing_exit_reasons(db_path, broker="kraken")
     return {
         **result,
         "persisted_rows_read": len(rows),
