@@ -782,7 +782,21 @@ def replay_persisted_kraken_evidence(db_path: Path, *, limit: int = 1000) -> dic
             payload.setdefault("updated_at", row["updated_at"] or row["closed_at"] or row["opened_at"])
             events.append(payload)
         result = replay_kraken_evidence(db_path, events=events, source="persisted_kraken_evidence_replay", conn=conn)
-    return {**result, "persisted_rows_read": len(rows), "broker_orders_submitted": 0}
+    # 2026-09-06: repair exits that closed before anything recorded why, and propagate the
+    # result into PERFORMANCE_ATTRIBUTION. Cheap by construction -- the query only matches
+    # rows whose exit_reason is still blank, so once the backlog is cleared this does nothing
+    # on every subsequent cycle.
+    #
+    # Wired in HERE rather than left to be called by hand because that is exactly how the
+    # original backfill_trade_reasons failed: it was written, was correct, and had no callers
+    # at all, so every placeholder it existed to clear simply stayed there for weeks.
+    backfilled = trade_reasons.backfill_missing_exit_reasons(db_path, broker="kraken")
+    return {
+        **result,
+        "persisted_rows_read": len(rows),
+        "broker_orders_submitted": 0,
+        "exit_reasons_backfilled": backfilled,
+    }
 
 
 def kraken_reconciliation_status(db_path: Path) -> dict[str, Any]:
@@ -1473,7 +1487,82 @@ def _mark_managed_exit_reconciled(
                     logical_trade_id,
                 ),
             )
+            _fill_missing_exit_reason(active, logical_trade_id=logical_trade_id, result=result, now=now)
             _record_attribution_for_reconciled_trade(active, result=result, now=now)
+
+
+def _fill_missing_exit_reason(conn: Any, *, logical_trade_id: str, result: dict[str, Any], now: str) -> None:
+    """Say why a position ended, for the exits nobody was watching when they did.
+
+    2026-09-06, Founder-reported: he asked the app why it sold XRP at a loss and it answered
+    that no exit trigger was documented. That was true, and this is why.
+
+    When this system places the closing order it records the reason at the same moment. But a
+    stop can also rest AT KRAKEN from the moment the position opens and fill hours later with
+    nothing here watching -- the caller above then finds the position gone and marks it
+    closed, and until now set no reason at all. Measured before fixing: 15 of 28 closed
+    managed exits had a NULL exit_reason, and 40 of 67 Kraken attribution rows carried the
+    placeholder. XRP on 2026-09-05 was exactly this case, and the evidence was already
+    sitting in the row -- native_stop_order_id was the very order that filled.
+
+    ONLY fills a reason that is missing. A reason recorded at the moment of the decision is
+    always better evidence than one reconstructed afterwards, so it is never overwritten.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT managed_exit_id, entry_price, stop_loss, take_profit, side,
+               native_stop_order_id, exit_reason
+        FROM MANAGED_TRADE_EXITS
+        WHERE broker = 'kraken'
+          AND managed_exit_id IN (
+              SELECT managed_exit_id FROM KRAKEN_AI_ORDER_OWNERSHIP
+              WHERE logical_trade_id = ? AND order_role = 'exit' AND managed_exit_id IS NOT NULL
+          )
+        """,
+        (logical_trade_id,),
+    ).fetchall()
+    if not rows:
+        return
+
+    owned_exit = conn.execute(
+        """
+        SELECT broker_order_id FROM KRAKEN_AI_ORDER_OWNERSHIP
+        WHERE logical_trade_id = ? AND order_role = 'exit' AND broker_order_id IS NOT NULL
+        LIMIT 1
+        """,
+        (logical_trade_id,),
+    ).fetchone()
+    filled_exit_order_id = (dict(owned_exit).get("broker_order_id") if owned_exit else None)
+
+    for raw in rows:
+        row = dict(raw)
+        if not trade_reasons.is_placeholder(row.get("exit_reason")) and row.get("exit_reason"):
+            continue
+        reason = trade_reasons.infer_exit_reason(
+            exit_price=result.get("actual_exit"),
+            stop_loss=row.get("stop_loss"),
+            take_profit=row.get("take_profit"),
+            entry_price=row.get("entry_price"),
+            side=row.get("side"),
+            native_stop_order_id=row.get("native_stop_order_id"),
+            filled_exit_order_id=filled_exit_order_id,
+        )
+        if not reason:
+            continue
+        conn.execute(
+            "UPDATE MANAGED_TRADE_EXITS SET exit_reason = ?, updated_at = ? WHERE managed_exit_id = ?",
+            (reason, now, row.get("managed_exit_id")),
+        )
+        # _kraken_exit_reason_index caches the whole table on the connection, and
+        # _record_attribution_for_reconciled_trade reads it moments later to stamp this very
+        # trade's attribution row. Without this the reason just written would be invisible to
+        # the one caller that needed it, and the attribution row would still say "not
+        # recorded" -- the bug fixed here, reintroduced one function away.
+        try:
+            delattr(conn, "_ai_trader_exit_reason_index")
+        except AttributeError:
+            pass
 
 
 def _learning_payload(trade: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:

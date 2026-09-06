@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import connect
+from .models import utc_now_iso
 
 # The placeholder this module exists to replace. Backfill treats a row carrying it as
 # unrecorded rather than as a reason worth keeping.
@@ -284,6 +285,151 @@ def nearest_exit_reason(
     if best_gap is None or best_gap > tolerance_seconds:
         return None
     return best_reason
+
+
+def infer_exit_reason(
+    *,
+    exit_price: Any,
+    stop_loss: Any,
+    take_profit: Any,
+    entry_price: Any = None,
+    side: Any = "buy",
+    native_stop_order_id: Any = None,
+    filled_exit_order_id: Any = None,
+) -> str | None:
+    """Why a position ended, worked out from what the exchange actually did.
+
+    2026-09-06, Founder-reported: he asked the app why it sold XRP at a loss and it could
+    only answer "no exit trigger documented". It genuinely did not know. Measured: 15 of 28
+    closed managed exits had no exit_reason, and 40 of 67 Kraken attribution rows.
+
+    The cause is narrow and worth stating exactly. When THIS system places the closing order
+    it records why at the same moment. But an exit can also be a stop resting AT KRAKEN,
+    placed at entry, which fills hours later with nothing here watching --
+    _mark_managed_exit_reconciled then finds the position gone and marks it closed. It knew
+    the position had ended; nobody ever asked it what ended it.
+
+    Certainty is graded, and the wording says which grade it is, because a guess presented as
+    a record is worse than a blank:
+
+      * The filled order IS the native stop we placed -- that is identity, not inference.
+      * Otherwise the fill price against the stop and target set at entry, described as
+        inferred, with the actual numbers so the reader can disagree.
+      * Neither -- an honest "not recorded", plus the numbers, which still tells the AI more
+        than silence did.
+
+    Returns None only when there is genuinely nothing to say, so the caller can leave the
+    column NULL rather than write a sentence that means nothing.
+    """
+
+    price = _number_or_none(exit_price)
+    if price is None:
+        return None
+
+    if native_stop_order_id and filled_exit_order_id and str(native_stop_order_id) == str(filled_exit_order_id):
+        return (
+            f"Stop order resting at Kraken filled at {price:g}. This was the protective/trailing "
+            f"stop placed when the position opened, not a decision taken at exit time."
+        )
+
+    stop = _number_or_none(stop_loss)
+    target = _number_or_none(take_profit)
+    long = str(side or "buy").strip().lower() != "sell"
+
+    if stop is not None and ((long and price <= stop) or (not long and price >= stop)):
+        return f"Stop loss: sold at {price:g}, at or beyond the {stop:g} stop set at entry (inferred from the fill price)."
+    if target is not None and ((long and price >= target) or (not long and price <= target)):
+        return f"Target reached: sold at {price:g}, at or beyond the {target:g} target set at entry (inferred from the fill price)."
+
+    if stop is None and target is None:
+        return None
+    entry = _number_or_none(entry_price)
+    against_entry = ""
+    if entry:
+        move = (price - entry) / entry * 100 * (1 if long else -1)
+        against_entry = f", {move:+.2f}% against the {entry:g} entry"
+    bounds = " and ".join(
+        part for part in (f"the {stop:g} stop" if stop is not None else "",
+                          f"the {target:g} target" if target is not None else "") if part
+    )
+    return (
+        f"Exit trigger not recorded. Sold at {price:g}{against_entry}, which is between {bounds} "
+        f"-- so neither of them fired."
+    )
+
+
+def _number_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN is not a price
+
+
+def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
+    """Work out, for exits already closed, why they ended -- then let the existing repair run.
+
+    2026-09-06. Two separate gaps met here and produced the Founder-visible symptom "there's
+    no exit trigger documented, so it doesn't really know why":
+
+      1. Nothing recorded a reason when a stop resting AT KRAKEN filled unwatched. Fixed
+         forward in _fill_missing_exit_reason; this handles the rows already closed that way.
+      2. backfill_trade_reasons, which repairs PERFORMANCE_ATTRIBUTION from
+         MANAGED_TRADE_EXITS, had NO CALLERS AT ALL. It was written and never wired in, so
+         every placeholder it existed to clear simply stayed. Running it is step two here.
+
+    Order matters and is the whole point: attribution reads its reason from the managed exit,
+    so filling the managed exits FIRST is what makes the second step able to do anything.
+
+    Idempotent and additive -- only ever fills a blank, never overwrites a reason recorded at
+    the time, which is always the better evidence.
+    """
+
+    filled = 0
+    with closing(connect(db_path)) as conn:
+        with conn:
+            rows = conn.execute(
+                """
+                SELECT m.managed_exit_id, m.entry_price, m.stop_loss, m.take_profit, m.side,
+                       m.native_stop_order_id, m.exit_reason,
+                       t.average_exit_price AS exit_price,
+                       (SELECT o2.broker_order_id FROM KRAKEN_AI_ORDER_OWNERSHIP o2
+                        WHERE o2.managed_exit_id = m.managed_exit_id AND o2.order_role = 'exit'
+                        LIMIT 1) AS filled_exit_order_id
+                FROM MANAGED_TRADE_EXITS m
+                LEFT JOIN KRAKEN_AI_ORDER_OWNERSHIP o ON o.managed_exit_id = m.managed_exit_id
+                LEFT JOIN LOGICAL_TRADES t ON t.logical_trade_id = o.logical_trade_id
+                WHERE m.broker = ? AND m.status = 'closed'
+                  AND (m.exit_reason IS NULL OR m.exit_reason = '')
+                """,
+                (broker.lower(),),
+            ).fetchall()
+            seen: set[Any] = set()
+            for raw in rows:
+                row = dict(raw)
+                exit_id = row.get("managed_exit_id")
+                if exit_id in seen:  # the join can repeat a managed exit per owned order
+                    continue
+                seen.add(exit_id)
+                reason = infer_exit_reason(
+                    exit_price=row.get("exit_price"),
+                    stop_loss=row.get("stop_loss"),
+                    take_profit=row.get("take_profit"),
+                    entry_price=row.get("entry_price"),
+                    side=row.get("side"),
+                    native_stop_order_id=row.get("native_stop_order_id"),
+                    filled_exit_order_id=row.get("filled_exit_order_id"),
+                )
+                if not reason:
+                    continue
+                conn.execute(
+                    "UPDATE MANAGED_TRADE_EXITS SET exit_reason = ?, updated_at = ? WHERE managed_exit_id = ?",
+                    (reason, utc_now_iso(), exit_id),
+                )
+                filled += 1
+
+    propagated = backfill_trade_reasons(db_path, broker=broker)
+    return {"managed_exits_filled": filled, "attribution": propagated}
 
 
 def backfill_trade_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:
