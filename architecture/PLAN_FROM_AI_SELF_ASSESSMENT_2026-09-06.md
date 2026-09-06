@@ -96,6 +96,39 @@ minimum trade size.
 **Done when:** we can say what proportion of rejections are economic rather than judgemental,
 and what account size makes the strategy viable at Kraken's fee schedule.
 
+### ANSWERED 2026-09-06, and it overturns the hypothesis
+
+961 rejections in 24 hours, classified from the recorded reasons:
+
+| bucket | count | share |
+|---|---|---|
+| Mechanical gate (due diligence / trend) | 723 | **75.2%** |
+| AI judgement (declined or confidence lowered) | 108 | 11.2% |
+| **Economic (fees + liquidity)** | 56 | **5.8%** |
+| Other | 74 | 7.7% |
+
+**Fees are not the binding constraint.** Thirty fee-hurdle rejections out of 961. The XRP
+trade made the cost real and worth understanding, but it is not what is stopping trading, and
+building around it would have been solving the wrong problem.
+
+The binding filter is `crypto_due_diligence_below_threshold_or_negative_trend` -- the bar of
+0.70 on `overall_due_diligence_score`, plus a `trend > 0.5` requirement.
+
+But it is NOT an absolute wall. Measured across the scored universe: **17 of 39 coins pass
+it**, 22 fail on due diligence and 8 on trend. So candidates do reach the AI, which then
+declines 83 a day and lowers confidence below the bar on 25 more, while liquidity removes 26
+and fees 30.
+
+**There is no single villain.** It is a chain of filters each removing some, with nothing
+surviving all of them. That is a materially different problem from "one gate is too tight",
+and it means the next question is which link is mis-calibrated rather than which one to
+delete.
+
+Also checked and CLEARED: `entry_too_extended_in_24h_range` appeared 74 times in the 24-hour
+window, which would have meant a gate the Founder had removed was still firing. It is not --
+last firing 2026-09-05 16:44, removal 17:18, zero since. The window straddled the change. The
+two remaining code references are label lookups so historical rejections still read properly.
+
 ## Task 5 — Backtest evidence (its gap #3)
 
 `strategy_backtest_results` is genuinely empty. But note what already exists: 1,184 settled
