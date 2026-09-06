@@ -1172,15 +1172,20 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # multi-day directional view does not meaningfully change within an hour. Covers both
     # asset classes, so like crypto-candle-refresh it sits above the NYSE weekday gate.
     due.append(("forecast-refresh", _time_bucket(now, 6 * 3600)))
-    # 2026-09-06, Founder-directed: ask the trading AI twice a day whether it has what it
-    # needs, what is going wrong, and what it would need to be world class.
+    # 2026-09-06, Founder-directed: ask the trading AI ONCE A DAY whether it has what it
+    # needs, what is going wrong, and what it would need to be world class. "Once a day, I want
+    # you to ask it. and I want to be able to read that history... that will allow us to have a
+    # daily connect and a daily plan if needed."
+    #
+    # The exchange is written into the Ask card's own history (see _record_daily_checkin), so
+    # the daily connect happens where he already reads, not in a table only I can query.
     #
     # He asked it once by hand and it named two real defects nobody had found -- a
     # track-record discrepancy and duplicated attribution rows -- both confirmed against the
     # database within the hour. Twice daily rather than hourly because the answer moves on the
     # timescale of data and code changes, not minutes, and each run is a real reasoning-model
     # call. A 12-hour bucket also means a missed window costs at most one assessment.
-    due.append(("self-assessment", _time_bucket(now, 12 * 3600)))
+    due.append(("self-assessment", _time_bucket(now, 24 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see

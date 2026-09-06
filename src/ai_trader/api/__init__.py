@@ -404,6 +404,24 @@ _NOT_LOADED_YET = {
 }
 
 
+def _record_daily_checkin(db_path, *, question: str, answer: str | None) -> None:
+    """Put the scheduled check-in into the Founder's own Ask history.
+
+    Never raises. A lost transcript must not fail the assessment that produced it -- the answer
+    is already stored in AI_SELF_ASSESSMENTS by the caller, so the worst case here is that one
+    day's exchange is missing from the chat, not that the day's assessment is lost.
+    """
+
+    if not answer:
+        return
+    try:
+        preamble = "Daily check-in - asked automatically once a day.\n\n"
+        record_turn(db_path, conversation_id="default", role="founder", text=preamble + question)
+        record_turn(db_path, conversation_id="default", role="assistant", text=answer)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not record the daily check-in into Ask history.")
+
+
 class LocalApiService:
     def __init__(self, settings: Settings, *, initialize_runtime: bool = True):
         self.settings = settings
@@ -1378,6 +1396,20 @@ class LocalApiService:
                 model=self.settings.openai_reasoning_model, status="openai_failed",
                 inventory=inventory,
             )
+        # 2026-09-06, Founder-directed: "I just wanna see your question there in the history,
+        # and I wanna see what ChatGPT says to you... I want to be able to read that history."
+        #
+        # Recorded as ordinary conversation turns so the daily check-in appears in the Ask card
+        # alongside everything else he asks, rather than in a table only I can read. The
+        # question is stored as his side of the exchange, because it is asked ON HIS BEHALF and
+        # a reply with no visible question reads as the app talking to itself.
+        #
+        # Asked HERE rather than through /ask-ai-trader deliberately: that endpoint is tuned
+        # for a quick interactive reply and this question timed out on it (2026-09-06, and the
+        # Founder has complained about Ask latency before). The job carries the 450s research
+        # budget, so the daily assessment gets the time it needs without slowing the screen he
+        # actually types into.
+        _record_daily_checkin(self.settings.db_path, question=SELF_ASSESSMENT_QUESTION, answer=answer)
         return record_self_assessment(
             self.settings.db_path, answer=answer,
             model=self.settings.openai_reasoning_model, status="answered", inventory=inventory,
