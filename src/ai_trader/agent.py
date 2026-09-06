@@ -1128,6 +1128,20 @@ def _review_candidate(proposal: TradeProposal, row: Any, *,
     and low it was measured against, so it can tell a breakout from a spent move instead of a
     threshold refusing both."""
     return {
+        # 2026-09-06: the reviewer is ASKED whether the assigned strategy suits this coin, and
+        # was never told which strategy was assigned. It answered honestly -- strategy_fit
+        # "unproven", and "Assigned strategy is unspecified" listed among its concerns -- and
+        # that concern then counted towards declining the trade.
+        #
+        # Live example, XLM: the ai_strategy_judgement event recorded
+        # assigned_strategy "range_trading" for the very same candidate the reviewer had just
+        # called unidentified. The value was one attribute away the whole time.
+        #
+        # It is one of three stated concerns behind a decline, so this is not cosmetic: the
+        # model was being marked down for a blank the caller left. Naming the strategy also
+        # lets it use the per-coin record it already receives in `context`, which is what
+        # "does this strategy suit THIS coin" actually needs.
+        "assigned_strategy": proposal.strategy_id,
         "confidence_score": proposal.confidence_score,
         "position_in_24h_range": range_position,
         "day_range": day_range,
