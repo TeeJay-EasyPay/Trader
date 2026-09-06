@@ -155,3 +155,43 @@ class LeanTradeColumnsTests(unittest.TestCase):
             self.assertNotIn("decision_context_json", lean)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class InsertIdRoundTripTests(unittest.TestCase):
+    """The Postgres id path must never cost extra round trips, and never lie.
+
+    2026-09-06. These assert the STATEMENT CLASSIFICATION, which is the part that decides
+    whether a query is sent. The end-to-end behaviour cannot be tested here at all -- the
+    suite runs on SQLite, where this code never executes -- so it was verified separately
+    against production Postgres inside a rolled-back TEMPORARY table.
+    """
+
+    def _conn(self):
+        from ai_trader.database import PostgresConnection
+
+        return PostgresConnection.__new__(PostgresConnection)  # no connection needed
+
+    def test_plain_insert_gets_its_id_from_the_insert_itself(self):
+        conn = self._conn()
+        conn._conn = None  # a lookup would raise; a plain INSERT must not need one
+        self.assertIsNone(
+            conn._last_insert_id("INSERT INTO x (a) VALUES (1) ON CONFLICT DO NOTHING"),
+            "conflict inserts must cost no lookup and report no id",
+        )
+
+    def test_non_inserts_are_left_alone(self):
+        conn = self._conn()
+        conn._conn = None
+        self.assertIsNone(conn._last_insert_id("SELECT 1"))
+        self.assertIsNone(conn._last_insert_id("UPDATE x SET a = 1"))
+
+    def test_returning_is_declined_where_it_would_change_meaning(self):
+        conn = self._conn()
+        conn._conn = None
+        # ON CONFLICT: RETURNING yields nothing when the conflict fires, so it stays off.
+        self.assertIsNone(conn._returning_column("INSERT INTO x (a) VALUES (1) ON CONFLICT DO NOTHING"))
+        # A statement that already returns something must not have a second clause bolted on.
+        self.assertIsNone(conn._returning_column("INSERT INTO x (a) VALUES (1) RETURNING x_id"))
+        # And nothing that is not an insert.
+        self.assertIsNone(conn._returning_column("SELECT 1"))
+        self.assertIsNone(conn._returning_column("UPDATE x SET a = 1"))

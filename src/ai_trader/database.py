@@ -429,6 +429,20 @@ class PostgresConnection:
     def _last_insert_id(self, statement: str) -> int | None:
         if not re.match(r"^\s*INSERT\s+INTO\b", statement, flags=re.IGNORECASE):
             return None
+        # 2026-09-06: ON CONFLICT statements -- what INSERT OR IGNORE and INSERT OR REPLACE
+        # translate into -- get no id at all, and pay for no lookup. They cannot use RETURNING
+        # (it yields nothing when the conflict fires), so they were the only inserts still
+        # paying the two-question currval tax: ~57,000 pg_get_serial_sequence and ~30,000
+        # currval calls a day after the RETURNING change landed.
+        #
+        # Returning None is also the honest answer. After a conflict nothing was written, yet
+        # currval would happily report whatever number that sequence last reached in this
+        # session -- an id belonging to some other row entirely. Verified before changing it:
+        # all fourteen call sites that read .lastrowid sit on plain INSERT INTO statements, so
+        # none of them can observe this. Checked one by one, not by pattern -- six of them do
+        # int(cursor.lastrowid) with no fallback and would raise on a None.
+        if re.search(r"\bON\s+CONFLICT\b", statement, flags=re.IGNORECASE):
+            return None
         table_match = re.match(r'^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)', statement, flags=re.IGNORECASE)
         if not table_match:
             return None
