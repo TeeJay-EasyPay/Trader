@@ -138,7 +138,7 @@ class FeedColumnTests(unittest.TestCase):
             p.read_text(encoding="utf-8", errors="replace") for p in src.rglob("*.py")
         )
         missing = []
-        for table, column, _purpose in _FEEDS:
+        for table, column, _purpose, _decision_input in _FEEDS:
             block = re.search(
                 r"CREATE TABLE IF NOT EXISTS\s+" + table + r"\s*\((.*?)\n\)",
                 schema_text,
@@ -199,3 +199,77 @@ class ShadowSettlementTests(unittest.TestCase):
 
         _note_unsettleable(bucket, 3, None, moment)
         self.assertEqual(bucket, [2, 3], "a row with no usable date can never settle")
+
+
+class CensusHonestyTests(unittest.TestCase):
+    """The census must not invent defects out of its own blind spots.
+
+    2026-09-06. Three of the AI's four "what is actually wrong" findings were artefacts of the
+    feed list rather than defects in the system -- no Alpaca feeds (22,199 rows exist), no
+    broker attribution on P&L (the column exists and is populated), and possible use of stale
+    crypto prices (nothing reads that table). It hedged all three itself and was right to.
+
+    These tests hold the census to what was learned.
+    """
+
+    def test_every_feed_says_whether_a_decision_reads_it(self):
+        """'Stale' means everything for an input a trade reads and nothing for one nothing
+        consumes. Without this flag the only reasonable inference from 'six days old' is the
+        wrong one."""
+        from ai_trader.self_assessment import _FEEDS
+
+        for table, _column, purpose, decision_input in _FEEDS:
+            self.assertIsInstance(decision_input, bool, table)
+            self.assertTrue(purpose.strip(), table)
+
+    def test_the_feeds_it_wrongly_reported_missing_are_now_listed(self):
+        """It reported no Alpaca quote/bar or execution feed. All three of these exist."""
+        from ai_trader.self_assessment import _FEEDS
+
+        listed = {table for table, _c, _p, _d in _FEEDS}
+        for table in ("MARKET_DATA_OBSERVATIONS", "BROKER_TRADE_HISTORY",
+                      "PRODUCTION_BROKER_SNAPSHOTS", "EXECUTION_EVENTS", "RESEARCH_FUNNELS"):
+            self.assertIn(table, listed)
+
+    def test_the_universe_snapshot_is_marked_as_not_a_decision_input(self):
+        """CRYPTO_MARKET_DATA is a CoinGecko snapshot nothing reads. Entries price from a live
+        Kraken Ticker call. Marking it correctly is what stops a housekeeping problem being
+        reported as a trading one."""
+        from ai_trader.self_assessment import _FEEDS
+
+        entry = next(f for f in _FEEDS if f[0] == "CRYPTO_MARKET_DATA")
+        self.assertFalse(entry[3])
+        self.assertIn("NOT a decision input", entry[2])
+
+    def test_the_inventory_explains_what_actually_prices_a_decision(self):
+        from ai_trader.self_assessment import _PRICING_NOTE
+
+        self.assertIn("LIVE Kraken Ticker", _PRICING_NOTE)
+        self.assertIn("CRYPTO_MARKET_DATA", _PRICING_NOTE)
+
+    def test_the_realised_record_is_split_by_broker_with_its_currency(self):
+        """It refused to state a combined P&L across a GBP account and a USD one, correctly.
+        The broker column existed all along; the census was summing over it."""
+        from ai_trader.self_assessment import _record_by_broker
+
+        tmp = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp) / "audit.sqlite3"
+            with closing(connect(db_path)) as conn:
+                with conn:
+                    conn.execute(
+                        "CREATE TABLE PERFORMANCE_ATTRIBUTION (attribution_id INTEGER PRIMARY KEY"
+                        " AUTOINCREMENT, broker TEXT, profit_loss REAL)"
+                    )
+                    for broker, pnl in (("kraken", -1.0), ("kraken", 0.5), ("alpaca", 2.0)):
+                        conn.execute(
+                            "INSERT INTO PERFORMANCE_ATTRIBUTION (broker, profit_loss) VALUES (?, ?)",
+                            (broker, pnl),
+                        )
+            rows = {r["broker"]: r for r in _record_by_broker(db_path)}
+            self.assertEqual(rows["kraken"]["currency"], "GBP")
+            self.assertEqual(rows["alpaca"]["currency"], "USD")
+            self.assertEqual(rows["kraken"]["closed_trades"], 2)
+            self.assertEqual(rows["alpaca"]["closed_trades"], 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

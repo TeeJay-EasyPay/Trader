@@ -45,22 +45,57 @@ CREATE TABLE IF NOT EXISTS AI_SELF_ASSESSMENTS (
 );
 """
 
-# Every feed a trading decision genuinely consults, with the column that dates a row. Held as
-# data rather than prose so the census cannot drift from what is actually measured.
-_FEEDS: tuple[tuple[str, str, str], ...] = (
-    ("CRYPTO_NEWS", "created_at", "coin news used to judge a crypto entry"),
-    ("NEWS_CATALYST_EVIDENCE", "created_at", "news catalysts attached to a symbol"),
-    ("MARKET_REGIME_EVIDENCE", "created_at", "market regime an entry is judged against"),
-    ("CRYPTO_SENTIMENT_SCORES", "created_at", "per-coin behavioural score"),
+# Every feed, the column that dates a row, what it is for, and -- decisively -- WHETHER A
+# TRADING DECISION ACTUALLY READS IT.
+#
+# 2026-09-06: that last field exists because of what the first honest census produced. Three
+# of the AI's four "what is actually wrong" findings were artefacts of THIS LIST rather than
+# defects in the system:
+#
+#   * It reported that decisions might be using six-day-old crypto prices. Nothing anywhere
+#     SELECTs from CRYPTO_MARKET_DATA. Every crypto entry calls adapter.current_prices() for a
+#     live Kraken Ticker read at the moment it decides. The table is genuinely stale and it
+#     prices nothing -- but the census described it as "crypto prices and ranges", so the only
+#     reasonable inference was the wrong one.
+#   * It reported no Alpaca quote/bar or execution feed. MARKET_DATA_OBSERVATIONS,
+#     PRODUCTION_BROKER_SNAPSHOTS and BROKER_TRADE_HISTORY all exist and hold thousands of
+#     rows. The census simply did not list them.
+#   * It reported that realised P&L lacked broker attribution. PERFORMANCE_ATTRIBUTION.broker
+#     exists and is populated; the census summed across brokers and threw the split away, and
+#     the AI then rightly refused to state a combined figure.
+#
+# It hedged every one of them -- "I cannot tell whether those inputs are absent from the system
+# or simply absent from the census" -- and it was right to. A wrong census produces confident,
+# specific, wrong findings, which is the exact opposite of this job's purpose. So: list what
+# exists, and say plainly whether a decision depends on it, because "stale" means everything
+# for an input a trade reads and nothing for one nothing consumes.
+_FEEDS: tuple[tuple[str, str, str, bool], ...] = (
+    ("CRYPTO_NEWS", "created_at", "coin news used to judge a crypto entry", True),
+    ("NEWS_CATALYST_EVIDENCE", "created_at", "news catalysts attached to a symbol", True),
+    ("MARKET_REGIME_EVIDENCE", "created_at", "market regime an entry is judged against", True),
+    ("CRYPTO_SENTIMENT_SCORES", "created_at", "per-coin behavioural score", True),
     # observed_at, not created_at. Getting this wrong is what cascaded on the first real
     # run -- see _scalar. test_every_feed_column_exists is the guard against it drifting again.
-    ("CRYPTO_MARKET_DATA", "observed_at", "crypto prices and ranges"),
-    ("PERFORMANCE_ATTRIBUTION", "closed_at", "completed trades the learning loop reads"),
-    ("STRATEGY_BACKTEST_RESULTS", "created_at", "backtest evidence behind a strategy"),
-    ("PRODUCTION_RESEARCH_EVIDENCE", "completed_at", "research runs"),
-    ("PRODUCTION_RECOMMENDATION_EVIDENCE", "created_at", "recommendations produced"),
-    ("MACRO_EVENT_EVIDENCE", "created_at", "macro events"),
-    ("FUNDAMENTAL_EVIDENCE", "created_at", "fundamentals"),
+    ("CRYPTO_MARKET_DATA", "observed_at",
+     "CoinGecko market-cap universe snapshot. NOT a decision input: nothing reads this table, "
+     "and crypto entries price from a live Kraken Ticker call instead", False),
+    # observation_time, not observed_at -- caught by test_every_feed_column_exists before
+    # this ever reached production, which is the second time that guard has paid for itself.
+    ("MARKET_DATA_OBSERVATIONS", "observation_time", "stored candles/observations behind indicators", True),
+    ("BROKER_TRADE_HISTORY", "updated_at", "real broker orders and fills, both brokers", True),
+    ("PRODUCTION_BROKER_SNAPSHOTS", "captured_at", "account state: cash, positions, buying power", True),
+    ("LOGICAL_TRADES", "updated_at", "the canonical trade record, entries through exits", True),
+    ("EXECUTION_EVENTS", "created_at",
+     "why each candidate was dropped -- the agent_no_trade reasons", True),
+    ("RESEARCH_FUNNELS", "created_at", "per-cycle funnel from symbols examined to proposals", True),
+    ("PERFORMANCE_ATTRIBUTION", "closed_at", "completed trades the learning loop reads", True),
+    ("SHADOW_TRADES", "created_at",
+     "simulated candidates settled against real candles -- the out-of-sample record", True),
+    ("STRATEGY_BACKTEST_RESULTS", "created_at", "backtest evidence behind a strategy", True),
+    ("PRODUCTION_RESEARCH_EVIDENCE", "completed_at", "research runs", True),
+    ("PRODUCTION_RECOMMENDATION_EVIDENCE", "created_at", "recommendations produced", True),
+    ("MACRO_EVENT_EVIDENCE", "created_at", "macro events", True),
+    ("FUNDAMENTAL_EVIDENCE", "created_at", "fundamentals", True),
 )
 
 QUESTION = (
@@ -133,14 +168,21 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
 
     feeds: list[dict[str, Any]] = []
     with closing(connect(db_path)) as conn:
-        for table, column, purpose in _FEEDS:
+        for table, column, purpose, decision_input in _FEEDS:
             total = _scalar(conn, "SELECT COUNT(*) FROM " + table)
             if total is None:
-                feeds.append({"feed": table, "purpose": purpose, "status": "table_missing"})
+                feeds.append({
+                    "feed": table, "purpose": purpose,
+                    "read_by_a_trading_decision": decision_input, "status": "table_missing",
+                })
                 continue
             feeds.append({
                 "feed": table,
                 "purpose": purpose,
+                # Says outright whether staleness here can change a trade. Without it the only
+                # reasonable inference from "six days old" is that decisions are using six-day
+                # -old data, which is what happened on 2026-09-06 and was wrong.
+                "read_by_a_trading_decision": decision_input,
                 "rows_total": int(total),
                 "newest_at": _scalar(conn, "SELECT MAX(" + column + ") FROM " + table),
                 "rows_last_24h": _scalar(
@@ -173,7 +215,60 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
     record["duplicate_rows_present"] = bool(
         closed is not None and distinct is not None and int(closed) != int(distinct)
     )
-    return {"generated_at": utc_now_iso(), "feeds": feeds, "realised_record": record}
+    return {
+        "generated_at": utc_now_iso(),
+        "feeds": feeds,
+        "realised_record": record,
+        "realised_record_by_broker": _record_by_broker(db_path),
+        "how_a_decision_is_priced": _PRICING_NOTE,
+    }
+
+
+# 2026-09-06: the AI refused to state a combined P&L -- "I cannot responsibly label it pounds
+# or dollars, or use it as a combined account result" -- and it was exactly right to. Alpaca
+# trades in dollars and Kraken in pounds, so a single summed figure is not a number at all.
+#
+# The irony is that PERFORMANCE_ATTRIBUTION.broker exists and is populated. The census was
+# summing across brokers and discarding the split, then presenting the meaningless total. The
+# system knew; the census hid it.
+def _record_by_broker(db_path: Path) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    try:
+        with closing(connect(db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT broker, COUNT(*) AS trades,
+                       SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) AS wins,
+                       SUM(profit_loss) AS net
+                FROM PERFORMANCE_ATTRIBUTION GROUP BY broker
+                """
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a census gap is a finding, not a crash
+        return out
+    for row in rows:
+        values = row_values(row)
+        if len(values) < 4:
+            continue
+        broker = str(values[0] or "unknown")
+        out.append({
+            "broker": broker,
+            # Named per broker rather than left to be inferred. Kraken is a GBP account and
+            # Alpaca a USD paper account, and the AI cannot know that from a number.
+            "currency": "GBP" if broker.lower() == "kraken" else "USD",
+            "closed_trades": values[1],
+            "wins": values[2],
+            "net_pnl": values[3],
+        })
+    return out
+
+
+_PRICING_NOTE = (
+    "A crypto entry is priced from a LIVE Kraken Ticker call made at the moment of the "
+    "decision (adapter.current_prices), not from any stored table. CRYPTO_MARKET_DATA is a "
+    "CoinGecko universe snapshot that nothing reads. So its age does not affect entry prices "
+    "or stop placement, and staleness there is a housekeeping problem rather than a trading "
+    "one. Equity decisions read stored observations, where age does matter."
+)
 
 
 def record_self_assessment(
