@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .always_on import uses_postgres
-from .canonical_trades import reconcile_canonical_broker_event
+from .canonical_trades import canonical_trade, reconcile_canonical_broker_event
 from .guardrails import validate_trade_proposal
 from .models import AccountContext, GuardrailConfig, TradeProposal, utc_now_iso
 from .operational import safe_float
@@ -941,7 +941,17 @@ def normalize_broker_events(
         )
         canonical["logical_trade_id"] = canonical_result["logical_trade_id"]
         if canonical_result["terminal"] and canonical_result.get("trade"):
-            terminal_trades[canonical_result["logical_trade_id"]] = canonical_result["trade"]
+            # 2026-09-06: fetch the FULL row here, for terminal trades only.
+            # _learning_payload_from_canonical_trade below reads decision_context_json -- the
+            # AI's own record of why the trade was taken -- and _refresh_trade_aggregate now
+            # returns the lean row, because that 45 KB field was being carried through 4,306
+            # ordinary fill events a day for the handful that actually end a trade. Falls back
+            # to the lean row if the re-read finds nothing, so a terminal trade is never lost
+            # to a bookkeeping optimisation.
+            logical_trade_id = canonical_result["logical_trade_id"]
+            terminal_trades[logical_trade_id] = (
+                canonical_trade(db_path, logical_trade_id) or canonical_result["trade"]
+            )
         raw_hash = _stable_hash(event)
         try:
             with closing(connect(db_path)) as conn:

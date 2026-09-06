@@ -602,7 +602,17 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
                     logical_trade_id,
                 ),
             )
-        return canonical_trade(db_path, logical_trade_id, conn=active)
+        # 2026-09-06 Supabase egress finding, and the completion of a fix left half-done
+        # this morning. This ran on EVERY fill event -- 4,306 times a day measured on
+        # production, about 206 MB/day and the single largest remaining source -- and each
+        # full row carries decision_context_json, 45,433 of its ~50,000 bytes.
+        #
+        # Only ONE consumer needs that field: sprint6 hands terminal trades to
+        # _learning_payload_from_canonical_trade, which reads the AI's record of why the trade
+        # was taken. Terminal trades are rare -- 27 in the system's entire history against
+        # 4,306 reads a day -- so that caller now fetches the full row for itself, and this
+        # returns the lean one for the thousands of ordinary fill events that never look at it.
+        return canonical_trade(db_path, logical_trade_id, conn=active, include_decision_context=False)
 
 
 def _weighted_average(rows: list[Any]) -> float | None:

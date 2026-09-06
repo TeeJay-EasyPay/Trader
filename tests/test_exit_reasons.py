@@ -156,3 +156,40 @@ class TimestampNormalisationTests(unittest.TestCase):
         self.assertIn("-", to_iso("1787162315.152785"))
         self.assertIsNone(to_iso(None))
         self.assertIsNone(to_iso("not a time"))
+
+
+class LearningContextSurvivesTheLeanReadTests(unittest.TestCase):
+    """The lean LOGICAL_TRADES read must not empty the AI's record of why a trade was taken.
+
+    2026-09-06. _refresh_trade_aggregate ran on every fill event -- 4,306 times a day, about
+    206 MB/day -- and each full row carried decision_context_json, 45,433 of its ~50,000 bytes.
+    It now returns the lean row. The one consumer that genuinely needs that field, sprint6's
+    terminal-trade learning payload, re-reads the full row for itself.
+
+    This test exists because getting it wrong would be invisible: the learning loop would keep
+    running and simply record an empty reason for every closed trade, in production only.
+    """
+
+    def test_the_aggregate_read_omits_the_context_and_the_full_read_keeps_it(self):
+        from ai_trader.canonical_trades import _LEAN_TRADE_COLUMNS
+
+        self.assertNotIn("decision_context_json", _LEAN_TRADE_COLUMNS)
+
+    def test_the_terminal_path_asks_for_the_full_row(self):
+        """sprint6 must call canonical_trade() WITHOUT include_decision_context=False for
+        terminal trades, or _learning_payload_from_canonical_trade gets nothing to read."""
+        import re
+
+        src = Path(__file__).resolve().parents[1] / "src" / "ai_trader" / "sprint6.py"
+        body = src.read_text(encoding="utf-8")
+        self.assertIn("canonical_trade(db_path, logical_trade_id)", body,
+                      "the terminal path must re-read the FULL row")
+        block = body[body.index("terminal_trades["):body.index("terminal_trades[") + 700]
+        self.assertNotIn("include_decision_context=False", block,
+                         "the terminal path must never take the lean row")
+
+    def test_the_learning_payload_still_reads_the_context_field(self):
+        """A guard on the reader, so nobody 'tidies away' the field the fix preserves."""
+        src = Path(__file__).resolve().parents[1] / "src" / "ai_trader" / "sprint6.py"
+        body = src.read_text(encoding="utf-8")
+        self.assertIn("decision_context_json", body)
