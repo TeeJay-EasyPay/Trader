@@ -59,30 +59,73 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+_INTERROGATIVE_OPENERS = (
+    r"^(why|what|when|where|who|which|how|did|does|do|is|are|was|were|has|have|had|should|shall)\b"
+)
+_REQUEST_OPENERS = r"^(can|could|would|will) (you|we)\b|^please\b"
+
+
+def _sentences(text: str) -> list[str]:
+    """Split on sentence endings, keeping the terminator so a "?" can still be read.
+
+    Falls back to the whole text when there is nothing to split on, so a single unpunctuated
+    instruction -- the normal shape of voice input -- behaves exactly as it did before.
+    """
+
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    return parts or [text]
+
+
+def _looks_like_a_question(sentence: str) -> bool:
+    """Whether one sentence asks rather than instructs.
+
+    A request opener rescues an otherwise question-shaped sentence: "can you run a cycle?" is
+    a real instruction and people say it constantly.
+
+    Otherwise a sentence is a question if it is punctuated as one OR opens with an
+    interrogative. That second half is load-bearing rather than belt-and-braces: Whisper often
+    returns speech with no question mark, so punctuation alone once let "why did it not run a
+    cycle" -- a question about the PAST -- start a new one.
+    """
+
+    if re.match(_REQUEST_OPENERS, sentence):
+        return False
+    return sentence.endswith("?") or bool(re.match(_INTERROGATIVE_OPENERS, sentence))
+
+
 def detect_action(question: str) -> str | None:
-    """The action key this sentence unambiguously asks for, or None to answer instead."""
+    """The action key this message unambiguously asks for, or None to answer instead.
+
+    JUDGED PER SENTENCE, and that is the whole point of this function's shape.
+
+    2026-09-06 incident. This used to ask whether the WHOLE message looked like a question --
+    its first word and its last character -- and then search every pattern across the entire
+    blob. So a multi-sentence message that neither opened with an interrogative nor ended in a
+    question mark had its guard skipped, and any action phrase anywhere inside it fired.
+
+    It started a real trading cycle. A daily check-in beginning "Daily check-in. Do you have
+    everything you need..." matched the cycle_all pattern on the words "do you have
+    everything" -- "do", within twenty characters, "everything". The sentence containing that
+    phrase was plainly a question and ended in a question mark. The MESSAGE did not, so the
+    guard never looked at it.
+
+    No trade resulted, because research produced no proposal on that cycle. Luck, not design.
+    The Founder writes in long multi-sentence messages, so this was never an edge case, and
+    the failure runs in the dangerous direction: silence is read as consent to trade.
+
+    Splitting first means each action phrase is judged in the sentence that actually contains
+    it -- the sentence whose grammar decides whether it is an instruction at all.
+    """
+
     text = " ".join(str(question or "").lower().split())
     if not text:
         return None
-    # A request rescues an otherwise question-shaped sentence: "can you run a cycle?" is a
-    # real instruction and people say it constantly.
-    if re.match(r"^(can|could|would|will) (you|we)\b|^please\b", text):
-        pass
-    # Otherwise this is a question if it is punctuated as one OR opens with an interrogative.
-    #
-    # The interrogative check is not belt-and-braces, it is the load-bearing half: Whisper
-    # frequently returns speech without a question mark, so relying on punctuation alone let
-    # "why did it not run a cycle" -- a question about the PAST -- start a new cycle. Voice
-    # input is exactly where sentences arrive unpunctuated, which makes this the common case
-    # rather than the edge one.
-    elif text.endswith("?") or re.match(
-        r"^(why|what|when|where|who|which|how|did|does|do|is|are|was|were|has|have|had|should|shall)\b",
-        text,
-    ):
-        return None
-    for pattern, key in _PATTERNS:
-        if re.search(pattern, text):
-            return key
+    for sentence in _sentences(text):
+        if _looks_like_a_question(sentence):
+            continue
+        for pattern, key in _PATTERNS:
+            if re.search(pattern, sentence):
+                return key
     return None
 
 
