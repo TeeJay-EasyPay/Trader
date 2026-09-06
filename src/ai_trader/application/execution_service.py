@@ -633,9 +633,13 @@ class ExecutionService:
         # Cheap by construction: the query matches only rows whose exit_reason is still blank,
         # so once the backlog clears it is a no-op on every later cycle.
         try:
+            # Dedupe FIRST: backfill_missing_exit_reasons writes reasons onto attribution rows,
+            # and doing that before collapsing duplicates would just write the same reason onto
+            # four copies of one trade.
+            trade_reasons.dedupe_performance_attribution(self.settings.db_path)
             trade_reasons.backfill_missing_exit_reasons(self.settings.db_path, broker="kraken")
         except Exception:  # noqa: BLE001 - a bookkeeping repair must never stop exit monitoring
-            logger.exception("Exit-reason backfill failed; managed-exit monitoring continues.")
+            logger.exception("Attribution repair failed; managed-exit monitoring continues.")
         checked = []
         for item in open_managed_exits(self.settings.db_path):
             broker = item["broker"]

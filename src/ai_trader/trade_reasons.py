@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect
+from .database import connect, row_values
 from .models import utc_now_iso
 
 # The placeholder this module exists to replace. Backfill treats a row carrying it as
@@ -287,6 +287,23 @@ def nearest_exit_reason(
     return best_reason
 
 
+def to_iso(value: Any) -> str | None:
+    """One timestamp format, whatever the caller was handed.
+
+    Kraken returns times as epoch floats on some paths and ISO strings on others, and this
+    codebase has now been bitten by that three separate times -- BROKER_TRADE_HISTORY,
+    PERFORMANCE_ATTRIBUTION's opened_at/closed_at, and the duplicate-row bug fixed on
+    2026-09-06 where an exact-string duplicate check compared a raw epoch against an
+    already-converted ISO row and inserted a copy every replay.
+
+    Converting at the WRITE, rather than leaving each reader to remember, is the only version
+    of this that stays fixed.
+    """
+
+    parsed = _parse(value)
+    return parsed.isoformat() if parsed is not None else None
+
+
 def infer_exit_reason(
     *,
     exit_price: Any,
@@ -364,6 +381,46 @@ def _number_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number else None  # NaN is not a price
+
+
+def dedupe_performance_attribution(db_path: Path) -> dict[str, Any]:
+    """Collapse repeated recordings of the same round trip down to one row each.
+
+    2026-09-06, surfaced by the trading AI itself when the Founder asked whether it had what
+    it needed: "the detailed attribution also contains repeated rows... until those records
+    reconcile, I can't confidently say the system is measuring its results correctly, let
+    alone learning from it." It was right, and the scale was worse than repeated rows --
+    94 rows for 27 real round trips, most counted four times and one five.
+
+    This is the table calculate_performance_metrics and symbol_track_record read, so every
+    duplicate inflated a win rate, an expectancy and a per-coin history that the entry gates
+    then consulted. A record that counts one loss four times is not a small reporting blemish;
+    it is the learning loop being fed a fiction.
+
+    Keeps the EARLIEST row of each (broker, symbol, closed_at) group -- the original
+    recording, closest to the fill -- and deletes the later copies. Deliberately not
+    "keep the newest": the first write is the one made from the reconciled fills, and later
+    copies exist only because the duplicate check missed.
+
+    Idempotent: once each group holds one row this deletes nothing on every later run.
+    """
+
+    with closing(connect(db_path)) as conn:
+        with conn:
+            before = row_values(conn.execute("SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION").fetchone())
+            conn.execute(
+                """
+                DELETE FROM PERFORMANCE_ATTRIBUTION
+                WHERE attribution_id NOT IN (
+                    SELECT MIN(attribution_id) FROM PERFORMANCE_ATTRIBUTION
+                    GROUP BY broker, symbol, closed_at
+                )
+                """
+            )
+            after = row_values(conn.execute("SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION").fetchone())
+    start = int(before[0]) if before else 0
+    end = int(after[0]) if after else 0
+    return {"rows_before": start, "rows_after": end, "duplicates_removed": max(0, start - end)}
 
 
 def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str, Any]:

@@ -1362,7 +1362,22 @@ def _record_attribution_for_reconciled_trade(conn: Any, *, result: dict[str, Any
     # per-coin history the entry gates now consult. Normalised on the way in so the stored
     # record is right, not merely corrected by whichever reader remembers to.
     symbol = normalize_symbol(result.get("symbol"))
-    closed_at = result.get("exit_time") or now
+    # 2026-09-06: closed_at is NORMALISED TO ISO before it is used, and that is the whole
+    # fix for a duplicate-row bug the AI itself surfaced ("the detailed attribution also
+    # contains repeated rows"). Measured: 94 rows for 27 real round trips -- most trades
+    # recorded four times, one five, each copy carrying the same P&L into every win rate,
+    # expectancy and per-coin track record computed from this table.
+    #
+    # The duplicate check below is an exact string comparison on closed_at. Kraken hands back
+    # exit_time as an epoch float ('1787162315.152785') on some paths and ISO on others, and
+    # trade_reasons.backfill_trade_reasons converts the stored value to ISO AFTERWARDS. So a
+    # replay compared a raw epoch against an already-converted ISO row, found no match, and
+    # inserted another copy -- which the next backfill then converted, making the two
+    # identical and the cause invisible. Every one of the 27 duplicate groups is byte-identical
+    # on (broker, symbol, closed_at) today, which is exactly what that loop produces.
+    #
+    # Normalising here means the check compares like with like, so it matches and returns.
+    closed_at = trade_reasons.to_iso(result.get("exit_time")) or now
     try:
         # PERFORMANCE_ATTRIBUTION's only key is its autoincrement id, so ON CONFLICT cannot
         # dedupe here -- an explicit check is required. Without it every replay cycle would
