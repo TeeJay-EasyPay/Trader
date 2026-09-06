@@ -56,7 +56,7 @@ function loadAudioModules() {
 
 const { micButtonLabel, micButtonAccessibilityLabel, thinkingFrame, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
 const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
-const { mergeTurns, newestExchangesFirst, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
+const { mergeTurns, newestExchangesFirst, withDayStamps, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
 const { askStatusLine, isModelAnswer } = require('../lib/askStatus');
 
 
@@ -347,7 +347,16 @@ function AskAiTrader({ messages, setMessages, request }) {
             rather than in a second card further down the screen. Newest turn first, so the
             reply to the question just asked is the thing immediately below the buttons and
             needs no scrolling to find. */}
-        {messages.length ? (
+        {/* 2026-09-06, Founder-directed: "the ask trader card only shows the last
+            conversations once a question is asked. so I can't see what you asked it unless I
+            ask another question."
+
+            The gate was `messages.length` -- the turns from THIS session only. storedTurns,
+            which is the history fetched from the server, was merged in one line below and
+            then never shown, because the block wrapping it could not render until the Founder
+            had asked something new. Yesterday's conversation existed, was loaded, and was
+            invisible. */}
+        {messages.length || storedTurns.length ? (
           <View style={styles.askConversation}>
             {/* 2026-09-03, Founder-directed: "my request once transcribed shouldn't have to
                 have 'You' above it... it should just be on the right of the box and then when
@@ -367,15 +376,21 @@ function AskAiTrader({ messages, setMessages, request }) {
               nestedScrollEnabled
               keyboardShouldPersistTaps="handled"
             >
-              {newestExchangesFirst(mergeTurns(storedTurns, messages)).map((exchange, index) => (
-                <View key={exchange[0].key || `exchange-${index}`} style={styles.chatExchange}>
-                  {exchange.map((turn) => (
-                    <View key={turn.key} style={bubbleStyle(turn)}>
-                      <Text style={bubbleTextStyle(turn)} selectable>{chatMessageText(turn.text)}</Text>
-                    </View>
-                  ))}
-                </View>
-              ))}
+              {withDayStamps(newestExchangesFirst(mergeTurns(storedTurns, messages))).map((item, index) =>
+                item.type === 'stamp' ? (
+                  <View key={item.key} style={styles.chatDayStampRow}>
+                    <Text style={styles.chatDayStamp}>{item.label}</Text>
+                  </View>
+                ) : (
+                  <View key={item.key || `exchange-${index}`} style={styles.chatExchange}>
+                    {item.exchange.map((turn) => (
+                      <View key={turn.key} style={bubbleStyle(turn)}>
+                        <Text style={bubbleTextStyle(turn)} selectable>{chatMessageText(turn.text)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )
+              )}
             </ScrollView>
           </View>
         ) : null}

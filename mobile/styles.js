@@ -302,6 +302,24 @@ export const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#eef1f6',
   },
+  // 2026-09-06, Founder-directed: a WhatsApp-style day stamp in the chat, so it is obvious
+  // which conversation happened when. Centred and quiet on purpose -- it is a signpost between
+  // exchanges, not a message, and it must not compete with what was actually said.
+  chatDayStampRow: {
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  chatDayStamp: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6b7280',
+    backgroundColor: '#eef1f6',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
   brokerStandingBlock: { marginTop: 14 },
   cardTitle: {
     fontSize: 16,

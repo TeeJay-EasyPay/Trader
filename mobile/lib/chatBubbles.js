@@ -120,7 +120,56 @@ function newestExchangesFirst(turns) {
   return exchanges.reverse();
 }
 
+// 2026-09-06, Founder-directed: "there should be some sort of time indication in the chat. so
+// I can see what conversation happened when. it could just be a simple date stamp that sits in
+// the chat window when scrolling. something like in WhatsApp."
+//
+// Relative words for the two days a person actually thinks in, and a real date beyond that.
+// "Today" and "Yesterday" are what makes a stamp readable at a glance; "4 September" is what
+// makes it useful a week later.
+function dayStampFor(createdAt, now) {
+  if (!createdAt) return null;
+  const when = new Date(createdAt);
+  if (Number.isNaN(when.getTime())) return null;
+  const today = now ? new Date(now) : new Date();
+  const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startOf(today) - startOf(when)) / 86400000);
+  if (dayDiff <= 0) return 'Today';
+  if (dayDiff === 1) return 'Yesterday';
+  const sameYear = when.getFullYear() === today.getFullYear();
+  return when.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'long',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+}
+
+// Exchanges arrive newest-first, so reading DOWN the list walks backwards in time. A stamp is
+// emitted whenever the day changes from the exchange above it, which puts each day's label
+// directly above that day's newest exchange -- the same place WhatsApp puts it, just read in
+// the other direction.
+//
+// An exchange with no usable timestamp gets no stamp rather than a guessed one: a wrong date
+// on a conversation is worse than none, because it is the thing the Founder would rely on to
+// tell two similar answers apart.
+function withDayStamps(exchanges, now) {
+  const out = [];
+  let previous = null;
+  for (const exchange of exchanges || []) {
+    const stamped = (exchange || []).find((turn) => turn && turn.createdAt);
+    const label = stamped ? dayStampFor(stamped.createdAt, now) : null;
+    if (label && label !== previous) {
+      out.push({ type: 'stamp', label, key: `stamp-${label}` });
+      previous = label;
+    }
+    out.push({ type: 'exchange', exchange, key: (exchange[0] && exchange[0].key) || `exchange-${out.length}` });
+  }
+  return out;
+}
+
 module.exports = {
+  dayStampFor,
+  withDayStamps,
   newestExchangesFirst,
   isFounder,
   bubbleAlignment,
