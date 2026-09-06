@@ -157,3 +157,48 @@ and 3, which are the AI's own top two and share plumbing. Then 5.
 
 Egress constraint applies throughout: the account is restricted, measured 276 MB/day today
 against roughly 170 MB/day allowed. Nothing here may add a per-view query.
+
+
+---
+
+## CORRECTION 2026-09-06: the candle feed was not ten days stale
+
+I reported that `crypto-candle-refresh` timing out had left the candles ten days old, and that
+this was the root cause of the 75% due-diligence rejection rate. **The first half was wrong,
+and it invalidates the chain.**
+
+What is true:
+
+* The job HAD timed out 232 times, last completing 2026-08-27. Real, and worth fixing. It now
+  completes (16:19:30) on the research budget.
+* But the candles were NOT stale. `fetch_kraken_ohlc` deliberately drops the still-forming
+  bar -- documented in its own comment -- so the newest row is always YESTERDAY's completed
+  bar. On 2026-09-06 the newest bar being 2026-09-05 is correct, not broken. Verified against
+  Kraken directly: it returns two bars, and we intentionally keep one.
+* 82 symbols carried yesterday's bar, written at 00:50 that morning. The feed was working.
+
+What misled me was my own census: it reports `rows_last_24h`, and for a feed of completed
+daily bars that reads zero for most of any day even when perfectly healthy. I built the
+instrument, then believed its most misleading number. That is the same defect I had just
+finished writing up in Part 0 -- a census that invites the wrong inference -- committed by me,
+one task later.
+
+Fixed: the feed now describes itself as completed daily bars and says outright that zero rows
+in 24h is expected, and that it should be judged on symbol COVERAGE rather than recency.
+
+**A real problem the correct reading does show:** coverage is DECLINING.
+
+    2026-08-31   105 symbols
+    2026-09-01    96
+    2026-09-02    91
+    2026-09-03    87
+    2026-09-04    86
+    2026-09-05    82
+
+Twenty-three symbols lost in five days. That is consistent with the timeouts -- a job that
+never finished never got through the whole universe -- so the budget fix should reverse it.
+**Unverified.** The test is whether tomorrow's coverage rises back toward 116.
+
+**So the 75% rejection rate is still unexplained.** The due-diligence bar and the trend score
+remain the biggest filter, and I do not yet know why so many coins score below it. That is the
+open question, and the next one to answer.

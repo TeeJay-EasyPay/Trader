@@ -81,7 +81,19 @@ _FEEDS: tuple[tuple[str, str, str, bool], ...] = (
      "and crypto entries price from a live Kraken Ticker call instead", False),
     # observation_time, not observed_at -- caught by test_every_feed_column_exists before
     # this ever reached production, which is the second time that guard has paid for itself.
-    ("MARKET_DATA_OBSERVATIONS", "observation_time", "stored candles/observations behind indicators", True),
+    # 2026-09-06: the purpose text must say COMPLETED DAILY BARS, because "0 rows in the last
+    # 24 hours" is this feed's NORMAL state and reads as a fault otherwise. fetch_kraken_ohlc
+    # deliberately drops the still-forming bar, so the newest row is always yesterday, and for
+    # most of any given day that is more than 24 hours old while being perfectly current.
+    #
+    # I misread exactly this and told the Founder the feed had been dead for ten days. It had
+    # not: 82 symbols carried yesterday's bar, written at 00:50 that morning. A census that
+    # invites the wrong inference is the same defect as one that omits a feed.
+    ("MARKET_DATA_OBSERVATIONS", "observation_time",
+     "COMPLETED daily bars behind the technical indicators. One bar per symbol per day, "
+     "written just after that day closes; the in-progress bar is deliberately excluded. So a "
+     "newest row dated YESTERDAY is healthy, and zero rows in the last 24h is expected rather "
+     "than a fault. Judge this feed on symbol COVERAGE per day, not on recency", True),
     ("BROKER_TRADE_HISTORY", "updated_at", "real broker orders and fills, both brokers", True),
     ("PRODUCTION_BROKER_SNAPSHOTS", "captured_at", "account state: cash, positions, buying power", True),
     ("LOGICAL_TRADES", "updated_at", "the canonical trade record, entries through exits", True),
