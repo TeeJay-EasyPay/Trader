@@ -455,7 +455,12 @@ def main(argv: list[str] | None = None) -> int:
                                 service.settings.forecast_refresh_timeout_seconds
                                 if job_name == "forecast-refresh"
                                 else service.settings.research_job_timeout_seconds
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh"}
+                                # self-assessment is one reasoning-model call over a measured
+                                # inventory -- comfortably inside the research budget, and
+                                # certainly not the default meant for single-query work. Given
+                                # it up front rather than after being caught by the same
+                                # silent-timeout trap that hid forecast-refresh and daily-report.
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment"}
                                 # 2026-08-23: external-intelligence-refresh timed out on the
                                 # shared 180s budget. It makes many small sequential HTTP
                                 # calls in one run -- SEC EDGAR per symbol, Alpaca News
@@ -724,6 +729,8 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.reconcile_open_positions(broker="kraken")
     if job_name == "kraken-startup-reconciliation":
         return replay_persisted_kraken_evidence(service.settings.db_path)
+    if job_name == "self-assessment":
+        return service.run_self_assessment()
     if job_name == "push-dispatch":
         return service.dispatch_pending_push_notifications()
     if job_name == "strategy-lab-refresh":
@@ -1165,6 +1172,15 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # multi-day directional view does not meaningfully change within an hour. Covers both
     # asset classes, so like crypto-candle-refresh it sits above the NYSE weekday gate.
     due.append(("forecast-refresh", _time_bucket(now, 6 * 3600)))
+    # 2026-09-06, Founder-directed: ask the trading AI twice a day whether it has what it
+    # needs, what is going wrong, and what it would need to be world class.
+    #
+    # He asked it once by hand and it named two real defects nobody had found -- a
+    # track-record discrepancy and duplicated attribution rows -- both confirmed against the
+    # database within the hour. Twice daily rather than hourly because the answer moves on the
+    # timescale of data and code changes, not minutes, and each run is a real reasoning-model
+    # call. A 12-hour bucket also means a missed window costs at most one assessment.
+    due.append(("self-assessment", _time_bucket(now, 12 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see

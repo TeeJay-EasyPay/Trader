@@ -112,6 +112,13 @@ from ..voice_actions import detect_action, run_action
 from ..operational import display_value, initialize_operational_schema, latest_pnl_snapshot, permitted_universe_fit, record_portfolio_snapshot, record_research_run, safe_float, safe_score, seed_crypto_universe
 from ..operational_truth import initialize_operational_truth_schema, reconcile_broker_trade_rows, reconciliation_health
 from ..rejection_review import deterministic_learned_synthesis, recent_crypto_rejection_digest
+from ..self_assessment import (
+    QUESTION as SELF_ASSESSMENT_QUESTION,
+    input_inventory,
+    latest_self_assessment,
+    record_self_assessment,
+    recent_self_assessments,
+)
 from ..portfolio_intelligence import initialize_portfolio_intelligence_schema, upsert_asset_metadata
 from ..production_spine import initialize_production_spine_schema
 from ..production_evidence import (
@@ -849,6 +856,15 @@ class LocalApiService:
             return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["why_no_trade"]
         if path == "/daily-plan":
             return 200, daily_trading_plan_status(self.settings.db_path, broker=_first(query, "broker") or "alpaca")
+        if path == "/self-assessment":
+            # 2026-09-06: the app reads the STORED answer rather than triggering a new one.
+            # A fresh reasoning-model call per screen view is exactly the pattern that put a
+            # 459 KB blob on a 2-minute loop and cost the Founder his Supabase quota. The
+            # worker produces these twice a day; this hands over what it produced.
+            return 200, {
+                "latest": latest_self_assessment(self.settings.db_path),
+                "history": recent_self_assessments(self.settings.db_path, limit=14),
+            }
         if path == "/crypto-rejections-explained":
             return 200, self.ask_about_crypto_rejections(hours=_int_or_default(_first(query, "hours"), 48))
         if path == "/activity/brokers":
@@ -1328,6 +1344,44 @@ class LocalApiService:
         # Deterministic, no OpenAI call -- see recent_crypto_rejection_digest's own
         # docstring for why the "what and why" half doesn't need one.
         return recent_crypto_rejection_digest(self.settings.db_path, hours=hours)
+
+    def run_self_assessment(self) -> dict[str, Any]:
+        """Ask the trading AI, on a schedule, whether it has what it needs.
+
+        2026-09-06, Founder-directed. He asked this by hand in the app and the answer named two
+        real defects nobody had found -- a track-record discrepancy and duplicated attribution
+        rows. Both were confirmed against the database within the hour (94 rows for 27 real
+        round trips). An assistant that finds its own bugs when asked is worth asking twice a
+        day rather than when someone happens to think of it.
+
+        The inventory is MEASURED and handed over rather than left to be inferred. That first
+        answer opened by saying it could not assess freshness or coverage because the system had
+        just restarted -- a wasted assessment. Given the census, the same question becomes one
+        it can answer with numbers.
+        """
+
+        inventory = input_inventory(self.settings.db_path)
+        if not self.settings.openai_api_key:
+            return record_self_assessment(
+                self.settings.db_path, answer=None, model=None,
+                status="openai_not_configured", inventory=inventory,
+            )
+        explainer = OpenAIReadOnlyExplainer(
+            self.settings.openai_api_key, self.settings.openai_reasoning_model
+        )
+        try:
+            answer = explainer.answer(SELF_ASSESSMENT_QUESTION, {"input_inventory": inventory})
+        except Exception as exc:  # noqa: BLE001 - a failed assessment must never stop the worker
+            logger.exception("Self-assessment failed.")
+            return record_self_assessment(
+                self.settings.db_path, answer=f"Assessment could not be produced: {exc}",
+                model=self.settings.openai_reasoning_model, status="openai_failed",
+                inventory=inventory,
+            )
+        return record_self_assessment(
+            self.settings.db_path, answer=answer,
+            model=self.settings.openai_reasoning_model, status="answered", inventory=inventory,
+        )
 
     def ask_about_crypto_rejections(self, *, hours: int = 48) -> dict[str, Any]:
         """The Founder's pre-built Ask-AI-Trader question (2026-08-16): what crypto
