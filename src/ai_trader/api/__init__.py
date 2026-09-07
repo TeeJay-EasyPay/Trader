@@ -892,6 +892,15 @@ class LocalApiService:
             return 200, self.recent_standup_actions(
                 limit=_int_or_default(_first(query, "limit"), 10)
             )
+        if path == "/standup/history":
+            # 2026-09-07. Without this, reopening the Standup screen shows an empty card until
+            # you ask something new -- the exact complaint the Founder made about Ask on
+            # 2026-08-31 ("only shows the last conversations once a question is asked"). The
+            # transcript was already being stored; nothing could read it back.
+            return 200, self.standup_history(
+                conversation_id=_first(query, "conversation_id") or "standup",
+                limit=_int_or_default(_first(query, "limit"), 40),
+            )
         if path == "/self-assessment":
             # 2026-09-06: the app reads the STORED answer rather than triggering a new one.
             # A fresh reasoning-model call per screen view is exactly the pattern that put a
@@ -1451,6 +1460,23 @@ class LocalApiService:
             for turn in turns
             if str(turn.get("conversation_id") or "default") == conversation_id
         ]
+
+    def standup_history(self, *, conversation_id: str = "standup", limit: int = 40) -> dict[str, Any]:
+        """What was already said, for the screen to show on open.
+
+        Richer than _standup_history, which exists to feed a model: this carries the timestamp
+        the day stamps need and the speaker the bubble colour is chosen from. Bounded, and the
+        text is already stored -- so this reads a screenful, not a history.
+        """
+
+        capped = max(1, min(int(limit), 100))
+        turns = [
+            {"speaker": str(turn.get("role") or ""), "text": str(turn.get("text") or ""),
+             "created_at": turn.get("created_at"), "status": turn.get("status")}
+            for turn in recent_turns(self.settings.db_path, limit=capped * 3)
+            if str(turn.get("conversation_id") or "default") == conversation_id
+        ]
+        return {"conversation_id": conversation_id, "turns": turns[-capped:]}
 
     def _trader_turn(self, history: list[dict[str, Any]], question: str) -> dict[str, Any]:
         """The trading AI's contribution.

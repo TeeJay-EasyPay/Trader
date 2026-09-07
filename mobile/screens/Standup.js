@@ -64,9 +64,30 @@ function StandupScreen({ request }) {
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
+  // What was already said, loaded on open. 2026-09-07: without this the card was empty until
+  // you asked something new, which is the complaint the Founder made about Ask on 2026-08-31 --
+  // "the ask trader card only shows the last conversations once a question is asked". The
+  // transcript was being stored the whole time; nothing read it back.
+  useEffect(() => {
+    let cancelled = false;
+    request('/standup/history?conversation_id=standup&limit=40')
+      .then((payload) => {
+        if (cancelled || !mountedRef.current) return;
+        const stored = (payload && payload.turns) || [];
+        setTurns(stored.map((turn) => ({
+          speaker: turn.speaker,
+          text: normalizeChatText(turn.text),
+          createdAt: turn.created_at,
+        })));
+      })
+      // A history that will not load is not worth an error message: the conversation still
+      // works, and the turns from this session will appear as normal.
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [request]);
+
   const start = useCallback(() => {
     setRunning(true);
-    setTurns([]);
     setSpentTotal(0);
     setStatusLine(mode === 'both' ? 'Standup open - both are listening' : 'Open');
   }, [mode]);

@@ -143,5 +143,91 @@ class EndpointReportsCostTests(unittest.TestCase):
             self.assertEqual(result["cost_usd"], 0)
 
 
+class StoredHistoryTests(unittest.TestCase):
+    """Reopening the screen must show what was already said.
+
+    2026-09-07. Without this the Conversation card was empty until you asked something new --
+    the exact complaint the Founder made about Ask on 2026-08-31: "the ask trader card only
+    shows the last conversations once a question is asked". The turns were being stored the
+    whole time; nothing could read them back.
+    """
+
+    def _service(self, tmp):
+        from ai_trader.api import LocalApiService
+        from ai_trader.config import Settings
+        from ai_trader.models import AutoTradeConfig, GuardrailConfig
+
+        root = Path(tmp)
+        return LocalApiService(Settings(
+            alpaca_api_key=None, alpaca_secret_key=None,
+            alpaca_paper_base_url="https://paper-api.alpaca.markets",
+            alpaca_data_base_url="https://data.alpaca.markets",
+            openai_api_key=None, openai_model="gpt-4.1-mini",
+            db_path=root / "audit.sqlite3", output_dir=root,
+            trading_log_path=root / "TRADING_LOG.md",
+            guardrails=GuardrailConfig(), auto_trade=AutoTradeConfig(),
+        ))
+
+    def test_stored_turns_come_back_with_who_said_them_and_when(self):
+        """The speaker picks the bubble colour and the timestamp drives the day stamps, so a
+        history missing either renders wrongly rather than not at all."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp)
+            service._trader_turn = lambda history, prompt: {
+                "text": "here is what I see", "status": "answered", "model": "stub"}
+            service.run_standup_turn(
+                {"message": "trader, what do you see?", "mode": "trader", "exchange_budget": 0}
+            )
+            history = service.standup_history(conversation_id="standup")
+            speakers = [turn["speaker"] for turn in history["turns"]]
+            self.assertIn("founder", speakers)
+            self.assertIn("trader", speakers)
+            for turn in history["turns"]:
+                self.assertTrue(turn["created_at"], "a turn with no time breaks the day stamps")
+
+    def test_another_conversation_does_not_leak_in(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp)
+            service._trader_turn = lambda history, prompt: {
+                "text": "ok", "status": "answered", "model": "stub"}
+            service.run_standup_turn({"message": "one", "mode": "trader",
+                                      "conversation_id": "standup", "exchange_budget": 0})
+            service.run_standup_turn({"message": "two", "mode": "trader",
+                                      "conversation_id": "elsewhere", "exchange_budget": 0})
+            texts = [t["text"] for t in service.standup_history(conversation_id="standup")["turns"]]
+            self.assertIn("one", texts)
+            self.assertNotIn("two", texts)
+
+    def test_an_empty_conversation_returns_an_empty_list_not_an_error(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._service(tmp).standup_history(conversation_id="nothing")["turns"], [])
+
+    def test_the_history_is_bounded(self):
+        """A screenful, not a history. Unbounded reads are what cost the Founder his Supabase
+        quota in August."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            history = self._service(tmp).standup_history(conversation_id="standup", limit=10_000)
+            self.assertIsInstance(history["turns"], list)
+
+    def test_the_screen_asks_for_it_on_open(self):
+        source = STANDUP_SCREEN.read_text(encoding="utf-8")
+        self.assertIn("/standup/history", source)
+
+    def test_starting_a_conversation_does_not_wipe_what_was_said(self):
+        """Ending a conversation does not delete the transcript on the server, so clearing the
+        screen only hid it."""
+        source = STANDUP_SCREEN.read_text(encoding="utf-8")
+        start = source[source.index("const start = useCallback"):]
+        self.assertNotIn("setTurns([])", start[:400])
+
+
 if __name__ == "__main__":
     unittest.main()
