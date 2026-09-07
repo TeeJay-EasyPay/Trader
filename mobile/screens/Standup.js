@@ -24,6 +24,7 @@ const { styles } = require('../styles');
 const { Section, Button } = require('../components/shared');
 const { withDayStamps, newestExchangesFirst } = require('../lib/chatBubbles');
 const { normalizeChatText } = require('../lib/chat');
+const { formatPence } = require('../lib/cost');
 
 const MODES = [
   { key: 'both', label: 'Standup', hint: 'Both, talking to each other' },
@@ -43,12 +44,14 @@ function StandupScreen({ request }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [statusLine, setStatusLine] = useState('Not started');
+  const [spentTotal, setSpentTotal] = useState(0);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const start = useCallback(() => {
     setRunning(true);
     setTurns([]);
+    setSpentTotal(0);
     setStatusLine(mode === 'both' ? 'Standup open - both are listening' : 'Open');
   }, [mode]);
 
@@ -77,6 +80,10 @@ function StandupScreen({ request }) {
       });
       if (!mountedRef.current) return;
       const produced = (payload && payload.turns) || [];
+      // Cost shown next to the answer, not buried in a console. The Founder's first $6 of
+      // credit went overnight and he could only find out where from Anthropic's billing page
+      // the following morning.
+      const spent = Number((payload && payload.cost_usd) || 0);
       setTurns((prev) => [
         ...prev,
         ...produced.map((turn) => ({
@@ -86,9 +93,11 @@ function StandupScreen({ request }) {
           createdAt: new Date().toISOString(),
         })),
       ]);
+      setSpentTotal((prev) => prev + spent);
       setStatusLine(
         produced.length
           ? `${produced.length} repl${produced.length === 1 ? 'y' : 'ies'} - your turn`
+            + (spent ? `  ·  ${formatPence(spent)}` : '')
           : 'No reply came back'
       );
     } catch (error) {
@@ -146,6 +155,11 @@ function StandupScreen({ request }) {
         )}
 
         <Text style={styles.smallText}>{statusLine}</Text>
+        {spentTotal ? (
+          <Text style={styles.smallText}>
+            This conversation so far: {formatPence(spentTotal)}
+          </Text>
+        ) : null}
 
         {running ? (
           <View style={styles.standupComposer}>

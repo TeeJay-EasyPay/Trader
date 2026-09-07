@@ -1491,7 +1491,10 @@ class LocalApiService:
         messages = transcript_for(STANDUP_CLAUDE, history + [{"speaker": "founder", "text": question}])
         result = ask_claude(messages, db_path=self.settings.db_path)
         return {"status": result.get("status"), "text": result.get("answer") or "",
-                "model": result.get("model"), "tool_calls": result.get("tool_calls") or []}
+                "model": result.get("model"), "tool_calls": result.get("tool_calls") or [],
+                # Passed through so the Founder sees the cost of the answer next to the answer.
+                # He had to read the first $5.29 off the Anthropic console the morning after.
+                "usage": result.get("usage") or {}}
 
     def run_standup_turn(self, body: dict[str, Any]) -> dict[str, Any]:
         """One exchange: the Founder speaks, whoever is addressed answers, the peer may reply.
@@ -1540,7 +1543,8 @@ class LocalApiService:
                         text=text, model=turn.get("model"), status=turn.get("status"))
             history.append({"speaker": who, "text": text})
             produced.append({"speaker": who, "text": text, "status": turn.get("status"),
-                             "tool_calls": turn.get("tool_calls") or []})
+                             "tool_calls": turn.get("tool_calls") or [],
+                             "usage": turn.get("usage") or {}})
             return True
 
         for who in speakers:
@@ -1558,8 +1562,11 @@ class LocalApiService:
                 break
             used += 1
 
+        # One number for the whole exchange, because that is the unit the Founder decides on:
+        # he asks a question, and wants to know what asking it cost.
+        spent = round(sum(float((t.get("usage") or {}).get("cost_usd") or 0) for t in produced), 4)
         return {"status": "ok", "mode": mode, "addressed": addressed,
-                "exchange_turns": used, "turns": produced}
+                "exchange_turns": used, "turns": produced, "cost_usd": spent}
 
     def write_up_standup_actions(self, body: dict[str, Any]) -> dict[str, Any]:
         """Turn the conversation into a written, verifiable action list for Claude Code.

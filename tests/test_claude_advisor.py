@@ -158,5 +158,139 @@ class LookupCeilingTests(unittest.TestCase):
         self.assertIn("Do not ask for more", source)
 
 
+class CostControlTests(unittest.TestCase):
+    """2026-09-07: the Founder's first $6 of credit was gone in fifteen minutes across four
+    test questions. The console confirmed it -- $5.29, one day, all Opus 5.
+
+    The cause is structural. A tool loop resends the whole conversation on every iteration, so
+    a 21-lookup question does not pay for those tokens once; it pays for them again and again.
+    These tests hold the three defences in place, because the failure is silent: nothing breaks,
+    the answers stay good, and the money simply goes.
+    """
+
+    def _recording_client(self, *, usage=None, always_tools=True):
+        """A stub that records exactly what was sent, so the caching can be asserted on."""
+        from types import SimpleNamespace
+
+        sent = []
+
+        class _Client:
+            class messages:
+                @staticmethod
+                def create(**kwargs):
+                    sent.append(kwargs)
+                    return SimpleNamespace(
+                        stop_reason="tool_use" if always_tools else "end_turn",
+                        model="stub",
+                        content=[SimpleNamespace(
+                            type="tool_use", id=f"t{len(sent)}", name="search_source",
+                            input={"pattern": "anything"},
+                        )] if always_tools else [SimpleNamespace(type="text", text="done")],
+                        usage=usage or SimpleNamespace(
+                            input_tokens=10, output_tokens=5,
+                            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                        ),
+                    )
+
+        return _Client(), sent
+
+    def _run(self, client, **kwargs):
+        import os
+
+        saved_env = os.environ.get("ANTHROPIC_API_KEY")
+        saved_client = claude_advisor._client
+        os.environ["ANTHROPIC_API_KEY"] = "stub-key"
+        claude_advisor._client = lambda: client
+        try:
+            return claude_advisor.ask_claude([{"role": "user", "content": "hello"}], **kwargs)
+        finally:
+            claude_advisor._client = saved_client
+            if saved_env is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = saved_env
+
+    def test_the_system_prompt_is_sent_as_a_cacheable_block(self):
+        """It is identical on every iteration. Paying for it twelve times is pure waste."""
+        client, sent = self._recording_client()
+        self._run(client, max_iterations=2)
+        system = sent[0]["system"]
+        self.assertIsInstance(system, list, "a plain string cannot carry a cache breakpoint")
+        self.assertEqual(system[-1]["cache_control"], {"type": "ephemeral"})
+
+    def test_the_tool_schemas_carry_a_cache_breakpoint(self):
+        client, sent = self._recording_client()
+        self._run(client, max_iterations=2)
+        self.assertEqual(sent[0]["tools"][-1]["cache_control"], {"type": "ephemeral"})
+
+    def test_the_conversation_so_far_is_marked_cacheable(self):
+        """The breakpoint moves forward each iteration, so what it caches is everything before
+        the newest exchange -- exactly the part that would otherwise be resent at full price."""
+        client, sent = self._recording_client()
+        self._run(client, max_iterations=3)
+        self.assertGreaterEqual(len(sent), 2)
+        for call in sent:
+            last = call["messages"][-1]
+            blocks = last["content"]
+            self.assertIsInstance(blocks, list)
+            self.assertEqual(blocks[-1].get("cache_control"), {"type": "ephemeral"})
+
+    def test_marking_never_loses_the_original_content(self):
+        """A missed cache hit costs money; a mangled message costs the whole turn."""
+        marked = claude_advisor._with_cache_breakpoint([{"role": "user", "content": "hello"}])
+        self.assertEqual(marked[0]["content"][0]["text"], "hello")
+
+    def test_an_unmarkable_message_is_left_alone_rather_than_broken(self):
+        for awkward in ([], [{"role": "user", "content": ""}], [{"role": "user", "content": None}]):
+            self.assertEqual(claude_advisor._with_cache_breakpoint(list(awkward)), awkward)
+
+    def test_a_turn_stops_when_it_costs_too_much(self):
+        """The iteration count bounds how MANY times we look. It says nothing about what each
+        look costs, which is why it did not stop the overnight burn."""
+        from types import SimpleNamespace
+
+        expensive = SimpleNamespace(
+            input_tokens=200_000, output_tokens=1_000,
+            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+        )
+        client, sent = self._recording_client(usage=expensive)
+        result = self._run(client, max_iterations=12, max_cost_usd=0.60)
+        self.assertEqual(result["status"], "answered_at_cost_limit")
+        self.assertLess(len(sent), 12, "it stopped well before the iteration ceiling")
+
+    def test_the_two_kinds_of_stop_are_reported_differently(self):
+        """One says the question was too broad; the other says it was too expensive. The
+        Founder acts differently on each."""
+        client, _ = self._recording_client()
+        cheap = self._run(client, max_iterations=2, max_cost_usd=1000.0)
+        self.assertEqual(cheap["status"], "answered_at_lookup_limit")
+
+    def test_every_outcome_reports_what_it_spent(self):
+        """Cost the Founder cannot see is cost he cannot control -- he had to read it off the
+        Anthropic console the morning after."""
+        client, _ = self._recording_client(always_tools=False)
+        answered = self._run(client, max_iterations=4)
+        self.assertEqual(answered["status"], "answered")
+        self.assertIn("cost_usd", answered["usage"])
+        self.assertIn("cache_read_tokens", answered["usage"])
+
+    def test_cached_and_uncached_input_are_counted_apart(self):
+        """They are priced an order of magnitude apart, so a merged total cannot show whether
+        the caching is working at all."""
+        totals = {"input": 1_000_000, "output": 0, "cache_write": 0, "cache_read": 1_000_000}
+        self.assertAlmostEqual(claude_advisor._cost_usd(totals), 5.50, places=2)
+
+    def test_a_cache_read_is_far_cheaper_than_fresh_input(self):
+        self.assertLess(claude_advisor.PRICE_PER_MTOK["cache_read"],
+                        claude_advisor.PRICE_PER_MTOK["input"] / 5)
+
+    def test_tool_results_are_bounded(self):
+        """A result stays in the history for the rest of the turn, so an oversized one is paid
+        for on every later iteration too."""
+        self.assertLessEqual(claude_advisor.MAX_TOOL_RESULT_CHARS, 12000)
+        self.assertGreaterEqual(claude_advisor.MAX_TOOL_RESULT_CHARS, 4000,
+                                "too small and the evidence stops being evidence")
+
+
 if __name__ == "__main__":
     unittest.main()

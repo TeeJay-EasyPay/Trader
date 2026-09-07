@@ -41,6 +41,41 @@ MODEL = "claude-opus-5"
 MAX_TOOL_ITERATIONS = 12
 MAX_TOKENS = 8000
 
+# ---------------------------------------------------------------------------
+# COST. 2026-09-07: the Founder's first $6 of credit was gone in fifteen minutes, across four
+# test questions. The console confirmed it: $5.29, one day, all Opus 5.
+#
+# The cause is structural, not careless use. A tool loop RESENDS THE WHOLE CONVERSATION on
+# every iteration, so a question that takes 21 lookups does not pay for those tokens once --
+# it pays for them again and again, and the bill grows with the square of the investigation.
+#
+# Three defences, in order of how much they save:
+#
+#   1. Prompt caching. The system prompt, the tool schemas and the conversation so far are
+#      marked cacheable, so the repeated prefix is billed at a tenth of the input price
+#      instead of full price. This is the fix; the other two are safety nets.
+#   2. Smaller tool results. Each result sits in the history for the rest of the turn, so an
+#      oversized one is paid for on every later iteration as well as its own.
+#   3. A hard ceiling in POUNDS, not just in iterations. An iteration count bounds how many
+#      times we look, but says nothing about how much each look costs. This is the backstop
+#      that would actually have stopped the overnight burn.
+# ---------------------------------------------------------------------------
+
+CACHE_CONTROL = {"type": "ephemeral"}
+
+# Per tool result. Chosen so a file read or a search still carries real evidence, while a
+# runaway result cannot park 20k characters in the history for the rest of the turn.
+MAX_TOOL_RESULT_CHARS = 10000
+
+# Opus 5, USD per million tokens. Cache writes cost a quarter more than fresh input; cache
+# reads cost a tenth. That ratio is the whole reason caching is worth the complexity here.
+PRICE_PER_MTOK = {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.50}
+
+# The stop-loss on a single turn. Deliberately low: the entire first standup, including the
+# 21-lookup investigation, would have been stopped here instead of running to the end of the
+# credit. Raise it knowingly, not by accident.
+MAX_TURN_COST_USD = 0.60
+
 SYSTEM_PROMPT = """You are Claude, one of two AI participants in a working standup about a live \
 algorithmic trading system. The other participant is the trading intelligence that actually \
 runs the account ("the trader"). The third is the Founder, who owns the system and chairs the \
@@ -84,12 +119,82 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
     Built from the same TOOL_SPECS the dispatcher uses, so a description can never advertise a
     tool that does not exist or promise behaviour the function does not have.
+
+    The last one carries a cache breakpoint, which caches the whole tool block. The schemas are
+    identical on every iteration of a turn, so paying for them twelve times is pure waste.
     """
 
-    return [
+    tools = [
         {"name": spec["name"], "description": spec["description"], "input_schema": spec["input_schema"]}
         for spec in TOOL_SPECS
     ]
+    if tools:
+        tools[-1] = {**tools[-1], "cache_control": CACHE_CONTROL}
+    return tools
+
+
+def _system_blocks(system: str) -> list[dict[str, Any]]:
+    """The system prompt as a cacheable block. It never changes within a turn."""
+
+    return [{"type": "text", "text": system, "cache_control": CACHE_CONTROL}]
+
+
+def _with_cache_breakpoint(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark the end of the conversation so far as cacheable.
+
+    The breakpoint moves forward each iteration. What it caches is everything BEFORE the newest
+    exchange -- which is precisely the part that would otherwise be re-sent at full price on
+    every single lookup.
+
+    Returns the history unchanged if the last message cannot be marked safely. A missed cache
+    hit costs money; a malformed request costs the whole turn.
+    """
+
+    if not history:
+        return history
+
+    marked = list(history)
+    last = dict(marked[-1])
+    content = last.get("content")
+
+    if isinstance(content, str):
+        if not content:
+            return history
+        last["content"] = [{"type": "text", "text": content, "cache_control": CACHE_CONTROL}]
+    elif isinstance(content, list) and content:
+        blocks = list(content)
+        tail = blocks[-1]
+        if isinstance(tail, dict):
+            blocks[-1] = {**tail, "cache_control": CACHE_CONTROL}
+        elif hasattr(tail, "model_dump"):
+            # An SDK block object (the assistant's own content). Converting it to a plain dict
+            # is the only way to attach cache_control without mutating the SDK's object.
+            blocks[-1] = {**tail.model_dump(exclude_none=True), "cache_control": CACHE_CONTROL}
+        else:
+            return history
+        last["content"] = blocks
+    else:
+        return history
+
+    marked[-1] = last
+    return marked
+
+
+def _add_usage(totals: dict[str, int], usage: Any) -> None:
+    """Accumulate one response's tokens, keeping cached and uncached input apart.
+
+    They are priced an order of magnitude apart, so a total that merges them cannot tell the
+    Founder whether the caching is working.
+    """
+
+    totals["input"] += int(getattr(usage, "input_tokens", 0) or 0)
+    totals["output"] += int(getattr(usage, "output_tokens", 0) or 0)
+    totals["cache_write"] += int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    totals["cache_read"] += int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+
+
+def _cost_usd(totals: dict[str, int]) -> float:
+    return sum(totals.get(kind, 0) / 1_000_000 * price for kind, price in PRICE_PER_MTOK.items())
 
 
 def ask_claude(
@@ -98,6 +203,7 @@ def ask_claude(
     system: str | None = None,
     db_path: Path | None = None,
     max_iterations: int = MAX_TOOL_ITERATIONS,
+    max_cost_usd: float | None = None,
 ) -> dict[str, Any]:
     """One Claude turn, with tool use resolved before returning.
 
@@ -130,27 +236,45 @@ def ask_claude(
     client = _client()
     history = [dict(message) for message in messages]
     tool_calls: list[dict[str, Any]] = []
+    totals = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+    ceiling = float(max_cost_usd if max_cost_usd is not None else MAX_TURN_COST_USD)
+    stopped_on_cost = False
+
+    def _spent() -> dict[str, Any]:
+        """What this turn has cost so far, in the shape the app and the tests both read."""
+        return {
+            "input_tokens": totals["input"],
+            "output_tokens": totals["output"],
+            "cache_write_tokens": totals["cache_write"],
+            "cache_read_tokens": totals["cache_read"],
+            "cost_usd": round(_cost_usd(totals), 4),
+        }
 
     for iteration in range(max(1, int(max_iterations))):
         try:
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=system or SYSTEM_PROMPT,
+                system=_system_blocks(system or SYSTEM_PROMPT),
                 # Adaptive thinking: this is judgement work over real evidence, not lookup.
                 thinking={"type": "adaptive"},
                 tools=_tool_definitions(),
-                messages=history,
+                messages=_with_cache_breakpoint(history),
             )
         except anthropic.AuthenticationError:
-            return {"status": "auth_failed", "answer": "The Anthropic API key was rejected.", "tool_calls": tool_calls}
+            return {"status": "auth_failed", "answer": "The Anthropic API key was rejected.",
+                    "tool_calls": tool_calls, "usage": _spent()}
         except anthropic.BadRequestError as exc:
             # Includes "credit balance is too low", which is the Founder's problem to fix and
             # must say so plainly rather than surfacing as a generic failure.
-            return {"status": "rejected", "answer": f"Anthropic rejected the request: {exc}", "tool_calls": tool_calls}
+            return {"status": "rejected", "answer": f"Anthropic rejected the request: {exc}",
+                    "tool_calls": tool_calls, "usage": _spent()}
         except Exception as exc:  # noqa: BLE001 - a failed turn must not end the standup
             logger.exception("Claude turn failed.")
-            return {"status": "failed", "answer": f"Claude could not answer: {type(exc).__name__}", "tool_calls": tool_calls}
+            return {"status": "failed", "answer": f"Claude could not answer: {type(exc).__name__}",
+                    "tool_calls": tool_calls, "usage": _spent()}
+
+        _add_usage(totals, response.usage)
 
         if response.stop_reason != "tool_use":
             text = "".join(block.text for block in response.content if block.type == "text")
@@ -159,11 +283,23 @@ def ask_claude(
                 "answer": text.strip(),
                 "tool_calls": tool_calls,
                 "model": response.model,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                },
+                "usage": _spent(),
             }
+
+        # The stop-loss. An iteration count bounds how MANY times we look; it says nothing
+        # about what each look costs, and it was the missing guard when four test questions
+        # emptied the credit overnight. Checked here rather than at the top of the loop so a
+        # turn that has already gone over still gets to summarise what it found.
+        if _cost_usd(totals) >= ceiling:
+            stopped_on_cost = True
+            history.append({"role": "assistant", "content": response.content})
+            history.append({"role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps({"status": "refused", "reason": "spend ceiling reached"}),
+                "is_error": True,
+            } for block in response.content if block.type == "tool_use"]})
+            break
 
         # Claude wants evidence. Run every requested tool and return ALL results in ONE user
         # message -- splitting them across messages teaches the model to stop asking for things
@@ -179,7 +315,9 @@ def ask_claude(
             results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
-                "content": json.dumps(outcome, default=str)[:20000],
+                # Truncated because this result stays in the history for the rest of the turn:
+                # an oversized one is paid for on every LATER iteration too, not just its own.
+                "content": json.dumps(outcome, default=str)[:MAX_TOOL_RESULT_CHARS],
                 # A refused or failed lookup is marked as an error so Claude treats it as a dead
                 # end and tries something else, rather than reading the refusal text as data.
                 "is_error": outcome.get("status") in {"refused", "failed", "bad_pattern", "unreadable"},
@@ -207,19 +345,23 @@ def ask_claude(
         final = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=system or SYSTEM_PROMPT,
+            system=_system_blocks(system or SYSTEM_PROMPT),
             thinking={"type": "adaptive"},
-            messages=history,
+            messages=_with_cache_breakpoint(history),
         )
+        _add_usage(totals, final.usage)
         text = "".join(block.text for block in final.content if block.type == "text").strip()
     except Exception as exc:  # noqa: BLE001 - the fallback must never be worse than the failure
         logger.exception("Claude could not summarise after reaching the lookup limit.")
         text = ""
     return {
-        "status": "answered_at_lookup_limit",
+        # Two different stops, reported differently, because they mean different things to the
+        # Founder: one says the question was too broad, the other says it was too expensive.
+        "status": "answered_at_cost_limit" if stopped_on_cost else "answered_at_lookup_limit",
         "answer": text or (
             "I ran out of lookups before reaching an answer. That usually means the question "
             "needs narrowing, or that what I need is not in the code and data I can see."
         ),
         "tool_calls": tool_calls,
+        "usage": _spent(),
     }
