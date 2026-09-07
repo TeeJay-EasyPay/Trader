@@ -37,6 +37,22 @@ const MODES = [
 // true if the model behind it ever changes.
 const SPEAKER_LABEL = { founder: 'You', trader: 'Trader', claude: 'Claude' };
 
+// One colour each. 2026-09-07, Founder-directed: "each of us needs a different chat bubble
+// colour so that it's easy to understand who is asking the questions and who is answering."
+// The label stays as well as the colour -- colour alone fails a colour-blind reader, and a
+// label alone was what made the wall of grey hard to read in the first place.
+const BUBBLE = {
+  founder: { row: 'standupMine', text: 'standupMineText', speaker: 'standupSpeaker' },
+  trader: { row: 'standupTrader', text: 'standupTraderText', speaker: 'standupTraderSpeaker' },
+  claude: { row: 'standupClaude', text: 'standupClaudeText', speaker: 'standupClaudeSpeaker' },
+};
+
+function bubbleFor(speaker) {
+  // An unknown speaker falls back to the neutral "theirs" styling rather than crashing on a
+  // missing style, which is what would happen if a new participant were ever added.
+  return BUBBLE[speaker] || { row: 'standupTheirs', text: 'standupTheirsText', speaker: 'standupSpeaker' };
+}
+
 function StandupScreen({ request }) {
   const [mode, setMode] = useState('both');
   const [running, setRunning] = useState(false);
@@ -190,25 +206,24 @@ function StandupScreen({ request }) {
                 </View>
               ) : (
                 <View key={item.key || `x-${index}`} style={styles.chatExchange}>
-                  {item.exchange.map((turn, position) => (
-                    <View
-                      key={`${turn.key || position}`}
-                      style={turn.speaker === 'founder' ? styles.standupMine : styles.standupTheirs}
-                    >
-                      {/* The label is load-bearing in a three-way conversation: two AI replies in
-                          the same colour, one after the other, are unreadable without knowing
-                          who is speaking. */}
-                      {turn.speaker !== 'founder' ? (
-                        <Text style={styles.standupSpeaker}>
-                          {SPEAKER_LABEL[turn.speaker] || 'AI'}
-                          {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
+                  {item.exchange.map((turn, position) => {
+                    const bubble = bubbleFor(turn.speaker);
+                    return (
+                      <View key={`${turn.key || position}`} style={styles[bubble.row]}>
+                        {/* Colour says who at a glance; the label confirms it. Two AI replies
+                            one after the other were unreadable when they shared a colour. */}
+                        {turn.speaker !== 'founder' ? (
+                          <Text style={styles[bubble.speaker]}>
+                            {SPEAKER_LABEL[turn.speaker] || 'AI'}
+                            {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
+                          </Text>
+                        ) : null}
+                        <Text style={styles[bubble.text]} selectable>
+                          {turn.text}
                         </Text>
-                      ) : null}
-                      <Text style={turn.speaker === 'founder' ? styles.standupMineText : styles.standupTheirsText} selectable>
-                        {turn.text}
-                      </Text>
-                    </View>
-                  ))}
+                      </View>
+                    );
+                  })}
                 </View>
               )
             )}
@@ -219,4 +234,4 @@ function StandupScreen({ request }) {
   );
 }
 
-module.exports = { StandupScreen, MODES, SPEAKER_LABEL };
+module.exports = { StandupScreen, MODES, SPEAKER_LABEL, BUBBLE, bubbleFor };

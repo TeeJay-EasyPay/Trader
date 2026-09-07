@@ -370,6 +370,44 @@ export const styles = StyleSheet.create({
     marginBottom: 6,
   },
   standupTheirsText: { color: '#1f2d3d', fontSize: 14, lineHeight: 20 },
+
+  // 2026-09-07, Founder-directed: "each of us needs a different chat bubble colour so that
+  // it's easy to understand who is asking the questions and who is answering."
+  //
+  // Three voices, three colours. The two AIs used to share one grey, so a standup read as an
+  // undifferentiated wall -- exactly the problem the speaker labels were only half solving.
+  //
+  // Colour carries the meaning at a glance and the label confirms it. Both are kept, because
+  // colour alone fails for a colour-blind reader and in bright sunlight; the pairing is the
+  // point. The two AI colours are separated in hue AND lightness for the same reason -- green
+  // against amber survives the most common form of colour blindness where green against red
+  // would not.
+  standupTrader: {
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+    backgroundColor: '#e7f4ec',   // green: the one that runs the account
+    borderLeftWidth: 3,
+    borderLeftColor: '#2e7d5b',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+  },
+  standupTraderText: { color: '#14352a', fontSize: 14, lineHeight: 20 },
+  standupTraderSpeaker: { fontSize: 11, fontWeight: '700', color: '#2e7d5b', marginBottom: 3 },
+  standupClaude: {
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+    backgroundColor: '#fdf1e0',   // amber: the one that reads the code
+    borderLeftWidth: 3,
+    borderLeftColor: '#b4681a',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+  },
+  standupClaudeText: { color: '#4a2c0a', fontSize: 14, lineHeight: 20 },
+  standupClaudeSpeaker: { fontSize: 11, fontWeight: '700', color: '#b4681a', marginBottom: 3 },
   chatDayStampRow: {
     alignItems: 'center',
     marginTop: 4,
