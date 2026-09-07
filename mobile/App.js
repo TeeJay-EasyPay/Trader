@@ -15,6 +15,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
 import { AskAiTrader } from './screens/Ask';
+import { StandupScreen } from './screens/Standup';
 import { RunCycleScreen } from './screens/RunCycle';
 import { useCycleRun, cycleProgressLabel } from './hooks/useCycleRun';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
@@ -57,7 +58,10 @@ const { shortApiBase, apiRequest } = require('./api/client');
 // question the other two cannot -- "run the whole thing now and show me every step" -- and
 // because it is how updates get tested on the emulator without waiting for the worker's
 // hourly schedule. It is a run log, not a dashboard, so it does not belong on the Briefing.
-const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'RunCycle'];
+// 2026-09-07: Standup is its own screen, and its own endpoint. Not a mode on Ask -- Ask
+// carries the voice-action detector, and a question phrased unluckily once started a real
+// trading cycle. A standup must never be able to place a trade.
+const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'Standup', 'RunCycle'];
 const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', RunCycle: 'Run a Cycle' };
 
 export default function App() {
@@ -179,6 +183,20 @@ export default function App() {
             setAskMessages={setAskMessages}
             request={apiRequest}
           />
+        </ErrorBoundary>
+      );
+    }
+    if (screen === 'Standup') {
+      // Its own ErrorBoundary, like every other screen: a render failure in the standup must
+      // not take the Briefing or Portfolio down with it.
+      return (
+        <ErrorBoundary
+          label="Standup"
+          title="The standup could not be displayed."
+          message="Something went wrong showing the conversation. Your other data and navigation are unaffected."
+          onRetry={() => setScreen('ExecutiveBriefing')}
+        >
+          <StandupScreen request={apiRequest} />
         </ErrorBoundary>
       );
     }

@@ -91,8 +91,11 @@ class GuardrailTests(unittest.TestCase):
             result = claude_advisor.ask_claude(
                 [{"role": "user", "content": "hello"}], max_iterations=3
             )
-            self.assertEqual(result["status"], "tool_limit_reached")
-            self.assertIn("ran out of lookups", result["answer"])
+            # The ceiling means "stop looking", not "give up". Caught on the first real
+            # standup: Claude made TWENTY-ONE lookups on a broad question, hit the ceiling and
+            # returned a canned apology -- all that evidence gathered and thrown away, which is
+            # worse than not looking, because it costs the money and produces nothing.
+            self.assertEqual(result["status"], "answered_at_lookup_limit")
             self.assertEqual(len(result["tool_calls"]), 3, "every attempt is still reported")
         finally:
             claude_advisor._client = saved_client
@@ -128,6 +131,31 @@ class SystemPromptTests(unittest.TestCase):
 
     def test_it_is_told_the_founder_wants_plain_english(self):
         self.assertIn("plain English", claude_advisor.SYSTEM_PROMPT)
+
+class LookupCeilingTests(unittest.TestCase):
+    """Hitting the ceiling must mean "stop looking", not "give up".
+
+    2026-09-07, caught on the very first real standup. Asked a broad opening question, Claude
+    made TWENTY-ONE lookups, hit the ceiling, and returned a canned apology. Every one of those
+    lookups was paid for and then discarded -- worse than not looking at all, because it costs
+    the money and produces nothing.
+    """
+
+    def test_the_final_summary_call_offers_no_tools(self):
+        """If it could still request evidence in the last call, the ceiling would not be one.
+        With nothing offered it must answer from what it has, or say what is missing."""
+        import inspect
+
+        source = inspect.getsource(claude_advisor.ask_claude)
+        tail = source[source.index("You have used all the lookups"):]
+        self.assertNotIn("tools=", tail, "the final call must offer no tools")
+
+    def test_it_is_asked_to_name_what_it_could_not_establish(self):
+        import inspect
+
+        source = inspect.getsource(claude_advisor.ask_claude)
+        self.assertIn("say plainly which part you could", source)
+        self.assertIn("Do not ask for more", source)
 
 
 if __name__ == "__main__":

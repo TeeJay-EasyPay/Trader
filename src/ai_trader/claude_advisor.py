@@ -186,9 +186,38 @@ def ask_claude(
             })
         history.append({"role": "user", "content": results})
 
+    # 2026-09-07, caught on the first real standup: Claude made TWENTY-ONE lookups on a broad
+    # opening question, hit the ceiling, and returned a canned apology. All that evidence was
+    # gathered and then thrown away, which is worse than not looking at all -- it costs the
+    # money and produces nothing.
+    #
+    # So the ceiling now means "stop looking", not "give up". One final call with NO TOOLS
+    # offered, asking for the best answer from what was found. The model cannot request more
+    # evidence, so it must either answer or say plainly what is still missing -- and either of
+    # those is worth having.
+    history.append({
+        "role": "user",
+        "content": (
+            "You have used all the lookups available for this turn. Do not ask for more. "
+            "Answer now from what you have already found, and say plainly which part you could "
+            "not establish and what would settle it."
+        ),
+    })
+    try:
+        final = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system or SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
+            messages=history,
+        )
+        text = "".join(block.text for block in final.content if block.type == "text").strip()
+    except Exception as exc:  # noqa: BLE001 - the fallback must never be worse than the failure
+        logger.exception("Claude could not summarise after reaching the lookup limit.")
+        text = ""
     return {
-        "status": "tool_limit_reached",
-        "answer": (
+        "status": "answered_at_lookup_limit",
+        "answer": text or (
             "I ran out of lookups before reaching an answer. That usually means the question "
             "needs narrowing, or that what I need is not in the code and data I can see."
         ),

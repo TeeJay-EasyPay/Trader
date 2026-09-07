@@ -15,7 +15,7 @@ from ..application.founder_experience_service import FounderExperienceService
 from ..application.operations_service import OperationsService
 from ..application.reporting_service import ReportingService
 from ..application.research_service import ResearchService
-from ..database import connect
+from ..database import connect, row_values
 from ..db_diagnostics import database_size_report, vacuum_table
 from ..persistence.query_executor import QueryExecutor
 from .http_server import ApiHandler
@@ -76,6 +76,20 @@ from ..forecasting import latest_forecast, recent_forecasts
 from ..market_intelligence_platform import initialize_market_intelligence_schema
 from ..trade_scorecard import trade_scorecard
 from ..conversations import record_turn, recent_turns
+from ..claude_advisor import ask_claude, is_configured as claude_is_configured
+from ..standup import (
+    ACTIONS_INSTRUCTION,
+    ACTIONS_SCHEMA,
+    BOTH as STANDUP_BOTH,
+    CLAUDE as STANDUP_CLAUDE,
+    DEFAULT_EXCHANGE_BUDGET,
+    PEER_EXCHANGE_INSTRUCTION,
+    TRADER as STANDUP_TRADER,
+    detect_addressee,
+    other_speaker,
+    should_reply_to_peer,
+    transcript_for,
+)
 from ..decision_inputs import startup_report
 from ..decline_reasons import recent_decline_reasons
 from ..intelligence import InvestmentIntelligenceDatabase
@@ -874,6 +888,10 @@ class LocalApiService:
             return 200, founder_evidence_payload(self.settings.db_path, period=_first(query, "period") or "24h")["why_no_trade"]
         if path == "/daily-plan":
             return 200, daily_trading_plan_status(self.settings.db_path, broker=_first(query, "broker") or "alpaca")
+        if path == "/standup/actions":
+            return 200, self.recent_standup_actions(
+                limit=_int_or_default(_first(query, "limit"), 10)
+            )
         if path == "/self-assessment":
             # 2026-09-06: the app reads the STORED answer rather than triggering a new one.
             # A fresh reasoning-model call per screen view is exactly the pattern that put a
@@ -1023,6 +1041,16 @@ class LocalApiService:
                 period_start=body.get("period_start"),
                 period_end=body.get("period_end"),
             )
+        if path == "/standup/actions":
+            # The handoff. Writing the decision down is where vagueness shows up -- "look at the
+            # fee thing" survives a conversation, not an action with a verify step attached.
+            return 200, self.write_up_standup_actions(body)
+        if path == "/standup":
+            # 2026-09-07: the three-way conversation. Deliberately a SEPARATE route from
+            # /ask-ai-trader rather than a mode on it -- that endpoint carries the voice-action
+            # detector which can start a real trading cycle, and a standup must never be able
+            # to place a trade by being phrased unluckily.
+            return 200, self.run_standup_turn(body)
         if path == "/ask-ai-trader":
             answer = self.ask_ai_trader(body)
             # 2026-09-03, Founder-directed: "can all the discussions be stored... that way I
@@ -1414,6 +1442,205 @@ class LocalApiService:
             self.settings.db_path, answer=answer,
             model=self.settings.openai_reasoning_model, status="answered", inventory=inventory,
         )
+
+    def _standup_history(self, conversation_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
+        """This conversation's turns, oldest first, as {speaker, text}."""
+        turns = recent_turns(self.settings.db_path, limit=limit)
+        return [
+            {"speaker": str(turn.get("role") or ""), "text": str(turn.get("text") or "")}
+            for turn in turns
+            if str(turn.get("conversation_id") or "default") == conversation_id
+        ]
+
+    def _trader_turn(self, history: list[dict[str, Any]], question: str) -> dict[str, Any]:
+        """The trading AI's contribution.
+
+        READ-ONLY BY CONSTRUCTION: this goes straight to the explainer and never through
+        ask_ai_trader, which carries the voice-action detector. On 2026-09-06 a question phrased
+        "Daily check-in. Do you have everything you need..." matched that detector and STARTED A
+        REAL TRADING CYCLE. The sentence guard fixed that particular phrasing; not routing a
+        standup through the action path at all removes the class of problem.
+        """
+
+        inventory = input_inventory(self.settings.db_path)
+        if not self.settings.openai_api_key:
+            return {"status": "not_configured",
+                    "text": "The trader cannot answer: OPENAI_API_KEY is not set on this deployment."}
+        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_reasoning_model)
+        try:
+            answer = explainer.answer(question, {"input_inventory": inventory}, history)
+        except Exception as exc:  # noqa: BLE001 - one silent participant must not end the standup
+            logger.exception("Trader turn failed in standup.")
+            return {"status": "failed", "text": f"The trader could not answer ({type(exc).__name__})."}
+        return {"status": "answered", "text": str(answer or "").strip(),
+                "model": self.settings.openai_reasoning_model}
+
+    def _claude_turn(self, history: list[dict[str, Any]], question: str) -> dict[str, Any]:
+        """Claude's contribution, with the read tools.
+
+        The asymmetry with the trader is deliberate and worth stating: Claude can search the
+        code and query the database mid-answer; the trader reasons over the evidence it is
+        given. That mirrors what they actually are -- the trader knows what it decided and why,
+        Claude can check whether the system really works that way. It is exactly the dynamic
+        that on 2026-09-06 turned "the price feed is stale" into "nothing reads that table".
+        """
+
+        if not claude_is_configured():
+            return {"status": "not_configured",
+                    "text": "Claude cannot answer: ANTHROPIC_API_KEY is not set on this deployment."}
+        messages = transcript_for(STANDUP_CLAUDE, history + [{"speaker": "founder", "text": question}])
+        result = ask_claude(messages, db_path=self.settings.db_path)
+        return {"status": result.get("status"), "text": result.get("answer") or "",
+                "model": result.get("model"), "tool_calls": result.get("tool_calls") or []}
+
+    def run_standup_turn(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One exchange: the Founder speaks, whoever is addressed answers, the peer may reply.
+
+        2026-09-07, Founder-directed. Modes: "claude" and "trader" are one-to-one; "both" is the
+        standup, where each participant sees the other's answers and they may talk to each other
+        within a bounded budget before the floor returns to him.
+        """
+
+        said = str(body.get("message") or "").strip()
+        if not said:
+            return {"status": "rejected", "message": "Say something first.", "turns": []}
+        mode = str(body.get("mode") or STANDUP_BOTH).strip().lower()
+        if mode not in {STANDUP_BOTH, STANDUP_CLAUDE, STANDUP_TRADER}:
+            mode = STANDUP_BOTH
+        conversation_id = str(body.get("conversation_id") or "standup")
+        # `or` would read a deliberate 0 as "not supplied" and hand back the default, so a
+        # caller asking for NO peer exchange would silently buy four model turns. Caught by
+        # test_standup_routing on 2026-09-07, having already happened for real: a probe run
+        # passed 0, got an exchange anyway, and the extra turn is what exhausted the credit.
+        requested = body.get("exchange_budget")
+        try:
+            budget = DEFAULT_EXCHANGE_BUDGET if requested is None else int(requested)
+        except (TypeError, ValueError):
+            budget = DEFAULT_EXCHANGE_BUDGET
+        budget = max(0, min(budget, 8))
+
+        history = self._standup_history(conversation_id)
+        last_ai = next((turn["speaker"] for turn in reversed(history)
+                        if turn["speaker"] in {STANDUP_CLAUDE, STANDUP_TRADER}), None)
+        addressed = detect_addressee(said, mode=mode, last_ai_speaker=last_ai)
+
+        record_turn(self.settings.db_path, conversation_id=conversation_id, role="founder",
+                    text=said, spoken=bool(body.get("spoken")))
+        history = history + [{"speaker": "founder", "text": said}]
+
+        produced: list[dict[str, Any]] = []
+        speakers = [STANDUP_TRADER, STANDUP_CLAUDE] if addressed == STANDUP_BOTH else [addressed]
+
+        def _speak(who: str, prompt: str) -> bool:
+            turn = self._trader_turn(history, prompt) if who == STANDUP_TRADER else self._claude_turn(history, prompt)
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                return False
+            record_turn(self.settings.db_path, conversation_id=conversation_id, role=who,
+                        text=text, model=turn.get("model"), status=turn.get("status"))
+            history.append({"speaker": who, "text": text})
+            produced.append({"speaker": who, "text": text, "status": turn.get("status"),
+                             "tool_calls": turn.get("tool_calls") or []})
+            return True
+
+        for who in speakers:
+            _speak(who, said)
+
+        # The two may now answer each other, bounded. The budget is about cost, not quality:
+        # two agreeable models will ping-pong for as long as they are allowed to.
+        used = 0
+        while produced and should_reply_to_peer(
+            mode=mode, turns_used=used, budget=budget,
+            peer_said_something=bool(produced[-1]["text"]),
+        ):
+            peer = other_speaker(produced[-1]["speaker"])
+            if not _speak(peer, PEER_EXCHANGE_INSTRUCTION):
+                break
+            used += 1
+
+        return {"status": "ok", "mode": mode, "addressed": addressed,
+                "exchange_turns": used, "turns": produced}
+
+    def write_up_standup_actions(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Turn the conversation into a written, verifiable action list for Claude Code.
+
+        2026-09-07, Founder-directed: "when we conclude Claude would document the actions for
+        you to develop." He also said he would feel safer with writes going through Claude Code
+        rather than being made in the conversation.
+
+        The honest reason that IS safer is not that a second Claude checks the first -- we are
+        the same model, and a wrong conclusion would be implemented just as cheerfully. It is
+        that writing the decision down is where vagueness shows up. "Look at the fee thing"
+        survives a conversation; it does not survive being written as an action with a
+        verification step attached.
+        """
+
+        conversation_id = str(body.get("conversation_id") or "standup")
+        history = self._standup_history(conversation_id, limit=80)
+        if not history:
+            return {"status": "nothing_to_write_up", "summary": "", "actions": []}
+
+        messages = transcript_for(STANDUP_CLAUDE, history)
+        messages.append({"role": "user", "content": ACTIONS_INSTRUCTION})
+        result = ask_claude(messages, db_path=self.settings.db_path)
+        raw = str(result.get("answer") or "").strip()
+
+        summary, actions = "", []
+        try:
+            # The model is asked for JSON only, but a stray sentence around it should not lose
+            # the whole write-up -- take the outermost braces.
+            start, end = raw.index("{"), raw.rindex("}") + 1
+            parsed = json.loads(raw[start:end])
+            summary = str(parsed.get("summary") or "").strip()
+            actions = [a for a in (parsed.get("actions") or []) if isinstance(a, dict)]
+        except (ValueError, json.JSONDecodeError):
+            # Kept verbatim rather than discarded: an unparseable write-up is still a record of
+            # what was concluded, and losing it would be worse than showing it unstructured.
+            summary = raw[:2000]
+
+        try:
+            with closing(connect(self.settings.db_path)) as conn:
+                with conn:
+                    conn.executescript(ACTIONS_SCHEMA)
+                    conn.execute(
+                        """INSERT INTO STANDUP_ACTIONS
+                           (created_at, conversation_id, summary, actions_json, status)
+                           VALUES (?, ?, ?, ?, 'open')""",
+                        (utc_now_iso(), conversation_id, summary,
+                         json.dumps(actions, default=str)),
+                    )
+        except Exception:  # noqa: BLE001 - the write-up is still returned even if storing fails
+            logger.exception("Could not store the standup actions.")
+
+        return {"status": result.get("status") or "answered", "summary": summary,
+                "actions": actions, "tool_calls": result.get("tool_calls") or []}
+
+    def recent_standup_actions(self, *, limit: int = 10) -> dict[str, Any]:
+        """The most recent write-ups, newest first -- what Claude Code picks up."""
+        try:
+            with closing(connect(self.settings.db_path)) as conn:
+                with conn:
+                    conn.executescript(ACTIONS_SCHEMA)
+                rows = conn.execute(
+                    """SELECT action_id, created_at, conversation_id, summary, actions_json, status
+                       FROM STANDUP_ACTIONS ORDER BY action_id DESC LIMIT ?""",
+                    (max(1, min(int(limit), 50)),),
+                ).fetchall()
+        except Exception:  # noqa: BLE001
+            return {"items": []}
+        items = []
+        for row in rows:
+            values = row_values(row)
+            if len(values) < 6:
+                continue
+            try:
+                actions = json.loads(values[4] or "[]")
+            except (ValueError, json.JSONDecodeError):
+                actions = []
+            items.append({"action_id": values[0], "created_at": values[1],
+                          "conversation_id": values[2], "summary": values[3],
+                          "actions": actions, "status": values[5]})
+        return {"items": items}
 
     def ask_about_crypto_rejections(self, *, hours: int = 48) -> dict[str, Any]:
         """The Founder's pre-built Ask-AI-Trader question (2026-08-16): what crypto

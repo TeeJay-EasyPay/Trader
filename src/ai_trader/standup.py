@@ -166,3 +166,50 @@ def _merge_adjacent(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         merged.append(dict(message))
     return merged
+
+
+# ---------------------------------------------------------------------------
+# The handoff. 2026-09-07, Founder-directed: "when we conclude Claude would document the
+# actions for you to develop", and separately that he would "feel safer" with writes going
+# through Claude Code rather than being made in the conversation.
+#
+# The honest reason that is safer is not that a second Claude double-checks the first -- we are
+# the same model, and a wrong conclusion would be implemented just as cheerfully. It is that the
+# write path carries tests, a production check and a deploy confirmation, and that WRITING THE
+# DECISION DOWN is where vagueness shows up. "Look at the fee thing" survives a conversation;
+# it does not survive being written as an action with a verification step attached.
+# ---------------------------------------------------------------------------
+
+ACTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS STANDUP_ACTIONS (
+    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+);
+"""
+
+ACTIONS_INSTRUCTION = """The standup is finishing. Write up what was AGREED, for the engineer \
+who will implement it and who was not in the room.
+
+Return JSON only, no prose around it:
+
+{"summary": "one or two sentences on what this conversation concluded",
+ "actions": [{"what": "the change, specifically enough to start work",
+              "why": "the evidence or reasoning behind it, in one line",
+              "verify": "how we will know it actually worked, in production",
+              "confidence": "high|medium|low - how sure we are the premise is right"}]}
+
+Rules that matter:
+- Only what was actually agreed. Do not invent tidy actions to round the list out, and do not
+  carry in your own opinions that nobody accepted.
+- If something was DISCUSSED BUT NOT SETTLED, leave it out of actions and say so in the
+  summary. An open question recorded as a decision is how wrong work gets done.
+- Every action needs a verify step. "Done as discussed" with no evidence is exactly the failure
+  this handoff exists to prevent.
+- Mark confidence honestly. On 2026-09-06 three of four findings in this system turned out to
+  be artefacts of how the evidence was gathered rather than real faults, so "medium" or "low"
+  on an unverified premise is useful, not weak.
+- Empty actions is a valid answer if nothing was concluded."""

@@ -305,6 +305,71 @@ export const styles = StyleSheet.create({
   // 2026-09-06, Founder-directed: a WhatsApp-style day stamp in the chat, so it is obvious
   // which conversation happened when. Centred and quiet on purpose -- it is a signpost between
   // exchanges, not a message, and it must not compete with what was actually said.
+  // 2026-09-07: the three-way standup. Mode row, start/end, and speaker-labelled bubbles --
+  // in a conversation with two AI participants the LABEL is load-bearing, because two replies
+  // in the same colour one after the other are unreadable without knowing who is speaking.
+  standupModeRow: { flexDirection: 'row', marginTop: 10, marginBottom: 4 },
+  standupMode: {
+    flex: 1,
+    paddingVertical: 8,
+    marginRight: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d6dbe4',
+    alignItems: 'center',
+    backgroundColor: '#f7f9fc',
+  },
+  standupModeActive: { backgroundColor: '#1f2d3d', borderColor: '#1f2d3d' },
+  standupModeText: { fontSize: 13, fontWeight: '600', color: '#41506a' },
+  standupModeTextActive: { color: '#ffffff' },
+  standupStart: {
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#1f8b4c',
+    alignItems: 'center',
+  },
+  standupStartText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
+  standupEnd: {
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#b3261e',
+    alignItems: 'center',
+  },
+  standupEndText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
+  standupComposer: { marginTop: 10 },
+  standupSend: {
+    marginTop: 8,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#1f2d3d',
+    alignItems: 'center',
+  },
+  standupSendBusy: { backgroundColor: '#66748c' },
+  standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
+  standupTranscript: { marginTop: 12, maxHeight: 460 },
+  standupSpeaker: { fontSize: 11, fontWeight: '700', color: '#5a6b86', marginBottom: 3 },
+  standupMine: {
+    alignSelf: 'flex-end',
+    maxWidth: '86%',
+    backgroundColor: '#1f2d3d',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+  },
+  standupMineText: { color: '#ffffff', fontSize: 14, lineHeight: 20 },
+  standupTheirs: {
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+    backgroundColor: '#eef1f6',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+  },
+  standupTheirsText: { color: '#1f2d3d', fontSize: 14, lineHeight: 20 },
   chatDayStampRow: {
     alignItems: 'center',
     marginTop: 4,
