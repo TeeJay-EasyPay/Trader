@@ -340,8 +340,13 @@ export const styles = StyleSheet.create({
   standupEndText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
   standupComposer: { marginTop: 10 },
   standupSend: {
-    marginTop: 8,
-    paddingVertical: 12,
+    // flex:1 so it fills the row beside the microphone. Without it the button collapses to its
+    // own text width and the padding squeezes "Send" over its own edges -- which is exactly
+    // what it did the moment the mic was put next to it, caught on the device rather than in
+    // a test, because no test looks at whether a word fits inside its box.
+    flex: 1,
+    height: 48,
+    justifyContent: 'center',
     borderRadius: 8,
     backgroundColor: '#1f2d3d',
     alignItems: 'center',
@@ -350,7 +355,7 @@ export const styles = StyleSheet.create({
   standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
   // The microphone, beside Send rather than hidden in it. 2026-09-07: the screen had none at
   // all, so speaking into it did nothing and looked identical to a fault.
-  standupActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  standupActions: { flexDirection: 'row', alignItems: 'stretch', gap: 8, marginTop: 8 },
   standupMic: {
     width: 56,
     height: 48,

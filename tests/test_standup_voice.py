@@ -117,5 +117,34 @@ class ScreenWiringTests(unittest.TestCase):
         self.assertNotIn("useVoiceCapture", ask)
 
 
+class ComposerLayoutTests(unittest.TestCase):
+    """Putting the microphone beside Send broke Send.
+
+    2026-09-07, caught on the device. standupSend had no width: as the only child of a column it
+    stretched, and the moment it shared a row it collapsed to its own text width, so the padding
+    squeezed "Send" over its own edges. No test looks at whether a word fits inside its box,
+    which is why this needed a screenshot.
+    """
+
+    def _style_block(self, name: str) -> str:
+        source = STYLES.read_text(encoding="utf-8")
+        start = source.index(f"  {name}: {{")
+        return source[start:source.index("},", start)]
+
+    def test_send_fills_the_row_beside_the_microphone(self):
+        self.assertIn("flex: 1", self._style_block("standupSend"))
+
+    def test_the_microphone_keeps_a_fixed_width(self):
+        """It is an icon, not a label. Letting it flex would give a 20px glyph half the row."""
+        block = self._style_block("standupMic")
+        self.assertIn("width:", block)
+        self.assertNotIn("flex: 1", block)
+
+    def test_both_buttons_are_the_same_height(self):
+        """Different heights in a row read as a rendering fault rather than a design."""
+        self.assertIn("height: 48", self._style_block("standupMic"))
+        self.assertIn("height: 48", self._style_block("standupSend"))
+
+
 if __name__ == "__main__":
     unittest.main()
