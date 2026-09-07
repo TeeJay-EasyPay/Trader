@@ -348,6 +348,21 @@ export const styles = StyleSheet.create({
   },
   standupSendBusy: { backgroundColor: '#66748c' },
   standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
+  // The microphone, beside Send rather than hidden in it. 2026-09-07: the screen had none at
+  // all, so speaking into it did nothing and looked identical to a fault.
+  standupActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  standupMic: {
+    width: 56,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: '#eef1f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Red while recording. Colour plus the ticking counter in the status line: two independent
+  // signals that it is listening, because one of them silently failing is how we got here.
+  standupMicRecording: { backgroundColor: '#b3261e' },
+  standupMicText: { fontSize: 20 },
   standupSpeaker: { fontSize: 11, fontWeight: '700', color: '#5a6b86', marginBottom: 3 },
   standupMine: {
     alignSelf: 'flex-end',

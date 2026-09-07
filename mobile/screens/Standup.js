@@ -25,6 +25,8 @@ const { Section, Button } = require('../components/shared');
 const { withDayStamps, newestExchangesFirst } = require('../lib/chatBubbles');
 const { normalizeChatText } = require('../lib/chat');
 const { formatPence } = require('../lib/cost');
+const { useVoiceCapture } = require('../lib/useVoiceCapture');
+const { micButtonLabel, micButtonAccessibilityLabel } = require('../lib/voiceQuestion');
 
 const MODES = [
   { key: 'both', label: 'Standup', hint: 'Both, talking to each other' },
@@ -86,6 +88,23 @@ function StandupScreen({ request }) {
     return () => { cancelled = true; };
   }, [request]);
 
+  // 2026-09-07, Founder-reported: he opened the standup, spoke, and nothing happened -- there
+  // was no microphone on this screen at all. Speaking is how he uses this app; a conversation
+  // screen he cannot talk to is not a conversation screen.
+  //
+  // sendRef exists because the hook is declared before `send`. Reading it through a ref keeps
+  // the hook's identity stable, so a new callback on every render cannot restart the recorder
+  // mid-sentence.
+  const sendRef = useRef(null);
+  const voice = useVoiceCapture({
+    request,
+    onTranscript: (text) => { if (sendRef.current) sendRef.current(text, { spoken: true }); },
+    onProblem: (message) => setTurns((prev) => [...prev, {
+      speaker: 'claude', text: normalizeChatText(message), createdAt: new Date().toISOString(),
+    }]),
+    onStatus: setStatusLine,
+  });
+
   const start = useCallback(() => {
     setRunning(true);
     setSpentTotal(0);
@@ -97,10 +116,13 @@ function StandupScreen({ request }) {
   const end = useCallback(() => {
     setRunning(false);
     setBusy(false);
+    // Ending the conversation must stop the microphone too. Leaving it live on a closed
+    // conversation is the failure this screen can least afford.
+    voice.cancel();
     setStatusLine('Ended');
-  }, []);
+  }, [voice]);
 
-  const send = useCallback(async (text) => {
+  const send = useCallback(async (text, { spoken = false } = {}) => {
     const said = String(text || '').trim();
     if (!said || busy) return;
     setDraft('');
@@ -149,6 +171,8 @@ function StandupScreen({ request }) {
       if (mountedRef.current) setBusy(false);
     }
   }, [busy, mode, request]);
+
+  useEffect(() => { sendRef.current = send; }, [send]);
 
   // Newest exchange first, matching Ask -- the Founder asked for that on 2026-09-04 so the
   // reply to what he just said needs no scrolling to find.
@@ -204,17 +228,45 @@ function StandupScreen({ request }) {
               style={styles.multilineInput}
               value={draft}
               onChangeText={setDraft}
-              placeholder="Say something, or name who you are asking"
+              placeholder="Tap the microphone and speak, or type here"
               multiline
               editable={!busy}
             />
-            <TouchableOpacity
-              style={[styles.standupSend, busy && styles.standupSendBusy]}
-              onPress={() => send(draft)}
-              disabled={busy || !draft.trim()}
-            >
-              {busy ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.standupSendText}>Send</Text>}
-            </TouchableOpacity>
+
+            {/* 2026-09-07, Founder-reported: "I clicked start conversation. Nothing gets picked
+                up, and there's no icon that's animated that shows me that it's listening."
+                There was no microphone on this screen at all. Speaking is how he uses this app.
+
+                Recording turns the button red and the status line becomes a ticking counter --
+                the count is the proof it is hearing him, which is the specific thing whose
+                absence he reported. */}
+            <View style={styles.standupActions}>
+              <TouchableOpacity
+                style={[styles.standupMic, voice.isRecording && styles.standupMicRecording]}
+                onPress={() => (voice.isRecording ? voice.stop() : voice.start())}
+                disabled={busy || voice.isBusy}
+                accessibilityRole="button"
+                accessibilityLabel={micButtonAccessibilityLabel(voice.voiceState)}
+              >
+                <Text style={styles.standupMicText}>{micButtonLabel(voice.voiceState)}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.standupSend, (busy || !draft.trim()) && styles.standupSendBusy]}
+                onPress={() => send(draft)}
+                disabled={busy || !draft.trim()}
+              >
+                {busy ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.standupSendText}>Send</Text>}
+              </TouchableOpacity>
+            </View>
+
+            {/* Send is disabled with an empty box, which on its own looks identical to a broken
+                button -- he pressed it, nothing happened, and he had no way to tell which. */}
+            {!draft.trim() && !voice.isRecording && !busy ? (
+              <Text style={styles.smallText}>
+                Tap the microphone to speak, or type something to send.
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
