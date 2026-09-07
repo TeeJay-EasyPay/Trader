@@ -18,7 +18,7 @@
 
 const React = require('react');
 const { useCallback, useEffect, useMemo, useRef, useState } = React;
-const { ActivityIndicator, ScrollView, Text, TextInput, TouchableOpacity, View } = require('react-native');
+const { ActivityIndicator, Text, TextInput, TouchableOpacity, View } = require('react-native');
 
 const { styles } = require('../styles');
 const { Section, Button } = require('../components/shared');
@@ -197,39 +197,53 @@ function StandupScreen({ request }) {
           </View>
         ) : null}
 
-        {turns.length ? (
-          <ScrollView style={styles.standupTranscript} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-            {rendered.map((item, index) =>
-              item.type === 'stamp' ? (
-                <View key={item.key} style={styles.chatDayStampRow}>
-                  <Text style={styles.chatDayStamp}>{item.label}</Text>
-                </View>
-              ) : (
-                <View key={item.key || `x-${index}`} style={styles.chatExchange}>
-                  {item.exchange.map((turn, position) => {
-                    const bubble = bubbleFor(turn.speaker);
-                    return (
-                      <View key={`${turn.key || position}`} style={styles[bubble.row]}>
-                        {/* Colour says who at a glance; the label confirms it. Two AI replies
-                            one after the other were unreadable when they shared a colour. */}
-                        {turn.speaker !== 'founder' ? (
-                          <Text style={styles[bubble.speaker]}>
-                            {SPEAKER_LABEL[turn.speaker] || 'AI'}
-                            {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
-                          </Text>
-                        ) : null}
-                        <Text style={styles[bubble.text]} selectable>
-                          {turn.text}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              )
-            )}
-          </ScrollView>
-        ) : null}
       </Section>
+
+      {/* 2026-09-07, Founder-directed: "it doesn't show your conversation in a scrollable
+          section like in the executive briefing."
+
+          It was crammed into the controls card inside a fixed 460px nested ScrollView, which
+          on a tall screen sat mostly below the fold -- so the conversation was there but
+          effectively unreachable. The briefing has no nested scrolling anywhere: it is a run
+          of titled Section cards that flow into the app's own page scroll. This now does the
+          same, which is both what he asked for and less machinery.
+
+          Ask keeps its nested scroll deliberately (he asked for it on 2026-09-04), and the
+          difference is real: there the composer must stay put while you page through history.
+          Here the newest exchange is already at the top, so the answer to what you just said
+          needs no scrolling at all. */}
+      {turns.length ? (
+        <Section title="Conversation">
+          {rendered.map((item, index) =>
+            item.type === 'stamp' ? (
+              <View key={item.key} style={styles.chatDayStampRow}>
+                <Text style={styles.chatDayStamp}>{item.label}</Text>
+              </View>
+            ) : (
+              <View key={item.key || `x-${index}`} style={styles.chatExchange}>
+                {item.exchange.map((turn, position) => {
+                  const bubble = bubbleFor(turn.speaker);
+                  return (
+                    <View key={`${turn.key || position}`} style={styles[bubble.row]}>
+                      {/* Colour says who at a glance; the label confirms it. Two AI replies
+                          one after the other were unreadable when they shared a colour. */}
+                      {turn.speaker !== 'founder' ? (
+                        <Text style={styles[bubble.speaker]}>
+                          {SPEAKER_LABEL[turn.speaker] || 'AI'}
+                          {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
+                        </Text>
+                      ) : null}
+                      <Text style={styles[bubble.text]} selectable>
+                        {turn.text}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )
+          )}
+        </Section>
+      ) : null}
     </View>
   );
 }

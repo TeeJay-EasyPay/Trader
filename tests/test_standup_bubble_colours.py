@@ -76,5 +76,42 @@ class BubbleColourTests(unittest.TestCase):
                       "an unrecognised speaker must still get a readable bubble")
 
 
+class TranscriptLayoutTests(unittest.TestCase):
+    """2026-09-07, Founder-directed after using the screen:
+
+        "it doesn't show your conversation in a scrollable section like in the executive
+         briefing."
+
+    It was inside the controls card, in a fixed-height nested ScrollView that sat mostly below
+    the fold on a tall screen -- present, but effectively unreachable. The Executive Briefing
+    uses no nested scrolling at all: titled Section cards that flow into the app's own page
+    scroll.
+    """
+
+    def test_the_conversation_is_its_own_section(self):
+        source = SCREEN.read_text(encoding="utf-8")
+        self.assertIn('<Section title="Conversation">', source)
+
+    def test_the_transcript_does_not_sit_in_a_nested_scroll_box(self):
+        """A ScrollView inside the app's ScrollView is the thing that put it below the fold."""
+        source = SCREEN.read_text(encoding="utf-8")
+        code = re.sub(r"/\*[\s\S]*?\*/", "", source)     # comments may still mention it
+        self.assertNotIn("<ScrollView", code)
+        self.assertNotIn("nestedScrollEnabled", code)
+
+    def test_no_fixed_height_caps_the_conversation(self):
+        """A maxHeight is what made a long standup unreadable; the page scroll has no such cap."""
+        styles = STYLES.read_text(encoding="utf-8")
+        self.assertNotIn("standupTranscript", styles,
+                         "the fixed-height transcript style should be gone, not merely unused")
+
+    def test_an_empty_conversation_shows_no_empty_card(self):
+        """Before the first question there is nothing to show, and a titled empty card reads
+        as something failing to load."""
+        source = SCREEN.read_text(encoding="utf-8")
+        marker = source.index('<Section title="Conversation">')
+        self.assertIn("turns.length ?", source[marker - 300:marker])
+
+
 if __name__ == "__main__":
     unittest.main()

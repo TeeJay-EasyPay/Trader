@@ -348,7 +348,6 @@ export const styles = StyleSheet.create({
   },
   standupSendBusy: { backgroundColor: '#66748c' },
   standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
-  standupTranscript: { marginTop: 12, maxHeight: 460 },
   standupSpeaker: { fontSize: 11, fontWeight: '700', color: '#5a6b86', marginBottom: 3 },
   standupMine: {
     alignSelf: 'flex-end',
