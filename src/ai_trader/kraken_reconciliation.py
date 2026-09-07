@@ -753,10 +753,62 @@ def replay_kraken_evidence(
     return {"status": "completed", **counts, "ledger": kraken_capital_ledger_summary(db_path)}
 
 
-def replay_persisted_kraken_evidence(db_path: Path, *, limit: int = 1000) -> dict[str, Any]:
-    """Replay durable broker evidence without contacting Kraken or submitting orders."""
+def _seconds_since(timestamp: str) -> float | None:
+    """Age of an ISO-8601 timestamp in seconds, or None if it cannot be read.
+
+    None means "cannot tell", and every caller treats that as "do the work" -- an unreadable
+    timestamp must never be the reason a catch-up is skipped.
+    """
+
+    text = str(timestamp or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - moment).total_seconds()
+
+
+def replay_persisted_kraken_evidence(
+    db_path: Path,
+    *,
+    limit: int = 1000,
+    skip_if_replayed_within_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Replay durable broker evidence without contacting Kraken or submitting orders.
+
+    2026-09-07, Founder-asked: "if you deploy why does that cause so much egress? can't
+    deployments be more targeted."
+
+    This is the answer. It runs once per worker START, and a deploy restarts the worker -- so
+    every deploy re-read up to 1,000 historical Kraken trades WITH their full payloads, oldest
+    first, and replayed every one. Measured at roughly 1 MB per restart, and six deploys in
+    four hours made it about 17% of that window's entire database egress.
+
+    Replaying is idempotent, so doing it again minutes later changes nothing whatsoever -- it
+    just costs. `skip_if_replayed_within_seconds` lets the startup path say "if this already
+    finished recently, there is nothing to catch up on". A genuine restart after real downtime
+    still replays normally, because then the last replay is genuinely old.
+
+    Deliberately opt-in rather than the default: the manual endpoint exists precisely so the
+    Founder can force a full replay, and a skip he did not ask for would make that button lie.
+    """
 
     _ensure_schema(db_path)
+    if skip_if_replayed_within_seconds:
+        last_replay = str(reconciliation_control(db_path).get("last_replay_at") or "")
+        age = _seconds_since(last_replay)
+        if age is not None and age < max(0, int(skip_if_replayed_within_seconds)):
+            return {
+                "status": "skipped_recently_replayed",
+                "seconds_since_last_replay": int(age),
+                "persisted_rows_read": 0,
+                "broker_orders_submitted": 0,
+                "exit_reasons_backfilled": 0,
+            }
     # 2026-09-06: FIRST, deliberately, and this placement is the whole point.
     #
     # This backfill repairs exits that closed before anything recorded why. The obvious home

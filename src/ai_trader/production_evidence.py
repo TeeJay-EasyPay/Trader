@@ -508,9 +508,33 @@ def backfill_broker_evidence_timestamps(db_path: Path) -> dict[str, Any]:
     until the whole backlog is caught up.
     """
     _ensure_local_production_evidence_schema(db_path)
+    # 2026-09-07 egress work: this ran on EVERY broker-poll cycle and read 500 rows each time
+    # -- 13,629 rows across 21 calls in four hours -- to repair a backlog that was cleared
+    # weeks ago. "Cheap and safe to call until the backlog is caught up" was true; nothing
+    # ever told it the backlog WAS caught up.
+    #
+    # So the filter now matches _normalize_broker_timestamp's own rule: it rewrites a value
+    # only when the whole string parses as a bare number, and passes anything containing
+    # non-numeric characters through untouched. A real ISO-8601 timestamp always contains a
+    # dash; a raw Kraken epoch never does. Once every row is normalised this returns nothing
+    # and costs almost nothing, which is what a finished backfill should cost.
+    #
+    # The Python comparison below is still the decider -- this only narrows the candidates, so
+    # a row that somehow slips through the filter is still checked properly before any write.
+    #
+    # The pattern is a BOUND VALUE, not a literal. A literal percent sign in SQL raises on
+    # Postgres because psycopg reads it as a placeholder even with no parameters -- the same
+    # trap that silently emptied the category lookup in operational.py on 2026-09-04.
+    iso_marker = "%-%"
     rows = _query(
         db_path,
-        "SELECT trade_evidence_id, observed_at, opened_at, closed_at FROM PRODUCTION_TRADE_EVIDENCE ORDER BY trade_evidence_id DESC",
+        """SELECT trade_evidence_id, observed_at, opened_at, closed_at
+           FROM PRODUCTION_TRADE_EVIDENCE
+           WHERE (observed_at IS NOT NULL AND observed_at <> '' AND observed_at NOT LIKE {x})
+              OR (opened_at   IS NOT NULL AND opened_at   <> '' AND opened_at   NOT LIKE {x})
+              OR (closed_at   IS NOT NULL AND closed_at   <> '' AND closed_at   NOT LIKE {x})
+           ORDER BY trade_evidence_id DESC""",
+        (iso_marker, iso_marker, iso_marker),
         limit=500,
     )
     updated = 0

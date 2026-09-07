@@ -922,16 +922,34 @@ def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None
         return [dict(row) for row in conn.execute(sql, params)]
 
 
-def list_worker_heartbeats(db_path: Path) -> list[dict[str, Any]]:
+# Every worker process that has ever run leaves a row here, so this table only grows -- it was
+# at 393 rows on 2026-09-07 with SIXTEEN workers alive in the last hour. Unbounded, this read
+# dragged all 393 back on every call, and classify_worker_presence below can only ever mark the
+# FIRST row Live; the rest are labelled Historical and shown as a short list. So the older rows
+# were fetched, shipped across the wire, and then thrown away.
+#
+# Measured at 8,977 rows across 23 calls in four hours -- the single largest read in the whole
+# window, and none of it needed. See the Founder's egress work, 2026-09-07.
+WORKER_HEARTBEAT_HISTORY_LIMIT = 25
+
+
+def list_worker_heartbeats(db_path: Path, *, limit: int = WORKER_HEARTBEAT_HISTORY_LIMIT) -> list[dict[str, Any]]:
     initialize_always_on_schema(db_path)
+    capped = max(1, min(int(limit), 200))
+    sql = "SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC LIMIT %s"
     if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC")
+                cur.execute(sql, (capped,))
                 return [dict(row) for row in cur.fetchall()]
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute("SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC")]
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC LIMIT ?", (capped,)
+            )
+        ]
 
 
 def list_shadow_trades(db_path: Path, *, broker: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

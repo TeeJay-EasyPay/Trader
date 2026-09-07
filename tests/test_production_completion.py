@@ -386,7 +386,15 @@ class ProductionCompletionTests(unittest.TestCase):
             self.assertIn("execution boundary", result["reason"])
 
     def test_kraken_startup_reconciliation_is_a_bounded_named_job(self):
-        service = SimpleNamespace(settings=SimpleNamespace(db_path=Path("runtime.sqlite3")))
+        # 2026-09-07: the startup path now passes a skip window. A deploy restarts the worker,
+        # and re-reading 1,000 historical Kraken trades minutes after the last replay changes
+        # nothing and costs about 1 MB of egress every time -- see test_egress_lean_reads.
+        service = SimpleNamespace(
+            settings=SimpleNamespace(
+                db_path=Path("runtime.sqlite3"),
+                kraken_startup_replay_skip_seconds=1800,
+            )
+        )
         expected = {"status": "completed", "persisted_rows_read": 4}
         with patch(
             "ai_trader.cli.replay_persisted_kraken_evidence",
@@ -400,7 +408,9 @@ class ProductionCompletionTests(unittest.TestCase):
                 limit=0,
             )
         self.assertEqual(result, expected)
-        replay.assert_called_once_with(service.settings.db_path)
+        replay.assert_called_once_with(
+            service.settings.db_path, skip_if_replayed_within_seconds=1800
+        )
 
     def test_external_intelligence_refresh_is_a_named_job_reachable_from_the_worker_loop(self):
         service = SimpleNamespace(

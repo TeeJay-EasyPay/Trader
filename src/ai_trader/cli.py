@@ -741,7 +741,15 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
     if job_name == "position-reconciliation":
         return service.reconcile_open_positions(broker="kraken")
     if job_name == "kraken-startup-reconciliation":
-        return replay_persisted_kraken_evidence(service.settings.db_path)
+        # Skipped when a replay already finished recently. A deploy restarts the worker, and
+        # replaying the same 1,000 historical trades minutes later changes nothing -- it only
+        # costs egress. A restart after real downtime still replays, because then the last
+        # replay is genuinely old. The manual /kraken-reconciliation/replay endpoint passes
+        # nothing here and so always runs in full.
+        return replay_persisted_kraken_evidence(
+            service.settings.db_path,
+            skip_if_replayed_within_seconds=service.settings.kraken_startup_replay_skip_seconds,
+        )
     if job_name == "self-assessment":
         return service.run_self_assessment()
     if job_name == "push-dispatch":

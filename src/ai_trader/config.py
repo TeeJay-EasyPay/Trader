@@ -92,6 +92,11 @@ class Settings:
     # anything on an ongoing basis -- it only has to be long enough to let one real backlog
     # actually finish instead of timing out and needing another full worker restart to resume.
     kraken_startup_reconciliation_timeout_seconds: int = 900
+    # 2026-09-07: how recently a full replay must have finished for a worker restart to skip
+    # its own. Thirty minutes -- long enough that a run of deploys costs one replay instead of
+    # six, short enough that a restart after real downtime still catches up. Set to 0 to
+    # replay on every start, as it did before.
+    kraken_startup_replay_skip_seconds: int = 1800
     evidence_snapshot_job_timeout_seconds: int = 300
     research_job_timeout_seconds: int = 450
     # 2026-08-20 live finding: forecast-refresh started exactly once (02:38:35) with the
@@ -233,6 +238,7 @@ def load_settings() -> Settings:
         worker_heartbeat_interval_seconds=_int_env("AI_TRADER_WORKER_HEARTBEAT_INTERVAL_SECONDS", 30),
         worker_job_timeout_seconds=_int_env("AI_TRADER_WORKER_JOB_TIMEOUT_SECONDS", 180),
         kraken_startup_reconciliation_timeout_seconds=_int_env("AI_TRADER_KRAKEN_STARTUP_RECONCILIATION_TIMEOUT_SECONDS", 900),
+        kraken_startup_replay_skip_seconds=_int_env("AI_TRADER_KRAKEN_STARTUP_REPLAY_SKIP_SECONDS", 1800),
         evidence_snapshot_job_timeout_seconds=_int_env("AI_TRADER_EVIDENCE_SNAPSHOT_TIMEOUT_SECONDS", 300),
         research_job_timeout_seconds=_int_env("AI_TRADER_RESEARCH_JOB_TIMEOUT_SECONDS", 450),
         forecast_refresh_timeout_seconds=_int_env("AI_TRADER_FORECAST_REFRESH_TIMEOUT_SECONDS", 1200),
