@@ -842,9 +842,18 @@ def _load_founder_evidence_rows(
                        rejected, expired, primary_reason
                 FROM RESEARCH_FUNNELS
                 WHERE created_at >= {x} ORDER BY created_at DESC LIMIT 100""", (since,)),
+            # 2026-09-07: bounded. Every worker process that has ever run leaves a row here,
+            # so the table only grows -- 393 rows against sixteen workers alive in the last
+            # hour -- and this read had no limit at all. Measured as the single largest read
+            # in a four-hour window: 8,977 rows across 23 calls, 2.7 MB.
+            #
+            # This is the SECOND instance of the same bug. list_worker_heartbeats in
+            # always_on.py was bounded first, and this one was missed by reading the code;
+            # tools/egress_report.py found it by attributing the bytes to the file that
+            # actually issues the query, which is the whole argument for that tool.
             ("""SELECT worker_id, worker_type, started_at, last_heartbeat_at, status,
                        current_job, last_successful_job, last_error, deployment_commit
-                FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC""", ()),
+                FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC LIMIT 25""", ()),
         ],
         limit=trade_limit,
     ))

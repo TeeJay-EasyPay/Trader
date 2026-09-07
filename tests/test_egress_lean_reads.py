@@ -191,5 +191,34 @@ class StartupReplaySkipTests(unittest.TestCase):
         )
 
 
+class UnboundedWholeTableReadTests(unittest.TestCase):
+    """Ordered reads with no limit return the whole table to use a handful of rows.
+
+    2026-09-07: WORKER_HEARTBEATS was read this way in TWO places. always_on.py was fixed by
+    reading the code; the second, in production_evidence's Founder-snapshot batch, was missed
+    and only surfaced when tools/egress_report.py attributed the bytes to the file that
+    actually issues the query. Reading code found one of two; measuring found both.
+    """
+
+    def test_the_snapshot_batch_bounds_its_heartbeat_read(self):
+        source = (REPO / "src" / "ai_trader" / "production_evidence.py").read_text(encoding="utf-8")
+        start = source.index("FROM WORKER_HEARTBEATS")
+        self.assertIn("LIMIT", source[start : start + 120])
+
+    def test_neither_heartbeat_read_is_unbounded(self):
+        """Both call sites, asserted together, so fixing one and forgetting the other cannot
+        happen twice."""
+        for module in ("always_on.py", "production_evidence.py"):
+            source = (REPO / "src" / "ai_trader" / module).read_text(encoding="utf-8")
+            for index, _ in enumerate(source.split("FROM WORKER_HEARTBEATS")[1:]):
+                position = -1
+                for _ in range(index + 1):
+                    position = source.index("FROM WORKER_HEARTBEATS", position + 1)
+                following = source[position : position + 160].upper()
+                if "ORDER BY" not in following:
+                    continue  # a keyed lookup, already bounded by its WHERE
+                self.assertIn("LIMIT", following, f"unbounded heartbeat read in {module}")
+
+
 if __name__ == "__main__":
     unittest.main()
