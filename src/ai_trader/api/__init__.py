@@ -1528,10 +1528,37 @@ class LocalApiService:
         2026-09-07, Founder-directed. Modes: "claude" and "trader" are one-to-one; "both" is the
         standup, where each participant sees the other's answers and they may talk to each other
         within a bounded budget before the floor returns to him.
+
+        ONE SPEAKER PER REQUEST, when the caller asks for it. Founder-reported the same day:
+
+            "I asked a question... the transcribing went on for quite a while, so much so that
+             we just stopped it. Then I clicked on the trader button, and I spoke to ChatGPT...
+             and then I started getting messages from both trader and ChatGPT. And then they
+             started talking amongst themselves. So I think right now, this whole thing isn't in
+             full control."
+
+        He was right, and the cause was here. A "both" turn ran the whole exchange inside ONE
+        request -- trader, Claude, then up to four peer replies. Six model calls at 30-60
+        seconds each is three to six minutes, against a client that gives up at four; the server
+        carried on regardless, so its replies arrived long after he had moved to another mode
+        and read as two AIs talking amongst themselves unbidden.
+
+        So `max_replies` lets the caller take one turn at a time. The response says who should
+        speak next and what remains of the budget, and the caller decides whether to ask for it.
+        That is what makes interrupting possible -- "I would want to be able to interrupt as
+        well if needed" -- because there is a gap between turns to interrupt in.
+
+        Omitting `max_replies` keeps the old run-it-all behaviour, which is what the tests and
+        any non-interactive caller want.
         """
 
         said = str(body.get("message") or "").strip()
-        if not said:
+        # A continuation carries no new words from the Founder: it asks one named participant to
+        # answer what was already said.
+        continue_as = str(body.get("continue_as") or "").strip().lower()
+        if continue_as not in {STANDUP_CLAUDE, STANDUP_TRADER}:
+            continue_as = ""
+        if not said and not continue_as:
             return {"status": "rejected", "message": "Say something first.", "turns": []}
         mode = str(body.get("mode") or STANDUP_BOTH).strip().lower()
         if mode not in {STANDUP_BOTH, STANDUP_CLAUDE, STANDUP_TRADER}:
@@ -1548,17 +1575,47 @@ class LocalApiService:
             budget = DEFAULT_EXCHANGE_BUDGET
         budget = max(0, min(budget, 8))
 
+        # How many replies this request may produce. None means "the whole exchange", which is
+        # what a test or a script wants; the app asks for one so the Founder sees each reply as
+        # it lands instead of waiting minutes for all of them.
+        try:
+            max_replies = None if body.get("max_replies") is None else max(1, int(body["max_replies"]))
+        except (TypeError, ValueError):
+            max_replies = None
+
         history = self._standup_history(conversation_id)
         last_ai = next((turn["speaker"] for turn in reversed(history)
                         if turn["speaker"] in {STANDUP_CLAUDE, STANDUP_TRADER}), None)
-        addressed = detect_addressee(said, mode=mode, last_ai_speaker=last_ai)
 
-        record_turn(self.settings.db_path, conversation_id=conversation_id, role="founder",
-                    text=said, spoken=bool(body.get("spoken")))
-        history = history + [{"speaker": "founder", "text": said}]
+        if continue_as:
+            # Mid-exchange. Nothing new is said and nothing is recorded as the Founder speaking;
+            # the named participant simply answers what is already in the transcript.
+            #
+            # opening_left says whether this turn still belongs to the OPENING (both were asked,
+            # and only one has answered so far) or is already a peer reply. Without that
+            # distinction the peer counter never advances and next_speaker never becomes None --
+            # the exchange runs forever, which is the first thing the tests caught.
+            addressed = continue_as
+            queue = [continue_as]
+            try:
+                used = max(0, int(body.get("exchange_used") or 0))
+            except (TypeError, ValueError):
+                used = 0
+            try:
+                opening_left = max(0, int(body.get("opening_left") or 0))
+            except (TypeError, ValueError):
+                opening_left = 0
+        else:
+            addressed = detect_addressee(said, mode=mode, last_ai_speaker=last_ai)
+            record_turn(self.settings.db_path, conversation_id=conversation_id, role="founder",
+                        text=said, spoken=bool(body.get("spoken")))
+            history = history + [{"speaker": "founder", "text": said}]
+            queue = [STANDUP_TRADER, STANDUP_CLAUDE] if addressed == STANDUP_BOTH else [addressed]
+            used = 0
+            opening_left = len(queue)
 
         produced: list[dict[str, Any]] = []
-        speakers = [STANDUP_TRADER, STANDUP_CLAUDE] if addressed == STANDUP_BOTH else [addressed]
+        speakers = list(queue)
 
         def _speak(who: str, prompt: str) -> bool:
             turn = self._trader_turn(history, prompt) if who == STANDUP_TRADER else self._claude_turn(history, prompt)
@@ -1573,26 +1630,56 @@ class LocalApiService:
                              "usage": turn.get("usage") or {}})
             return True
 
-        for who in speakers:
-            _speak(who, said)
+        def _room_left() -> bool:
+            return max_replies is None or len(produced) < max_replies
 
-        # The two may now answer each other, bounded. The budget is about cost, not quality:
+        # The opening: whoever was addressed answers what the Founder said. A continuation that
+        # is still inside the opening answers the question too; only once the opening is spent
+        # does a turn become a reply to the other participant.
+        while speakers and _room_left():
+            in_opening = opening_left > 0
+            _speak(speakers.pop(0), said if in_opening and not continue_as else PEER_EXCHANGE_INSTRUCTION)
+            if in_opening:
+                opening_left -= 1
+            else:
+                used += 1
+
+        # Then the two may answer each other, bounded. The budget is about cost, not quality:
         # two agreeable models will ping-pong for as long as they are allowed to.
-        used = 0
-        while produced and should_reply_to_peer(
-            mode=mode, turns_used=used, budget=budget,
-            peer_said_something=bool(produced[-1]["text"]),
+        while (
+            not speakers
+            and produced
+            and _room_left()
+            and should_reply_to_peer(
+                mode=mode, turns_used=used, budget=budget,
+                peer_said_something=bool(produced[-1]["text"]),
+            )
         ):
             peer = other_speaker(produced[-1]["speaker"])
             if not _speak(peer, PEER_EXCHANGE_INSTRUCTION):
                 break
             used += 1
 
+        # Who should speak next, so a caller taking one turn at a time knows whether to ask for
+        # another. None means the floor is back with the Founder, which is the only state in
+        # which the app stops waiting.
+        next_speaker = None
+        if speakers:
+            next_speaker = speakers[0]
+        elif produced and should_reply_to_peer(
+            mode=mode, turns_used=used, budget=budget,
+            peer_said_something=bool(produced[-1]["text"]),
+        ):
+            next_speaker = other_speaker(produced[-1]["speaker"])
+
         # One number for the whole exchange, because that is the unit the Founder decides on:
         # he asks a question, and wants to know what asking it cost.
         spent = round(sum(float((t.get("usage") or {}).get("cost_usd") or 0) for t in produced), 4)
         return {"status": "ok", "mode": mode, "addressed": addressed,
-                "exchange_turns": used, "turns": produced, "cost_usd": spent}
+                "exchange_turns": used, "exchange_used": used,
+                "opening_left": max(0, opening_left),
+                "next_speaker": next_speaker,
+                "turns": produced, "cost_usd": spent}
 
     def write_up_standup_actions(self, body: dict[str, Any]) -> dict[str, Any]:
         """Turn the conversation into a written, verifiable action list for Claude Code.

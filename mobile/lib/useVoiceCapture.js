@@ -97,7 +97,16 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
       return;
     }
     setVoiceState('transcribing');
+    // 2026-09-07, Founder-reported: "the transcribing... went on for quite a while, so much so
+    // that we just stopped it." A static "Transcribing..." cannot be told apart from a hang, so
+    // it counts. Upload plus speech-to-text on a long recording genuinely takes a while; the
+    // counter is the difference between waiting and giving up.
     say(voiceStatusText('transcribing'));
+    const transcribeStart = Date.now();
+    tickRef.current = setInterval(() => {
+      const seconds = Math.round((Date.now() - transcribeStart) / 1000);
+      say(`${voiceStatusText('transcribing')}  ${seconds}s`);
+    }, 1000);
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
@@ -128,6 +137,7 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
       problem(voiceErrorMessage('failed'));
       say('Voice failed.');
     } finally {
+      clearTick();
       if (mountedRef.current) setVoiceState('idle');
     }
   }, [clearTick, onTranscript, problem, request, say]);

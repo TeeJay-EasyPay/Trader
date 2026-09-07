@@ -64,8 +64,35 @@ def app_root() -> Path:
     configured = os.getenv("AI_TRADER_APP_ROOT")
     if configured:
         return Path(configured).resolve()
+
+    # 2026-09-07, found live: this returned a directory with no source in it, so EVERY code
+    # lookup failed in production while working perfectly on my machine. Claude said so plainly
+    # -- "no hits, and it reported 0 files searched" -- which is the only reason it was caught.
+    #
+    # The cause is the Dockerfile: `pip install .` puts the package in site-packages, so at
+    # runtime __file__ is
+    #     /usr/local/lib/python3.12/site-packages/ai_trader/evidence_tools.py
+    # and walking up two parents lands on /usr/local/lib/python3.12 -- no src/, no governance/,
+    # no knowledge/. Locally the same walk lands on the repository root and everything works,
+    # which is exactly why testing it on my machine proved nothing.
+    #
+    # So the answer is not a cleverer walk, it is a CHECK: take the first candidate that
+    # actually contains the directories we intend to read. A root that holds none of them is
+    # not the root, whatever the path arithmetic says.
     here = Path(__file__).resolve()
-    # src/ai_trader/evidence_tools.py -> the directory holding src/
+    candidates = [
+        here.parents[2],          # the repository root, when running from a source checkout
+        Path("/app"),             # the Dockerfile's WORKDIR, where COPY put src/ and friends
+        Path.cwd(),               # a last resort for anything started elsewhere
+    ]
+    for candidate in candidates:
+        try:
+            if any((candidate / name).is_dir() for name in READABLE_DIRECTORIES):
+                return candidate.resolve()
+        except OSError:
+            continue
+    # Nothing readable anywhere. Returning the original guess keeps the failure shaped the way
+    # callers already handle it -- "not found" -- rather than raising inside a conversation.
     return here.parents[2]
 
 

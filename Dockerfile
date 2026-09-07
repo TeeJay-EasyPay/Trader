@@ -7,6 +7,11 @@ ENV AI_TRADER_DB_PATH=/data/audit.sqlite3
 ENV AI_TRADER_OUTPUT_DIR=/data
 ENV AI_TRADER_TRADING_LOG_PATH=/data/TRADING_LOG.md
 ENV AI_TRADER_KNOWLEDGE_DIR=/app/knowledge
+# Where the readable source actually lives in this image. `pip install .` below puts the
+# package in site-packages, so nothing can infer this from its own __file__ -- and without it
+# every one of Claude's code lookups silently returned nothing in production while working
+# locally. app_root() also detects this on its own now; this line states it outright.
+ENV AI_TRADER_APP_ROOT=/app
 
 WORKDIR /app
 

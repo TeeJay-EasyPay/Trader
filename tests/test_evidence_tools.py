@@ -154,5 +154,63 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("writes are refused", blob)
 
 
+class SourceRootTests(unittest.TestCase):
+    """The root must be a directory that actually holds the source.
+
+    2026-09-07, found in production and only because Claude said so plainly: "no hits, and it
+    reported 0 files searched." Every code lookup had been failing on the deployed container
+    since the day the tools shipped, while passing on my machine.
+
+    The Dockerfile runs `pip install .`, so at runtime the package lives in site-packages and
+    walking up from __file__ lands on /usr/local/lib/python3.12 -- no src/, no governance/, no
+    knowledge/. The same walk on a source checkout lands on the repository root and works
+    perfectly, which is precisely why verifying it locally proved nothing.
+    """
+
+    def test_the_root_contains_the_directories_it_promises_to_read(self):
+        from ai_trader.evidence_tools import READABLE_DIRECTORIES, app_root
+
+        root = app_root()
+        present = [name for name in READABLE_DIRECTORIES if (root / name).is_dir()]
+        self.assertTrue(present, f"app_root() returned {root}, which holds no readable source")
+
+    def test_an_explicit_override_still_wins(self):
+        import os
+        import tempfile
+
+        from ai_trader.evidence_tools import app_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = os.environ.get("AI_TRADER_APP_ROOT")
+            os.environ["AI_TRADER_APP_ROOT"] = tmp
+            try:
+                self.assertEqual(app_root(), Path(tmp).resolve())
+            finally:
+                if saved is None:
+                    os.environ.pop("AI_TRADER_APP_ROOT", None)
+                else:
+                    os.environ["AI_TRADER_APP_ROOT"] = saved
+
+    def test_the_container_is_told_where_the_source_is(self):
+        """Belt and braces: app_root() detects this itself now, but a deployment that states
+        it outright cannot be broken by a future change to the path arithmetic."""
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("AI_TRADER_APP_ROOT=/app", dockerfile)
+        self.assertIn("COPY src ./src", dockerfile)
+
+    def test_searching_the_source_finds_this_projects_own_code(self):
+        """The end-to-end check the production failure would have tripped: a pattern that must
+        exist in this repository has to come back with hits."""
+        from ai_trader.evidence_tools import run_tool
+
+        outcome = run_tool("search_source", {"pattern": "MAX_SCORING_SYMBOLS"})
+        self.assertEqual(outcome.get("status"), "ok")
+        # files_searched is the tell. In production it came back 0 with an "ok" status, so a
+        # test that only checked the status would have passed against the broken deployment.
+        self.assertGreater(outcome.get("files_searched", 0), 10,
+                           f"searched almost nothing: {str(outcome)[:160]}")
+        self.assertTrue(outcome.get("hits"), f"no hits at all: {str(outcome)[:200]}")
+
+
 if __name__ == "__main__":
     unittest.main()

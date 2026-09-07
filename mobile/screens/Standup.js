@@ -39,6 +39,26 @@ const MODES = [
 // true if the model behind it ever changes.
 const SPEAKER_LABEL = { founder: 'You', trader: 'Trader', claude: 'Claude' };
 
+// One reply per request, so the wait is one answer long. A whole "both" exchange used to run
+// inside a single call and could take three to six minutes; two minutes is generous for one
+// turn, including Claude going away to read the code.
+const TURN_TIMEOUT_MS = 120000;
+
+// A hard stop on how far one question can run, independent of the server's own budget. Belt
+// and braces: if the server ever kept naming a next speaker, the app would still hand the
+// floor back rather than looping.
+const MAX_TURNS_PER_QUESTION = 5;
+
+// 2026-09-07, Founder-reported: "there was the circular animation on the send button that just
+// kept going, and I never got anything back." A spinner says something is happening; it does
+// not say WHAT, or for how long, so a slow answer is indistinguishable from a hang.
+function waitingLine(speaker, elapsedMs) {
+  const seconds = Math.max(0, Math.round((elapsedMs || 0) / 1000));
+  const who = SPEAKER_LABEL[speaker] || 'They';
+  const clock = seconds >= 5 ? `  ${seconds}s` : '';
+  return `${who === 'They' ? 'Thinking' : `${who} is thinking`}...${clock}`;
+}
+
 // One colour each. 2026-09-07, Founder-directed: "each of us needs a different chat bubble
 // colour so that it's easy to understand who is asking the questions and who is answering."
 // The label stays as well as the colour -- colour alone fails a colour-blind reader, and a
@@ -96,6 +116,8 @@ function StandupScreen({ request }) {
   // the hook's identity stable, so a new callback on every render cannot restart the recorder
   // mid-sentence.
   const sendRef = useRef(null);
+  // Stamps each question so replies to an abandoned one can be recognised and dropped.
+  const exchangeRef = useRef(0);
   const voice = useVoiceCapture({
     request,
     onTranscript: (text) => { if (sendRef.current) sendRef.current(text, { spoken: true }); },
@@ -115,6 +137,9 @@ function StandupScreen({ request }) {
   // conversation loses nothing except the screenful -- see /standup's conversation_id.
   const end = useCallback(() => {
     setRunning(false);
+    // Abandon anything still in flight. Without this, replies to the question he gave up on
+    // arrive later and read as the AIs talking unprompted -- exactly what he reported.
+    exchangeRef.current += 1;
     setBusy(false);
     // Ending the conversation must stop the microphone too. Leaving it live on a closed
     // conversation is the failure this screen can least afford.
@@ -127,52 +152,100 @@ function StandupScreen({ request }) {
     if (!said || busy) return;
     setDraft('');
     setBusy(true);
-    setStatusLine('Thinking...');
+    // Every reply from here belongs to THIS question. 2026-09-07, Founder-reported: a slow
+    // standup answer arrived after he had given up, switched to Trader and asked something
+    // else -- so two AIs appeared to start "talking amongst themselves" unbidden. The stamp is
+    // checked before anything is rendered, so a late reply from an abandoned question is
+    // discarded rather than dropped into a conversation that has moved on.
+    const ticket = (exchangeRef.current += 1);
+    const stale = () => !mountedRef.current || exchangeRef.current !== ticket;
+
     // Shown immediately. A question that vanishes into a spinner reads as the app ignoring
     // him -- the same complaint that put the live transcript into Ask on 2026-08-31.
     setTurns((prev) => [...prev, { speaker: 'founder', text: said, createdAt: new Date().toISOString() }]);
+
+    // One speaker per request. The whole exchange used to run inside a single call -- up to
+    // six model calls, three to six minutes, against a client that gives up at four. Now each
+    // reply is fetched and shown on its own, so the wait is one answer long and there is a gap
+    // between turns in which he can interrupt.
+    let body = { message: said, mode, conversation_id: 'standup', max_replies: 1 };
+    let spent = 0;
+    let replies = 0;
+    const startedAt = Date.now();
+
     try {
-      const payload = await request('/standup', {
-        method: 'POST',
-        body: JSON.stringify({ message: said, mode, conversation_id: 'standup' }),
-        timeoutMs: 240000,
-      });
-      if (!mountedRef.current) return;
-      const produced = (payload && payload.turns) || [];
-      // Cost shown next to the answer, not buried in a console. The Founder's first $6 of
-      // credit went overnight and he could only find out where from Anthropic's billing page
-      // the following morning.
-      const spent = Number((payload && payload.cost_usd) || 0);
-      setTurns((prev) => [
-        ...prev,
-        ...produced.map((turn) => ({
-          speaker: turn.speaker,
-          text: normalizeChatText(turn.text),
-          toolCalls: (turn.tool_calls || []).length,
-          createdAt: new Date().toISOString(),
-        })),
-      ]);
-      setSpentTotal((prev) => prev + spent);
+      for (let step = 0; step < MAX_TURNS_PER_QUESTION; step += 1) {
+        setStatusLine(waitingLine(body.continue_as || (mode === 'claude' ? 'claude' : null), Date.now() - startedAt));
+        const payload = await request('/standup', {
+          method: 'POST',
+          body: JSON.stringify(body),
+          timeoutMs: TURN_TIMEOUT_MS,
+        });
+        if (stale()) return;
+
+        const produced = (payload && payload.turns) || [];
+        spent += Number((payload && payload.cost_usd) || 0);
+        replies += produced.length;
+        setTurns((prev) => [
+          ...prev,
+          ...produced.map((turn) => ({
+            speaker: turn.speaker,
+            text: normalizeChatText(turn.text),
+            toolCalls: (turn.tool_calls || []).length,
+            createdAt: new Date().toISOString(),
+          })),
+        ]);
+        if (spent) setSpentTotal((prev) => prev + Number((payload && payload.cost_usd) || 0));
+
+        const next = payload && payload.next_speaker;
+        if (!next || !produced.length) break;
+        // Carry the exchange forward. Nothing new is said; the next participant answers what
+        // is already in the transcript.
+        body = {
+          continue_as: next,
+          mode,
+          conversation_id: 'standup',
+          max_replies: 1,
+          // Both counters go back untouched. exchange_used is how many peer replies have
+          // happened; opening_left is whether this turn still belongs to the opening question
+          // or is already one AI answering the other. Without the second the peer counter
+          // never advances and the exchange never ends.
+          exchange_used: Number((payload && payload.exchange_used) || 0),
+          opening_left: Number((payload && payload.opening_left) || 0),
+        };
+      }
+      if (stale()) return;
       setStatusLine(
-        produced.length
-          ? `${produced.length} repl${produced.length === 1 ? 'y' : 'ies'} - your turn`
+        replies
+          ? `${replies} repl${replies === 1 ? 'y' : 'ies'} - your turn`
             + (spent ? `  ·  ${formatPence(spent)}` : '')
           : 'No reply came back'
       );
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (stale()) return;
       setTurns((prev) => [...prev, {
         speaker: 'claude',
-        text: 'That did not get through. The conversation is still open - try again.',
+        text: replies
+          ? 'The rest of that exchange did not get through. The conversation is still open.'
+          : 'That did not get through. The conversation is still open - try again.',
         createdAt: new Date().toISOString(),
       }]);
-      setStatusLine('Failed');
+      setStatusLine('Failed - your turn');
     } finally {
-      if (mountedRef.current) setBusy(false);
+      if (mountedRef.current && exchangeRef.current === ticket) setBusy(false);
     }
   }, [busy, mode, request]);
 
   useEffect(() => { sendRef.current = send; }, [send]);
+
+  // Changing who you are talking to abandons the previous question. 2026-09-07: he asked in
+  // Standup mode, gave up, switched to Trader and asked again -- and the first question's
+  // replies arrived into the new conversation, so both AIs appeared to answer a question he
+  // had not asked them. Switching mode is him saying "not that, this".
+  useEffect(() => {
+    exchangeRef.current += 1;
+    setBusy(false);
+  }, [mode]);
 
   // Newest exchange first, matching Ask -- the Founder asked for that on 2026-09-04 so the
   // reply to what he just said needs no scrolling to find.

@@ -87,10 +87,16 @@ class ScreenWiringTests(unittest.TestCase):
         self.assertIn("onStatus: setStatusLine", source)
 
     def test_ending_the_conversation_stops_the_microphone(self):
-        """A recorder still running on a closed conversation is the worst failure here."""
+        """A recorder still running on a closed conversation is the worst failure here.
+
+        Scoped to the whole callback rather than a fixed number of characters: the first
+        version counted 400 characters in and broke the moment a comment was added above the
+        line it was checking, which is a test measuring the wrong thing.
+        """
         source = SCREEN.read_text(encoding="utf-8")
-        end = source[source.index("const end = useCallback"):]
-        self.assertIn("voice.cancel()", end[:400])
+        start = source.index("const end = useCallback")
+        end = source[start : source.index("}, [", start)]
+        self.assertIn("voice.cancel()", end)
 
     def test_an_empty_box_explains_itself_instead_of_a_dead_send_button(self):
         """"I clicked send. Nothing happened." Send is disabled with an empty box, which looks
