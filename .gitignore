@@ -25,3 +25,6 @@ screenshots/
 build/
 ZIP-Updates/
 ~$*
+# Egress measurement snapshots: local working data, not source.
+data/egress_baseline*.json
+data/egress_report_now.json
