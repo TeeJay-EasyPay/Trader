@@ -108,6 +108,37 @@ def is_configured() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
 
 
+def _plain_refusal(error: Exception) -> str:
+    """Say why Claude could not answer, in words the Founder can act on.
+
+    2026-09-07, caught by looking at the actual screen rather than the logs. The credit ran out
+    and the bubble showed him this:
+
+        Anthropic rejected the request: Error code: 400 - {'type': 'error', 'error':
+        {'type': 'invalid_request_error', 'message': 'Your credit balance is too low...
+
+    He has asked repeatedly for short plain English and no jargon. A raw API payload in a
+    conversation bubble is the opposite of that, and it buries the one sentence that tells him
+    what to do about it.
+    """
+
+    detail = str(error).lower()
+    if "credit balance is too low" in detail or "insufficient" in detail:
+        return ("Claude has run out of credit, so it cannot answer. Add funds to the Anthropic "
+                "account and it will work again straight away.")
+    if "rate limit" in detail or "429" in detail:
+        return ("Claude is being rate limited right now. Waiting a minute and asking again "
+                "usually clears it.")
+    if "overloaded" in detail or "529" in detail:
+        return "Anthropic's service is overloaded at the moment. Worth trying again shortly."
+    if "max_tokens" in detail or "too long" in detail or "context" in detail:
+        return ("That was too long for Claude to take in one go. A narrower question, or "
+                "ending the conversation and starting a fresh one, will get past it.")
+    # Anything unrecognised: say plainly that it was refused and keep the technical detail
+    # short, rather than pasting a JSON payload into the conversation.
+    return f"Claude could not answer: the request was refused ({type(error).__name__})."
+
+
 def _client() -> Any:
     import anthropic
 
@@ -265,13 +296,15 @@ def ask_claude(
             return {"status": "auth_failed", "answer": "The Anthropic API key was rejected.",
                     "tool_calls": tool_calls, "usage": _spent()}
         except anthropic.BadRequestError as exc:
-            # Includes "credit balance is too low", which is the Founder's problem to fix and
-            # must say so plainly rather than surfacing as a generic failure.
-            return {"status": "rejected", "answer": f"Anthropic rejected the request: {exc}",
+            # Includes "credit balance is too low", which is the Founder's to fix -- so it is
+            # translated into a sentence he can act on. The raw payload goes to the log, where
+            # it belongs, and never into a conversation bubble.
+            logger.warning("Anthropic refused the request: %s", exc)
+            return {"status": "rejected", "answer": _plain_refusal(exc),
                     "tool_calls": tool_calls, "usage": _spent()}
         except Exception as exc:  # noqa: BLE001 - a failed turn must not end the standup
             logger.exception("Claude turn failed.")
-            return {"status": "failed", "answer": f"Claude could not answer: {type(exc).__name__}",
+            return {"status": "failed", "answer": _plain_refusal(exc),
                     "tool_calls": tool_calls, "usage": _spent()}
 
         _add_usage(totals, response.usage)

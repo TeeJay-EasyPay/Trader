@@ -292,5 +292,52 @@ class CostControlTests(unittest.TestCase):
                                 "too small and the evidence stops being evidence")
 
 
+class PlainRefusalTests(unittest.TestCase):
+    """2026-09-07, found by looking at the actual screen rather than the logs.
+
+    The credit ran out and Claude's bubble in the app showed the Founder this:
+
+        Anthropic rejected the request: Error code: 400 - {'type': 'error', 'error':
+        {'type': 'invalid_request_error', 'message': 'Your credit balance is too low...
+
+    He has asked repeatedly for short plain English and no jargon. A raw API payload in a
+    conversation bubble is the opposite, and it buries the one sentence he can act on.
+    """
+
+    def test_no_credit_says_so_and_says_what_to_do(self):
+        answer = claude_advisor._plain_refusal(Exception(
+            "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+            "'message': 'Your credit balance is too low to access the Anthropic API.'}}"
+        ))
+        self.assertIn("run out of credit", answer)
+        self.assertIn("Add funds", answer)
+
+    def test_the_raw_payload_never_reaches_the_conversation(self):
+        answer = claude_advisor._plain_refusal(Exception(
+            "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error'}}"
+        ))
+        for jargon in ("{", "}", "Error code", "invalid_request_error", "400"):
+            self.assertNotIn(jargon, answer, f"{jargon!r} leaked into a Founder-facing message")
+
+    def test_rate_limits_and_overload_are_told_apart(self):
+        """They need different actions -- wait a minute, versus try again later."""
+        limited = claude_advisor._plain_refusal(Exception("429 rate limit exceeded"))
+        overloaded = claude_advisor._plain_refusal(Exception("529 overloaded_error"))
+        self.assertNotEqual(limited, overloaded)
+        self.assertIn("rate limited", limited)
+        self.assertIn("overloaded", overloaded)
+
+    def test_an_unrecognised_failure_still_says_something_useful(self):
+        answer = claude_advisor._plain_refusal(TimeoutError("connection timed out"))
+        self.assertIn("TimeoutError", answer, "the class name is a short, honest clue")
+        self.assertLess(len(answer), 200, "still a sentence, not a stack trace")
+
+    def test_every_message_is_short_enough_to_read_in_a_bubble(self):
+        for error in (Exception("credit balance is too low"), Exception("429 rate limit"),
+                      Exception("529 overloaded"), Exception("context length exceeded"),
+                      ValueError("something else entirely")):
+            self.assertLess(len(claude_advisor._plain_refusal(error)), 220)
+
+
 if __name__ == "__main__":
     unittest.main()
