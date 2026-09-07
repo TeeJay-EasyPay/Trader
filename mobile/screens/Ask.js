@@ -55,7 +55,7 @@ function loadAudioModules() {
 }
 
 const { micButtonLabel, micButtonAccessibilityLabel, thinkingFrame, recordingIndicator, resolveTranscription, voiceErrorMessage, voiceStatusText, MAX_RECORDING_SECONDS } = require('../lib/voiceQuestion');
-const { acknowledgement, shouldSpeak, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
+const { acknowledgement, shouldSpeak, shouldListenAgain, speechRequestOptions, playableAudioUri } = require('../lib/spokenReply');
 const { mergeTurns, newestExchangesFirst, withDayStamps, bubbleStyle, bubbleTextStyle } = require('../lib/chatBubbles');
 const { askStatusLine, isModelAnswer } = require('../lib/askStatus');
 
@@ -71,6 +71,15 @@ function AskAiTrader({ messages, setMessages, request }) {
   const recordingRef = React.useRef(null);
   const audioRef = React.useRef(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  // 2026-09-07, Founder-directed: "isn't there a way... so that I can speak and have a
+  // conversation with chatgpt in the app". True while a VOICE conversation is running, so the
+  // microphone re-opens by itself once the reply has finished playing. Set when he speaks,
+  // cleared the moment anything makes continuing wrong -- see shouldListenAgain.
+  const handsFreeRef = React.useRef(false);
+  // Guards the auto-restart against a screen the Founder has already left. Without it, leaving
+  // Ask mid-answer would open the microphone on a screen he is no longer looking at.
+  const askMountedRef = React.useRef(true);
+  React.useEffect(() => () => { askMountedRef.current = false; handsFreeRef.current = false; }, []);
   const tickRef = React.useRef(null);
   // 2026-09-03, Founder-directed: "can all the discussions be stored... that way I can scroll
   // back to previous discussions if I want to." Loaded once when the card mounts and merged
@@ -152,9 +161,14 @@ function AskAiTrader({ messages, setMessages, request }) {
         await ask(result.text, { spoken: true, alreadyShown: true });
         return;
       }
+      // Nothing could be made out. End the conversation rather than re-opening the
+      // microphone: a phone left on a desk would otherwise record silence, fail to transcribe
+      // it, and try again indefinitely.
+      handsFreeRef.current = false;
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(result.message) }]);
       setAskStatus('Voice question failed.');
     } catch (error) {
+      handsFreeRef.current = false;
       setMessages((prev) => [...prev, { role: 'assistant', text: normalizeChatText(voiceErrorMessage('failed')) }]);
       setAskStatus('Voice question failed.');
     } finally {
@@ -213,7 +227,40 @@ function AskAiTrader({ messages, setMessages, request }) {
   };
 
   // Interrupting the reply by pressing the mic is how a real conversation works.
-  const toggleVoice = () => (voiceState === 'recording' ? stopRecording() : (stopSpeaking(), startRecording()));
+  const toggleVoice = () => {
+    if (voiceState === 'recording') {
+      // Mid-conversation the button means STOP TALKING TO ME, not "submit this". Submitting
+      // here would send whatever silence had been captured while he reached for the phone.
+      if (handsFreeRef.current) {
+        handsFreeRef.current = false;
+        return cancelRecording();
+      }
+      return stopRecording();
+    }
+    // Speaking starts a conversation. It ends when he taps again, when nothing could be made
+    // out, when he types, or when he leaves the screen.
+    handsFreeRef.current = true;
+    stopSpeaking();
+    return startRecording();
+  };
+
+  const cancelRecording = async () => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+    setRecordingSeconds(0);
+    const recording = recordingRef.current;
+    recordingRef.current = null;
+    setVoiceState('idle');
+    setAskStatus('Ready');
+    if (!recording) return;
+    try {
+      await recording.stopAndUnloadAsync();
+    } catch (error) {
+      // Already stopped. Nothing to recover from, and nothing is sent either way.
+    }
+  };
   // Holds the currently playing spoken reply so a new answer can stop the previous one --
   // otherwise a quick second question talks over the first, which is the opposite of a
   // conversation.
@@ -247,7 +294,16 @@ function AskAiTrader({ messages, setMessages, request }) {
       const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
       spokenRef.current = sound;
       sound.setOnPlaybackStatusUpdate((status) => {
-        if (status && status.didJustFinish) stopSpeaking();
+        if (!status || !status.didJustFinish) return;
+        stopSpeaking();
+        // The whole conversation lives here: the answer has finished being read aloud, so it
+        // is his turn again and the microphone opens without a tap. Guarded on the screen
+        // still being open and on the turn having been a voice one.
+        if (askMountedRef.current && shouldListenAgain({
+          handsFree: handsFreeRef.current, spokenOk: true, questionUnderstood: true,
+        })) {
+          startRecording();
+        }
       });
     } catch (error) {
       // Deliberately silent -- see above.
@@ -255,6 +311,11 @@ function AskAiTrader({ messages, setMessages, request }) {
   };
 
   const ask = async (text, { spoken = false, alreadyShown = false } = {}) => {
+    // Typing ends a voice conversation. He has moved to the keyboard, so the microphone
+    // re-opening after the next answer would be a surprise rather than a convenience.
+    if (!spoken) {
+      handsFreeRef.current = false;
+    }
     const finalQuestion = String(text || question || '').trim();
     if (!finalQuestion || askLoading) {
       return;

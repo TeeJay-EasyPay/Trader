@@ -118,7 +118,35 @@ function acknowledgement(question, seed) {
   return pool[index];
 }
 
+// 2026-09-07, Founder-directed: "I then need to click on the microphone icon to ask the next
+// question. isn't there a way... so that I can speak and have a conversation with chatgpt in
+// the app. that way I can fully understand from it what it's doing and thinking."
+//
+// Everything needed was already shipped: expo-av records, the server transcribes, the server
+// speaks, expo-av plays. The only thing missing was intent -- nothing re-opened the microphone
+// when the reply finished playing. So this is a loop, not a new capability, and it needs no
+// new native module and no rebuild (which matters: the app updates over the air).
+//
+// CONSIDERED AND REJECTED for now: a realtime speech-to-speech API. It would allow
+// interrupting mid-sentence, which this cannot, but it needs a native WebRTC module, a full
+// rebuild rather than an OTA update, and a continuously open audio stream on an account that
+// is currently restricted for exceeding its data quota. The loop delivers the conversation;
+// interruption can be revisited when those constraints ease.
+function shouldListenAgain({ handsFree, spokenOk, questionUnderstood }) {
+  // Only ever continues a conversation the Founder started BY VOICE. Typing has never made it
+  // speak, and it must not make it listen either.
+  if (!handsFree) return false;
+  // A reply that never played leaves him with no cue that it is his turn, so re-opening the
+  // microphone would be listening at someone who does not know he is being listened to.
+  if (!spokenOk) return false;
+  // Silence, or speech that could not be made out, ends the conversation rather than looping.
+  // Without this, walking away from the phone leaves it recording, transcribing nothing and
+  // asking again, forever.
+  return Boolean(questionUnderstood);
+}
+
 module.exports = {
+  shouldListenAgain,
   acknowledgement,
   shouldSpeak,
   spokenText,
