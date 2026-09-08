@@ -324,6 +324,24 @@ function StandupScreen({ request }) {
                 <Text style={styles.standupMicText}>{micButtonLabel(voice.voiceState)}</Text>
               </TouchableOpacity>
 
+              {/* 2026-09-07, Founder-directed: "there should be an x button if I want to cancel
+                  the transcription or my voice in case I get it wrong."
+
+                  Shown while recording AND while transcribing, because both are moments where
+                  he can already tell it has gone wrong and the only alternative is to let it
+                  finish and then delete the result. Cancelling discards the audio and abandons
+                  any transcription already in flight, so the words never arrive at all. */}
+              {voice.isRecording || voice.isBusy ? (
+                <TouchableOpacity
+                  style={styles.standupCancel}
+                  onPress={() => voice.cancel()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel what I just said"
+                >
+                  <Text style={styles.standupCancelText}>✕</Text>
+                </TouchableOpacity>
+              ) : null}
+
               <TouchableOpacity
                 style={[styles.standupSend, (busy || !draft.trim()) && styles.standupSendBusy]}
                 onPress={() => send(draft)}
@@ -337,7 +355,7 @@ function StandupScreen({ request }) {
                 button -- he pressed it, nothing happened, and he had no way to tell which. */}
             {!draft.trim() && !voice.isRecording && !busy ? (
               <Text style={styles.smallText}>
-                Tap the microphone to speak, or type something to send.
+                Tap the microphone and just talk - it sends when you stop. Or type instead.
               </Text>
             ) : null}
           </View>

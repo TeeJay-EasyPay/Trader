@@ -100,9 +100,17 @@ class ScreenWiringTests(unittest.TestCase):
 
     def test_an_empty_box_explains_itself_instead_of_a_dead_send_button(self):
         """"I clicked send. Nothing happened." Send is disabled with an empty box, which looks
-        exactly like a broken button unless something says otherwise."""
+        exactly like a broken button unless something says otherwise.
+
+        Asserted on intent rather than exact wording: the first version pinned the sentence
+        itself and broke the moment the hint was reworded to say he can just talk, which is a
+        test guarding the words instead of the behaviour.
+        """
         source = SCREEN.read_text(encoding="utf-8")
-        self.assertIn("Tap the microphone to speak, or type something to send.", source)
+        hint = source[source.index("{!draft.trim() && !voice.isRecording"):]
+        hint = hint[:hint.index("</Text>")]
+        self.assertIn("microphone", hint.lower())
+        self.assertIn("type", hint.lower(), "it must say what to do instead of pressing Send")
 
     def test_the_placeholder_mentions_speaking(self):
         """The old one said "Say something" while offering no way to say anything."""

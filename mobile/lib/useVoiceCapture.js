@@ -31,6 +31,11 @@ const {
   voiceStatusText,
   MAX_RECORDING_SECONDS,
 } = require('./voiceQuestion');
+const { initialPauseState, nextPauseState, listeningLabel } = require('./speechPause');
+
+// How often the recorder reports its sound level. Fast enough that a two-second pause is
+// noticed promptly, slow enough not to wake the JavaScript thread five times a second.
+const PAUSE_POLL_MS = 250;
 
 // Loaded on demand, never at module load. An installed app whose binary predates expo-av has no
 // such native code, and Expo's lookup throws out through the module registry rather than as an
@@ -64,6 +69,15 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
   const audioRef = useRef(null);
   const tickRef = useRef(null);
   const mountedRef = useRef(true);
+  // Stamps each recording so a transcription the Founder cancelled cannot deliver its words
+  // afterwards. 2026-09-07: "there should be an x button if I want to cancel the transcription
+  // or my voice in case I get it wrong" -- cancelling has to mean it never arrives, not that
+  // it arrives slightly later.
+  const ticketRef = useRef(0);
+  const pauseRef = useRef(initialPauseState());
+  // The status callback is created before stop() exists and outlives every render, so it calls
+  // through a ref rather than closing over a particular version of it.
+  const stopRef = useRef(() => {});
 
   const say = useCallback((line) => { if (onStatus) onStatus(line); }, [onStatus]);
   const problem = useCallback((line) => { if (onProblem) onProblem(line); }, [onProblem]);
@@ -96,6 +110,12 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
       setVoiceState('idle');
       return;
     }
+    // This transcription belongs to this recording. If he cancels while it is in flight the
+    // stamp moves on, and the words that eventually come back are discarded instead of being
+    // dropped into the conversation he just cancelled out of.
+    const ticket = (ticketRef.current += 1);
+    const abandoned = () => !mountedRef.current || ticketRef.current !== ticket;
+
     setVoiceState('transcribing');
     // 2026-09-07, Founder-reported: "the transcribing... went on for quite a while, so much so
     // that we just stopped it." A static "Transcribing..." cannot be told apart from a hang, so
@@ -120,7 +140,7 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
         timeoutMs: 60000,
       });
       const result = resolveTranscription(payload);
-      if (!mountedRef.current) return;
+      if (abandoned()) return;
       if (result.ok) {
         setVoiceState('idle');
         // Handed straight on. He asked to "press it and just ask the app something verbally and
@@ -133,14 +153,16 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
       problem(result.message);
       say('Could not make that out.');
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (abandoned()) return;
       problem(voiceErrorMessage('failed'));
       say('Voice failed.');
     } finally {
       clearTick();
-      if (mountedRef.current) setVoiceState('idle');
+      if (mountedRef.current && ticketRef.current === ticket) setVoiceState('idle');
     }
   }, [clearTick, onTranscript, problem, request, say]);
+
+  useEffect(() => { stopRef.current = stop; }, [stop]);
 
   const start = useCallback(async () => {
     let native = null;
@@ -168,7 +190,36 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
         return;
       }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const created = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+
+      // 2026-09-07, Founder-directed: "I don't want to click on a send button each time. I want
+      // the app to detect a long pause and then just respond." Metering is what makes that
+      // possible -- it reports the sound level as he speaks, and speechPause.js decides from
+      // that when a pause is a full stop rather than a breath.
+      //
+      // If the hardware ignores isMeteringEnabled the readings come back empty, the detector
+      // never fires, and the Stop button behaves exactly as it does today. An addition, never a
+      // replacement.
+      pauseRef.current = initialPauseState();
+      let lastReadingAt = Date.now();
+      const created = await Audio.Recording.createAsync(
+        { ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true },
+        (status) => {
+          if (!status || !status.isRecording || !mountedRef.current) return;
+          const now = Date.now();
+          const sinceLastMs = now - lastReadingAt;
+          lastReadingAt = now;
+          pauseRef.current = nextPauseState(pauseRef.current, {
+            metering: status.metering, sinceLastMs,
+          });
+          say(listeningLabel(pauseRef.current, (status.durationMillis || 0) / 1000));
+          if (pauseRef.current.shouldSubmit) {
+            // He has finished. Sending is the whole point -- reaching for the screen at the end
+            // of every sentence is the friction he asked to be rid of.
+            stopRef.current();
+          }
+        },
+        PAUSE_POLL_MS,
+      );
       const recording = created.recording;
       if (!mountedRef.current) {
         try { await recording.stopAndUnloadAsync(); } catch (error) { /* left already */ }
@@ -203,10 +254,15 @@ function useVoiceCapture({ request, onTranscript, onProblem, onStatus }) {
   // rather than "submit this" -- sending would upload the silence recorded while he reached for
   // the phone.
   const cancel = useCallback(async () => {
+    // Moving the stamp is what makes cancelling real: any transcription already in flight will
+    // find itself abandoned when it returns, and say nothing.
+    ticketRef.current += 1;
     clearTick();
+    pauseRef.current = initialPauseState();
     const recording = recordingRef.current;
     recordingRef.current = null;
     setVoiceState('idle');
+    say('Cancelled.');
     if (!recording) return;
     try {
       await recording.stopAndUnloadAsync();

@@ -351,6 +351,18 @@ export const styles = StyleSheet.create({
     backgroundColor: '#1f2d3d',
     alignItems: 'center',
   },
+  // The X. 2026-09-07, Founder-directed: a way out mid-sentence, before the words are sent.
+  // Deliberately quiet grey rather than red -- red is the End Conversation button, and two red
+  // buttons side by side is how someone ends the wrong thing.
+  standupCancel: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: '#e6e8ec',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  standupCancelText: { fontSize: 18, color: '#3d4757', fontWeight: '700' },
   standupSendBusy: { backgroundColor: '#66748c' },
   standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
   // The microphone, beside Send rather than hidden in it. 2026-09-07: the screen had none at
