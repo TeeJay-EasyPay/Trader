@@ -160,10 +160,9 @@ class CryptoTradeReviewer:
     equities already get.
 
     Deliberately a REVIEW, not a proposal: price, size, stop-loss and take-profit stay
-    deterministic risk-management math and are never authored by a model. This step can
-    only (a) veto a candidate, or (b) lower its confidence -- never raise it, never widen
-    risk. That asymmetry is the point: real-money sizing must not depend on model output,
-    but a model spotting a reason not to trade is genuinely valuable.
+    deterministic risk-management math. The reviewer can veto or request a fraction of
+    the independently approved position. Its confidence is recorded separately from the
+    research eligibility score; it cannot increase size or alter price, stop or target.
     """
 
     def __init__(self, api_key: str, model: str):
@@ -188,13 +187,19 @@ class CryptoTradeReviewer:
                 "including the trend and momentum scores and the market forecast. Buying near the top "
                 "of a narrow, directionless day is usually poor; buying strength on a decisive "
                 "expansion can be sound. If you judge the entry stretched but still worth taking, "
-                "LOWER the confidence rather than refusing: position size is scaled from confidence, "
-                "so a reduced number is how you take a smaller bite. "
+                "set proceed=true and size_fraction below 1.0. size_fraction is applied ONCE to the "
+                "position allowed by the existing risk, cash and research-conviction sizing rules. "
+                "For example, 0.5 requests half of that allowed position; 1.0 keeps it unchanged. "
+                "An amount below the exchange minimum will be refused, never rounded up past your request. "
                 "Your job is judgment, not arithmetic: decide whether this is genuinely worth taking right now. "
-                "Return only JSON with fields: proceed, confidence, reasoning, concerns, "
+                "Return only JSON with fields: proceed, confidence, size_fraction, reasoning, concerns, "
                 "strategy_fit, better_suited_strategy. "
-                "proceed must be true or false. confidence must be a decimal fraction between 0 and 1 and must "
-                "NOT exceed the supplied candidate confidence -- you may lower it, never raise it. "
+                "proceed must be true or false. confidence must be a decimal fraction between 0 and 1: "
+                "your qualitative assessment, recorded separately, not a calibrated probability. "
+                "It does not replace the research eligibility score or control size. size_fraction must "
+                "be a number greater than 0 and at most 1. You may only reduce the independently approved size. "
+                "The research score must still clear the disclosed policy threshold; your assessment cannot "
+                "override that gate. Use proceed=false when you do not approve entry. "
                 "reasoning must be 2-4 sentences in plain English a non-technical founder can follow, citing the "
                 "actual evidence supplied. concerns must be an array of at most 3 short strings. "
                 "Set proceed=false when the evidence genuinely does not support entering now -- a thin or "
@@ -216,8 +221,10 @@ class CryptoTradeReviewer:
                 "null when none is clearly better -- naming one does not change this trade's stop or "
                 "target, it is recorded so selection can improve. Do NOT prefer a strategy merely "
                 "because it has no losing record; absent evidence is not good evidence. "
-                "You are NOT setting the entry price, position size, stop-loss or take-profit; those are fixed by "
-                "risk management and are shown only as context."
+                "Entry price, stop-loss and take-profit are fixed by risk management. The candidate position "
+                "size is a pre-allocation request, not permission to spend that amount; size_fraction can "
+                "only reduce what the downstream risk checks permit. Fees are percentage costs: a smaller "
+                "position reduces money at risk, not the percentage move needed to cover those costs."
             ),
             "symbol": symbol,
             "candidate": candidate,
@@ -504,10 +511,15 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         data = json.loads(text)
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict) or "proceed" not in data:
+    if not isinstance(data, dict):
         return None
     reasoning = str(data.get("reasoning") or "").strip()
-    if not reasoning:
+    if "size_fraction" in data and (not isinstance(data.get("proceed"), bool) or not reasoning):
+        return {"proceed": False, "confidence": None,
+                "reasoning": "AI sizing review omitted a valid decision or explanation; entry was refused.",
+                "concerns": ["Invalid AI sizing review"], "strategy_fit": None,
+                "better_suited_strategy": None}
+    if "proceed" not in data or not reasoning:
         return None
     confidence: float | None
     try:
@@ -516,6 +528,22 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         confidence = None
     if confidence is not None and not 0.0 <= confidence <= 1.0:
         confidence = None
+    # A malformed explicit sizing instruction must never fall through to the existing
+    # unavailable-review fallback, which would proceed at the unreduced size.
+    has_size_fraction = "size_fraction" in data
+    size_fraction = None
+    if has_size_fraction:
+        try:
+            if isinstance(data["size_fraction"], bool):
+                raise ValueError("boolean size")
+            size_fraction = float(data["size_fraction"])
+            if not 0.0 < size_fraction <= 1.0 or confidence is None or not isinstance(data["proceed"], bool):
+                raise ValueError("invalid review contract")
+        except (TypeError, ValueError):
+            return {"proceed": False, "confidence": confidence,
+                    "reasoning": "AI review contained an invalid sizing instruction; entry was refused.",
+                    "concerns": ["Invalid AI sizing instruction"], "strategy_fit": None,
+                    "better_suited_strategy": None}
     # Phase 5, 2026-09-05. Both fields are optional on purpose: a model that omits them still
     # produces a usable review, so this cannot become a new way for a trade to be lost. The
     # strategy judgement is recorded and used to improve selection -- it never alters this
@@ -525,7 +553,7 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         strategy_fit = None
     better = data.get("better_suited_strategy")
     better_suited = str(better).strip() if isinstance(better, str) and better.strip() else None
-    return {
+    review = {
         "proceed": bool(data.get("proceed")),
         "confidence": confidence,
         "reasoning": reasoning,
@@ -533,6 +561,10 @@ def _review_from_response_text(text: str) -> dict[str, Any] | None:
         "strategy_fit": strategy_fit,
         "better_suited_strategy": better_suited,
     }
+    # Missing means the old contract: retain its confidence gate for compatibility.
+    if has_size_fraction:
+        review["size_fraction"] = size_fraction
+    return review
 
 
 def _lenient_json_object(text: str) -> dict[str, Any] | None:

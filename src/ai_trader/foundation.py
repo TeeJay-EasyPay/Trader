@@ -1177,10 +1177,17 @@ def calculate_capital_allocation(
         confidence=p.confidence_score,
         min_confidence=policy.min_ai_confidence,
     )
+    pre_review_notional = approved_notional
+    if p.asset_type == "crypto" and p.reviewer_size_fraction is not None:
+        approved_notional = round(approved_notional * p.reviewer_size_fraction, 8)
     approved_quantity = approved_notional / p.entry_price if p.entry_price > 0 else 0.0
     risk_amount = approved_quantity * per_unit_risk
     result = "approved" if approved_notional > 0 else "rejected"
     notes = None if result == "approved" else "Capital allocation produced zero approved notional."
+    if p.asset_type == "crypto" and p.reviewer_size_fraction is not None:
+        notes = (f"Reviewer size fraction {p.reviewer_size_fraction:.4f} applied once to "
+                 f"pre-review approved notional {pre_review_notional:.8f}; "
+                 f"reviewer confidence {p.reviewer_confidence}, research confidence {p.confidence_score:.4f}.")
     with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(
@@ -1215,6 +1222,8 @@ def calculate_capital_allocation(
         # what was permitted and what was actually taken -- and confirm the second never
         # exceeds the first.
         "policy_ceiling_notional": ceiling_notional,
+        "pre_review_approved_notional": pre_review_notional,
+        "reviewer_size_fraction": p.reviewer_size_fraction,
         "result": result,
         "notes": notes,
     }

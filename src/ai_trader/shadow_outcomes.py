@@ -181,6 +181,11 @@ def resolve_shadow_trades(
                         status, gross_r, final_price, closed_at = "target_hit", planned_r, target, stamp
                         break
                 if gross_r is None:
+                    # A partial history is not expiry. Keep the candidate open until its
+                    # full observation horizon has passed, so later levels can still settle it.
+                    if moment < horizon:
+                        still_pending += 1
+                        continue
                     stamp, _high, _low, close = candles[-1]
                     status, final_price, closed_at = "expired", close, stamp
                     gross_r = (close - entry) / risk_per_unit

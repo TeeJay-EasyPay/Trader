@@ -250,14 +250,14 @@ def explain_trade_outcomes(trades: Iterable[dict[str, Any]], *, now_epoch: float
             symbol = str(trade.get("symbol") or "").upper() or "a position"
             overruns.append(f"{symbol} lost {abs(net_r):.1f}x the risk it was sized for")
 
-    # 1. Fee drag. The clearest and most fixable cause when trade sizes are small: a fee
-    #    that is a fixed-ish cost per round trip consumes a far larger share of a tiny
-    #    position's move than of a normal one.
+    # 1. Fee drag. Percentage fees consume returns when captured price moves are
+    #    too small relative to costs; changing notional alone does not fix that ratio.
     if fees > 0 and gross_wins > 0 and fees >= gross_wins * 0.5:
         return (
             f"The trades themselves were not the main problem: fees of {fees:.2f} came to more than "
             f"{fees / gross_wins:.1f}x everything the winners made before costs ({gross_wins:.2f}), "
-            "so position sizes were too small for the moves captured to survive the cost of trading."
+            "so the price moves captured were too small to cover the percentage trading costs. "
+            "Increasing position size alone would scale both gains and fees, not improve that ratio."
         )
     # 2. Exits filling past the stop.
     if overruns:

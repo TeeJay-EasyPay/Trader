@@ -57,7 +57,7 @@ class ReviewerCandidateTests(unittest.TestCase):
         it may not argue with."""
         body = AGENT.read_text(encoding="utf-8")
         start = body.index("def _review_candidate")
-        block = body[start:start + 2600]
+        block = body[start:].split("\ndef ", 1)[0]
         self.assertIn('"assigned_strategy": proposal.strategy_id', block)
         fixed_at = block.index("fixed_by_risk_management_not_negotiable")
         strategy_at = block.index('"assigned_strategy"')

@@ -206,9 +206,11 @@ class RejectionReviewTests(unittest.TestCase):
 
 
 class RejectionReviewRollupTests(unittest.TestCase):
+    NOW = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
     def _seed_old_review(self, db_path: Path, *, symbol: str, verdict: str, pct_change: float, days_ago: int) -> None:
         initialize_rejection_review_schema(db_path)
-        review_date = (datetime.now(timezone.utc) - timedelta(days=days_ago)).date().isoformat()
+        review_date = (self.NOW - timedelta(days=days_ago)).date().isoformat()
         with closing(connect(db_path)) as conn:
             with conn:
                 conn.execute(
@@ -229,7 +231,7 @@ class RejectionReviewRollupTests(unittest.TestCase):
             self._seed_old_review(db_path, symbol="BTC", verdict="favourable", pct_change=-0.03, days_ago=40)
             self._seed_old_review(db_path, symbol="BTC", verdict="unfavourable", pct_change=0.02, days_ago=38)
 
-            result = run_crypto_rejection_rollup(db_path)
+            result = run_crypto_rejection_rollup(db_path, now=self.NOW)
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["rows_summarized"], 2)
@@ -248,13 +250,26 @@ class RejectionReviewRollupTests(unittest.TestCase):
             initialize_foundation_schema(db_path)
             self._seed_old_review(db_path, symbol="ETH", verdict="neutral", pct_change=0.0, days_ago=5)
 
-            result = run_crypto_rejection_rollup(db_path)
+            result = run_crypto_rejection_rollup(db_path, now=self.NOW)
 
             self.assertEqual(result["status"], "no_action")
             with closing(connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 remaining = conn.execute("SELECT COUNT(*) AS n FROM CRYPTO_REJECTION_REVIEWS").fetchone()["n"]
             self.assertEqual(remaining, 1)
+
+    def test_month_boundary_produces_two_separate_summaries(self):
+        self.NOW = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_foundation_schema(db_path)
+            self._seed_old_review(db_path, symbol="BTC", verdict="favourable", pct_change=-0.03, days_ago=40)
+            self._seed_old_review(db_path, symbol="BTC", verdict="unfavourable", pct_change=0.02, days_ago=38)
+            result = run_crypto_rejection_rollup(db_path, now=self.NOW)
+            self.assertEqual(result["rows_summarized"], 2)
+            with closing(connect(db_path)) as conn:
+                rows = conn.execute("SELECT period, days_reviewed FROM CRYPTO_REJECTION_REVIEW_SUMMARIES ORDER BY period").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [("2026-07", 1), ("2026-08", 1)])
 
 
 class RejectionDigestTests(unittest.TestCase):

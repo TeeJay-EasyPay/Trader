@@ -122,8 +122,13 @@ class TradeProposal:
     philosophy_fit: float = 0.0
     intelligence: dict[str, Any] | None = None
     strategy_id: str = ""
+    reviewer_confidence: float | None = None
+    reviewer_size_fraction: float | None = None
 
     def normalized(self) -> "TradeProposal":
+        review_fraction = None if self.reviewer_size_fraction is None else float(self.reviewer_size_fraction)
+        if review_fraction is not None and not 0.0 < review_fraction <= 1.0:
+            raise ValueError("reviewer_size_fraction must be finite and greater than zero, at most one")
         return TradeProposal(
             proposal_id=self.proposal_id,
             created_at=self.created_at,
@@ -146,6 +151,8 @@ class TradeProposal:
             philosophy_fit=float(self.philosophy_fit or 0),
             intelligence=dict(self.intelligence) if isinstance(self.intelligence, dict) else None,
             strategy_id=str(self.strategy_id or "").strip(),
+            reviewer_confidence=self.reviewer_confidence,
+            reviewer_size_fraction=review_fraction,
         )
 
     def to_dict(self) -> dict[str, Any]:

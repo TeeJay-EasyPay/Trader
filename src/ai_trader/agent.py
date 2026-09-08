@@ -1066,10 +1066,11 @@ def propose_crypto_trades(
                 # generation was pure scoring arithmetic while equities got genuine LLM
                 # judgment. Runs only for candidates that already cleared every mechanical
                 # gate (so at most a couple of symbols per cycle, not one call per symbol),
-                # and can only veto or LOWER confidence, never raise it or touch
-                # price/size/stop/target -- those stay deterministic risk-management math,
-                # never model-authored. Any failure falls back to the existing deterministic
-                # proposal unchanged, matching propose_trades' per-symbol isolation.
+                # and can veto or request a fraction of the independently approved position.
+                # Price, stop and target stay deterministic; reviewer confidence is separate
+                # from research eligibility in the explicit sizing contract. Reviewer-call
+                # failures retain the existing unreviewed fallback; errors applying a
+                # returned review instead skip that candidate, as recorded below.
                 review = None
                 if reviewer is not None:
                     try:
@@ -1079,6 +1080,7 @@ def propose_crypto_trades(
                                 proposal, row,
                                 range_position=range_position,
                                 day_range=_kraken_day_range(prices, pair),
+                                min_confidence=min_confidence,
                             ),
                             context=context,
                         )
@@ -1107,6 +1109,16 @@ def propose_crypto_trades(
                         )
                         print(f"[crypto-research] symbol={symbol} stage=review outcome=failed detail={exc}", flush=True)
                         review = None
+                review_contract = (
+                    "explicit_sizing_v1" if review is not None and "size_fraction" in review
+                    else "legacy_confidence" if review is not None else "unreviewed"
+                )
+                audit.record_execution_event(
+                    proposal_id=proposal.proposal_id,
+                    event_type="ai_review_contract",
+                    payload={"symbol": symbol, "contract": review_contract,
+                             "reviewer_configured": reviewer is not None},
+                )
                 if review is not None:
                     # Phase 5, 2026-09-05: the reviewer now also judges whether the strategy
                     # assigned to this candidate actually suits this coin, and may name one it
@@ -1132,7 +1144,30 @@ def propose_crypto_trades(
                             f"better={review.get('better_suited_strategy')}",
                             flush=True,
                         )
-                    proposal = _apply_crypto_review(proposal, review)
+                    try:
+                        proposal = _apply_crypto_review(proposal, review)
+                    except Exception as exc:  # noqa: BLE001
+                        # A returned review that cannot be applied is not an unavailable
+                        # reviewer: skip this candidate, never fall back to full size.
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="agent_no_trade",
+                            payload={"symbol": symbol, "reason": "ai_review_application_failed",
+                                     "contract": review_contract, "error_type": type(exc).__name__},
+                        )
+                        if on_symbol_complete:
+                            on_symbol_complete(symbol, [])
+                        continue
+                    if proposal.reviewer_size_fraction is not None:
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="ai_review_sizing_decision",
+                            payload={"symbol": symbol, "proceed": review["proceed"],
+                                     "research_confidence": proposal.confidence_score,
+                                     "reviewer_confidence": proposal.reviewer_confidence,
+                                     "size_fraction": proposal.reviewer_size_fraction,
+                                     "review": review},
+                        )
                     if not review["proceed"]:
                         audit.record_execution_event(
                             proposal_id=proposal.proposal_id,
@@ -1214,7 +1249,8 @@ def propose_crypto_trades(
 
 def _review_candidate(proposal: TradeProposal, row: Any, *,
                       range_position: float | None = None,
-                      day_range: dict[str, Any] | None = None) -> dict[str, Any]:
+                      day_range: dict[str, Any] | None = None,
+                      min_confidence: float | None = None) -> dict[str, Any]:
     """The candidate as the reviewer sees it: real evidence plus the already-fixed
     risk-management numbers, clearly labelled as fixed so the model treats them as
     context rather than something to negotiate.
@@ -1239,6 +1275,8 @@ def _review_candidate(proposal: TradeProposal, row: Any, *,
         # "does this strategy suit THIS coin" actually needs.
         "assigned_strategy": proposal.strategy_id,
         "confidence_score": proposal.confidence_score,
+        "minimum_research_confidence": min_confidence,
+        "review_contract": "Separate proceed decision, qualitative confidence and size_fraction; research score remains unchanged.",
         "position_in_24h_range": range_position,
         "day_range": day_range,
         "scores": {
@@ -1261,15 +1299,23 @@ def _review_candidate(proposal: TradeProposal, row: Any, *,
 
 
 def _apply_crypto_review(proposal: TradeProposal, review: dict[str, Any]) -> TradeProposal:
-    """Fold a review into the proposal: real reasoning text always, and a LOWERED
-    confidence when the reviewer argued for one. Never raises confidence -- see
-    CryptoTradeReviewer's docstring for why that asymmetry is deliberate."""
+    """Keep explicit sizing separate from eligibility; preserve legacy review semantics."""
     reasoning = str(proposal.plain_english_reasoning or "")
     addition = f"\n\nAI review: {review['reasoning']}"
     if review.get("concerns"):
         addition += f" Concerns: {'; '.join(review['concerns'])}."
     confidence = proposal.confidence_score
     reviewed = review.get("confidence")
+    if "size_fraction" in review:
+        fraction = float(review["size_fraction"])
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError("Invalid reviewer size fraction")
+        addition += (
+            f" Reviewer confidence {reviewed}; research eligibility score remains {confidence:.4f}."
+            f" Requested fraction of independently approved position: {fraction:.4f}."
+        )
+        return replace(proposal, plain_english_reasoning=reasoning + addition,
+                       reviewer_confidence=reviewed, reviewer_size_fraction=fraction)
     if reviewed is not None and reviewed < confidence:
         addition += f" Confidence lowered from {confidence:.2f} to {reviewed:.2f} on this review."
         confidence = reviewed

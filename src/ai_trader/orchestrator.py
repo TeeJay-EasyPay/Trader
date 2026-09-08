@@ -336,6 +336,10 @@ class InvestmentOrchestrator:
                 )
         if selected and selected.name == "kraken":
             kraken_control = reconciliation_control(self.db_path)
+            reviewer_size_ceiling = (
+                float(allocation.get("approved_notional") or 0.0)
+                if p.reviewer_size_fraction is not None else None
+            )
             if kraken_control.get("hold_new_entries"):
                 failures.append("kraken_reconciliation_hold")
             # Founder investigation (2026-08-05/06): every Kraken order attempt was rejected by
@@ -397,6 +401,14 @@ class InvestmentOrchestrator:
                     allocation["approved_quantity"] = exchange_minimum / p.entry_price if p.entry_price > 0 else 0.0
                 else:
                     failures.append("kraken_exchange_minimum_not_tradeable_at_current_limits")
+            if reviewer_size_ceiling is not None and allocation["approved_notional"] > reviewer_size_ceiling:
+                failures.append("reviewer_reduced_size_below_kraken_minimum")
+                gate_evidence["reviewer_reduced_size_below_kraken_minimum"] = {
+                    "approved_notional": reviewer_size_ceiling,
+                    "minimum_notional": allocation["approved_notional"],
+                }
+                allocation["approved_notional"] = reviewer_size_ceiling
+                allocation["approved_quantity"] = reviewer_size_ceiling / p.entry_price if p.entry_price > 0 else 0.0
         failures = list(dict.fromkeys(failures))
         record_broker_decision(
             self.db_path,

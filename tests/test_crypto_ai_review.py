@@ -63,7 +63,7 @@ class FakeReviewer:
         return self.response
 
 
-def _run(db_path: Path, reviewer=None, min_confidence: float = 0.85):
+def _run(db_path: Path, reviewer=None, min_confidence: float = 0.85, **kwargs):
     initialize_foundation_schema(db_path)
     audit = AuditDatabase(db_path, None)
     _seed_score(db_path)
@@ -71,6 +71,7 @@ def _run(db_path: Path, reviewer=None, min_confidence: float = 0.85):
         db_path, FakeAdapter(), ["BTC"], _account(), GuardrailConfig(), audit,
         min_confidence=min_confidence, requested_notional=5.0, default_stop_loss_pct=0.02,
         reviewer=reviewer,
+        **kwargs,
     )
 
 

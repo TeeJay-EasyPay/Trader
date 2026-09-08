@@ -1,5 +1,122 @@
 # Implementation Log
 
+## 2026-09-08 — Pre-deployment hardening of the independent Kraken review
+
+Following Claude's independent review, the Founder authorised Codex to finish the cautious
+hardening approach, run the checks, then commit and deploy. This supersedes the earlier
+instruction to leave the changes local; the earlier entry below records that earlier snapshot.
+
+- Every candidate reaching the reviewer stage now records `ai_review_contract` with
+  `explicit_sizing_v1`, `legacy_confidence`, or `unreviewed`. Missing sizing still retains
+  compatibility behavior, but the selected path is now directly observable.
+- Exceptions applying a returned review now record `ai_review_application_failed` with
+  symbol, contract and exception type, complete that symbol with no proposal, and continue
+  to the next symbol. They do not fall back to unreduced size. Existing reviewer-call
+  unavailability policy is deliberately unchanged.
+- Limit-order tests clear inherited Kraken variables within each test. All 19 pass even
+  with conflicting parent settings for enabled limit entries, zero polling budget, real-order
+  mode and a tiny maximum notional. All exchange interactions in these tests remain mocked.
+- The rollup test now uses an explicit fixed date for both fixture creation and evaluation.
+  A separate regression test verifies that July/August dates produce two monthly summaries.
+  This fixes a calendar-dependent test assumption, not production rollup logic.
+- Added tests for all three contract paths and an injected application error: BTC is skipped,
+  ETH still produces a correctly reduced proposal, and the failure is recorded.
+
+The focused hardening run passed 61 tests. The first invocation encountered Windows access
+errors in pytest's shared temporary directory; rerunning with a fresh, uniquely named test
+directory resolved them without modifying permissions or production code. The earlier seven
+baseline failures were observations, not established production defects: the calendar issue
+is a fixture bug, and the limit-order tests depended on ambient configuration.
+
+Full-suite result: **1,785 passed and 21 subtests passed**, no failures, in 247.32 seconds.
+The offline shadow-expiry reproduction also passed; `git diff --check` was clean.
+
+Release checks: push the approved commit to
+the existing `master` deployment branch, then confirm API health, the corrected live scorecard
+wording, and a fresh worker heartbeat reporting the new revision. Do not force a research cycle
+or order, change live-trading interlocks, rewrite old shadows, or loosen eligibility/fee gates.
+
+## 2026-09-08 — Independent-review follow-up: explicit AI sizing and shadow expiry (local implementation)
+
+Founder-authorised after the independent Kraken review: implement the corrections and update
+this log. The primary question was why software rejected an AI-supported smaller entry,
+separately from whether the missed trade would have made money.
+
+### Production evidence behind the change
+
+At the review snapshot, 79 crypto reviews said `proceed=true` with confidence 0.50–0.60,
+but the software rejected them against the 0.70 minimum. Another 74 reviews explicitly
+declined. Fourteen candidates failed the separate fee hurdle before AI review. Kraken
+polling was completing and auto-execution was running without eligible proposals.
+
+The reviewer had been told that reducing confidence would produce a smaller position, while
+the caller used that same number to reject entry. Seventy of 119 recorded pre-review
+size-down events were already at the 0.70 floor, leaving no room for a further confidence
+reduction that remained eligible.
+
+### Implementation
+
+- `CryptoTradeReviewer` now requests an explicit positive `size_fraction` no greater than
+  one, alongside its proceed decision and qualitative confidence. Research eligibility and
+  reviewer confidence are kept separate; the model is told what each means.
+- `TradeProposal` preserves `reviewer_confidence` and `reviewer_size_fraction` through its
+  normalisation and JSON round trip. Capital allocation applies the fraction once, after
+  the existing risk/cash/position limits and research-conviction scaling, and records it.
+- The configured research minimum remains unchanged. New-contract reviews may proceed
+  despite a lower *separate reviewer assessment*, provided research qualifies and all
+  subsequent execution gates pass. This deliberately changes the old second confidence
+  veto; it is not a claim that the two scores are calibrated probabilities.
+- Explicit AI declines remain refusals. Invalid explicit sizing is declined rather than
+  silently treated as an unavailable review. Legacy reviews without a sizing field retain
+  their old behavior. Existing review-unavailability behavior is otherwise unchanged.
+- Kraken minimum-order floors may not increase a reviewed allocation. An amount below
+  the minimum produces an explicit refusal with numerical evidence and no broker submission.
+- `ai_review_sizing_decision` events retain the decision, both scores, size fraction and
+  review; allocation notes retain the amount before review. No schema migration is needed.
+- Shadow settlement no longer expires a candidate with incomplete follow-up before its
+  seven-day horizon. A deterministic, offline reproduction verified the original failure
+  and now verifies that it stays pending. Historical results were not rewritten.
+- Corrected the scorecard's claim that small position sizes caused percentage-fee losses:
+  the relevant problem is price movement relative to proportional costs. Increasing size
+  alone scales gains and costs together.
+
+### Correction to the earlier simulation interpretation
+
+The aggregate of 1,494 settled crypto shadows and −0.3864R gross expectancy is reproducible.
+However, all 1,494 lack a rejection-reason field; 1,452 join to `agent_proposal` records that
+passed AI guardrails. They may have failed later execution checks, but cannot be labelled
+as today's AI-review rejections. Most predate the current strategy, and they cover only
+130 distinct symbol-days. The explicit new rejection cohort had 20 rows, all pending.
+The earlier inference in this log that those simulations establish that current refusals
+are correct should therefore be withdrawn. Their adverse historical results remain relevant
+cautionary evidence, not proof about the current reviewer.
+
+### Validation and deployment status
+
+169 focused tests passed, including the new sizing contract, JSON persistence, final order
+quantity, retained explicit/fee/research refusals, malformed instructions, minimum-order
+protection, reviewer strategy visibility and shadow-expiry cases.
+
+The wider run returned 1,770 passed, 21 subtests passed and eight failures. One was a
+source-inspection test whose arbitrary 2,600-character window no longer reached the risk
+context after the new fields; it now inspects the whole function and passes in the focused
+rerun. The other seven failures (six Kraken limit-entry/fallback tests and one rejection
+rollup test) were reproduced unchanged against a clean archive of HEAD using the same
+Python environment: seven failed, 28 passed. They are baseline failures, not evidence that
+this patch introduced those regressions, but remain follow-up work before declaring the
+whole suite green. The full suite was not rerun after the source-inspection test correction.
+
+Next release steps: independently review this diff, investigate the baseline limit-order
+and rollup failures, then obtain approval to deploy. Verify the deployed worker revision and
+fresh review/allocation events with read-only checks. Do not force trades or lower the fee
+or research gates to demonstrate activity. Further shadow-model/provenance repairs remain
+separate work; the new expiry guard does not validate historical simulated outcomes.
+
+This change is local and has not been committed, pushed or deployed. No real order, trading
+cycle, production setting change or historical-result rewrite was performed. The original
+review and detailed release checks are in
+`architecture/KRAKEN_INDEPENDENT_REVIEW_2026-09-08.md`.
+
 ## 2026-09-04 (Option B) — a thin order book now sizes the trade down instead of refusing it
 
 Founder-directed, after working through the alternatives together. The blocker established

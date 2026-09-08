@@ -20,11 +20,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import ai_trader.broker_adapters as ba
 from ai_trader.broker_adapters import _limit_entry_price
 from ai_trader.models import OrderRequest
+
+
+@pytest.fixture(autouse=True)
+def isolated_kraken_environment(monkeypatch):
+    """These adapter unit tests must not inherit live Kraken configuration."""
+    for key in tuple(os.environ):
+        if key.startswith("KRAKEN_"):
+            monkeypatch.delenv(key)
 
 
 def request(entry_price=100.0, side="buy", quantity=0.1):
