@@ -591,6 +591,18 @@ def propose_crypto_trades(
                 (symbol,),
             ).fetchone()
             if row is None:
+                # 2026-09-08, Founder-directed: "everything being turned down needs to have a
+                # reason which is stored". This exit had only a console line, so a coin that
+                # was researched and dropped for want of a score left no trace a later
+                # question could find. It has not fired in the last two days -- every coin
+                # examined had data -- which is exactly why it was easy to miss.
+                audit.record_execution_event(
+                    proposal_id=f"no-trade-crypto-{symbol}",
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "no_research_score",
+                             "detail": "No CRYPTO_RESEARCH_SCORES row exists for this coin, so "
+                                       "there was nothing to judge it on."},
+                )
                 print(f"[crypto-research] symbol={symbol} stage=completed outcome=no_research_score", flush=True)
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
@@ -1071,6 +1083,28 @@ def propose_crypto_trades(
                             context=context,
                         )
                     except Exception as exc:  # noqa: BLE001
+                        # 2026-09-08, Founder-directed. This is the one that mattered of the
+                        # three unrecorded exits. The candidate is NOT refused here -- it
+                        # carries on with its deterministic confidence, which is the
+                        # pre-review behaviour and a deliberate choice. But it carries on
+                        # WITHOUT the qualitative check, and until now the only trace of that
+                        # was a line in the console. A trade could be proposed unreviewed and
+                        # nothing in the record would say so.
+                        #
+                        # Recorded as its own event type rather than agent_no_trade, because
+                        # it is not a refusal and filing it as one would corrupt every count
+                        # of why trades do not happen.
+                        audit.record_execution_event(
+                            proposal_id=proposal.proposal_id,
+                            event_type="ai_review_unavailable",
+                            payload={
+                                "symbol": symbol,
+                                "reason": "ai_review_unavailable",
+                                "detail": f"{type(exc).__name__}: {exc}"[:500],
+                                "consequence": "Candidate continued without a qualitative "
+                                               "review, keeping its deterministic confidence.",
+                            },
+                        )
                         print(f"[crypto-research] symbol={symbol} stage=review outcome=failed detail={exc}", flush=True)
                         review = None
                 if review is not None:
@@ -1158,6 +1192,16 @@ def propose_crypto_trades(
                 # doesn't surface crypto rows in the confidence-sorted top 50 (equity
                 # proposals dominate), so there was no cheap way to see which check actually
                 # failed. Logging the real failure list closes that gap.
+                # 2026-09-08: the failure list already reached TRADE_AUDIT on the
+                # agent_proposal event above, but nothing put it where every other refusal
+                # is read from -- so "why didn't you trade X" would have come back with four
+                # reasons out of five. Same shape as the others, so it counts alongside them.
+                audit.record_execution_event(
+                    proposal_id=proposal.proposal_id,
+                    event_type="agent_no_trade",
+                    payload={"symbol": symbol, "reason": "guardrails_failed",
+                             "failures": list(validation.failures or [])},
+                )
                 print(
                     f"[crypto-research] symbol={symbol} stage=completed outcome=guardrails_failed "
                     f"failures={validation.failures}",

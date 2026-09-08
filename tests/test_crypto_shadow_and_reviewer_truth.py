@@ -23,6 +23,7 @@ Everything here runs against a temporary database. Nothing calls a broker or a m
 """
 
 import json
+import re
 import sqlite3
 from contextlib import closing
 import sys
@@ -214,6 +215,78 @@ class AgentWiringTests(unittest.TestCase):
             block = call[: call.index("continue")] if "continue" in call else call
             self.assertNotIn("\n                continue", block[:40],
                              "the refusal moved on before it was recorded")
+
+
+class EveryExitIsRecordedTests(unittest.TestCase):
+    """Founder-directed, 2026-09-08:
+
+        "everything being turned down needs to have a reason which is stored so that if you
+         were to ask the app to analyze and look back at it, it would know what it did and why."
+
+    Measured against production first: over 7-8 September, 1,051 refusals were recorded and
+    every one carried a reason, against 1,025 coins examined -- so nothing was falling out
+    silently in practice. But reading every exit in the code rather than only the ones that had
+    fired turned up three that would have:
+
+      * no_research_score      -- a coin with no score row, dropped with nothing written
+      * guardrails_failed      -- the detail reached the audit trail but not the reasons anyone
+                                  reads back, so a look-back would have been short one reason
+      * the reviewer erroring  -- the candidate CARRIED ON UNREVIEWED and only a console line
+                                  said so
+
+    This test is the durable half. It walks the crypto research path and fails if any exit
+    reports an outcome without recording something first -- so the next one added is caught on
+    the day it is written, not on the day it costs something.
+    """
+
+    def _exits(self):
+        """Every point the crypto path announces an outcome, with what precedes it."""
+        source = AGENT.read_text(encoding="utf-8").splitlines()
+        found = []
+        for index, line in enumerate(source):
+            match = re.search(r"outcome=([a-z_]+)", line)
+            if not match or "crypto-research" not in line:
+                continue
+            # 40 lines is comfortably more than the longest exit block and comfortably less
+            # than the distance to the previous exit, so a neighbour's recording cannot be
+            # mistaken for this one's.
+            preceding = "\n".join(source[max(0, index - 40):index])
+            found.append((match.group(1), index + 1, preceding))
+        return found
+
+    def test_the_path_still_has_the_exits_we_think_it_has(self):
+        """If this drops to a handful, the scan below is passing by finding nothing."""
+        self.assertGreaterEqual(len(self._exits()), 12)
+
+    def test_every_exit_writes_down_what_it_did(self):
+        unrecorded = [
+            f"{name} (line {line})"
+            for name, line, preceding in self._exits()
+            if "record_execution_event(" not in preceding
+        ]
+        self.assertEqual(unrecorded, [], "these exits leave no trace a later question can find")
+
+    def test_the_three_that_were_missing_are_named_and_covered(self):
+        """Named individually as well as caught by the scan, so a refactor that quietly drops
+        one of them fails with the reason rather than with a count."""
+        source = AGENT.read_text(encoding="utf-8")
+        self.assertIn('"reason": "no_research_score"', source)
+        self.assertIn('"reason": "guardrails_failed"', source)
+        self.assertIn('"reason": "ai_review_unavailable"', source)
+
+    def test_a_failed_review_is_not_filed_as_a_refusal(self):
+        """It is not one -- the candidate carries on. Filing it as agent_no_trade would corrupt
+        every count of why trades do not happen."""
+        source = AGENT.read_text(encoding="utf-8")
+        block = source[source.index('event_type="ai_review_unavailable"'):]
+        self.assertNotIn("agent_no_trade", block[:400])
+
+    def test_a_failed_review_records_that_the_trade_went_unreviewed(self):
+        """The consequence is the point. "The reviewer errored" is a log line; "this candidate
+        continued without a qualitative review" is evidence."""
+        source = AGENT.read_text(encoding="utf-8")
+        block = source[source.index('event_type="ai_review_unavailable"'):]
+        self.assertIn("without a qualitative", block[:900])
 
 
 class TradeCountLabelTests(unittest.TestCase):
