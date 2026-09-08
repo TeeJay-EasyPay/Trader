@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .shadow_outcomes import shadow_strategy_records, shadow_symbol_records
+from .expectancy import expectancy_summary
 from .strategy_performance import strategy_records, strategy_symbol_records
 
 # One cycle's worth. Long enough that a research run over 19 coins reads the outcome tables
@@ -64,17 +65,31 @@ class StrategyEvidence:
     overall_expectancy_r: float | None = None
     overall_basis: str | None = None
     notes: list[str] = field(default_factory=list)
+    # The count the R average is genuinely over. 2026-09-08: the line used to pair an average
+    # computed from 13 trades with a headcount of 22, because trades that risked pennies carry
+    # no R but were still counted. Defaults to 0, meaning "use the plain sample" -- so an older
+    # caller that has not been updated reads exactly as it did before.
+    coin_r_sample: int = 0
+    overall_r_sample: int = 0
 
     def as_line(self) -> str:
-        """One row of the table the model reads. Deliberately terse."""
+        """One row of the table the model reads. Deliberately terse.
+
+        The count beside each average is the number of trades that average is over, not the
+        number of trades linked to the strategy. Those differ whenever a trade was too small
+        to have a meaningful R, and quoting the larger one made a 13-trade finding look like a
+        22-trade one.
+        """
+        coin_over = self.coin_r_sample or self.coin_sample
+        overall_over = self.overall_r_sample or self.overall_sample
         if self.coin_sample:
-            here = f"on this coin {self.coin_expectancy_r:+.2f}R over {self.coin_sample} ({self.coin_basis})"
-            if self.coin_sample < THIN_SAMPLE:
+            here = f"on this coin {self.coin_expectancy_r:+.2f}R over {coin_over} ({self.coin_basis})"
+            if coin_over < THIN_SAMPLE:
                 here += " [thin]"
         else:
             here = "no record on this coin"
         if self.overall_sample:
-            everywhere = f"overall {self.overall_expectancy_r:+.2f}R over {self.overall_sample} ({self.overall_basis})"
+            everywhere = f"overall {self.overall_expectancy_r:+.2f}R over {overall_over} ({self.overall_basis})"
         else:
             everywhere = "no record anywhere"
         return f"- {self.strategy_id}: {here}; {everywhere}"
@@ -96,6 +111,46 @@ def _sources(db_path: Path) -> dict[str, Any]:
     return sources
 
 
+def trading_cost_note(db_path: Path, *, broker: str = "kraken") -> str | None:
+    """One sentence telling the reviewer what trading has been COSTING, not just returning.
+
+    2026-09-08, and the reason it exists is worth stating plainly. Measured directly against
+    production: the 27 closed Kraken trades made +GBP 0.17 before fees and -GBP 5.41 after
+    them. Every fill was charged 0.800% by Kraken, entry and exit alike -- a 1.60% round trip
+    against a 1.5% stop, so a trade was being asked to predict a move smaller than the cost of
+    making it. The reviewer saw only the after-fees number, concluded the approach loses money,
+    and marked down every new candidate on the strength of it. It was being told the truth
+    about the outcome and nothing at all about the cause.
+
+    Returns None when there is nothing measured to say. Silence is correct there: inventing a
+    cost figure would be the same mistake in the other direction.
+    """
+
+    try:
+        summary = expectancy_summary(db_path, broker=broker)
+    except Exception:  # noqa: BLE001 - context is additive; its failure must not block a trade
+        return None
+    fee_r = summary.get("average_fee_cost_r")
+    expectancy_r = summary.get("expectancy_r")
+    if fee_r is None or fee_r <= 0:
+        return None
+    note = (
+        f"COST CONTEXT, and read it before judging the records below: fees alone have cost "
+        f"{fee_r:.2f}R on the average closed trade. A strategy showing a negative R here is "
+        f"therefore not necessarily selecting badly -- subtract the fee and you have what the "
+        f"selection actually achieved."
+    )
+    if expectancy_r is not None:
+        before_costs = round(expectancy_r + fee_r, 2)
+        note += (
+            f" On the overall record that is {expectancy_r:+.2f}R after costs and about "
+            f"{before_costs:+.2f}R before them. Judge the setup in front of you on its own "
+            f"merits and on whether its target clears the round trip, not on a past loss that "
+            f"was mostly toll."
+        )
+    return note
+
+
 def clear_cache() -> None:
     """For tests, and for a caller that has just changed the outcome record."""
     _cache.clear()
@@ -114,9 +169,11 @@ def strategy_evidence_for(db_path: Path, *, symbol: str, candidates: list[str]) 
     for strategy_id in candidates:
         notes: list[str] = []
         coin_sample, coin_r, coin_basis = 0, None, None
+        coin_r_sample = overall_r_sample = 0
         real_coin = sources["real_by_coin"].get((strategy_id, coin))
         if real_coin and real_coin.expectancy_r is not None:
             coin_sample, coin_r, coin_basis = real_coin.sample_size, real_coin.expectancy_r, "real_money"
+            coin_r_sample = getattr(real_coin, "r_sample_size", 0)
         else:
             shadow_coin = sources["shadow_by_coin"].get((strategy_id, coin))
             if shadow_coin:
@@ -128,6 +185,7 @@ def strategy_evidence_for(db_path: Path, *, symbol: str, candidates: list[str]) 
         real_all = sources["real_overall"].get(strategy_id)
         if real_all and real_all.expectancy_r is not None:
             overall_sample, overall_r, overall_basis = real_all.sample_size, real_all.expectancy_r, "real_money"
+            overall_r_sample = getattr(real_all, "r_sample_size", 0)
         else:
             shadow_all = sources["shadow_overall"].get(strategy_id)
             if shadow_all:
@@ -143,6 +201,7 @@ def strategy_evidence_for(db_path: Path, *, symbol: str, candidates: list[str]) 
             strategy_id=strategy_id, coin_sample=coin_sample, coin_expectancy_r=coin_r,
             coin_basis=coin_basis, overall_sample=overall_sample,
             overall_expectancy_r=overall_r, overall_basis=overall_basis, notes=notes,
+            coin_r_sample=coin_r_sample, overall_r_sample=overall_r_sample,
         ))
 
     # Best on this coin first; anything with no coin evidence sorts last but is still shown.
@@ -150,8 +209,18 @@ def strategy_evidence_for(db_path: Path, *, symbol: str, candidates: list[str]) 
     return evidence
 
 
-def serialize_strategy_evidence(evidence: list[StrategyEvidence]) -> str:
-    """The prompt block. Compact by design -- this rides in ~163 calls a day."""
+def serialize_strategy_evidence(
+    evidence: list[StrategyEvidence], *, cost_note: str | None = None
+) -> str:
+    """The prompt block. Compact by design -- this rides in ~163 calls a day.
+
+    `cost_note` says what trading has been COSTING, alongside what it has been returning.
+    2026-09-08, and it is the correction that matters most here: measured against production,
+    the 27 closed Kraken trades made +GBP 0.17 before fees and lost GBP 5.41 after them. The
+    reviewer was seeing only the after-fees figure, concluding the approach loses money, and
+    marking every new candidate down for it. "Flat before costs, losing after" is a completely
+    different instruction from "losing", and only one of them is true.
+    """
     if not evidence:
         return (
             "STRATEGY EVIDENCE UNAVAILABLE: no closed trades and no settled shadow trades exist "
@@ -171,6 +240,8 @@ def serialize_strategy_evidence(evidence: list[StrategyEvidence]) -> str:
         "closed trades; shadow_simulation is what would have happened to candidates it "
         "recorded but did not take -- informative, but not a trading record.",
     ]
+    if cost_note:
+        lines.append(cost_note)
     lines.extend(item.as_line() for item in evidence)
     flagged = [e for e in evidence if e.notes]
     if flagged:

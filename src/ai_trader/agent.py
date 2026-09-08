@@ -19,6 +19,7 @@ from .proposal_context import build_proposal_context
 from .liquidity_map import liquidity_map_for_pair
 from .sprint6 import _ai_managed_symbols
 from .symbol_track_record import symbol_track_record
+from .crypto_shadow import record_crypto_rejection, rejection_evidence
 from .market_intelligence_platform import load_recent_observations_batch
 from .volatility_stops import volatility_stop_pct
 from .technical_discretion import (
@@ -779,6 +780,16 @@ def propose_crypto_trades(
                     payload={"symbol": symbol, "reason": "fee_hurdle_not_cleared",
                              "round_trip_fee_pct": round_trip_fee_pct},
                 )
+                # 2026-09-08: keep the refusal as a shadow trade, so in a week we know whether
+                # refusing was right. See crypto_shadow.py -- nothing has been recorded since
+                # 4 September and the whole threshold argument is unanswerable without it.
+                record_crypto_rejection(
+                    db_path, symbol=symbol, reason="fee_hurdle_not_cleared",
+                    entry_price=price, stop_loss=stop_loss, take_profit=take_profit,
+                    confidence=confidence, notional=sized_notional,
+                    evidence=rejection_evidence(round_trip_fee_pct=round_trip_fee_pct,
+                                                min_net_reward_risk=min_net_reward_risk),
+                )
                 print(
                     f"[crypto-research] symbol={symbol} stage=completed outcome=fee_hurdle_not_cleared "
                     f"fee_pct={round_trip_fee_pct:.4f}",
@@ -804,6 +815,15 @@ def propose_crypto_trades(
                         "reason": "own_track_record_negative",
                         "track_record": track_record.to_dict(),
                     },
+                )
+                # The most important refusal to keep evidence on: this is the one that can
+                # become a doom loop, because it only lifts when a coin wins and a coin cannot
+                # win while it is being stood aside from.
+                record_crypto_rejection(
+                    db_path, symbol=symbol, reason="own_track_record_negative",
+                    entry_price=price, stop_loss=stop_loss, take_profit=take_profit,
+                    confidence=confidence,
+                    evidence=rejection_evidence(track_record=track_record.to_dict()),
                 )
                 print(
                     f"[crypto-research] symbol={symbol} stage=completed outcome=own_track_record_negative "
@@ -835,6 +855,12 @@ def propose_crypto_trades(
                             "reason": "liquidity_structure_unfavourable",
                             "liquidity_map": liquidity.to_dict(),
                         },
+                    )
+                    record_crypto_rejection(
+                        db_path, symbol=symbol, reason="liquidity_structure_unfavourable",
+                        entry_price=price, stop_loss=stop_loss, take_profit=take_profit,
+                        confidence=confidence,
+                        evidence=rejection_evidence(liquidity=liquidity.to_dict()),
                     )
                     print(
                         f"[crypto-research] symbol={symbol} stage=completed outcome=liquidity_structure_unfavourable "
@@ -1079,6 +1105,17 @@ def propose_crypto_trades(
                             event_type="agent_no_trade",
                             payload={"symbol": symbol, "reason": "ai_review_declined", "review": review},
                         )
+                        # 83 of 7 September's 271 refusals came from the reviewer. Whether that
+                        # caution is earning its keep is exactly what a shadow record answers.
+                        record_crypto_rejection(
+                            db_path, symbol=symbol, reason="ai_review_declined",
+                            entry_price=proposal.entry_price, stop_loss=proposal.stop_loss,
+                            take_profit=proposal.take_profit,
+                            confidence=proposal.confidence_score,
+                            quantity=proposal.position_size,
+                            argument_against=str(review.get("reasoning") or "")[:2000] or None,
+                            evidence=rejection_evidence(reviewer_confidence=review.get("confidence")),
+                        )
                         print(f"[crypto-research] symbol={symbol} stage=completed outcome=ai_review_declined", flush=True)
                         if on_symbol_complete:
                             on_symbol_complete(symbol, [])
@@ -1088,6 +1125,21 @@ def propose_crypto_trades(
                             proposal_id=proposal.proposal_id,
                             event_type="agent_no_trade",
                             payload={"symbol": symbol, "reason": "ai_review_lowered_confidence_below_minimum", "review": review},
+                        )
+                        # The near misses -- FIL was refused on 0.58 against a 0.70 bar with the
+                        # reviewer saying proceed. If these would have won, that is the finding.
+                        record_crypto_rejection(
+                            db_path, symbol=symbol,
+                            reason="ai_review_lowered_confidence_below_minimum",
+                            entry_price=proposal.entry_price, stop_loss=proposal.stop_loss,
+                            take_profit=proposal.take_profit,
+                            confidence=proposal.confidence_score,
+                            quantity=proposal.position_size,
+                            argument_against=str(review.get("reasoning") or "")[:2000] or None,
+                            evidence=rejection_evidence(
+                                reviewer_confidence=review.get("confidence"),
+                                minimum_required=min_confidence,
+                            ),
                         )
                         print(f"[crypto-research] symbol={symbol} stage=completed outcome=ai_review_lowered_confidence", flush=True)
                         if on_symbol_complete:

@@ -76,11 +76,19 @@ class StrategyRecord:
     expectancy_r: float | None
     net_profit_loss: float
     verdict: str          # "insufficient_evidence" | "provisional" | "confident"
+    # How many trades the R average is actually over. NOT the same as sample_size, and the
+    # difference is not cosmetic. 2026-09-08, found in the standup: the crypto reviewer was
+    # being told "-1.35R over 22 trades" when the average was over 13 -- the other nine had
+    # risked pennies and contribute no R at all (see MINIMUM_RISK_FOR_R). A real average
+    # wearing the wrong headcount reads as a much stronger finding than it is, and that
+    # sentence was being quoted into every refusal.
+    r_sample_size: int = 0
 
     def to_statistics(self) -> dict[str, Any]:
         """The shape `_strategy_profile` expects, so this can drop straight in."""
         return {
             "sample_size": self.sample_size,
+            "r_sample_size": self.r_sample_size,
             "win_rate": self.win_rate,
             "average_r": self.average_r,
             "expectancy_r": self.expectancy_r,
@@ -208,6 +216,7 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
             expectancy_r=round(sum(r_values) / len(r_values), 4) if r_values and sample >= MINIMUM_SAMPLE else None,
             net_profit_loss=net,
             verdict=verdict,
+            r_sample_size=len(r_values),
         )
     return records
 

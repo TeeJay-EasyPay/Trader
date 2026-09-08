@@ -29,7 +29,11 @@ from .database import connect
 from .decision_inputs import is_wired
 from .experience_engine import find_historical_analogues
 from .knowledge_base import record_knowledge_gap, relevant_excerpts
-from .strategy_scoreboard import serialize_strategy_evidence, strategy_evidence_for
+from .strategy_scoreboard import (
+    serialize_strategy_evidence,
+    strategy_evidence_for,
+    trading_cost_note,
+)
 from .trading_intelligence import candidate_strategy_ids_for, initialize_trading_intelligence_schema
 
 
@@ -314,7 +318,12 @@ def _serialize_strategy_evidence(db_path: Path, *, symbol: str, asset_type: str)
         evidence = strategy_evidence_for(
             db_path, symbol=symbol, candidates=candidate_strategy_ids_for(asset_type)
         )
-        return serialize_strategy_evidence(evidence)
+        # What the record cost as well as what it returned. Crypto only for now: the fee
+        # figure is measured per broker, and Kraken's 1.6% round trip is the one that has
+        # been swamping the result. Handing an Alpaca candidate Kraken's fee would be the
+        # same error this fixes, pointed the other way.
+        cost_note = trading_cost_note(db_path) if str(asset_type).lower() == "crypto" else None
+        return serialize_strategy_evidence(evidence, cost_note=cost_note)
     except Exception:  # noqa: BLE001
         return (
             "STRATEGY EVIDENCE UNAVAILABLE: the per-strategy record could not be read. Treat "
