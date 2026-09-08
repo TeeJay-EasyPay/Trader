@@ -4523,3 +4523,154 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   live on 7c794dc3.
 - No broker permission, risk limit, allocation limit, stop, target or confidence
   threshold was changed other than the removal described above.
+
+## 2026-09-08 - Standup made usable; every refusal recorded; stops widened; two months of Alpaca outcomes recovered
+
+- Five changes, all Founder-directed, all verified against production Postgres rather
+  than against tests alone. Read directly from the database this session for the first
+  time (psycopg installed locally, `AUDIT_DATABASE_URL`), which is how most of the
+  findings below were established and is far cheaper than asking the in-app models.
+
+### The standup screen could not hold a conversation
+
+- Founder-reported with a screenshot: "after 2 messages or less you provide a message
+  saying 'the rest of that exchange did not get through'... does it mean the conversation
+  has ended?" It meant the app gave up. `TURN_TIMEOUT_MS` was 120000; his own server logs
+  showed Claude turns of 1m 31s, 1m 57s and 4m 06s, because the turn spends up to twelve
+  lookups checking things before answering.
+- The turn now runs in the background (`standup_turns.py`, in memory, deliberately not the
+  database - polling five times a minute would undo the week's egress work) and the app
+  polls `/standup/turn`. No wait can end a conversation.
+- The wait now says what is happening: "Claude is reading the code - lookup 6 of 12 - 1m
+  20s". Confirmed live on the emulator against production: "2 of 12 lookups done - 10s"
+  progressing to a real answer with real row counts at 9.3p.
+- Also reported: "the app does not speak and the conversation tends to just stop". Both
+  true and both omissions rather than faults - Ask has spoken replies and a self-reopening
+  microphone; Standup was given a microphone on the 7th and none of the half that answers
+  back. `useSpeaker.js` adds it, queued rather than concatenated because two replies joined
+  exceed the 700-character spoken cap and the second speaker would vanish.
+- A lost turn now keeps the next-speaker pointer and offers "Carry on" instead of ending
+  the exchange.
+- NOT verified: the speaking half and the microphone reopening. The emulator runs
+  `-no-audio` and has no microphone, so only the Founder's own device can prove it.
+
+### Every refusal now leaves a reason
+
+- The trading AI raised it in the standup and was right: nothing had been written to
+  `SHADOW_TRADES` since 2026-09-04 23:40 while 271 candidates were refused on the 7th
+  alone. Shadow recording lived only in the research service; the crypto path is a
+  different module and never had any.
+- `crypto_shadow.py` records a refusal at each of the five points that has a tradeable
+  shape, with the reason on the row - the useful later question is not "did refusing work"
+  but "did refusing FOR THIS REASON work". One row per symbol per reason per day, not one
+  per cycle, for the same egress reason as above.
+- Confirmed live 13:25 UTC: first cycle recorded three refusals across three different
+  reasons; fourteen by mid-afternoon. Ten of the first thirteen came from the AI reviewer,
+  including ADA aiming at 4.9x its risk and DOT refused on liquidity at 0.907 confidence.
+- Production check on whether anything was escaping unrecorded: 7-8 September carried 1,051
+  no-trade events, every one with a reason, against 1,025 coins examined. Nothing was
+  falling out silently in practice. Reading every exit rather than the ones that had fired
+  found three that would have: `no_research_score` (nothing written at all),
+  `guardrails_failed` (in the audit trail but not where reasons are read from), and the AI
+  reviewer erroring - which does NOT refuse the candidate, it carries on UNREVIEWED, and
+  only a console line said so. All three now record; the reviewer failure is filed under its
+  own event type because counting it as a refusal would corrupt every no-trade tally.
+- A test now walks the crypto path and fails if any exit announces an outcome without
+  recording first. Verified by breaking an exit on purpose rather than trusting a pass.
+
+### The reviewer was being shown half the truth
+
+- Measured on production: the 27 closed Kraken trades made +GBP 0.17 before fees and lost
+  GBP 5.41 after them. Every fill was charged exactly 0.800% by Kraken, entry and exit, so
+  1.60% round trip against a 1.5% stop - a trade being asked to predict a move smaller than
+  the cost of making it. The reviewer saw only the after-fees figure and marked down every
+  new candidate for it.
+- The prompt now carries the fee drag and the before-costs figure (-1.34R after, about
+  -0.37R before), and says plainly that the rate is the account's Kraken tier and not
+  something to solve - Founder-directed after checking his own account: "tell it straight
+  that the rate is the rate in Kraken."
+- Fixed a real label defect: `sample_size` counted every linked trade while `expectancy_r`
+  averaged only those with usable risk, and the prompt printed one beside the other. "-1.35R
+  over 22 trades" was a 13-trade average. `r_sample_size` carries the honest count, and the
+  thin-sample marker is judged on it too.
+
+### The agreed 5% stop had never been the working number
+
+- Founder: "We already talked about this. We talked about a five percent stop that should
+  already be there." It was agreed and it was not there: 5% was only ever a CEILING. The
+  working number was 0.6 x ATR floored at 1.5%, so the ceiling was never touched and every
+  closed trade in the record sits at 1.5% or 2.0%.
+- Raised to 1.0 x ATR - one ordinary day rather than half of one - on the NOISE argument,
+  not the fee argument the Founder correctly rejected earlier. It does not become that
+  mistake because the target is a multiple of the stop: widen one and the prize widens with
+  it, leaving reward-to-risk untouched. A test now asserts exactly that.
+- Ceiling 5% -> 8% in all four places that hold it (`volatility_stops`, the config default,
+  the dataclass default, `render.yaml`) and set explicitly on both Render services.
+  Whichever copy is smallest wins silently - the trap that locked out every Kraken candidate
+  on 2026-08-16.
+- Confirmed live 15:28 UTC: ALGO at a 5.27% stop and 10.54% target, where it would have had
+  about 3.2%. Fee drag falls from ~1.06R to ~0.30R.
+- Discovered while doing this: 30 of the 60 test files are pytest-style and are NEVER
+  executed by `python -m unittest discover`, including this file's own guard against
+  widening the multiplier for fee reasons. It caught the change on the first run once
+  actually invoked. Correct command is
+  `PYTHONPATH=src python -m pytest tests -q -p no:cacheprovider`.
+
+### Alpaca's finished trades were being thrown away
+
+- Founder to the trading AI: "How do you think you've been doing with regards to the Alpaca
+  paper trading? Are you learning?" `PERFORMANCE_ATTRIBUTION` - the closed-trade table the
+  learning loop reads - held 27 rows, every one Kraken. Not one Alpaca row had ever existed,
+  while Alpaca had been trading since 2 July across 21 shares.
+- Cause: Kraken has had a reconciliation step from the start; Alpaca never got one, because
+  its exits are bracket legs resting on Alpaca's own book rather than in our exit loop. And
+  Alpaca never reports realised P&L (all 38 exits ever seen came back null, per the
+  2026-08-17 note), so it must be computed from the two fill prices.
+- The first attempt was wrong and the account check caught it. Pairing our own
+  `LOGICAL_TRADE_FILLS` produced 16 trades and twelve sells with no purchase behind them,
+  and the identity missed by $493 against an account that had moved $45 - the buys were
+  never written to our ledger. MDT was bought on 1 September and sold on the 2nd with no
+  record here at all. `BROKER_TRADE_HISTORY` is Alpaca's own activity feed and is complete.
+- The trap that would have produced confident nonsense: Alpaca reports each fill as an
+  INCREMENT and the real order id lives only in the activity payload. AAPL on 2 July is
+  4+152+107+53+9+6+1+1 = 333 shares, not 666. The pairing is therefore pure and separately
+  tested rather than trusted.
+- Result: 49 finished trades recovered back to 2 July, every sell paired, zero unmatched,
+  +$1,788.71 realised, 15 winners, average hold 46.8 hours.
+- Worth the Founder's attention: that total is carried entirely by one AAPL trade on 2 July
+  (+$2,215.68). The other 48 trades sum to about -$427. A 31% win rate carried by a single
+  position is not a track record, and the learning loop should be read that way.
+- The check the trading AI insisted on and was right to insist on - account-value change
+  against realised P&L PLUS the change in unrealised, not realised alone. Against the
+  written rows: account -52.12, realised +569.35, unrealised -618.79, unexplained -2.68.
+  Realised alone would have looked six hundred dollars wrong on completely correct work.
+- Runs every broker poll, idempotent on broker + symbol + closing time. The first write was
+  performed from the terminal against production; the scheduled path is deployed but
+  unproven until the next Alpaca position closes, and that is worth confirming tomorrow.
+- Exit reasons are recorded as unknown rather than invented. Those exits fired on Alpaca's
+  book and nothing here saw what tripped them; a constant string is what taught the Kraken
+  learning loop nothing for weeks until 2026-08-27.
+
+### The finding that outranks all of the above
+
+- Across 1,494 settled shadow trades: 1,117 stops, 238 targets, 139 expiries. Strip fees out
+  entirely and gross expectancy is still -0.39R. A 2% stop against a 4.2% target needs a
+  ~33% hit rate to break even; it is getting 16%.
+- These are overwhelmingly candidates the system REFUSED, so the refusals have been correct.
+  The caution has been protecting the account, not costing it - the opposite of what all
+  three participants assumed at the start of the day.
+- The in-app Claude reached this itself, tested its own earlier hourly-candle recommendation
+  (only 9 of 1,117 stop-outs were ambiguous, worth 0.02R) and withdrew it. That item was
+  therefore not built.
+- Implication: the binding constraint is the quality of the ideas, not the thresholds, not
+  the fees, and not the stop distance. Recorded here rather than acted on.
+
+- Full suite under pytest: 1,744 pass, 21 subtests, plus 10 pre-existing failures verified
+  against a clean tree (7 need the `anthropic` package, 1 rejection-review rollup, 2
+  cli-startup fixture errors). 79 tests are new today.
+- No broker permission, risk limit, allocation limit, confidence threshold or governance gate
+  was changed. The stop distance and its ceiling were changed as described above, on the
+  Founder's explicit instruction. The 0.70 confidence bar was deliberately left alone, agreed
+  with the trading AI, until the shadow record has produced a week of evidence.
+- Deployed and live on both Render services: 4507d4ee, 6ccb24f9, aa7862ab, 890cb39e,
+  b21a0ff3. Mobile published over the air to both `preview` and `hosted-preview`.
