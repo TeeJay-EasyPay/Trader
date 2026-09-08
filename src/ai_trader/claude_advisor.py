@@ -26,7 +26,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .evidence_tools import TOOL_SPECS, run_tool
 
@@ -235,6 +235,7 @@ def ask_claude(
     db_path: Path | None = None,
     max_iterations: int = MAX_TOOL_ITERATIONS,
     max_cost_usd: float | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """One Claude turn, with tool use resolved before returning.
 
@@ -246,6 +247,12 @@ def ask_claude(
     Returns the text, plus the tool calls made. The tool calls are returned rather than only
     logged so the Founder can see WHAT WAS CHECKED, which is the difference between trusting the
     answer and being able to audit it.
+
+    `on_progress` is called as the turn goes: which stage it is at, how many lookups it has
+    spent, and what it last reached for. 2026-09-08, Founder-reported -- a turn that takes two
+    to four minutes behind a motionless spinner is indistinguishable from a hang, and he stopped
+    one that was working. Saying "reading the code, lookup 6 of 12" costs nothing and is the
+    difference between waiting and giving up.
     """
 
     if not is_configured():
@@ -271,6 +278,17 @@ def ask_claude(
     ceiling = float(max_cost_usd if max_cost_usd is not None else MAX_TURN_COST_USD)
     stopped_on_cost = False
 
+    def _progress(**update: Any) -> None:
+        # Never allowed to break the turn it is describing. A progress line is a courtesy; the
+        # answer is what he is paying for.
+        if on_progress is None:
+            return
+        try:
+            on_progress({"lookups": len(tool_calls), "max_lookups": max(1, int(max_iterations)),
+                         **update})
+        except Exception:  # noqa: BLE001
+            logger.debug("Progress callback failed.", exc_info=True)
+
     def _spent() -> dict[str, Any]:
         """What this turn has cost so far, in the shape the app and the tests both read."""
         return {
@@ -282,6 +300,7 @@ def ask_claude(
         }
 
     for iteration in range(max(1, int(max_iterations))):
+        _progress(stage="thinking")
         try:
             response = client.messages.create(
                 model=MODEL,
@@ -342,6 +361,7 @@ def ask_claude(
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            _progress(stage="looking", last_tool=block.name)
             outcome = run_tool(block.name, dict(block.input or {}))
             tool_calls.append({"tool": block.name, "input": dict(block.input or {}),
                                "status": outcome.get("status")})
@@ -366,6 +386,7 @@ def ask_claude(
     # offered, asking for the best answer from what was found. The model cannot request more
     # evidence, so it must either answer or say plainly what is still missing -- and either of
     # those is worth having.
+    _progress(stage="summarising")
     history.append({
         "role": "user",
         "content": (

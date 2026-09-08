@@ -330,6 +330,20 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   standupStartText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
+  // Picking up an exchange that was cut off mid-way. 2026-09-08: a lost turn used to end the
+  // conversation because the app forgot whose turn was next. Outlined rather than filled -- it
+  // is an offer, not the main thing to do, and the main thing is still to say something.
+  standupResume: {
+    marginTop: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1f6feb',
+    backgroundColor: '#eef4ff',
+    alignItems: 'center',
+  },
+  standupResumeText: { color: '#1f3f75', fontWeight: '600', fontSize: 14 },
   standupEnd: {
     marginTop: 10,
     paddingVertical: 12,

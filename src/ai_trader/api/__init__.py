@@ -90,6 +90,7 @@ from ..standup import (
     should_reply_to_peer,
     transcript_for,
 )
+from ..standup_turns import start_turn as start_standup_turn, turn_state as standup_turn_state
 from ..decision_inputs import startup_report
 from ..decline_reasons import recent_decline_reasons
 from ..intelligence import InvestmentIntelligenceDatabase
@@ -892,6 +893,11 @@ class LocalApiService:
             return 200, self.recent_standup_actions(
                 limit=_int_or_default(_first(query, "limit"), 10)
             )
+        if path == "/standup/turn":
+            # How a background turn is going: who is working, how far in, and the answer once
+            # there is one. Polled every couple of seconds, so it must stay cheap -- it reads
+            # memory and touches no database.
+            return 200, standup_turn_state(_first(query, "turn_id") or "")
         if path == "/standup/history":
             # 2026-09-07. Without this, reopening the Standup screen shows an empty card until
             # you ask something new -- the exact complaint the Founder made about Ask on
@@ -1059,6 +1065,16 @@ class LocalApiService:
             # /ask-ai-trader rather than a mode on it -- that endpoint carries the voice-action
             # detector which can start a real trading cycle, and a standup must never be able
             # to place a trade by being phrased unluckily.
+            #
+            # 2026-09-08, Founder-reported: "after 2 messages or less you provide a message
+            # saying 'the rest of that exchange did not get through'". A Claude turn goes out
+            # and checks things, which takes 90 seconds to four minutes; the app gave up at two.
+            # So the app now asks for the turn to run in the BACKGROUND and polls
+            # /standup/turn for it. The synchronous path is kept for tests and scripts, where
+            # waiting is exactly what the caller wants.
+            if bool(body.get("background")):
+                turn_id = start_standup_turn(lambda report: self.run_standup_turn(body, report))
+                return 200, {"status": "started", "turn_id": turn_id}
             return 200, self.run_standup_turn(body)
         if path == "/ask-ai-trader":
             answer = self.ask_ai_trader(body)
@@ -1415,6 +1431,10 @@ class LocalApiService:
         it can answer with numbers.
         """
 
+        if report:
+            # The trader has no lookups to count -- it reasons over the evidence it is handed --
+            # so the only honest progress it can report is that it is working.
+            report({"speaker": STANDUP_TRADER, "stage": "thinking"})
         inventory = input_inventory(self.settings.db_path)
         if not self.settings.openai_api_key:
             return record_self_assessment(
@@ -1478,7 +1498,8 @@ class LocalApiService:
         ]
         return {"conversation_id": conversation_id, "turns": turns[-capped:]}
 
-    def _trader_turn(self, history: list[dict[str, Any]], question: str) -> dict[str, Any]:
+    def _trader_turn(self, history: list[dict[str, Any]], question: str,
+                     report: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         """The trading AI's contribution.
 
         READ-ONLY BY CONSTRUCTION: this goes straight to the explainer and never through
@@ -1501,7 +1522,8 @@ class LocalApiService:
         return {"status": "answered", "text": str(answer or "").strip(),
                 "model": self.settings.openai_reasoning_model}
 
-    def _claude_turn(self, history: list[dict[str, Any]], question: str) -> dict[str, Any]:
+    def _claude_turn(self, history: list[dict[str, Any]], question: str,
+                     report: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         """Claude's contribution, with the read tools.
 
         The asymmetry with the trader is deliberate and worth stating: Claude can search the
@@ -1515,14 +1537,21 @@ class LocalApiService:
             return {"status": "not_configured",
                     "text": "Claude cannot answer: ANTHROPIC_API_KEY is not set on this deployment."}
         messages = transcript_for(STANDUP_CLAUDE, history + [{"speaker": "founder", "text": question}])
-        result = ask_claude(messages, db_path=self.settings.db_path)
+        # Every lookup is reported as it happens. 2026-09-08: Claude's turns run 90 seconds to
+        # four minutes because it is out checking things, and behind a still spinner that is
+        # indistinguishable from a hang.
+        result = ask_claude(
+            messages, db_path=self.settings.db_path,
+            on_progress=(lambda update: report({"speaker": STANDUP_CLAUDE, **update})) if report else None,
+        )
         return {"status": result.get("status"), "text": result.get("answer") or "",
                 "model": result.get("model"), "tool_calls": result.get("tool_calls") or [],
                 # Passed through so the Founder sees the cost of the answer next to the answer.
                 # He had to read the first $5.29 off the Anthropic console the morning after.
                 "usage": result.get("usage") or {}}
 
-    def run_standup_turn(self, body: dict[str, Any]) -> dict[str, Any]:
+    def run_standup_turn(self, body: dict[str, Any],
+                         report: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
         """One exchange: the Founder speaks, whoever is addressed answers, the peer may reply.
 
         2026-09-07, Founder-directed. Modes: "claude" and "trader" are one-to-one; "both" is the
@@ -1618,7 +1647,14 @@ class LocalApiService:
         speakers = list(queue)
 
         def _speak(who: str, prompt: str) -> bool:
-            turn = self._trader_turn(history, prompt) if who == STANDUP_TRADER else self._claude_turn(history, prompt)
+            if report:
+                report({"speaker": who, "stage": "starting"})
+            # Passed only when there is one to pass. A synchronous caller -- every test, and any
+            # script -- has no reporter, and the participants are routinely substituted in tests
+            # by stand-ins that take exactly the two arguments the job needs.
+            watching = {"report": report} if report else {}
+            turn = (self._trader_turn(history, prompt, **watching) if who == STANDUP_TRADER
+                    else self._claude_turn(history, prompt, **watching))
             text = str(turn.get("text") or "").strip()
             if not text:
                 return False

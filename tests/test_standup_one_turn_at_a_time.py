@@ -214,10 +214,19 @@ class StaleReplyTests(unittest.TestCase):
 
     def test_the_wait_says_who_and_for_how_long(self):
         """"there was the circular animation on the send button that just kept going, and I
-        never got anything back." A spinner cannot be told apart from a hang."""
+        never got anything back." A spinner cannot be told apart from a hang.
+
+        The wording moved out to lib/standupTurn.progressLine on 2026-09-08, once the turn was
+        watched rather than waited on -- it can now say which lookup Claude is on, which the
+        old line could not know. Asserted on the screen USING it rather than on the function
+        living here, so the test survives the wording moving again and still fails if the
+        screen goes back to a bare spinner. The wording itself is exercised for real in
+        test_standup_background_turn.
+        """
         source = self._screen()
-        self.assertIn("function waitingLine", source)
-        self.assertIn("is thinking", source)
+        self.assertIn("progressLine", source)
+        self.assertIn("setStatusLine(progressLine", source,
+                      "the status line must be driven by it, not merely imported")
 
     def test_transcribing_counts_up_rather_than_sitting_still(self):
         hook = (REPO / "mobile" / "lib" / "useVoiceCapture.js").read_text(encoding="utf-8")
