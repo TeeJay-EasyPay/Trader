@@ -80,7 +80,10 @@ services:
         # 1.5% to 2%. Corrected to match reality.
         value: "0.015"
       - key: CRYPTO_MAX_STOP_LOSS_PCT
-        value: "0.05"
+        # 2026-09-08: 0.08, matching volatility_stops.MAXIMUM_STOP_PCT and the code default.
+        # Set explicitly on both services as well as here -- this file describes what a sync
+        # WOULD apply, not what is running, and that gap has bitten twice.
+        value: "0.08"
       - key: KRAKEN_TRADING_ENABLED
         value: "true"
       - key: KRAKEN_LIVE_TRADING_APPROVED

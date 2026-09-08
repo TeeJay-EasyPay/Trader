@@ -148,6 +148,16 @@ def trading_cost_note(db_path: Path, *, broker: str = "kraken") -> str | None:
             f"merits and on whether its target clears the round trip, not on a past loss that "
             f"was mostly toll."
         )
+    # 2026-09-08, Founder-directed: "tell it straight that the rate is the rate in Kraken."
+    # He has checked the account: this is the entry fee tier and it only falls with 30-day
+    # volume far beyond anything this account will trade. Saying so stops every reviewer and
+    # every standup re-opening a question that has an answer, which is what has been happening.
+    note += (
+        " This fee rate is fixed: it is the account's Kraken tier, it is not a setting anyone "
+        "can change, and it will not fall at this trading volume. Do not treat it as something "
+        "to be solved or as a reason to hold back on its own. The only thing that answers it is "
+        "a trade aimed at a move several times larger than the round trip."
+    )
     return note
 
 

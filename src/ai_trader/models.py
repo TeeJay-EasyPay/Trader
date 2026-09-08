@@ -77,7 +77,9 @@ class AutoTradeConfig:
     # small if a trade is wrong. Tradeoff stated plainly to him: a tighter stop on an asset
     # with ~4% daily ATR will be hit more often by ordinary noise.
     crypto_default_stop_loss_pct: float = 0.015
-    crypto_max_stop_loss_pct: float = 0.05
+    # 2026-09-08: 0.08, matching volatility_stops.MAXIMUM_STOP_PCT. These two must move
+    # together -- whichever is smaller wins, silently.
+    crypto_max_stop_loss_pct: float = 0.08
 
 
 @dataclass(frozen=True)

@@ -33,23 +33,50 @@ NOT A FEE ARGUMENT. Fees are no reason to widen a stop: widening keeps the same 
 enlarges the loss, so it makes the break-even win rate WORSE. The Founder corrected me on that
 and he was right. The only justification for a wider stop is noise, and it is the only one used
 here.
+
+2026-09-08. The Founder, having had this conversation more times than he should have:
+
+    "we just have to go for higher trades and... have a wider stop in case the market goes down
+     once a trade is placed. Isn't that what we'd agreed anyway?"
+
+That is the NOISE argument, not the fee one -- surviving the move against you after entry -- so
+it is the one this file accepts, and it says 0.6x was too tight.
+
+WHY 1.0x NOW. 0.6x was sized for the typical adverse move, which is about half a day's range.
+But "typical" is the wrong target: a stop only has to be wrong once to end the trade, and the
+half of entries that dip further than typical were being stopped out of positions that were not
+actually wrong. A full ATR is the ordinary daily swing, so the stop now sits outside a normal
+day rather than inside it. On real numbers that is BTC ~3.6%, ADA ~8.0%, GRT ~8.0% -- against
+the 1.5-2.0% every closed trade in the record was given.
+
+The prize moves with it. take_profit is set at a minimum of 2x the stop distance, so a wider
+stop asks for a bigger move rather than settling for the same one -- which is the other half of
+what he asked for, and the half that makes the arithmetic work.
 """
 
 from __future__ import annotations
 
-# Buy at a random moment and the typical adverse move is roughly half the day's range. 0.6
-# clears that with a little room, without drifting into "wide stop" territory where every loss
-# costs more for no better win rate.
-ATR_STOP_MULTIPLIER = 0.6
+# A full ordinary day's range below the entry. 0.6 covered the TYPICAL dip, which meant every
+# worse-than-typical dip -- about half of them -- stopped out a trade that was not wrong.
+# Founder-directed 2026-09-08: "a wider stop in case the market goes down once a trade is
+# placed."
+ATR_STOP_MULTIPLIER = 1.0
 
 # Never tighter than this, whatever the maths says. Below it the stop is inside the spread and
 # ordinary liquidity gaps for even the calmest coin -- this is the floor that a 0.4% proposal
 # would have violated.
 MINIMUM_STOP_PCT = 0.015
 
-# Never wider than this. Matches crypto_max_stop_loss_pct: past here a loss costs more than the
-# strategy can carry, and the trade should simply not be taken instead.
-MAXIMUM_STOP_PCT = 0.05
+# Never wider than this. Must match crypto_max_stop_loss_pct, or whichever is smaller silently
+# wins and the widening never reaches a real trade -- the disagreeing-values trap that locked
+# every Kraken candidate out on 2026-08-16.
+#
+# Raised from 0.05 on 2026-09-08. At 1.0x ATR the old ceiling clipped every genuinely volatile
+# coin back to 5%: ADA at 8.55% ATR and GRT at 8.74% both want ~8%, and handing them 5% is the
+# same "one number for every coin" mistake this file was written to end, just at a higher
+# number. Past 8% the position is small enough to be noise, and not taking the trade is the
+# better answer.
+MAXIMUM_STOP_PCT = 0.08
 
 
 def volatility_stop_pct(

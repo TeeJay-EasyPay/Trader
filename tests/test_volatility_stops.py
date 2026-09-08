@@ -45,14 +45,22 @@ def test_a_calm_coin_gets_a_tighter_stop_than_a_wild_one():
     btc = volatility_stop_pct(REAL_ATR["BTC"])
     grt = volatility_stop_pct(REAL_ATR["GRT"])
     assert btc < grt
-    assert round(btc * 100, 2) == 2.17
+    # 3.61% at 1.0x ATR, where it was 2.17% at 0.6x. Updated 2026-09-08 with the multiplier,
+    # not around it: the number is asserted exactly so a silent drift still fails here.
+    assert round(btc * 100, 2) == 3.61
 
 
 def test_the_old_formula_could_never_have_told_them_apart():
-    """The old range was 1.5%-3.0% for everything. GRT swings 10.3% a day and got 1.6%."""
-    old_low, old_high = 0.015, 0.030
-    assert volatility_stop_pct(REAL_ATR["GRT"]) > old_high
-    assert old_low <= volatility_stop_pct(REAL_ATR["BTC"]) <= old_high
+    """The old range was 1.5%-3.0% for everything. GRT swings 10.3% a day and got 1.6%.
+
+    Asserted as a SPREAD rather than a band, because the band moved on 2026-09-08 and the
+    thing worth protecting was never the band -- it was that a coin swinging three times
+    harder gets a stop to match.
+    """
+    btc = volatility_stop_pct(REAL_ATR["BTC"])
+    grt = volatility_stop_pct(REAL_ATR["GRT"])
+    assert grt - btc > 0.03, "the two must be far apart, not merely ordered"
+    assert grt > 0.030, "the old formula's ceiling for everything"
 
 
 def test_every_real_coin_lands_between_the_floor_and_the_cap():
@@ -92,14 +100,48 @@ def test_missing_history_falls_back_rather_than_guessing_an_extreme():
 def test_the_multiplier_is_about_noise_not_fees():
     """Guards the reasoning, not just the number.
 
-    0.6 exists because the typical adverse move is about half the daily range. If someone later
-    raises it to make the fee-to-risk ratio look better, they have reintroduced the mistake the
-    Founder corrected: a wider stop keeps the same prize and enlarges the loss, so break-even
-    gets harder, not easier.
+    The rule this protects has not changed: a wider stop that keeps the SAME prize makes the
+    break-even win rate worse, and widening for fee reasons is the mistake the Founder
+    corrected. What changed on 2026-09-08 is the noise judgement behind the number.
+
+    0.6x covered the TYPICAL adverse move, about half a day's range. But a stop only has to be
+    wrong once, and every worse-than-typical dip -- roughly half of them -- was ending trades
+    that were not actually wrong. Founder-directed: "a wider stop in case the market goes down
+    once a trade is placed." 1.0x is one ordinary day, so the stop sits outside a normal day
+    rather than inside it.
+
+    The bound stays tight in both directions. Below 0.8 is back inside the daily noise; above
+    1.2 is no longer a noise argument at all, and would need a different justification than
+    this file offers.
     """
-    assert 0.5 <= ATR_STOP_MULTIPLIER <= 0.8, (
-        "0.6x ATR clears the typical dip. Widening it for fee reasons makes trading worse."
+    assert 0.8 <= ATR_STOP_MULTIPLIER <= 1.2, (
+        "1.0x ATR clears one ordinary day. Widening beyond that needs a reason this file "
+        "does not have, and widening for fee reasons makes trading worse."
     )
+
+
+def test_widening_the_stop_widens_the_prize_with_it():
+    """The invariant that separates this from the mistake the Founder corrected.
+
+    His correction was right: a wider stop holding the same target enlarges the loss for the
+    same prize, so break-even gets harder. It does not apply here only because the target is
+    set as a MULTIPLE of the stop -- widen one and the other widens with it, leaving the
+    reward-to-risk ratio untouched. If that ever stops being true, this change becomes the
+    mistake it was careful not to be.
+    """
+    from ai_trader.technical_discretion import technical_take_profit
+
+    for atr in (0.02, 0.05, 0.09):
+        entry = 100.0
+        stop = entry * (1 - volatility_stop_pct(atr))
+        target = technical_take_profit(
+            entry_price=entry, stop_loss=stop, side="buy",
+            resistance=None, support=None, min_reward_risk=2.0,
+        )
+        reward_to_risk = (target - entry) / (entry - stop)
+        assert reward_to_risk >= 2.0 - 1e-9, (
+            f"a {atr:.0%} ATR coin was given a stop without a prize to match it"
+        )
 
 
 def test_the_cap_can_be_overridden_by_policy():

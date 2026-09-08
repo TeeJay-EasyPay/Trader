@@ -227,7 +227,7 @@ def load_settings() -> Settings:
             crypto_risk_per_trade_pct=_float_env("CRYPTO_RISK_PER_TRADE_PCT", _AUTO_TRADE_DEFAULTS.crypto_risk_per_trade_pct),
             crypto_min_net_reward_risk=_float_env("CRYPTO_MIN_NET_REWARD_RISK", 1.0),
             crypto_default_stop_loss_pct=_float_env("CRYPTO_DEFAULT_STOP_LOSS_PCT", 0.015),
-            crypto_max_stop_loss_pct=_float_env("CRYPTO_MAX_STOP_LOSS_PCT", 0.05),
+            crypto_max_stop_loss_pct=_float_env("CRYPTO_MAX_STOP_LOSS_PCT", 0.08),
         ),
         research_scheduler_enabled=_bool_env("RESEARCH_SCHEDULER_ENABLED", False),
         research_scheduler_interval_minutes=_int_env("RESEARCH_SCHEDULER_INTERVAL_MINUTES", 60),
