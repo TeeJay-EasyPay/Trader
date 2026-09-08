@@ -27,6 +27,7 @@ from ..multi_broker import (
     update_broker_runtime,
 )
 from ..order_lock_reconciliation import reconcile_order_intent_locks
+from ..alpaca_reconciliation import reconcile_alpaca
 from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliation_control, replay_kraken_evidence
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
@@ -349,6 +350,27 @@ class BrokerService:
                     events=new_rows,
                     source_endpoint="poll_broker_activity",
                 )
+            if broker_name == "alpaca":
+                # 2026-09-08: Alpaca's finished trades never became results. Kraken has had a
+                # reconciliation step since the start; Alpaca never got one, because its exits
+                # rest on Alpaca's own book rather than in our exit loop, so nothing here ever
+                # had to pair them. PERFORMANCE_ATTRIBUTION -- what the learning loop reads --
+                # held 27 rows, every one Kraken, and two months of paper trading was being
+                # thrown away as it happened.
+                #
+                # Same shape as the Kraken replay above: runs every cycle, idempotent on
+                # broker + symbol + closing time, so it recovers the whole backlog over the
+                # first run and then only adds what is new.
+                alpaca_outcomes = reconcile_alpaca(self.settings.db_path)
+                if alpaca_outcomes.get("written"):
+                    print(
+                        f"[alpaca-reconciliation] wrote={alpaca_outcomes['written']} "
+                        f"round_trips={alpaca_outcomes.get('round_trips')} "
+                        f"unmatched={len(alpaca_outcomes.get('unmatched') or [])}",
+                        flush=True,
+                    )
+                elif alpaca_outcomes.get("status") == "failed":
+                    print(f"[alpaca-reconciliation] failed: {alpaca_outcomes.get('error')}", flush=True)
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
             for row in new_rows:
                 status = str(row.get("status") or "").lower()
