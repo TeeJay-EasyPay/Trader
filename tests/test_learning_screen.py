@@ -60,6 +60,9 @@ def test_summary_keeps_currency_unknowns_and_hypotheses_separate(db):
     assert result['shadows'][0]['total'] == 26
     assert result['shadows'][0]['outcome_status'] == 'pending'
     assert 'hypotheses' in result['summary']
+    assert len(result['opportunity_previews']) == 1
+    assert result['opportunity_previews'][0]['id'] == 26
+    assert result['opportunity_previews'][0]['estimated_net_r'] is None
 
 
 def test_detail_pages_bounded_and_every_link_has_real_read_path(db):

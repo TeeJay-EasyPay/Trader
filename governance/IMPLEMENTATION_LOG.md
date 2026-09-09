@@ -1,5 +1,30 @@
 # Implementation Log
 
+## 2026-09-09 — Learning mockup structure pass
+
+Reworked Learning's overview against the approved preview: joined period tabs,
+centred date arrows/status, concise lesson with Evidence / Next test / Decision
+rows, a fixed-proportion native sun-behind-cloud illustration, section symbols,
+exchange-initial badges, compact right-aligned outcome rows, and a connected
+strategy-stage illustration with the latest catalogue record. Badges use K/A
+identifiers, not official broker logos. Native cloud shapes replace the landscape
+only on Learning; no new raster downloads or assets are required.
+
+Rejected opportunities now offers All/Kraken/Alpaca filters and an actual linked
+rejection preview with entry/target/stop and modelled status/net R. SQL fetches at
+most one bounded row per broker plus one strategy record per cached summary.
+Unconfirmed shadow candidates are not promoted to confirmed rejections. Missing
+results remain pending and unknown prices are not converted to currency claims.
+All existing detail buttons and the empty comparison chart remain available.
+The stage diagram illustrates process only, not evidence of completed tests.
+Summary says it makes no rule change; it does not claim no other worker changed a rule.
+
+Verification: 114 mobile tests and 8 Learning backend tests pass. Read-only live
+SQL checks passed every summary source and all seven detail routes. Preview data
+is bounded within the existing ten-minute cache. Emulator capture returned black,
+and activation failed; user asked to foreground/wake it for visual comparison.
+No local Expo development server or trading cycle started.
+
 ## 2026-09-09 — Keep the comparison chart visible while awaiting evidence
 
 Replaced the dashed explanatory placeholder in Learning with the actual empty

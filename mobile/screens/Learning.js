@@ -2,7 +2,7 @@
 const React = require('react');
 const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, Platform, BackHandler } = require('react-native');
-const { GreetingIllustration } = require('../components/GreetingIllustration');
+const { LearningCloud } = require('../components/LearningCloud');
 const { exchangePalette, palette } = require('../lib/palette');
 const { learningRequest, shiftedDate, resultText, humanStatus } = require('../lib/learningScreen');
 const HEADINGS = { rejected: 'Tracked opportunities', decisions: 'Rejected decisions', trades: 'Completed trades',
@@ -37,7 +37,21 @@ const s = StyleSheet.create({
   gridVertical: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: '#E7E4F3' },
   chartMessage: { backgroundColor: '#F5F1FF', padding: 10, margin: 12, textAlign: 'center', color: '#52637D', fontSize: 14 },
   legendDot: { width: 9, height: 9, borderRadius: 5 },
+  segmented: { flexDirection: 'row', borderWidth: 1, borderColor: '#CBD3DF', borderRadius: 9, overflow: 'hidden' },
+  segment: { flex: 1, minHeight: 44, paddingVertical: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' },
+  fact: { flexDirection: 'row', flexWrap: 'wrap', borderTopWidth: 1, borderColor: '#E8DFCC', paddingVertical: 8, gap: 8 },
+  factLabel: { color: '#182D50', fontWeight: '700', width: 80, fontSize: 14 },
+  factValue: { color: '#33486B', flex: 1, minWidth: 160, fontSize: 14, lineHeight: 21 },
+  brokerBadge: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  stageLine: { position: 'absolute', left: '12%', right: '12%', top: 9, height: 1, backgroundColor: '#ADB9D5' },
 });
+function SectionHeading({ icon, title }) {
+  return <View style={s.row}><Text accessible={false} style={{ color: '#006346', fontSize: 22 }}>{icon}</Text><Text style={[s.heading, { flexShrink: 1 }]}>{title}</Text></View>;
+}
+function BrokerBadge({ broker }) {
+  return <View accessible={false} style={[s.brokerBadge, { backgroundColor: broker === 'kraken' ? '#7955DA' : '#F3CE59' }]}>
+    <Text style={{ color: broker === 'kraken' ? '#FFFFFF' : '#4C3B00', fontWeight: '800', fontSize: 19 }}>{broker === 'kraken' ? 'K' : 'A'}</Text></View>;
+}
 function LearningComparisonChart({ period }) {
   return <View style={s.chart} accessibilityLabel="Kraken simulated comparison chart. Awaiting comparison results. No results plotted.">
     <Text style={[s.body, { color: '#633BC1', fontWeight: '700' }]}>Kraken · simulated comparison</Text>
@@ -73,33 +87,36 @@ function periodLabel(bounds) {
   return bounds.kind === 'daily' ? bounds.start : bounds.start + ' – ' + end.toISOString().slice(0, 10);
 }
 function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, today }) {
+  const [opportunityBroker, setOpportunityBroker] = useState('all');
+  const preview = (data.opportunity_previews || []).find(p => opportunityBroker === 'all' || p.broker === opportunityBroker);
+  const latest = data.reviews[0];
+  const lesson = latest?.lessons?.[0] || latest?.what_happened || 'No lesson is recorded for this period yet. Evidence is still being gathered.';
   const count = data.unavailable.includes('lesson proposals') ? '—' : data.proposals.reduce((n, x) => n + Number(x.total || 0), 0);
   return <View style={s.page}>
     <View><Text style={s.title}>What are we learning?</Text><Text style={s.body}>From decisions to evidence.</Text></View>
     <View style={[s.card, s.summary]}>
-      <View pointerEvents="none" style={s.summaryArt}><GreetingIllustration fadeToCream /></View>
+      <LearningCloud />
       <View style={s.summaryContent}>
-        <Text style={s.heading}>Learning summary</Text>
-        <View style={s.row}>{['daily', 'weekly', 'monthly'].map(p => <Action key={p} grow label={p[0].toUpperCase() + p.slice(1)} selected={p === period} onPress={() => onPeriod(p)} />)}</View>
-        <View style={s.row}><Action label="‹ Earlier" onPress={() => onMove(-1)} disabled={anchor <= '2020-01-01'} />
-          <Action label="Later ›" onPress={() => onMove(1)} disabled={shiftedDate(data.period.start, period, 1) > today} /></View>
-        <Text style={s.small}>{periodLabel(data.period)} · UTC</Text>
-        <Text style={s.badge}>{data.period.in_progress ? 'In progress' : 'Period complete · evidence may update'}</Text>
+        <View style={{ paddingRight: 112, minHeight: 56 }}><SectionHeading icon="▤" title="Learning summary" /></View>
+        <View style={s.segmented}>{['daily', 'weekly', 'monthly'].map(p => <TouchableOpacity key={p} accessibilityRole="tab"
+          accessibilityState={{ selected: p === period }} style={[s.segment, p === period && s.active]} onPress={() => onPeriod(p)}>
+          <Text style={[s.buttonText, p === period && s.selectedText]}>{p[0].toUpperCase() + p.slice(1)}</Text></TouchableOpacity>)}</View>
+        <View style={[s.row, { justifyContent: 'center' }]}><Action label="‹" onPress={() => onMove(-1)} disabled={anchor <= '2020-01-01'} />
+          <Text style={[s.small, { textAlign: 'center', flexShrink: 1 }]}>{periodLabel(data.period)} · UTC</Text>
+          <Action label="›" onPress={() => onMove(1)} disabled={shiftedDate(data.period.start, period, 1) > today} /></View>
+        <Text style={[s.badge, { alignSelf: 'center' }]}>{data.period.in_progress ? '◷ In progress' : 'Period complete · evidence may update'}</Text>
         <Text style={s.heading}>{period === 'daily' ? "The day's learning" : period === 'weekly' ? "The week's learning" : "The month's learning"}</Text>
-        <Text style={s.body}>{data.summary}</Text>
+        <Text style={s.body}>{lesson}</Text>
+        <Text style={s.small}>Recorded hypothesis—not proven improvement.</Text>
         {data.unavailable.length > 0 && <Text style={s.badge}>Unavailable: {data.unavailable.join(', ')}</Text>}
-        {data.reviews.slice(0, 1).map(review => <View key={review.review_id} style={s.divider}>
-          <Text style={[s.body, { fontWeight: '700' }]}>{[review.symbol, review.broker, 'Latest recorded lesson'].filter(Boolean).join(' · ')}</Text>
-          <Text style={s.body}>{review.lessons[0] || review.what_happened || 'No lesson text recorded.'}</Text>
-          <Text style={s.small}>Hypothesis from a review—not a validated rule change.</Text>
-        </View>)}
-        {!data.reviews.length && <Text style={s.body}>No review text is available for this period. That is not evidence of improvement.</Text>}
-        <Text style={s.small}>Next: {data.next_step}</Text>
+        {[['Evidence', data.unavailable.length ? 'Some evidence is unavailable; see details below.' : `${data.outcomes.reduce((n, o) => n + o.total, 0)} completed outcomes · ${data.review_count ?? 'Unknown'} reviews · ${data.shadows.reduce((n, o) => n + o.total, 0)} shadow candidates`],
+          ['Next test', 'Compare a named lesson against unchanged rules.'], ['Decision', 'No rule change is made by this report.']].map(([label, value]) => <View key={label} style={s.fact}><Text style={s.factLabel}>{label}</Text><Text style={s.factValue}>{value}</Text></View>)}
         <Action label="Read trade reviews →" onPress={() => onOpen('reviews')} />
+        <Text style={s.small}>Daily, weekly and monthly evidence · earlier reports may update.</Text>
       </View>
     </View>
     <View style={s.card}>
-      <Text style={s.heading}>Is learning helping?</Text><Text style={s.badge}>Not enough evidence yet</Text>
+      <SectionHeading icon="▥" title="Is learning helping?" /><Text style={s.badge}>Not enough evidence yet</Text>
       <View style={s.row}><View style={s.metric}><Text style={s.value}>{count}</Text><Text style={s.small}>proposals recorded</Text></View>
         <View style={s.metric}><Text style={s.value}>{data.review_count ?? '—'}</Text><Text style={s.small}>reviews written</Text></View>
         <View style={s.metric}><Text style={s.value}>—</Text><Text style={s.small}>validated change</Text></View></View>
@@ -107,31 +124,36 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       <Text style={s.small}>{data.assessment.explanation}</Text>
       <Action label="View proposed lessons →" onPress={() => onOpen('proposals')} />
     </View>
-    <View style={s.card}><Text style={s.heading}>Rejected opportunities</Text>
+    <View style={s.card}><SectionHeading icon="⊘" title="Rejected opportunities" />
+      <View style={s.row}>{['all', 'kraken', 'alpaca'].map(b => <Action key={b} grow label={b[0].toUpperCase() + b.slice(1)} selected={b === opportunityBroker} onPress={() => setOpportunityBroker(b)} />)}</View>
       <Text style={s.body}>{data.unavailable.includes('rejection events') ? 'Rejection counts unavailable' : data.rejections.reduce((n, x) => n + Number(x.events), 0) + ' recorded rejection events'} · may include repeated checks.</Text>
-      {['kraken', 'alpaca'].map(b => {
-        const rows = data.shadows.filter(r => r.broker === b);
-        return <BrokerCard key={b} broker={b}><Text style={[s.body, { fontWeight: '700' }]}>{b === 'kraken' ? 'Kraken' : 'Alpaca'} · SIMULATED</Text>
-          {rows.length ? rows.map(r => <Text key={r.outcome_status} style={s.body}>{humanStatus(r.outcome_status)}: {r.total}</Text>) : <Text style={s.body}>{data.unavailable.includes('shadow tracking') ? 'Shadow evidence unavailable.' : 'No tracked candidates in this period.'}</Text>}
-          <Text style={s.small}>Cohort by decision date. Some candidates have no confirmed rejection link.</Text></BrokerCard>;
-      })}
-      <Text style={s.small}>Historical simulations assume entry, use daily candles and estimated costs. They do not prove an order could have filled.</Text>
+      <BrokerCard broker={preview?.broker || (opportunityBroker === 'all' ? 'kraken' : opportunityBroker)}>
+        {preview ? <><View style={s.row}><BrokerBadge broker={preview.broker} /><Text style={[s.body, { fontWeight: '700', flexShrink: 1 }]}>{preview.symbol} · {preview.broker}</Text><Text style={s.badge}>SIMULATED</Text></View>
+          <Text style={s.body}>{preview.reason || 'Rejection reason not recorded'}</Text>
+          <View style={[s.row, { backgroundColor: 'rgba(255,255,255,0.55)', borderRadius: 10 }]}>{[['Entry', preview.intended_entry], ['Target', preview.take_profit], ['Stop', preview.stop_loss]].map(([label, value]) => <View key={label} style={s.metric}><Text style={s.small}>{label}</Text><Text style={[s.body, { fontWeight: '700' }]}>{value ?? 'Unknown'}</Text></View>)}</View>
+          <Text style={s.badge}>{humanStatus(preview.outcome_status)}</Text>
+          <Text style={s.small}>{typeof preview.estimated_net_r === 'number' ? `Estimated net outcome: ${preview.estimated_net_r.toFixed(2)}R (planned risk, not currency).` : 'Estimated outcome pending / unknown.'}</Text>
+        </> : <Text style={s.body}>No linked rejected-opportunity preview is available for this selection.</Text>}
+      </BrokerCard>
+      <Text style={s.small}>Entry prices are as recorded. Simulations assume entry, use daily candles and estimated costs—not verified fills.</Text>
       <Action label="View tracked opportunities →" onPress={() => onOpen('rejected')} />
       <Action label="View rejected decisions →" onPress={() => onOpen('decisions')} />
     </View>
-    <View style={s.card}><Text style={s.heading}>Completed trades</Text>
+    <View style={s.card}><SectionHeading icon="✓" title="Completed trades" />
       {['kraken', 'alpaca'].map(b => { const row = data.outcomes.find(o => o.broker === b); return <BrokerCard key={b} broker={b}>
-        <Text style={[s.body, { fontWeight: '700' }]}>{b === 'kraken' ? 'Kraken · live account' : 'Alpaca · paper account'}</Text>
-        <Text style={s.value}>{row ? resultText(row.pnl, b) : data.unavailable.includes('completed trades') ? 'Unavailable' : 'No recorded result'}</Text>
-        <Text style={s.body}>{row ? row.total + ' closed · ' + row.wins + ' positive · ' + row.losses + ' negative · ' + row.unknown + ' unknown' : data.unavailable.includes('completed trades') ? 'Completed-trade evidence could not be loaded.' : 'No completed outcomes in this period.'}</Text>
-        <Text style={s.small}>{b === 'kraken' ? 'Recorded net P&L · AI-managed trades only' : 'Before unreconciled fees · not verified net profit'} · historical modes may vary</Text>
+        <View style={s.row}><BrokerBadge broker={b} /><View style={{ flexGrow: 1 }}><Text style={[s.body, { fontWeight: '700' }]}>{b === 'kraken' ? 'Kraken' : 'Alpaca'}</Text><Text style={s.small}>{row ? `${row.total} closed · ${row.unknown} unknown` : 'No recorded outcomes'}</Text></View>
+          <Text style={[s.value, { fontSize: 18, textAlign: 'right', color: row?.pnl < 0 ? '#B42318' : row?.pnl > 0 ? '#006A3B' : '#182D50' }]}>{row ? resultText(row.pnl, b) : data.unavailable.includes('completed trades') ? 'Unavailable' : '—'}</Text></View>
+        <Text style={s.small}>{data.unavailable.includes('completed trades') ? 'Completed-trade evidence could not be loaded.' : b === 'kraken' ? 'Recorded net P&L · AI-managed trades only' : 'Before unreconciled fees · not verified net profit'}</Text>
       </BrokerCard>; })}
       <Action label="Review completed trades →" onPress={() => onOpen('trades')} />
     </View>
-    <View style={s.card}><Text style={s.heading}>Strategy research & testing</Text>
-      <Text style={s.body}>Research → Backtest → Shadow → Review</Text>
-      <Text style={s.body}>{data.backtest_count ?? 'Unknown'} backtest records in this period.</Text>
-      <Text style={s.small}>Existing catalogue and recorded results. External portal discovery and paired-rule experiments are not connected yet. Published backtests are ideas, not proof.</Text>
+    <View style={s.card}><SectionHeading icon="⚗" title="Strategy research & testing" />
+      <View style={{ flexDirection: 'row', marginVertical: 4 }}><View style={s.stageLine} />{['Research', 'Backtest', 'Shadow', 'Review'].map(stage => <View key={stage} style={{ flex: 1, alignItems: 'center', gap: 8 }}><View style={{ width: 19, height: 19, borderRadius: 10, borderWidth: 2, borderColor: '#ADB9D5', backgroundColor: '#FFFFFF' }} /><Text style={s.small}>{stage}</Text></View>)}</View>
+      <BrokerCard><Text style={[s.body, { fontWeight: '700' }]}>{data.strategy_preview?.name || 'Awaiting a strategy record'}</Text>
+        <Text style={s.small}>{data.strategy_preview?.purpose || 'Recorded strategy ideas will appear here.'}</Text>
+        <Text style={s.badge}>{data.strategy_preview ? 'Catalogue record · ' + humanStatus(data.strategy_preview.production_status) : 'No candidate selected'}</Text>
+      </BrokerCard>
+      <Text style={s.small}>Stages show the testing process, not verified progress. {data.backtest_count ?? 'Unknown'} backtest records in this period. External discovery and paired experiments are not connected yet.</Text>
       <View style={s.row}><Action grow label="Strategy ideas" onPress={() => onOpen('strategies')} /><Action grow label="Test results" onPress={() => onOpen('tests')} /></View>
     </View>
     <Text style={s.small}>Evidence updated {data.generated_at}. Cached for up to 10 minutes.</Text>

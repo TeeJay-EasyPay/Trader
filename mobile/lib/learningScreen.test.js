@@ -31,7 +31,7 @@ test('failed reads are retryable and never cached as success', async () => {
 });
 test('Learning uses read-only evidence, bundled art and real pending states', () => {
   const source = fs.readFileSync(require.resolve('../screens/Learning'), 'utf8');
-  for (const text of ['daily', 'weekly', 'monthly', 'GreetingIllustration', 'waveA', 'waveB', 'pointerEvents="none"',
+  for (const text of ['daily', 'weekly', 'monthly', 'LearningCloud', 'waveA', 'waveB', 'pointerEvents="none"',
     '/learning-summary?', '/learning-details?', 'No paired rule experiment recorded', 'Before unreconciled fees',
     'Back to Learning', 'Unavailable', 'setBroker', 'data.has_more']) assert.ok(source.includes(text), text);
   assert.ok(!source.includes('/daily-learning-update'));
@@ -47,7 +47,8 @@ test('overview renders missing sources safely and wires all seven evidence pages
   vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('babel-preset-expo')] }).code, {
     module, exports: module.exports, require: name => name === 'react-native'
       ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' } }
-      : name === '../components/GreetingIllustration' ? { GreetingIllustration: 'BundledArt' } : local(name),
+      : name === 'react' ? { ...local(name), useState: value => [value, () => {}] }
+      : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' } : local(name),
   });
   const opened = [];
   const tree = module.exports.LearningOverview({ period: 'daily', anchor: '2026-09-09', today: '2026-09-09', onOpen: x => opened.push(x),

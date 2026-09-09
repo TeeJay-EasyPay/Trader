@@ -121,6 +121,19 @@ def _summary(db, bounds, now=None):
         GROUP BY approval_status""")
     tests = read('strategy tests', f"""SELECT COUNT(*) AS total FROM STRATEGY_BACKTEST_RESULTS
         WHERE {day('created_at')}>=? AND {day('created_at')}<?""")
+    previews = []
+    for broker in ('kraken', 'alpaca'):
+        previews += read('opportunity preview ' + broker, f"""SELECT shadow_trade_id AS id,
+            symbol, intended_broker AS broker, intended_entry, stop_loss, take_profit,
+            outcome_status, estimated_net_r, substr(wait_or_rejection_reason,1,180) AS reason
+            FROM SHADOW_TRADES WHERE intended_broker=?
+            AND (strategy='crypto_research_refused' OR decision_status='rejected')
+            AND {day('created_at')}>=? AND {day('created_at')}<?
+            ORDER BY shadow_trade_id DESC LIMIT 1""", (broker, *args))
+    strategy_preview = read('strategy preview', """SELECT strategy_id AS id, name,
+        substr(purpose,1,180) AS purpose, production_status
+        FROM STRATEGY_REGISTRY ORDER BY updated_at DESC, strategy_id LIMIT 1""", ())
+    previews.sort(key=lambda row: row['id'], reverse=True)
     for review in reviews:
         try:
             lessons = json.loads(review.pop('lessons_json'))
@@ -148,6 +161,7 @@ def _summary(db, bounds, now=None):
     return {'generated_at': (now or datetime.now(timezone.utc)).isoformat(), 'period': bounds,
             'unavailable': unavailable, 'summary': narrative, 'outcomes': outcomes,
             'shadows': shadows, 'rejections': rejections, 'reviews': reviews,
+            'opportunity_previews': previews, 'strategy_preview': strategy_preview[0] if strategy_preview else None,
             'review_count': review_total, 'linked_reviews': review_counts[0]['linked'] if review_counts else None,
             'proposals': proposals, 'backtest_count': tests[0]['total'] if tests else None,
             'assessment': {'status': 'insufficient_evidence', 'validated': None,
