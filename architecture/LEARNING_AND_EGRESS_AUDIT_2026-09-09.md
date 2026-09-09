@@ -177,6 +177,8 @@ The implementation log's August 6 egress section documents a different, earlier
 5. Address the learning gaps above before calling the system fully learning.
    Restoring self-assessment restores its intended aggregate reads, so its net
    egress impact must be measured against the savings, not promised as zero.
-6. Local changes await review and release. No production backfill, automatic
+6. The scoped fixes were released in `26092511` on September 9; the worker
+   heartbeat confirmed that version at 10:03:59 UTC. See the implementation log
+   for test and mobile verification details. No production backfill, automatic
    model training, new recurring measurement job, fee change, stop change or
    trading-permission change was introduced.

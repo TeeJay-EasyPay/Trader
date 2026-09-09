@@ -1,5 +1,24 @@
 # Implementation Log
 
+## 2026-09-09 — Release published and emulator checked
+
+- Code `26092511cd8b52f2a43a1ecf6f6a7d552e44ec8a` committed and pushed to master.
+  Background worker heartbeat at 10:03:59 UTC reports this commit and running.
+  API health check returned OK; that endpoint does not expose its own commit.
+- Android runtime 1.0.3 published to preview (`c16f8ae6-3106-48a0-b775-36475c6a95c0`)
+  and hosted-preview (`53e111e3-03a0-45a4-8a2e-7942bb271666`).
+- Restarted the installed Pixel 9 app using emulator controls (no reinstall,
+  database reset or research cycle). Verified the new follow-up controls and
+  operational-only support card; the duplicated DOT approval requests are gone.
+- Device review caught low contrast on the selected follow-up button and a
+  misleading initial Cancelled label. Corrected both locally; all 81 mobile
+  tests pass again. Publishing this mobile-only polish with `[skip render]`.
+- Live microphone/transcription/TTS quality has NOT been verified by a spoken
+  conversation. Offline behavioural tests verify turn-taking/queue handling;
+  they do not establish real-device audio quality or model response latency.
+- Actual post-release billed egress still needs a comparable steady-state
+  measurement window; the learning audit's deeper gaps remain outstanding.
+
 ## 2026-09-09 — Briefing support requests and Standup turn-taking (release verification)
 
 Founder authorised implementation, commit and deployment, with the broader

@@ -395,6 +395,7 @@ function StandupScreen({ request }) {
     handsFreeRef.current = false;
     speaker.stop();
     voice.cancel();
+    setStatusLine('Not started');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
@@ -436,7 +437,7 @@ function StandupScreen({ request }) {
               {[0, 2, 4, 8].map((count) => (
                 <TouchableOpacity key={count} disabled={busy} onPress={() => setExchangeBudget(count)}
                   style={[styles.standupMode, exchangeBudget === count && styles.standupModeActive]}>
-                  <Text style={styles.standupModeText}>{count === 0 ? 'Answers only' : `${count} follow-ups`}</Text>
+                  <Text style={[styles.standupModeText, exchangeBudget === count && styles.standupModeTextActive]}>{count === 0 ? 'Answers only' : `${count} follow-ups`}</Text>
                 </TouchableOpacity>
               ))}
             </View>
