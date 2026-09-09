@@ -1,5 +1,26 @@
 # Implementation Log
 
+## 2026-09-09 — Cycle/chart release deployed; visual acceptance still pending
+
+- Code commit `564b0377a38bbb205baab4457b79859e7c603685` pushed to `origin/master`.
+- Final release check: 114 targeted backend tests passed; all 70 mobile Node tests
+  passed. Earlier full-suite cleanup failure and successful rerun remain documented.
+- Render API serves `/portfolio-trends`; read-only inspection confirms both broker
+  histories and correct net/provisional fee labels. `/healthz` returned healthy.
+- New worker heartbeat at `2026-09-09T01:18:31.062531+00:00` reports the release
+  commit and running status.
+- Android runtime 1.0.3 OTA published to `preview`, group
+  `780fd5e3-3e9b-473f-ae0a-6a6a9e9a5799`, and `hosted-preview`, group
+  `9d7f55b8-a3d6-42b5-ac6a-37f5b21fbc3a`. Both reference the release commit.
+- Installed Pixel 9 APK metadata confirms version 1.0.3 and channel `preview`.
+  No additional app installation, emulator data deletion or trading cycle was used.
+- Emulator visual acceptance remains **unverified**: the UI-control tool returned
+  `failed to activate captured window` after refreshing window selection. Asked
+  the Founder to foreground the emulator and open the app. Publishing an OTA is
+  not evidence that the installed app has downloaded and rendered it.
+- This documentation-only record uses `[skip render]` to avoid another unnecessary
+  backend/worker restart. The deployed code remains `564b0377`.
+
 ## 2026-09-09 — Founder authorised deployment before emulator acceptance
 
 The Founder explicitly requested committing/pushing all pending cycle and chart

@@ -1,5 +1,32 @@
 # Portfolio trend charts — 9 September 2026
 
+## Current release status
+
+Code `564b0377` is committed, pushed and deployed. The new API endpoint responds;
+the running worker reports that commit. Android runtime 1.0.3 is published to both
+`preview` (group `780fd5e3-3e9b-473f-ae0a-6a6a9e9a5799`) and `hosted-preview`
+(group `9d7f55b8-a3d6-42b5-ac6a-37f5b21fbc3a`). The installed Pixel 9 uses `preview`.
+Final targeted backend checks: 114 passed; mobile Node suite: 70 passed.
+
+**The updated emulator UI is not yet visually verified.** Window activation failed
+after refreshed selection, so the Founder was asked to foreground the emulator and
+open AI Trader. No app data was cleared. Earlier local/release-gate statements below
+are historical, retained for an accurate record.
+
+## Future local-preview setup (not implemented as a working workflow yet)
+
+1. A dedicated development app ID/update channel, separate from the installed
+   production-connected app. Keep both apps and their data isolated.
+2. Start with small local SQLite fixtures or sanitised chart fixtures; no live
+   trading credentials and no automatic production database reads.
+3. For an explicitly requested real-data UI check, use the existing read-only
+   preview gateway. Keep its bounded chart cache and reject all trading writes.
+4. Document the emulator/runtime requirements and reserve enough storage without
+   wiping the Founder's existing emulator.
+5. Verify charts, empty/error states, navigation, scrolling and period selection
+   locally before the normal commit/backend/OTA release. Capture actual screenshots,
+   not just successful bundle compilation.
+
 > Release authorisation update: the Founder subsequently instructed commit and
 > deployment first, then verification in the existing emulator app. The earlier
 > release gate and blockers below describe the prior attempt, not a current veto.

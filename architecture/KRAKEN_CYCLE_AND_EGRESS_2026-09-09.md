@@ -1,5 +1,10 @@
 # Kraken cycle corrections and Supabase egress follow-up
 
+> Release update: these corrections were committed and pushed as `564b0377`, with
+> the API and worker verified live and Android OTA published to both existing
+> channels. The earlier local-only status below records the pre-release snapshot.
+> See `PORTFOLIO_TRENDS_2026-09-09.md` for the outstanding emulator visual check.
+
 ## Confirmed live result
 
 The authorised manual Kraken cycle `752a88794dbd` ran from 21:01:43 to
