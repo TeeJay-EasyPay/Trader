@@ -27,7 +27,16 @@ Supabase queries, fetch frequency, trading decisions or database migrations chan
 No local Expo server or emulator setup was started, per Founder instruction.
 Device visual fidelity remains unverified; mockup illustrative data was not copied.
 Mobile-only release uses [skip render] to avoid restarting the trading backend.
-Publication identifiers will be recorded once EAS confirms the release.
+Published successfully from commit `67b8dbd42e5306fe15181034ef5427e715bb2826`,
+pushed to GitHub master. Android runtime 1.0.3, identical bundle on both channels:
+
+- preview: `17457d97-c22a-4386-8c48-68ae417dcbc2`
+- hosted-preview: `453a8508-91f5-42d1-9858-02e517ae33ea`
+
+Production export compiled 624 modules, 1.15 MB. No new remote image assets.
+EAS used its one-shot release bundler, not a local Expo development server.
+Installed app must download and reopen to apply; device appearance still needs
+Founder confirmation. No trading cycle was started as part of this release.
 
 ## 2026-09-09 — Warm mobile palette published
 
