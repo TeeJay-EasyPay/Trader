@@ -2,6 +2,15 @@
 
 ## 2026-09-09 — Release published and emulator checked
 
+Final mobile polish `7de5d621f54d413044ef7e187ff56493b744c090` is published:
+preview `b7a8878a-036e-4315-a455-8bf7759ba313`, hosted-preview
+`5a3fd16b-6476-4931-973f-7b6d6b32fefa`. Both use the same exported bundle.
+The hosted publish shows a dirty marker solely because this audit documentation
+was being updated; mobile source/bundle was unchanged. No additional backend
+restart requested. The final contrast/status polish passed tests and export;
+its pixels have not been rechecked after this second OTA. Earlier device checks
+verified the main release's operational card and compact expanded View Ahead.
+
 - Code `26092511cd8b52f2a43a1ecf6f6a7d552e44ec8a` committed and pushed to master.
   Background worker heartbeat at 10:03:59 UTC reports this commit and running.
   API health check returned OK; that endpoint does not expose its own commit.

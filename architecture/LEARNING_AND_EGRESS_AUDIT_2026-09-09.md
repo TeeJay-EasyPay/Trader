@@ -10,8 +10,11 @@ statistics, reviews and governed proposals; this audit found no model-weight
 training pipeline. More tables or completed jobs are not proof of deeper learning.
 
 Read-only production aggregates were collected on September 9. No live cycle,
-broker order, production repair/backfill, commit, push or deployment was performed
-in this audit. Changes below are **local and tested**, not live.
+broker order or production repair/backfill was performed by this audit. The scoped
+fixes below were subsequently committed, pushed and released with Founder
+authorisation (`26092511`); the worker confirmed that commit at 10:03:59 UTC.
+The remaining learning gaps are findings, not completed fixes. See the
+implementation log for release tests and mobile verification limits.
 
 ## Verified learning evidence
 
