@@ -50,7 +50,7 @@ const s = StyleSheet.create({
   stageLine: { position: 'absolute', left: '12%', right: '12%', top: 9, height: 1, backgroundColor: '#ADB9D5' },
 });
 function SectionHeading({ icon, title }) {
-  return <View style={[s.row, { flexWrap: 'nowrap' }]}><Text accessible={false} style={{ color: '#006346', fontSize: 22 }}>{icon}</Text><Text style={[s.heading, { flex: 1 }]}>{title}</Text></View>;
+  return <View style={[s.row, { flexWrap: 'nowrap', flexShrink: 1 }]}><Text accessible={false} style={{ color: '#006346', fontSize: 22 }}>{icon}</Text><Text style={[s.heading, { flexShrink: 1 }]}>{title}</Text></View>;
 }
 function BrokerBadge({ broker }) {
   return <View accessible={false} style={[s.brokerBadge, { backgroundColor: broker === 'kraken' ? '#7955DA' : '#F3CE59' }]}>
@@ -122,7 +122,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       </View>
     </View>
     <View style={s.card}>
-      <View style={[wide ? s.footer : { gap: 6 }]}><SectionHeading icon="▥" title="Is learning helping?" />
+      <View style={[wide ? [s.footer, { flexWrap: 'nowrap' }] : { gap: 6 }]}><SectionHeading icon="▥" title="Is learning helping?" />
         <View style={[s.segmented, { width: 170, alignSelf: 'flex-end' }]}>{[['daily', 'Today'], ['weekly', 'This week']].map(([p, label]) => <TouchableOpacity key={p} accessibilityRole="tab" accessibilityState={{ selected: period === p }} onPress={() => onPeriod(p)} style={[s.segment, period === p && s.active]}><Text style={[s.buttonText, period === p && s.selectedText]}>{label}</Text></TouchableOpacity>)}</View></View>
       <Text style={s.badge}>Not enough evidence yet</Text>
       <View style={s.row}><View style={s.metric}><Text style={s.value}>{count}</Text><Text style={s.small}>proposals recorded</Text></View>
@@ -131,7 +131,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       <LearningComparisonChart period={data.period} />
       <View style={s.footer}><Text style={[s.small, s.footerNote]}>Reviews alone do not prove improvement.</Text><Action compact label="View proposed lessons →" onPress={() => onOpen('proposals')} /></View>
     </View>
-    <View style={s.card}><View style={wide ? s.footer : { gap: 6 }}><SectionHeading icon="⊘" title="Rejected opportunities" />
+    <View style={s.card}><View style={wide ? [s.footer, { flexWrap: 'nowrap' }] : { gap: 6 }}><SectionHeading icon="⊘" title="Rejected opportunities" />
       <View style={[s.row, { alignSelf: 'flex-end', gap: 4 }]}>{['all', 'kraken', 'alpaca'].map(b => <Action compact key={b} label={b[0].toUpperCase() + b.slice(1)} selected={b === opportunityBroker} onPress={() => setOpportunityBroker(b)} />)}</View></View>
       <Text style={s.small}>{data.unavailable.includes('rejection events') ? 'Rejection counts unavailable' : data.rejections.reduce((n, x) => n + Number(x.events), 0) + ' rejection events'} · includes repeated checks.</Text>
       <BrokerCard broker={preview?.broker || (opportunityBroker === 'all' ? 'kraken' : opportunityBroker)}>
