@@ -69,7 +69,14 @@ GitHub master. Android runtime 1.0.3 published to preview group
 `e0b0398d-3717-43bd-bf27-ca2a8518e853` and hosted-preview group
 `59c2e46d-2c95-4dfc-9203-a797b2d99e15`. No new image assets were uploaded.
 API health passed at 18:27:55 UTC. Worker heartbeat at 18:28:52 UTC still named
-the prior `0be7dab1` release; new backend activation/recovery is not yet verified.
+the prior `0be7dab1` release. Worker subsequently confirmed `cb481a7c` at
+18:29:49 UTC and API health passed at 18:30:41 UTC. The live whole-account chart
+check caught a PostgreSQL dictionary-row issue: four unnamed NULL projections
+collapsed to one dictionary key. Follow-up gives every placeholder a unique
+alias; nine chart tests pass, including a HybridRow regression that reproduces
+PostgreSQL row behavior. No mobile republish is needed for this backend fix.
+The latest completed broker polls at verification still preceded this release;
+new-version reconciliation remains outstanding.
 
 ## 2026-09-09 — Greeting content-box sizing follow-up; Kraken value clarification
 

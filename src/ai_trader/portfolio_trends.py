@@ -51,7 +51,10 @@ def build_portfolio_trends(db_path, *, now=None, value_scope='ai_capital'):
     fields = ', '.join(_json_field('trading_permissions.ai_capital_ledger.' + key) + ' AS ' + key
                        for key in ['available_cash_gbp', 'deployed_capital_gbp', 'unrealized_pnl_gbp', 'allocation_gbp'])
     if value_scope == 'whole_account':
-        fields = 'NULL, NULL, NULL, NULL'  # No ledger payload fields leave the DB for account charts.
+        # Unique aliases are required by the PostgreSQL dictionary-row adapter.
+        # Repeated unnamed NULL columns collapse to one key and lose positional fields.
+        fields = ', '.join('NULL AS ' + key for key in
+                          ['available_cash_gbp', 'deployed_capital_gbp', 'unrealized_pnl_gbp', 'allocation_gbp'])
     try:
         with closing(connect(db_path)) as conn:
             rows = conn.execute(f"""

@@ -5,10 +5,33 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_trader.database import connect
+from ai_trader.database import connect, HybridRow
 from ai_trader.portfolio_trends import build_portfolio_trends, portfolio_trends, _cache
 
 NOW = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+
+
+def test_whole_account_projection_preserves_postgres_dictionary_columns(db):
+    with closing(connect(db)) as conn, conn:
+        snapshot(conn, 1, '2026-09-09T10:00:00Z')
+
+    class DictionaryConnection:
+        def __init__(self):
+            self.conn = connect(db)
+        def execute(self, sql, params):
+            cursor = self.conn.execute(sql, params)
+            names = [column[0] for column in cursor.description]
+            self.rows = [HybridRow(zip(names, row)) for row in cursor.fetchall()]
+            return self
+        def fetchall(self):
+            return self.rows
+        def close(self):
+            self.conn.close()
+
+    with patch('ai_trader.portfolio_trends.connect', side_effect=lambda *_: DictionaryConnection()):
+        result = build_portfolio_trends(db, now=NOW, value_scope='whole_account')
+    assert result['brokers'][0]['value_status'] == 'ok'
+    assert result['brokers'][0]['values'][0]['value'] == 99999
 
 
 @pytest.fixture
