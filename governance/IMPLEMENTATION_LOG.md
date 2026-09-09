@@ -75,6 +75,8 @@ check caught a PostgreSQL dictionary-row issue: four unnamed NULL projections
 collapsed to one dictionary key. Follow-up gives every placeholder a unique
 alias; nine chart tests pass, including a HybridRow regression that reproduces
 PostgreSQL row behavior. No mobile republish is needed for this backend fix.
+The same alias requirement is applied to both Alpaca payload projections, with
+an explicit regression assertion preventing unnamed extracted columns.
 The latest completed broker polls at verification still preceded this release;
 new-version reconciliation remains outstanding.
 

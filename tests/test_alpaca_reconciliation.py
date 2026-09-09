@@ -47,6 +47,18 @@ def fill(order, symbol, side, quantity, price, at, leaves=0):
 class CollapsingFillsTests(unittest.TestCase):
     """One order out of the several events Alpaca reports for it."""
 
+    def test_payload_projection_names_both_fields_for_postgres(self):
+        from ai_trader.alpaca_reconciliation import _alpaca_fill_rows
+        class Capture:
+            def execute(inner, sql):
+                self.assertIn('AS broker_order_id', sql)
+                self.assertIn('AS leaves_quantity', sql)
+                self.assertNotIn('h.opened_at, h.payload_json,', sql)
+                return inner
+            def fetchall(inner):
+                return []
+        self.assertEqual(_alpaca_fill_rows(Capture()), [])
+
     def test_full_order_profit_replaces_final_increment_estimate_once(self):
         from ai_trader.alpaca_reconciliation import _publish_order_result
         from ai_trader.production_evidence import record_trade_evidence

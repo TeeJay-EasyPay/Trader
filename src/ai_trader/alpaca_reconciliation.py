@@ -282,7 +282,7 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
     rows = conn.execute(
         f"""
         SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
-               {field('order_id')}, {field('leaves_qty')},
+               {field('order_id')} AS broker_order_id, {field('leaves_qty')} AS leaves_quantity,
                t.proposal_id, t.logical_trade_id
         FROM BROKER_TRADE_HISTORY h
         LEFT JOIN LOGICAL_TRADE_FILLS f ON f.broker_fill_id = h.external_id
