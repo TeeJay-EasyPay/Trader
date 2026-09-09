@@ -14,7 +14,6 @@ import { StatusPill } from './components/shared';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
-import { AskAiTrader } from './screens/Ask';
 import { StandupScreen } from './screens/Standup';
 import { RunCycleScreen } from './screens/RunCycle';
 import { useCycleRun, cycleProgressLabel } from './hooks/useCycleRun';
@@ -74,7 +73,6 @@ export default function App() {
   // actually reading was this SEEDED message -- a standing explainer that made an empty
   // conversation look like a redundant duplicate of the card description directly above it.
   // Starting empty means the Conversation card only appears once there is a conversation.
-  const [askMessages, setAskMessages] = useState([]);
 
   const {
     status,
@@ -179,9 +177,6 @@ export default function App() {
             declineReasons={declineReasons}
             onCommand={command}
             onRefresh={screenRefresh.ExecutiveBriefing.refresh}
-            askMessages={askMessages}
-            setAskMessages={setAskMessages}
-            request={apiRequest}
             onOpenPortfolio={() => setScreen('Portfolio')}
           />
         </ErrorBoundary>
@@ -233,7 +228,6 @@ export default function App() {
   }, [
     activity,
     activityPeriod,
-    askMessages,
     dailyLearning,
     declineReasons,
     founderBrief.brief,

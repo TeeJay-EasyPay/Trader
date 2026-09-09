@@ -1,5 +1,30 @@
 # Implementation Log
 
+## 2026-09-09 — Remove embedded Ask card (release authorised)
+
+Founder explicitly requested removing Ask AI Trader from Executive Briefing,
+using Standup for conversations. Removed the mounted card, import and unused
+App state/props. Retained Ask source/API and stored history; no deletion or
+automatic transfer to Standup. Standup remains discussion-only; explicit Run a
+Cycle controls remain available. No new database reads/polling added. This local
+change passed all 81 mobile tests and App/Briefing Babel compilation. Founder
+subsequently authorised commit and publication. Mobile-only release uses
+`[skip render]` to avoid an unnecessary backend restart. Broader review remains
+recommendations; macro ingestion is not included.
+
+## 2026-09-09 — Whole-app clarity review (recommendations only)
+
+Founder requested the previously deferred duplication review, preserving charts,
+AI-managed positions and trade history. Source review covers all four navigable
+screens plus Ask. Findings and proposed card responsibilities are in
+`architecture/FOUNDER_UX_REVIEW_2026-09-09.md`.
+Key issues: repeated greeting/balance/activity prose; refusal rows grouped by
+reason over a bounded event sample, not days or unique ideas; missing exchange
+and period labels; Portfolio totals grouped by currency rather than broker;
+hard-coded broker/currency assumptions and unrealised losses called attention
+items. Recommended bounded summaries, dynamic broker cards and explicit windows.
+No redesign, macro ingestion, commit or deployment performed for this review.
+
 ## 2026-09-09 — Release published and emulator checked
 
 Final mobile polish `7de5d621f54d413044ef7e187ff56493b744c090` is published:
