@@ -14,6 +14,12 @@ the screen and exercised exchange cards, but missed these loaded child-card path
 No Expo/emulator setup, database reads, trading logic or backend changes required.
 Publishing mobile-only with [skip render] to avoid a backend restart/extra egress.
 
+Hotfix release confirmed: `1ac597adf5fdcefab732eb661c13645605b9bb20` pushed to
+master; Android runtime 1.0.3 published to preview group
+`09a3cfd9-39e5-4cd9-bd39-16add6b0b34a` and hosted-preview group
+`b6113a5c-8fcf-4a6b-b84e-fb5ff4c67282`. Both share the corrected production bundle.
+Device confirmation is still outstanding; no claim of visual emulator testing.
+
 ## 2026-09-09 — Exchange-first briefing and Portfolio redesign
 
 Implemented the approved review: greeting no longer repeats account results;
