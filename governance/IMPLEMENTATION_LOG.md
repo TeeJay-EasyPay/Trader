@@ -24,6 +24,15 @@ Release compilation and mobile suite run before publication. No local Expo serve
 or emulator setup. Device visual fidelity is not yet independently verified;
 real graphs naturally differ from the illustrative mockup's data.
 
+Published from GitHub commit `2b89b5ab26c558c987333127730d44ee182bb136`:
+103 mobile tests passed; release export compiled 625 modules (1.15 MB).
+Android runtime 1.0.3 update groups:
+
+- preview: `0fe3fd61-7cce-41eb-b58f-92991539dc72`
+- hosted-preview: `ed29213a-cb05-4347-9adc-d69bcd085a0e`
+
+Both channels confirmed published. No new image assets or backend restart.
+
 ## 2026-09-09 — Approved mockup layouts, not only colours
 
 Founder reported that the published palette retained the old layouts. Implemented
