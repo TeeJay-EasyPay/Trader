@@ -42,6 +42,16 @@ explicitly says replies are read aloud and does not place trades; all 38 tests
 in that test module then passed. Targeted refusal/sample tests: 16 passed.
 The full backend suite was not repeated after this test-only correction.
 
+Release: `1949081eea16db4d837edc7a22f9c21f7d4741c7` committed and pushed to
+GitHub master. Android runtime 1.0.3 published successfully to preview group
+`0f1907a8-601e-4d53-a878-698bc75ff07b` and hosted-preview group
+`a22238c0-0deb-44d7-aaee-246d32f61b3a`, sharing the production exported bundle.
+The temporary local preview entry is not present in the commit or published build.
+Post-publication API health returned OK at 11:26 UTC. The bounded worker heartbeat
+check still reported prior backend commit `26092511`; Render rollout is NOT yet
+confirmed. No claim of a live backend version check or emulator visual sign-off.
+This release-record commit uses [skip render] to avoid another backend restart.
+
 ## 2026-09-09 — Remaining screen review completed (documentation only)
 
 Founder confirmed Ask is absent and requested the rest of the review. Updated
