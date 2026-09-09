@@ -101,6 +101,8 @@ test('greeting is a bundled absolute background, not a sibling icon or remote UR
   assert.equal(tree.type, 'Image');
   assert.equal(tree.props.source, 'bundled-greeting-image');
   assert.equal(tree.props.style.position, 'absolute');
+  assert.equal(tree.props.style.width, '100%', 'must override the bundled asset intrinsic width');
+  assert.equal(tree.props.style.height, '100%', 'must override the bundled asset intrinsic height');
   assert.ok(!JSON.stringify(tree).includes('uri'));
 });
 

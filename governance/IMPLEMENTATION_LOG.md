@@ -1,5 +1,17 @@
 # Implementation Log
 
+## 2026-09-09 — Greeting artwork clipped by intrinsic image dimensions
+
+Founder screenshot showed the cream texture but no sun/clouds. The bundled PNG
+is present (2172 × 724), and React Native Image.android.js applies its intrinsic
+width/height before caller styles. absoluteFillObject only supplies insets; it
+did not override those dimensions, so the card clipped the large artwork instead
+of stretching it into the card. GreetingIllustration now explicitly sets 100%
+width and height, retaining absolute decorative positioning and stretch mode.
+Regression assertions require both dimensions. No new assets, database requests,
+trading changes or local Expo server. Device visual confirmation remains pending.
+Publishing mobile-only with [skip render] to avoid restarting the backend.
+
 ## 2026-09-09 — Portfolio P&L, scrolling and balance-scope investigation
 
 Founder reported blank sell P&L, requested exchange-coloured history rows and a
