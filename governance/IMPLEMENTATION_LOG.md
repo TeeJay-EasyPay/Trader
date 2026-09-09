@@ -16,6 +16,14 @@ Unknowns stay unknown, zero remains zero, and tiny values remain nonzero. Intern
 AI-review rejection code is rendered in plain language. No trading/data changes.
 All 115 mobile tests passed. Release and post-update visual results follow below.
 
+Post-publication direct Android visual checks confirmed the corrected summary
+heading, proportional cloud, empty chart, single-line price tiles and compact
+Kraken/Alpaca results. Opening Strategy ideas exposed a pre-existing transition
+crash: a new detail route rendered one frame with old summary data before the
+request effect cleared it. Added a shape/route guard in render and scroll-restore
+effect, covering detail-to-summary and detail-to-detail transitions too. All 116
+mobile tests now pass. This was found by real navigation, not by static layout tests.
+
 ## 2026-09-09 — Learning mockup structure pass
 
 Reworked Learning's overview against the approved preview: joined period tabs,

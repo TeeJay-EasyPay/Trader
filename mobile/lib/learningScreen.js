@@ -31,4 +31,7 @@ function priceText(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unknown';
   return Number(value.toPrecision(6)).toString();
 }
-module.exports = { learningRequest, shiftedDate, resultText, humanStatus, priceText };
+function matchesLearningView(data, detail) {
+  return !!data && (detail ? data.kind === detail && Array.isArray(data.rows) : Array.isArray(data.outcomes) && !!data.assessment);
+}
+module.exports = { learningRequest, shiftedDate, resultText, humanStatus, priceText, matchesLearningView };

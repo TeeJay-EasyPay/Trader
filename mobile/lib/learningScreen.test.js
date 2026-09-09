@@ -3,6 +3,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { learningRequest, shiftedDate, resultText, humanStatus } = require('./learningScreen');
 const { priceText } = require('./learningScreen');
+test('summary/detail navigation cannot render stale data using the wrong shape', () => {
+  const { matchesLearningView } = require('./learningScreen');
+  const summary = { outcomes: [], assessment: {} };
+  const details = { kind: 'strategies', rows: [] };
+  assert.equal(matchesLearningView(summary, 'strategies'), false);
+  assert.equal(matchesLearningView(details, null), false);
+  assert.equal(matchesLearningView(details, 'trades'), false);
+  assert.equal(matchesLearningView(details, 'strategies'), true);
+  assert.equal(matchesLearningView(summary, null), true);
+  assert.equal(matchesLearningView(null, null), false);
+});
 test('compact prices preserve small values and never turn missing data into zero', () => {
   assert.equal(priceText(0.01346040756), '0.0134604');
   assert.equal(priceText(0.000000001234567), '1.23457e-9');

@@ -4,7 +4,7 @@ const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, Platform, BackHandler } = require('react-native');
 const { LearningCloud } = require('../components/LearningCloud');
 const { exchangePalette, palette } = require('../lib/palette');
-const { learningRequest, shiftedDate, resultText, humanStatus, priceText } = require('../lib/learningScreen');
+const { learningRequest, shiftedDate, resultText, humanStatus, priceText, matchesLearningView } = require('../lib/learningScreen');
 const HEADINGS = { rejected: 'Tracked opportunities', decisions: 'Rejected decisions', trades: 'Completed trades',
   strategies: 'Strategy ideas', tests: 'Test results', reviews: 'Trade reviews', proposals: 'Proposed lessons' };
 const s = StyleSheet.create({
@@ -194,10 +194,10 @@ function LearningScreen({ request, onNavigate }) {
     return () => { active = false; };
   }, [request, path, retry]);
   useEffect(() => { if (!detail || !BackHandler) return undefined; const listener = BackHandler.addEventListener('hardwareBackPress', () => { setDetail(null); return true; }); return () => listener.remove(); }, [detail]);
-  useEffect(() => { if (data && onNavigate) onNavigate(Boolean(detail)); }, [data, detail, onNavigate]);
+  useEffect(() => { if (matchesLearningView(data, detail) && onNavigate) onNavigate(Boolean(detail)); }, [data, detail, onNavigate]);
   const open = kind => { if (onNavigate) onNavigate(true); setPage(0); setBroker('all'); setDetail(kind); };
-  if (busy || error || !data) return <View style={s.card}>{detail && <Action label="‹ Back to Learning" onPress={() => setDetail(null)} />}
-    <Text style={s.heading}>Learning</Text>{busy ? <ActivityIndicator /> : <Action label="Retry" onPress={() => setRetry(n => n + 1)} />}<Text style={s.body}>{error || 'Loading compact evidence…'}</Text></View>;
+  if (busy || error || !matchesLearningView(data, detail)) return <View style={s.card}>{detail && <Action label="‹ Back to Learning" onPress={() => setDetail(null)} />}
+    <Text style={s.heading}>Learning</Text>{!error ? <ActivityIndicator /> : <Action label="Retry" onPress={() => setRetry(n => n + 1)} />}<Text style={s.body}>{error || 'Loading compact evidence…'}</Text></View>;
   if (!detail) return <LearningOverview data={data} period={period} anchor={anchor} today={today} onPeriod={setPeriod}
     onMove={n => setAnchor(shiftedDate(data.period.start, period, n))} onOpen={open} />;
   return <View style={s.page}><Action label="‹ Back to Learning" onPress={() => setDetail(null)} />
