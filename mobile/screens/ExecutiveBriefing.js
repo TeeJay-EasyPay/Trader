@@ -25,6 +25,7 @@ const { styles } = require('../styles');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
 const { money, gbp, brokerMoney } = require('../lib/money');
 const { formatList } = require('../lib/lists');
+const { formatDateTime } = require('../lib/datetime');
 const { riskTone, krakenWholeAccountNote } = require('../lib/founderPresentation');
 const {
   cioGreeting,

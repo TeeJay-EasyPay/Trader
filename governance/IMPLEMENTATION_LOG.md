@@ -1,5 +1,19 @@
 # Implementation Log
 
+## 2026-09-09 — Briefing asynchronous render crash hotfix
+
+Founder screenshots showed the new briefing rendering initially, then entering
+the error boundary after background refresh. Reproduced locally by invoking the
+actual DeclineReasonsCard and TradeScorecardCard with timestamped payloads: both
+threw ReferenceError: formatDateTime is not defined. The redesign introduced
+timestamp rendering but omitted the datetime import. Imported the existing helper.
+New regression tests explicitly cover unloaded then timestamped refusal data,
+sample dates, stale-refresh flags, and loaded scorecard timestamps. Both tests
+failed before the fix; all 87 mobile tests pass afterward. Prior checks compiled
+the screen and exercised exchange cards, but missed these loaded child-card paths.
+No Expo/emulator setup, database reads, trading logic or backend changes required.
+Publishing mobile-only with [skip render] to avoid a backend restart/extra egress.
+
 ## 2026-09-09 — Exchange-first briefing and Portfolio redesign
 
 Implemented the approved review: greeting no longer repeats account results;
