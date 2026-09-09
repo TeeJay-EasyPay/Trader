@@ -16,6 +16,10 @@ verification, not a claim of pixel-identical emulator verification. The emulator
 was previously observed running an older blue-layout app; latest-version visual
 comparison remains outstanding. No local Expo development server is used.
 
+Published mobile commit `39a1e3e20ebb681488406a8a15e8eeb2d5bfe0d4`, runtime
+1.0.3, to preview `d61ad9a1-2995-40d8-9c09-747ea547bf34` and hosted-preview
+`c21902ac-13e7-44a0-85cd-fc1d062f2d9b`. No backend deployment was needed.
+
 
 ## 2026-09-09 — Learning screen: period reports and traceable evidence
 
