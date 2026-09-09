@@ -2,6 +2,13 @@
 
 ## 2026-09-09 — Remove embedded Ask card (release authorised)
 
+Released: `44a3012cb449ce95ff8b591ac000cc4610965163` pushed to master.
+Android runtime 1.0.3 published successfully to preview
+`b5d6b371-50bc-4e2a-855d-3e7e9ef147cb` and hosted-preview
+`b4377d49-4bf5-44b5-98d3-6745f7eb8102`, using the same exported bundle.
+No backend restart requested. This particular OTA has not been visually
+rechecked on the emulator; build and automated verification passed.
+
 Founder explicitly requested removing Ask AI Trader from Executive Briefing,
 using Standup for conversations. Removed the mounted card, import and unused
 App state/props. Retained Ask source/API and stored history; no deletion or
