@@ -1,6 +1,8 @@
 # Learning reliability fixes — 9 September 2026
 
-Status: implemented locally; release and first live corrected outcome NOT verified.
+Status: committed and pushed as `0c073e2cc4ec2ea6e6f23517551d1b120576d2f7`.
+Production background-worker heartbeat reports that commit, running at
+2026-09-09 12:46:30 UTC. First live corrected learning outcome remains unverified.
 This is not model-weight training and does not establish increasing profitability.
 
 ## Changes
@@ -84,8 +86,8 @@ The workspace/runtime and read-only credentials must be available for it to run.
 
 ## Remaining gates and limitations
 
-- Release verification and a genuine closed governed Alpaca trade reaching exactly
-  one learning run/review/experience are outstanding. Do not force a trade.
+- Worker release is verified; a genuine closed governed Alpaca trade reaching
+  exactly one learning run/review/experience is still outstanding. Do not force a trade.
 - Orphaned historical fills outside the bounded broker window are not repaired.
   Recovery requires a bounded identity-verified replay, never symbol-based guesses.
 - Unknown actual fees require authoritative evidence, not an assumed zero.

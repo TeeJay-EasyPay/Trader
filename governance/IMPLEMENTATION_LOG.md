@@ -1,5 +1,15 @@
 # Implementation Log
 
+## 2026-09-09 — Learning fixes released
+
+Founder authorised commit/deployment. Code commit
+`0c073e2cc4ec2ea6e6f23517551d1b120576d2f7` pushed to master. Production worker
+heartbeat reports this exact commit running at 12:46:30 UTC. No manual research
+cycle or order was triggered. First post-release corrected learning outcome and
+steady-state egress remain to be measured by the existing daily audit. No mobile
+bundle change required. A separate brighter briefing image is a design preview,
+not an implemented/published colour change.
+
 ## 2026-09-09 — Learning identity, net-evidence reviews and daily audit (local)
 
 Implemented governed Alpaca parent/child identity resolution, activity-only fill
