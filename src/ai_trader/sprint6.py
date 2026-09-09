@@ -1447,8 +1447,9 @@ def _canonical_broker_event(broker: str, event: dict[str, Any]) -> dict[str, Any
     stage = _stage_from_status(status, event)
     confidence = 0.95 if order_id or trade_id else 0.70
     return {
-        "logical_trade_id": logical_trade_id,
+        "logical_trade_id": event.get("logical_trade_id") if broker.lower() == "alpaca" else logical_trade_id,
         "order_id": order_id,
+        "parent_order_id": event.get("parent_order_id"),
         "trade_id": trade_id,
         "id": event.get("id") or trade_id or order_id,
         "status": status,
@@ -1463,9 +1464,9 @@ def _canonical_broker_event(broker: str, event: dict[str, Any]) -> dict[str, Any
         "filled_quantity": event.get("filled_quantity") or event.get("filled_qty") or event.get("vol_exec"),
         "remaining_quantity": event.get("remaining_quantity") or event.get("remaining"),
         "broker_fee": event.get("broker_fee"),
-        "exchange_fee": event.get("exchange_fee") or event.get("fee"),
+        "exchange_fee": event.get("exchange_fee") if event.get("exchange_fee") is not None else event.get("fee"),
         "fill_id": event.get("fill_id") or event.get("trade_id") or event.get("tradeid") or event.get("id"),
-        "proposal_id": event.get("proposal_id") or event.get("client_order_id"),
+        "proposal_id": event.get("proposal_id") if broker.lower() == "alpaca" else event.get("proposal_id") or event.get("client_order_id"),
         "recommendation_id": event.get("recommendation_id"),
         "fill_role": event.get("fill_role"),
         "timestamp": event.get("updated_at") or event.get("transaction_time") or event.get("time") or event.get("created_at") or utc_now_iso(),
@@ -1479,6 +1480,8 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
         stored_context = json.loads(trade.get("decision_context_json") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         stored_context = {}
+    stored_context = stored_context if isinstance(stored_context, dict) else {}
+    guardrails = stored_context.get("guardrails") if isinstance(stored_context.get("guardrails"), dict) else {}
     proposal_context = stored_context.get("proposal") if isinstance(stored_context.get("proposal"), dict) else {}
     intelligence = stored_context.get("intelligence") if isinstance(stored_context.get("intelligence"), dict) else {}
     committee = intelligence.get("committee") if isinstance(intelligence.get("committee"), dict) else {}
@@ -1494,10 +1497,15 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
         "asset_type": trade.get("asset_type"),
         "side": trade.get("side"),
         "reconciliation_confidence": trade.get("reconciliation_confidence"),
+        "guardrails_passed": guardrails.get("passed"),
+        "strongest_argument_for": committee.get("strongest_argument_for"),
+        "strongest_argument_against": committee.get("strongest_argument_against"),
     }
     return {
         "symbol": trade.get("symbol"),
         "attribution": {
+            "broker": trade.get("broker"),
+            "fees_status": "known" if trade.get("net_pnl") is not None else "unavailable",
             "proposal_id": trade.get("proposal_id"),
             "symbol": trade.get("symbol"),
             "side": trade.get("side"),

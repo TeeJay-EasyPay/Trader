@@ -251,17 +251,25 @@ def link_broker_order(
     logical_trade_id: str,
     broker_order_id: str,
     payload: dict[str, Any],
+    order_role: str | None = None,
 ) -> dict[str, Any]:
-    return record_canonical_event(
+    result = record_canonical_event(
         db_path,
         logical_trade_id=logical_trade_id,
-        stage=str(payload.get("status") or "submitted").lower(),
+        stage=f"{order_role}_order_linked" if order_role in {"entry", "exit"} else str(payload.get("status") or "submitted").lower(),
         event_source="broker_submission",
         reason="Broker response linked to the governed execution intent.",
         payload=payload,
         broker_order_id=broker_order_id,
         idempotency_key=f"broker-order:{logical_trade_id}:{broker_order_id}:{payload.get('status')}",
     )
+    if order_role == "entry" and payload.get("side") in {"buy", "sell"}:
+        # Broker-supplied bracket children only; never pair exits by symbol.
+        for leg in payload.get("legs") or []:
+            if isinstance(leg, dict) and leg.get("id") and leg.get("side") in {"buy", "sell"} and leg.get("side") != payload.get("side"):
+                link_broker_order(db_path, logical_trade_id=logical_trade_id,
+                                  broker_order_id=str(leg["id"]), payload=leg, order_role="exit")
+    return result
 
 
 def resolve_logical_trade_id(
@@ -277,15 +285,31 @@ def resolve_logical_trade_id(
         return str(supplied)
     order_id = str(event.get("order_id") or event.get("ordertxid") or event.get("id") or "")
     if order_id:
+        parent_link = False
         with _connection(db_path, conn) as conn:
             row = conn.execute(
                 """
-                SELECT logical_trade_id FROM LOGICAL_TRADE_EVENTS
-                WHERE broker_order_id = ? ORDER BY event_id ASC LIMIT 1
+                SELECT e.logical_trade_id, t.proposal_id FROM LOGICAL_TRADE_EVENTS e
+                JOIN LOGICAL_TRADES t ON t.logical_trade_id = e.logical_trade_id
+                WHERE e.broker_order_id = ? AND t.broker = ?
+                ORDER BY CASE WHEN t.proposal_id IS NOT NULL THEN 0 ELSE 1 END, e.event_id ASC LIMIT 1
                 """,
-                (order_id,),
+                (order_id, broker.lower()),
             ).fetchone()
-            if not row and broker.lower() != "kraken":
+            if (not row or row[1] is None) and broker.lower() == "alpaca" and event.get("parent_order_id"):
+                parent = conn.execute(
+                    """SELECT e.logical_trade_id, t.side FROM LOGICAL_TRADE_EVENTS e
+                       JOIN LOGICAL_TRADES t ON t.logical_trade_id = e.logical_trade_id
+                       WHERE e.broker_order_id = ? AND t.broker = 'alpaca'
+                         AND t.proposal_id IS NOT NULL AND e.event_source = 'broker_submission'
+                         AND e.stage != 'exit_order_linked'
+                       ORDER BY e.event_id ASC LIMIT 1""",
+                    (str(event["parent_order_id"]),),
+                ).fetchone()
+                if parent and str(event.get("side") or "").lower() in {"buy", "sell"} and str(event["side"]).lower() != parent[1]:
+                    row = parent
+                    parent_link = True
+            if not row and broker.lower() not in {"kraken", "alpaca"}:
                 try:
                     row = conn.execute(
                         """
@@ -300,6 +324,8 @@ def resolve_logical_trade_id(
                 except Exception:
                     row = None
         if row:
+            if parent_link:
+                link_broker_order(db_path, logical_trade_id=str(row[0]), broker_order_id=order_id, payload=event, order_role="exit")
             return str(row[0])
     trade_id = str(event.get("trade_id") or event.get("tradeid") or "")
     stable = order_id or trade_id or _event_key(broker.lower(), str(event.get("symbol") or event.get("pair") or "unknown"), event)
@@ -445,6 +471,9 @@ def _record_fill_if_present(
 ) -> dict[str, Any]:
     if broker.lower() == "kraken" and str(event.get("record_type") or "").lower() != "trade_fill":
         return {"status": "not_a_fill", "reason": "kraken_trade_fill_evidence_required"}
+    if broker.lower() == "alpaca" and str(event.get("status") or "").lower() not in {"fill", "partial_fill"}:
+        # Order snapshots contain cumulative quantities, not distinct executions.
+        return {"status": "not_a_fill", "reason": "alpaca_activity_fill_required"}
     quantity = _number(event.get("filled_quantity") or event.get("filled_qty") or event.get("vol_exec") or event.get("quantity"))
     price = _number(event.get("average_fill_price") or event.get("filled_avg_price") or event.get("avg_price") or event.get("price"))
     if not fill_id or not quantity or quantity <= 0 or not price or price <= 0:
@@ -475,7 +504,7 @@ def _record_fill_if_present(
                         quantity,
                         price,
                         _number(event.get("broker_fee")),
-                        _number(event.get("exchange_fee") or event.get("fee")),
+                        _number(event.get("exchange_fee") if event.get("exchange_fee") is not None else event.get("fee")),
                         filled_at,
                         json.dumps(event, sort_keys=True, default=str),
                     ),
@@ -490,6 +519,17 @@ def _fill_role_from_order(
 ) -> str:
     if order_id:
         with _connection(db_path, conn) as conn:
+            if broker.lower() == "alpaca":
+                linked = conn.execute(
+                    """SELECT stage FROM LOGICAL_TRADE_EVENTS
+                       WHERE logical_trade_id = ? AND broker_order_id = ?
+                         AND event_source = 'broker_submission'
+                       ORDER BY event_id ASC LIMIT 1""",
+                    (logical_trade_id, order_id),
+                ).fetchone()
+                if not linked:
+                    return "unknown"
+                return "exit" if linked[0] == "exit_order_linked" else "entry"
             if broker.lower() == "kraken":
                 try:
                     owned = conn.execute(
@@ -553,7 +593,7 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
         # payload, both of which read that exact field. Dropping it there would empty the
         # AI's own record of why a trade was taken -- silently, and only in production.
         trade_row = active.execute(
-            "SELECT side, state FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)
+            "SELECT side, state, broker FROM LOGICAL_TRADES WHERE logical_trade_id = ?", (logical_trade_id,)
         ).fetchone()
         if not trade_row:
             return None
@@ -570,7 +610,9 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
         if avg_entry is not None and avg_exit is not None and exit_qty > 0:
             matched = min(entry_qty, exit_qty)
             gross_pnl = (avg_exit - avg_entry) * matched * (1 if side == "buy" else -1)
-        net_pnl = gross_pnl - broker_fee - exchange_fee if gross_pnl is not None else None
+        fees_known = trade_row["broker"] != "alpaca" or bool(fills and all(row["broker_fee"] is not None and row["exchange_fee"] is not None for row in fills))
+        # Legacy aggregate fee columns are NOT NULL; net_pnl carries incompleteness.
+        net_pnl = gross_pnl - broker_fee - exchange_fee if gross_pnl is not None and fees_known else None
         terminal = bool(entry_qty > 0 and exit_qty >= entry_qty - 1e-9)
         state = "closed" if terminal else "open" if entry_qty > 0 else str(trade_row["state"])
         confidence = 1.0 if terminal and all(row["broker_fill_id"] for row in fills) else 0.85 if fills else 0.5

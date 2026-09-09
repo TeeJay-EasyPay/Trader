@@ -304,6 +304,10 @@ class BrokerService:
                 )
                 continue
             events = _recent_unique_broker_events(list(orders), list(history), limit=100)
+            if broker_name == "alpaca":
+                # Nested bracket orders must not consume the entire event budget and
+                # starve actual fills. Keep the same maximum 100 persisted events.
+                events = _recent_unique_broker_events(list(history)[:50], list(orders), limit=100)
             new_rows = record_broker_trade_history(self.settings.db_path, broker_name, events)
             # Broker history is the change detector. Persist production evidence
             # only for new or changed rows; rewriting the broker's full recent
@@ -342,6 +346,9 @@ class BrokerService:
                     source="poll_broker_activity",
                 )
             else:
+                if broker_name == "alpaca":
+                    # Establish broker-provided parent/child identity before its fill.
+                    new_rows = sorted(new_rows, key=lambda row: not bool(row.get("parent_order_id")))
                 reconciliation = normalize_broker_events(
                     self.settings.db_path,
                     broker=broker_name,

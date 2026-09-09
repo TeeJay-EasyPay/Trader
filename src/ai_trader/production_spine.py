@@ -478,7 +478,7 @@ def run_closed_loop_learning(
         original_stop=_required_float(decision_context, "original_stop", "stop_loss"),
         filled_quantity=_required_float(attribution, "quantity", "filled_quantity"),
         gross_realized_pnl=_float(attribution.get("profit_loss") or attribution.get("gross_realized_pnl")) or 0.0,
-        total_cost=costs.get("total_trading_cost"),
+        total_cost=None if attribution.get("fees_status") in {"unknown", "unavailable", "estimated"} else costs.get("total_trading_cost"),
         expected_r=_float(_context_value(decision_context, "expected_r")),
         planned_take_profit=_float(_context_value(decision_context, "take_profit")),
         payload={"logical_trade_id": logical_trade_id},

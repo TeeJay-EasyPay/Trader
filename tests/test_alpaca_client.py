@@ -127,6 +127,30 @@ class AlpacaBracketOrderTimeInForceTests(unittest.TestCase):
         self.assertEqual(sent_payloads[0]["time_in_force"], "gtc")
         self.assertEqual(sent_payloads[0]["order_class"], "bracket")
 
+    def test_nested_orders_keep_explicit_bracket_parent_without_extra_requests(self):
+        client = self._client()
+        with patch.object(client, "_request", return_value=[
+            {"id": "entry", "order_class": "bracket", "side": "buy", "legs": [
+                {"id": "stop", "side": "sell"}, {"id": "target", "side": "sell"}]},
+            {"id": "manual", "side": "sell"},
+        ]) as request:
+            orders = client.get_orders()
+        request.assert_called_once_with("GET", "/v2/orders?status=all&limit=50&nested=true")
+        self.assertEqual([order["id"] for order in orders], ["entry", "stop", "target", "manual"])
+        self.assertEqual(orders[1]["parent_order_id"], "entry")
+        self.assertNotIn("parent_order_id", orders[3])
+        self.assertNotIn("legs", orders[0])
+
+    def test_standalone_oco_legs_remain_visible_without_inventing_entry_parent(self):
+        client = self._client()
+        with patch.object(client, "_request", return_value=[{
+            "id": "take-profit", "order_class": "oco", "side": "sell",
+            "legs": [{"id": "stop", "side": "sell"}],
+        }]):
+            orders = client.get_orders()
+        self.assertEqual([order["id"] for order in orders], ["take-profit", "stop"])
+        self.assertNotIn("parent_order_id", orders[1])
+
 
 if __name__ == "__main__":
     unittest.main()

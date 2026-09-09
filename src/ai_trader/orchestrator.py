@@ -490,6 +490,7 @@ class InvestmentOrchestrator:
                         logical_trade_id=logical_trade_id,
                         broker_order_id=broker_order_id,
                         payload=order,
+                        order_role="entry" if selected.name == "alpaca" else None,
                     )
                     if selected.name == "kraken":
                         register_kraken_order_ownership(

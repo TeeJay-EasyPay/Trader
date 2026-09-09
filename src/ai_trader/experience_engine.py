@@ -163,22 +163,39 @@ def record_experience(
     return {"status": "recorded", "experience_id": cursor.lastrowid, "immutable_hash": immutable_hash}
 
 
+def classify_trade_review(attribution: dict[str, Any], decision_context: dict[str, Any]) -> dict[str, Any]:
+    """Separate evidence completeness, decision process and net outcome; never guess costs."""
+    intelligence = decision_context.get("intelligence") or {}
+    committee = intelligence.get("committee") if isinstance(intelligence, dict) else None
+    committee = committee if isinstance(committee, dict) else {}
+    stored_guardrails = decision_context.get("guardrails") or {}
+    guardrails = decision_context.get("guardrails_passed", stored_guardrails.get("passed") if isinstance(stored_guardrails, dict) else None)
+    arguments_complete = all(
+        isinstance(decision_context.get(key) or committee.get(key), str) and (decision_context.get(key) or committee.get(key)).strip()
+        for key in ("strongest_argument_for", "strongest_argument_against")
+    )
+    decision = "poor" if guardrails is False else "good" if guardrails is True and arguments_complete else "unknown"
+    net_pnl = _float(attribution.get("net_realized_pnl"))
+    net_r = _float(attribution.get("net_r"))
+    fees_unknown = attribution.get("fees_status") in {"unavailable", "unknown", "estimated"}
+    result = None if fees_unknown else net_pnl if net_pnl is not None else net_r
+    outcome = "unknown" if result is None else "good" if result > 0 else "poor" if result < 0 else "breakeven"
+    classification = (
+        f"{decision.title()} decision, {outcome} outcome"
+        if decision != "unknown" and outcome in {"good", "poor"}
+        else "Insufficient evidence to judge" if decision == "unknown" or outcome == "unknown"
+        else f"{decision.title()} decision, breakeven outcome"
+    )
+    return {"outcome_classification": classification, "decision_assessment": decision,
+            "net_outcome_assessment": outcome, "classification_version": "net-evidence-v2"}
+
+
 def generate_post_trade_review(db_path: Path, attribution: dict[str, Any], decision_context: dict[str, Any] | None = None) -> dict[str, Any]:
     initialize_experience_engine_schema(db_path)
     decision_context = decision_context or {}
-    pnl = _float(attribution.get("profit_loss")) or 0.0
     expected_r = _float(decision_context.get("expected_r") or decision_context.get("expected_return_r"))
-    actual_r = _float(attribution.get("actual_r") or attribution.get("net_r"))
-    good_decision = bool(decision_context.get("guardrails_passed", True)) and bool(decision_context.get("strongest_argument_for")) and bool(decision_context.get("strongest_argument_against"))
-    good_outcome = pnl > 0 or (actual_r is not None and actual_r > 0)
-    if good_decision and good_outcome:
-        classification = "Good decision, good outcome"
-    elif good_decision and not good_outcome:
-        classification = "Good decision, poor outcome"
-    elif not good_decision and good_outcome:
-        classification = "Poor decision, good outcome"
-    else:
-        classification = "Poor decision, poor outcome" if decision_context else "Insufficient evidence to judge"
+    actual_r = _float(attribution.get("net_r"))
+    assessment = classify_trade_review(attribution, decision_context)
     lessons = [
         "Do not treat the result alone as proof of skill.",
         "Compare expected R with actual R before changing strategy.",
@@ -188,9 +205,9 @@ def generate_post_trade_review(db_path: Path, attribution: dict[str, Any], decis
     if attribution.get("fees_status") == "unavailable":
         lessons.append("Fee impact is unavailable, so net performance confidence is limited.")
     review = {
-        "outcome_classification": classification,
+        **assessment,
         "what_happened": _what_happened(attribution),
-        "decision_quality": "Decision evidence was complete enough to review." if decision_context else "Historical decision context is missing.",
+        "decision_quality": "Decision evidence is insufficient to judge quality." if assessment["decision_assessment"] == "unknown" else "Recorded decision-process evidence assessed separately from its outcome.",
         "execution_quality": "Execution quality is measurable when fill price, fees, and slippage are available.",
         "lessons": lessons,
         "questions": [
@@ -221,7 +238,7 @@ def generate_post_trade_review(db_path: Path, attribution: dict[str, Any], decis
                     review["execution_quality"],
                     json.dumps(review["lessons"], sort_keys=True),
                     json.dumps(review["questions"], sort_keys=True),
-                    json.dumps({"attribution": attribution, "decision_context": decision_context}, sort_keys=True, default=str),
+                    json.dumps({"attribution": attribution, "decision_context": decision_context, "assessment": assessment}, sort_keys=True, default=str),
                 ),
             )
     return {**review, "review_id": cursor.lastrowid}
@@ -345,7 +362,9 @@ def _float(value: Any) -> float | None:
     try:
         if value in {None, ""}:
             return None
-        return float(value)
+        import math
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 

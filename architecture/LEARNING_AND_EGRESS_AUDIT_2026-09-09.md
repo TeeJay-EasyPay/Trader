@@ -1,6 +1,35 @@
 # Learning and egress audit — 9 September 2026
 
+Implementation follow-up: `LEARNING_FIXES_2026-09-09.md` records local fixes,
+validation, the dated live baseline and remaining measurement/release gaps.
+
 ## Verdict and scope
+
+### Follow-up after briefing hotfix (September 9)
+
+Founder confirmed the briefing works and requested another learning review.
+Current source still confirms the material gaps below; the UX/hotfix releases
+did not repair them. This follow-up made no production database queries.
+`proposal_context` supplies selected library excerpts, historical analogues,
+backtest/external intelligence, market forecasts and strategy evidence to the
+proposal prompt. `symbol_track_record` can reduce confidence/avoid a coin using
+recent outcomes. These are real feedback mechanisms, not model-weight training.
+`alpaca_reconciliation` still writes reporting attribution without the equivalent
+canonical terminal-learning chain. `experience_engine.generate_post_trade_review`
+still conflates missing arguments with poor decisions and uses positive gross
+P&L OR positive R to classify a good outcome. The app's scorecard reports results
+and lesson text but does not demonstrate that lessons changed subsequent decisions
+or improved out-of-sample results. Earlier production counts below are the earlier
+audit snapshot, not freshly recollected totals.
+
+Recommended acceptance criteria: per-exchange closed-trade-to-review coverage;
+correct net-of-fee and unknown-evidence classification; traceable lesson/version
+used in later decisions; chronological out-of-sample comparison against an unchanged
+baseline, with sample size, fees, drawdown and market regime. Do not promise daily
+improvement or equate more public reading with verified learning. Fix learning
+identity/classification before expanding inputs. Report compact cached aggregates
+from existing records, not repeated history downloads; measure egress if implemented.
+This follow-up is review-only: no trading logic changes or new live experiments.
 
 Learning is **partly operational, not fully verified or complete**. Kraken has a
 working terminal-trade workflow and outcome-based strategy feedback. Alpaca's

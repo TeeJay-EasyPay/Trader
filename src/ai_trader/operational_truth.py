@@ -459,10 +459,13 @@ def calculate_execution_costs(
     exit_slippage = _slippage(actual_average_exit_price, intended_exit_price)
     confirmed_costs = [value for value in [broker_fee, exchange_fee, spread_cost] if value is not None]
     total_cost = sum(confirmed_costs) if confirmed_costs else None
+    incomplete_fees = (payload or {}).get("fees_status") in {"unknown", "unavailable", "estimated"}
+    if incomplete_fees:
+        total_cost = None
     notional = abs((actual_average_entry_price or intended_entry_price or 0.0) * (quantity or 0.0))
     cost_pct = (total_cost / notional) if total_cost is not None and notional else None
     cost_bps = cost_pct * 10_000 if cost_pct is not None else None
-    fee_status = "confirmed" if confirmed_costs else "unavailable"
+    fee_status = "confirmed" if confirmed_costs and not incomplete_fees else "unavailable"
     result = {
         "entry_slippage": entry_slippage,
         "exit_slippage": exit_slippage,
@@ -526,9 +529,9 @@ def calculate_r_multiple(
 ) -> dict[str, Any]:
     initialize_operational_truth_schema(db_path)
     initial_risk = abs(intended_entry_price - original_stop) * abs(filled_quantity)
-    net_pnl = gross_realized_pnl - (total_cost or 0.0)
+    net_pnl = gross_realized_pnl - total_cost if total_cost is not None else None
     gross_r = gross_realized_pnl / initial_risk if initial_risk else None
-    net_r = net_pnl / initial_risk if initial_risk else None
+    net_r = net_pnl / initial_risk if initial_risk and net_pnl is not None else None
     planned_r = (abs((planned_take_profit or intended_entry_price) - intended_entry_price) * abs(filled_quantity) / initial_risk) if initial_risk and planned_take_profit is not None else None
     fee_impact_r = (total_cost / initial_risk) if total_cost is not None and initial_risk else None
     prediction_error = (net_r - expected_r) if net_r is not None and expected_r is not None else None

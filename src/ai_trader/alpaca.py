@@ -83,8 +83,18 @@ class AlpacaPaperClient:
         return self._request("GET", "/v2/positions")
 
     def get_orders(self, status: str = "all", limit: int = 50) -> list[dict[str, Any]]:
-        query = urlencode({"status": status, "limit": limit})
-        return self._request("GET", f"/v2/orders?{query}")
+        query = urlencode({"status": status, "limit": limit, "nested": "true"})
+        orders = self._request("GET", f"/v2/orders?{query}")
+        flattened = []
+        for order in orders:
+            flattened.append({key: value for key, value in order.items() if key != "legs"})
+            for leg in order.get("legs") or []:
+                if isinstance(leg, dict):
+                    # Standalone OCO legs must remain visible, but their parent is
+                    # another exit, not proof of an entry-to-exit relationship.
+                    link = {"parent_order_id": order.get("id")} if order.get("order_class") in {"bracket", "oto"} else {}
+                    flattened.append({**leg, **link})
+        return flattened
 
     def get_activities(
         self,

@@ -1,5 +1,31 @@
 # Implementation Log
 
+## 2026-09-09 — Learning identity, net-evidence reviews and daily audit (local)
+
+Implemented governed Alpaca parent/child identity resolution, activity-only fill
+aggregation, duplicate/partial-fill protections and explicit unknown fees. Reviews
+now separate missing evidence from bad decisions and use net outcomes rather than
+allow gross profit to mask net loss. Added a two-query aggregate audit and daily
+09:00 local Codex heartbeat. No live trading, backfill or deployment. The live
+aggregate read confirms Kraken coverage but no canonical Alpaca terminal group;
+it is a pre-release baseline, not verification of the fixes.
+
+Details, egress boundaries and remaining gaps:
+`architecture/LEARNING_FIXES_2026-09-09.md`. Full suite: 1,820 passed and 21 subtests;
+96 focused tests passed after final small hardening edits. Improved skill is NOT
+established: prospective baseline
+comparison and durable lesson-to-decision attribution remain open.
+
+## 2026-09-09 — Learning follow-up after confirmed briefing recovery (review only)
+
+Founder confirmed the hotfixed briefing starts and remains readable. Reviewed
+current learning feedback, proposal-context retrieval, Alpaca attribution and app
+scorecard paths against the earlier learning audit. Updated
+`architecture/LEARNING_AND_EGRESS_AUDIT_2026-09-09.md` with confirmed remaining code
+gaps and measurable acceptance criteria. No new production database reads, fixes,
+deployment, training or trading experiment in this follow-up. Earlier aggregate
+counts remain dated audit evidence, not current live totals.
+
 ## 2026-09-09 — Briefing asynchronous render crash hotfix
 
 Founder screenshots showed the new briefing rendering initially, then entering
