@@ -1,5 +1,15 @@
 # Implementation Log
 
+## 2026-09-09 — Keep the comparison chart visible while awaiting evidence
+
+Replaced the dashed explanatory placeholder in Learning with the actual empty
+Kraken comparison-chart frame: lavender panel, grid, axes, proposed/unchanged rule
+legend, selected UTC period and centred "Awaiting comparison results" label.
+No illustrative points, lines, returns or numeric scale are shown. This is the
+requested visual empty state; paired experiment/result integration remains
+outstanding and is explicitly labelled. No database requests or trading changes.
+Mobile render checks cover the empty frame, legend, period and lack of fake values.
+
 ## 2026-09-09 — Foldable background proportions and compact Learning summary
 
 User screenshots showed an oval sun on unfolded displays and an abrupt edge below

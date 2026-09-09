@@ -61,4 +61,9 @@ test('overview renders missing sources safely and wires all seven evidence pages
   assert.deepEqual(opened.sort(), ['decisions', 'proposals', 'rejected', 'reviews', 'strategies', 'tests', 'trades']);
   assert.ok(JSON.stringify(tree).includes('Rejection counts unavailable'));
   assert.ok(JSON.stringify(tree).includes('Completed-trade evidence could not be loaded.'));
+  const chart = module.exports.LearningComparisonChart({ period: { kind: 'daily', start: '2026-09-09', end: '2026-09-10' } });
+  const rendered = JSON.stringify(chart);
+  for (const text of ['Awaiting comparison results', 'Proposed rule', 'Unchanged rule', 'scale pending', '2026-09-09']) assert.ok(rendered.includes(text));
+  assert.equal(walk(chart).filter(n => Array.isArray(n.props?.style) && n.props.style[1]?.top).length, 4);
+  assert.ok(!rendered.includes('104'), 'no illustrative performance numbers');
 });

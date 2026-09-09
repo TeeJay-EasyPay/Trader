@@ -31,8 +31,30 @@ const s = StyleSheet.create({
   value: { fontSize: 21, fontWeight: '700', color: '#182D50' },
   metric: { flex: 1, minWidth: 75, alignItems: 'center', paddingVertical: 9 },
   divider: { borderTopWidth: 1, borderColor: '#E2E7EA', paddingTop: 10, gap: 5 },
-  placeholder: { minHeight: 110, borderWidth: 1, borderStyle: 'dashed', borderColor: '#C4CFD9', borderRadius: 12, padding: 16, justifyContent: 'center', gap: 6 },
+  chart: { borderWidth: 1, borderColor: '#D8CBFF', backgroundColor: '#F5F1FF', borderRadius: 12, padding: 12, gap: 10 },
+  plot: { height: 150, borderLeftWidth: 1, borderBottomWidth: 1, borderColor: '#BCC3D6', justifyContent: 'center', alignItems: 'center' },
+  gridHorizontal: { position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: '#DEDDEF' },
+  gridVertical: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: '#E7E4F3' },
+  chartMessage: { backgroundColor: '#F5F1FF', padding: 10, margin: 12, textAlign: 'center', color: '#52637D', fontSize: 14 },
+  legendDot: { width: 9, height: 9, borderRadius: 5 },
 });
+function LearningComparisonChart({ period }) {
+  return <View style={s.chart} accessibilityLabel="Kraken simulated comparison chart. Awaiting comparison results. No results plotted.">
+    <Text style={[s.body, { color: '#633BC1', fontWeight: '700' }]}>Kraken · simulated comparison</Text>
+    <View style={s.row}>
+      <View style={[s.legendDot, { backgroundColor: '#00884A' }]} /><Text style={s.small}>Proposed rule</Text>
+      <View style={[s.legendDot, { backgroundColor: '#8B93AC' }]} /><Text style={s.small}>Unchanged rule</Text>
+    </View>
+    <Text style={s.small}>Indexed value · scale pending</Text>
+    <View style={s.plot}>
+      {[0, 25, 50, 75].map(p => <View key={'h' + p} style={[s.gridHorizontal, { top: p + '%' }]} />)}
+      {[25, 50, 75, 100].map(p => <View key={'v' + p} style={[s.gridVertical, { left: p + '%' }]} />)}
+      <Text style={s.chartMessage}>Awaiting comparison results</Text>
+    </View>
+    <Text style={[s.small, { textAlign: 'center' }]}>{periodLabel(period)} · UTC</Text>
+    <Text style={s.small}>No paired rule experiment recorded. Test-result integration is still needed to plot a named rule against an unchanged baseline after estimated costs.</Text>
+  </View>;
+}
 function Action({ label, onPress, selected, disabled, grow }) {
   return <TouchableOpacity accessibilityRole="button" accessibilityState={{ selected: !!selected, disabled: !!disabled }}
     disabled={disabled} onPress={onPress} style={[s.button, grow && s.grow, selected && s.active, disabled && s.muted]}>
@@ -81,8 +103,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       <View style={s.row}><View style={s.metric}><Text style={s.value}>{count}</Text><Text style={s.small}>proposals recorded</Text></View>
         <View style={s.metric}><Text style={s.value}>{data.review_count ?? '—'}</Text><Text style={s.small}>reviews written</Text></View>
         <View style={s.metric}><Text style={s.value}>—</Text><Text style={s.small}>validated change</Text></View></View>
-      <View style={s.placeholder}><Text style={[s.body, { fontWeight: '700' }]}>No paired rule experiment recorded</Text>
-        <Text style={s.small}>The graph needs a named rule, unchanged baseline and the same opportunities. No example graph is substituted for evidence.</Text></View>
+      <LearningComparisonChart period={data.period} />
       <Text style={s.small}>{data.assessment.explanation}</Text>
       <Action label="View proposed lessons →" onPress={() => onOpen('proposals')} />
     </View>
@@ -163,4 +184,4 @@ function LearningScreen({ request, onNavigate }) {
     <View style={s.row}><Action grow label="‹ Previous" disabled={page === 0} onPress={() => setPage(n => n - 1)} /><Text style={s.small}>Page {page + 1}</Text><Action grow label="Next ›" disabled={!data.has_more} onPress={() => setPage(n => n + 1)} /></View>
   </View>;
 }
-module.exports = { LearningScreen, LearningOverview, EvidenceRow, BrokerCard };
+module.exports = { LearningScreen, LearningOverview, EvidenceRow, BrokerCard, LearningComparisonChart };
