@@ -34,6 +34,12 @@ bottom/right; left 75% quiet for text; edge-to-edge, no text/logos/UI/border.
 This adds a one-time EAS update asset download, not Supabase egress or runtime
 image requests. No backend release, database migrations or trading-rule changes.
 
+Published from `88933a57fcee60ce712025a364ef4edf4e2e20dc` on GitHub master.
+Android runtime 1.0.3; release export compiled 627 modules and the bundled image.
+Confirmed update groups: preview `bcf2f35a-3464-4602-840b-912f56f7b807`;
+hosted-preview `6bbd75e6-3ae5-4142-a700-7cc30f548912`.
+Both channels use the identical production bundle. Device checks remain as above.
+
 ## 2026-09-09 — Portfolio chart fidelity follow-up
 
 Founder requested screen-by-screen fidelity to the Portfolio mockup rather than
