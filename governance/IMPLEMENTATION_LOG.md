@@ -12,6 +12,13 @@ Regression assertions require both dimensions. No new assets, database requests,
 trading changes or local Expo server. Device visual confirmation remains pending.
 Publishing mobile-only with [skip render] to avoid restarting the backend.
 
+108 mobile tests passed. Released GitHub commit
+`0e1527c38a51ac1097665e91caddb47fbd88fef4` to Android runtime 1.0.3:
+- preview: `e7429597-dc32-47c8-bf19-378509cdc525`
+- hosted-preview: `f1d492a2-b500-4a5a-9e32-8315536947a6`
+Both publications succeeded, reusing the existing bundled PNG without new asset
+uploads. Actual-device appearance is not yet independently verified.
+
 ## 2026-09-09 — Portfolio P&L, scrolling and balance-scope investigation
 
 Founder reported blank sell P&L, requested exchange-coloured history rows and a
