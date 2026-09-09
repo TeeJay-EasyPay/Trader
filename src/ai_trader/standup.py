@@ -79,6 +79,12 @@ def detect_addressee(
     if not said:
         return last_ai_speaker or BOTH
 
+    # Spoken transcription frequently omits commas. An explicit greeting remains
+    # a vocative even if the sentence also mentions the other participant.
+    for who, pattern in _NAMES:
+        if re.match(r"^\s*hey\s+(?:" + pattern + r")\b", said, re.IGNORECASE):
+            return who
+
     for who, pattern in _NAMES:
         if re.match(r"^\s*(?:hey\s+|ok\s+|okay\s+|so\s+)?(?:" + pattern + r")\b\s*[,:!?-]", said, re.IGNORECASE):
             return who

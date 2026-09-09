@@ -88,6 +88,22 @@ def _serialize_historical_analogues(analogues: dict[str, Any]) -> str:
             summary_bits.append(f"outcome={outcome}")
         if pnl is not None:
             summary_bits.append(f"pnl={pnl}")
+        # Closed-loop experiences use the reconciler's attribution contract, not
+        # the legacy {outcome, pnl} shape. Do not silently omit real trade results
+        # or present gross profit as an after-fee win. Uses only already-read data.
+        if isinstance(result_context, dict):
+            net = result_context.get("net_realized_pnl")
+            gross = result_context.get("gross_realized_pnl")
+            if gross is None:
+                gross = result_context.get("profit_loss")
+            if net is not None:
+                summary_bits.append(f"net_realized_pnl={net}")
+            if gross is not None:
+                summary_bits.append(f"gross_realized_pnl={gross}")
+                if net is None and pnl is None:
+                    summary_bits.append("net result unavailable; do not infer after-fee profitability")
+        if case.get("broker"):
+            summary_bits.append(f"broker={case['broker']}")
         # rejection_review.py's records (2026-08-16) are the one decision_context
         # shape with a reliable "why" -- real executed-trade decision_context is a
         # large free-form dict with no consistent reason field, so this is

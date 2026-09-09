@@ -35,7 +35,6 @@ const {
   cioActivityFunnel,
   cioMarketOutlook,
   cioAverageConfidence,
-  cioNoActionReason,
   cioExecutiveBriefingSummary,
 } = require('../lib/cio');
 const { currentInvestmentThesis, alternativeThesis } = require('../lib/investmentThesis');
@@ -52,7 +51,7 @@ const { declineReasonsCard } = require('../lib/declineReasons');
 const { evaluateFactors } = require('../lib/forecastFactors');
 const { buildRiskCards } = require('../lib/principalRisks');
 const { buildOpportunityCards } = require('../lib/principalOpportunities');
-const { buildFounderActions } = require('../lib/founderActions');
+const { buildOperationalSupport, summariseReason } = require('../lib/founderActions');
 const {
   largestPosition,
   sumBrokerFieldByCurrency,
@@ -401,11 +400,11 @@ function OpportunityCard({ opportunity }) {
     <View style={styles.compactRow}>
       <Text style={styles.cardTitle}>{opportunity.title}</Text>
       <Text style={styles.metricLabel}>Why I like it</Text>
-      <Text style={styles.bodyText}>{opportunity.whyILikeIt}</Text>
+      <Text style={styles.bodyText}>{summariseReason(opportunity.whyILikeIt)}</Text>
       <Text style={styles.metricLabel}>Potential upside</Text>
       <Text style={styles.bodyText}>{opportunity.potentialUpside}</Text>
       <Text style={styles.metricLabel}>Main catalyst</Text>
-      <Text style={styles.bodyText}>{opportunity.catalyst}</Text>
+      <Text style={styles.bodyText}>{summariseReason(opportunity.catalyst)}</Text>
       <Text style={styles.metricLabel}>Confidence</Text>
       <Text style={styles.bodyText}>{opportunity.confidence}</Text>
     </View>
@@ -421,7 +420,7 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
     .filter((position) => Number(position.unrealized_pl) < 0)
     .map((position) => ({ symbol: position.symbol, unrealizedPl: position.unrealized_pl }));
   const risks = buildRiskCards({ upcomingRisks: marketCentre?.upcoming_risks, positionsAtLoss, portfolioValue: portfolio?.portfolio_value });
-  const opportunities = buildOpportunityCards({ recommendations, themes });
+  const opportunities = buildOpportunityCards({ recommendations, themes, distinctAssets: true });
   return (
     // 2026-08-21 Founder feedback: happy with the length given the per-asset detail, but wants
     // it collapsible since it is the longest of the 6 sections - defaultExpanded keeps today's
@@ -430,6 +429,10 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
     // was technical jargon concluding "Unclear". Now collapsed by default with a one-line
     // summary at the top -- the detail is one tap away for when it is actually wanted.
     <CollapsibleSection title="The View Ahead" subtitle={forecastHeadline(forecastCards)} defaultExpanded={false}>
+      <Text style={styles.bodyText}>{summariseReason(marketOutlookText(marketCentre))}</Text>
+      <StatusPill label={`Confidence: ${conviction.level}`} tone={convictionTone(conviction.level)} />
+      <Text style={styles.smallText}>Trading choices remain with AI Trader, within the existing risk rules.</Text>
+      <CollapsibleSection title="Detailed outlook" subtitle="Supporting analysis, forecasts, risks and opportunities" defaultExpanded={false}>
       <Text style={styles.metricLabel}>Market assessment</Text>
       <Text style={styles.bodyText}>{marketOutlookText(marketCentre)}</Text>
 
@@ -465,6 +468,7 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
 
       <Text style={styles.metricLabel}>Principal opportunities</Text>
       {opportunities.length ? opportunities.map((opportunity, index) => <OpportunityCard key={`${opportunity.title}-${index}`} opportunity={opportunity} />) : <Text style={styles.bodyText}>Nothing currently clears my bar for a new opportunity.</Text>}
+      </CollapsibleSection>
     </CollapsibleSection>
   );
 }
@@ -516,15 +520,11 @@ function FounderActionCard({ action }) {
   );
 }
 
-function FounderActionsSection({ recommendations, unresolvedIncidentCount, connectionReadiness, onRefresh, onCommand }) {
-  const actions = buildFounderActions({ recommendations, unresolvedIncidentCount });
-  const outstanding = (recommendations || []).filter((item) => item.freshness_status !== 'Expired').length;
-  const noActionReason = cioNoActionReason({
-    tradeReady: Boolean(connectionReadiness?.trade_ready),
-    outstandingRecommendationsCount: outstanding,
-    unresolvedIncidentCount,
-    readinessNote: connectionReadiness?.note,
-  });
+function FounderActionsSection({ incidents, connectionReadiness, onRefresh, onCommand }) {
+  const actions = buildOperationalSupport({ incidents, connectionReadiness });
+  const noActionReason = connectionReadiness?.trade_ready === true
+    ? 'No operational support request is reported in the current status. AI Trader handles trade selection within its risk rules.'
+    : 'Operational readiness is not fully confirmed. Refresh the status; if this persists, ask your developer to investigate. You do not need to select trades.';
   return (
     <Section title="What I Need From You">
       {actions.length ? (
@@ -640,7 +640,7 @@ function ExecutiveBriefing({
         portfolio={portfolio}
       />
       <DeclineReasonsCard declineReasons={declineReasons} />
-      <FounderActionsSection recommendations={recommendations} unresolvedIncidentCount={unresolvedIncidentCount} connectionReadiness={connectionReadiness} onRefresh={onRefresh} onCommand={onCommand} />
+      <FounderActionsSection incidents={status?.operations_health?.incidents || []} connectionReadiness={connectionReadiness} onRefresh={onRefresh} onCommand={onCommand} />
       <ExecutiveMessagesCard status={status} />
     </View>
   );

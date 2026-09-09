@@ -812,13 +812,22 @@ def _load_founder_evidence_rows(
             # 5-minute worker refresh, not from the mobile app's poll (founder_evidence_payload
             # serves that from the cheap precomputed snapshot -- confirmed via
             # prefer_snapshot=True), but still adds up over hundreds of refreshes per day.
-            # LIMIT 20 keeps a wide safety margin (10x today's 2 brokers) while cutting the
-            # fetched volume by ~80%.
+            # 2026-09-09: choose the latest ID per broker INSIDE the database. Return
+            # wide payloads only for those rows, including a quiet broker whose last
+            # snapshot is older than the other broker's most recent 20 snapshots.
+            # Both supported databases implement ROW_NUMBER; IDs break timestamp ties.
             ("""SELECT snapshot_id, captured_at, broker, connection_status, account_mode, currency,
                        portfolio_value, cash, buying_power, deployed_capital, day_pnl, week_pnl,
                        month_pnl, open_positions, positions_json, reconciliation_status, source, error,
                        payload_json
-                FROM PRODUCTION_BROKER_SNAPSHOTS ORDER BY captured_at DESC LIMIT 20""", ()),
+                FROM PRODUCTION_BROKER_SNAPSHOTS
+                WHERE snapshot_id IN (
+                    SELECT snapshot_id FROM (
+                        SELECT snapshot_id, ROW_NUMBER() OVER (
+                            PARTITION BY broker ORDER BY captured_at DESC, snapshot_id DESC
+                        ) AS broker_rank FROM PRODUCTION_BROKER_SNAPSHOTS
+                    ) ranked WHERE broker_rank = 1
+                ) ORDER BY captured_at DESC, snapshot_id DESC""", ()),
             ("""SELECT trade_evidence_id, observed_at, broker, broker_order_id, broker_trade_id,
                        symbol, side, status, quantity, price, average_fill_price, fee, realized_pnl,
                        opened_at, closed_at, entry_reason, exit_reason

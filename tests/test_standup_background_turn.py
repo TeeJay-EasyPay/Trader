@@ -378,7 +378,7 @@ class ScreenWiringTests(unittest.TestCase):
         """"by the way the app does not speak." Ask spoke; this screen never did."""
         source = SCREEN.read_text(encoding="utf-8")
         self.assertIn("useSpeaker", source)
-        self.assertIn("speaker.speak(turn.text)", source)
+        self.assertIn("speaker.speak(`${SPEAKER_LABEL[turn.speaker] || 'AI'}: ${turn.text}`)", source)
 
     def test_the_microphone_reopens_when_they_have_finished_talking(self):
         """"the conversation tends to just stop after your message above." Nothing handed the
@@ -393,7 +393,12 @@ class ScreenWiringTests(unittest.TestCase):
         """Otherwise a spoken conversation stops dead on exactly the devices that can least
         afford another silent failure."""
         source = SCREEN.read_text(encoding="utf-8")
-        self.assertIn("!canSpeak()) voice.start()", source)
+        # Queue-idle works both without native audio and when clips finish before
+        # the model exchange. Behaviour is exercised in the Node hook/floor tests.
+        self.assertIn("speaker.isIdle()", source)
+        final = source[source.index("} finally {"):source.index("}, [mode, request")]
+        self.assertIn("voice.start()", final)
+        self.assertLess(final.index("busyRef.current = false"), final.index("voice.start()"))
 
     def test_typing_ends_the_hands_free_run(self):
         """He has moved to the keyboard. A microphone opening after the next reply would be a

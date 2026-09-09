@@ -101,8 +101,6 @@ def assess_learning_readiness(db_path: Path, *, now: datetime | None = None) -> 
     `except`, which is the pattern that hid the last three defects.
     """
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    blockers: list[str] = []
-    warnings: list[str] = []
     rows: list[Any] = []
     try:
         with closing(connect(db_path)) as conn:
@@ -119,6 +117,18 @@ def assess_learning_readiness(db_path: Path, *, now: datetime | None = None) -> 
             blockers=[f"the outcome record could not be read ({type(exc).__name__})"],
         )
 
+    return readiness_from_outcomes(rows, now=moment)
+
+
+def readiness_from_outcomes(rows: list[Any], *, now: datetime | None = None) -> LearningReadiness:
+    """Assess already-read (symbol, P&L, exit, closed, created) rows without I/O.
+
+    Allows a strategy calculation to reuse its outcome read instead of downloading
+    the same history twice. No cross-request cache or weaker evidence thresholds.
+    """
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    blockers: list[str] = []
+    warnings: list[str] = []
     closed_trades = len(rows)
     usable = 0
     unparseable = 0

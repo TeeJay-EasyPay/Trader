@@ -45,7 +45,7 @@ from typing import Any
 
 from .database import connect
 from .learning_readiness import _parse as _parse_stamp
-from .learning_readiness import assess_learning_readiness
+from .learning_readiness import readiness_from_outcomes
 
 # Below this a per-strategy figure is an anecdote. Reported as evidence, never as a verdict.
 MINIMUM_SAMPLE = 5
@@ -115,10 +115,6 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
     Python, not SQL, because 26 of 66 rows store a raw epoch and "1787586949" sorts before
     "2026-08-31" as text -- a SQL date predicate would silently drop the newest trades.
     """
-    readiness = assess_learning_readiness(db_path)
-    if not readiness.ready:
-        return {}
-
     cutoff = None
     if window_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
@@ -132,6 +128,11 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
                 FROM PERFORMANCE_ATTRIBUTION
                 """
             ).fetchall()
+            readiness = readiness_from_outcomes([
+                (row[7], row[1], row[3], row[5], row[6]) for row in outcomes
+            ])
+            if not readiness.ready:
+                return {}
             if cutoff is not None:
                 outcomes = [
                     row for row in outcomes

@@ -54,6 +54,23 @@ function spokenText(answer) {
   return `${cut.slice(0, cut.lastIndexOf(' '))}...`;
 }
 
+// Standup speaks the complete reply in bounded clips. The existing Ask summary
+// contract remains unchanged. No database requests are involved in chunking.
+function spokenChunks(answer) {
+  let remaining = String(answer || '').replace(/\s+/g, ' ').trim();
+  const chunks = [];
+  while (remaining.length > MAX_SPOKEN_CHARACTERS) {
+    const head = remaining.slice(0, MAX_SPOKEN_CHARACTERS);
+    const stop = Math.max(head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '));
+    const space = head.lastIndexOf(' ');
+    const end = stop > MAX_SPOKEN_CHARACTERS / 2 ? stop + 1 : space > 0 ? space : MAX_SPOKEN_CHARACTERS;
+    chunks.push(remaining.slice(0, end));
+    remaining = remaining.slice(end).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 /** Request options for the speech endpoint. */
 function speechRequestOptions(text) {
   return {
@@ -150,6 +167,7 @@ module.exports = {
   acknowledgement,
   shouldSpeak,
   spokenText,
+  spokenChunks,
   speechRequestOptions,
   playableAudioUri,
   SPEECH_TIMEOUT_MS,

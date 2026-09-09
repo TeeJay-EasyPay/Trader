@@ -26,7 +26,7 @@ const { withDayStamps, newestExchangesFirst } = require('../lib/chatBubbles');
 const { normalizeChatText } = require('../lib/chat');
 const { formatPence } = require('../lib/cost');
 const { useVoiceCapture } = require('../lib/useVoiceCapture');
-const { useSpeaker, canSpeak } = require('../lib/useSpeaker');
+const { useSpeaker } = require('../lib/useSpeaker');
 const {
   progressLine, pollOutcome, POLL_MS, POLL_TIMEOUT_MS,
 } = require('../lib/standupTurn');
@@ -60,7 +60,7 @@ const MAX_POLL_FAILURES = 5;
 // A hard stop on how far one question can run, independent of the server's own budget. Belt
 // and braces: if the server ever kept naming a next speaker, the app would still hand the
 // floor back rather than looping.
-const MAX_TURNS_PER_QUESTION = 5;
+const MAX_TURNS_PER_QUESTION = 10; // Two opening replies plus at most eight peer replies.
 
 // 2026-09-07, Founder-reported: "there was the circular animation on the send button that just
 // kept going, and I never got anything back." A spinner says something is happening; it does
@@ -92,6 +92,10 @@ function StandupScreen({ request }) {
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const floorRequestedRef = useRef(false);
+  const pendingSpeechRef = useRef('');
+  const [exchangeBudget, setExchangeBudget] = useState(4);
   const [statusLine, setStatusLine] = useState('Not started');
   const [spentTotal, setSpentTotal] = useState(0);
   const mountedRef = useRef(true);
@@ -142,6 +146,13 @@ function StandupScreen({ request }) {
     request,
     onTranscript: (text) => {
       handsFreeRef.current = true;
+      if (busyRef.current) {
+        pendingSpeechRef.current = text;
+        floorRequestedRef.current = true;
+        setDraft(text);
+        setStatusLine('Your words are saved here. Waiting for the current reply before sending.');
+        return;
+      }
       if (sendRef.current) sendRef.current(text, { spoken: true });
     },
     onProblem: (message) => {
@@ -161,7 +172,7 @@ function StandupScreen({ request }) {
     request,
     onFinished: () => {
       // The room has finished talking, so it is his turn -- without reaching for the phone.
-      if (!mountedRef.current || !handsFreeRef.current) return;
+      if (!mountedRef.current || !handsFreeRef.current || busyRef.current || floorRequestedRef.current) return;
       voice.start();
     },
   });
@@ -179,6 +190,9 @@ function StandupScreen({ request }) {
     // Abandon anything still in flight. Without this, replies to the question he gave up on
     // arrive later and read as the AIs talking unprompted -- exactly what he reported.
     exchangeRef.current += 1;
+    busyRef.current = false;
+    floorRequestedRef.current = false;
+    pendingSpeechRef.current = '';
     handsFreeRef.current = false;
     setBusy(false);
     setResumable(null);
@@ -192,7 +206,7 @@ function StandupScreen({ request }) {
 
   const send = useCallback(async (text, { spoken = false, resume = null } = {}) => {
     const said = String(text || '').trim();
-    if (busy) return;
+    if (busyRef.current) return;
     if (!resume && !said) return;
     // Typing ends a spoken conversation. He has moved to the keyboard, so the microphone
     // opening after the next reply would be a surprise rather than a convenience.
@@ -200,6 +214,9 @@ function StandupScreen({ request }) {
     setDraft('');
     setResumable(null);
     setBusy(true);
+    busyRef.current = true;
+    floorRequestedRef.current = false;
+    speaker.stop();
     // Every reply from here belongs to THIS question. 2026-09-07, Founder-reported: a slow
     // standup answer arrived after he had given up, switched to Trader and asked something
     // else -- so two AIs appeared to start "talking amongst themselves" unbidden. The stamp is
@@ -263,9 +280,11 @@ function StandupScreen({ request }) {
       }
     };
 
-    let body = resume || { message: said, mode, conversation_id: 'standup', max_replies: 1 };
+    let body = resume || { message: said, mode, conversation_id: 'standup', max_replies: 1,
+      exchange_budget: exchangeBudget, spoken };
     let spent = 0;
     let replies = 0;
+    let failed = false;
 
     try {
       for (let step = 0; step < MAX_TURNS_PER_QUESTION; step += 1) {
@@ -288,13 +307,13 @@ function StandupScreen({ request }) {
         // Queued as each reply lands rather than joined into one block: the spoken version is
         // capped at 700 characters, so joining the Trader and Claude would read out the first
         // and silently swallow the second.
-        if (handsFreeRef.current) {
-          produced.forEach((turn) => speaker.speak(turn.text));
+        if (handsFreeRef.current && !floorRequestedRef.current) {
+          produced.forEach((turn) => speaker.speak(`${SPEAKER_LABEL[turn.speaker] || 'AI'}: ${turn.text}`));
         }
         if (spent) setSpentTotal((prev) => prev + Number((payload && payload.cost_usd) || 0));
 
         const next = payload && payload.next_speaker;
-        if (!next || !produced.length) break;
+        if (!next || !produced.length || floorRequestedRef.current) break;
         // Carry the exchange forward. Nothing new is said; the next participant answers what
         // is already in the transcript.
         body = {
@@ -302,6 +321,8 @@ function StandupScreen({ request }) {
           mode,
           conversation_id: 'standup',
           max_replies: 1,
+          exchange_budget: body.exchange_budget ?? exchangeBudget,
+          spoken,
           // Both counters go back untouched. exchange_used is how many peer replies have
           // happened; opening_left is whether this turn still belongs to the opening question
           // or is already one AI answering the other. Without the second the peer counter
@@ -319,9 +340,9 @@ function StandupScreen({ request }) {
       );
       // Nothing will be read aloud on this device, so the floor has to come back some other
       // way -- otherwise a spoken conversation stops dead on a phone that cannot play audio.
-      if (handsFreeRef.current && replies && !canSpeak()) voice.start();
     } catch (error) {
       if (stale()) return;
+      failed = true;
       // The exchange is paused, not abandoned: whoever was due to speak is remembered so he can
       // pick it up with one tap instead of asking the whole question again.
       if (body && body.continue_as) setResumable(body);
@@ -334,9 +355,27 @@ function StandupScreen({ request }) {
       }]);
       setStatusLine('Stopped - your turn');
     } finally {
-      if (mountedRef.current && exchangeRef.current === ticket) setBusy(false);
+      if (mountedRef.current && exchangeRef.current === ticket) {
+        busyRef.current = false;
+        setBusy(false);
+        const pending = pendingSpeechRef.current;
+        pendingSpeechRef.current = '';
+        if (pending && failed) {
+          setDraft(pending);
+          setStatusLine('The reply failed. Your words are saved in the message box; tap Send to retry.');
+        } else if (pending) {
+          // Deferred until the current server turn has persisted, preserving shared
+          // transcript order. Do not silently lose speech behind the busy guard.
+          Promise.resolve().then(() => {
+            if (mountedRef.current && exchangeRef.current === ticket && sendRef.current)
+              sendRef.current(pending, { spoken: true });
+          });
+        } else if (handsFreeRef.current && replies && !floorRequestedRef.current && speaker.isIdle()) {
+          voice.start();
+        }
+      }
     }
-  }, [busy, mode, request, speaker, voice]);
+  }, [mode, request, speaker, voice, exchangeBudget]);
 
   useEffect(() => { sendRef.current = send; }, [send]);
 
@@ -346,12 +385,16 @@ function StandupScreen({ request }) {
   // had not asked them. Switching mode is him saying "not that, this".
   useEffect(() => {
     exchangeRef.current += 1;
+    busyRef.current = false;
+    pendingSpeechRef.current = '';
+    floorRequestedRef.current = false;
     setBusy(false);
     setResumable(null);
     // A reply still being read aloud belongs to the conversation he has just left, and the
     // microphone must not reopen into the new one on the back of it.
     handsFreeRef.current = false;
     speaker.stop();
+    voice.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
@@ -386,6 +429,20 @@ function StandupScreen({ request }) {
           ))}
         </View>
         <Text style={styles.smallText}>{(MODES.find((m) => m.key === mode) || {}).hint}</Text>
+        {mode === 'both' ? (
+          <View>
+            <Text style={styles.smallText}>AI-to-AI follow-up replies per question. Longer exchanges cost more; you can take the floor at any time.</Text>
+            <View style={styles.standupModeRow}>
+              {[0, 2, 4, 8].map((count) => (
+                <TouchableOpacity key={count} disabled={busy} onPress={() => setExchangeBudget(count)}
+                  style={[styles.standupMode, exchangeBudget === count && styles.standupModeActive]}>
+                  <Text style={styles.standupModeText}>{count === 0 ? 'Answers only' : `${count} follow-ups`}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.smallText}>Say “Hey ChatGPT” or “Hey Claude” to choose who answers first. Both share the transcript.</Text>
+          </View>
+        ) : null}
 
         {running ? (
           <TouchableOpacity style={styles.standupEnd} onPress={end}>
@@ -398,6 +455,12 @@ function StandupScreen({ request }) {
         )}
 
         <Text style={styles.smallText}>{statusLine}</Text>
+        {running ? <Button label="Let me speak" tone="neutral" onPress={() => {
+          floorRequestedRef.current = true;
+          handsFreeRef.current = true;
+          speaker.stop();
+          if (!voice.isRecording && !voice.isBusy) voice.start();
+        }} /> : null}
         {/* 2026-09-08: a turn that fails used to end the exchange, because the app forgot whose
             turn was next. Now it remembers, so picking it up is one tap rather than asking the
             whole question again. */}
@@ -415,7 +478,7 @@ function StandupScreen({ request }) {
         ) : null}
         {spentTotal ? (
           <Text style={styles.smallText}>
-            This conversation so far: {formatPence(spentTotal)}
+            This conversation so far: {formatPence(spentTotal)} in estimated model replies (excludes speech and transcription)
           </Text>
         ) : null}
 
@@ -440,8 +503,11 @@ function StandupScreen({ request }) {
             <View style={styles.standupActions}>
               <TouchableOpacity
                 style={[styles.standupMic, voice.isRecording && styles.standupMicRecording]}
-                onPress={() => (voice.isRecording ? voice.stop() : voice.start())}
-                disabled={busy || voice.isBusy}
+                onPress={() => {
+                  if (voice.isRecording) voice.stop();
+                  else { speaker.stop(); handsFreeRef.current = true; voice.start(); }
+                }}
+                disabled={(busy && !voice.isRecording) || voice.isBusy}
                 accessibilityRole="button"
                 accessibilityLabel={micButtonAccessibilityLabel(voice.voiceState)}
               >

@@ -87,4 +87,34 @@ module.exports = {
   recommendationAction,
   incidentAction,
   buildFounderActions,
+  buildOperationalSupport,
 };
+
+// The briefing asks for help operating the software, not selecting trades.
+// Read only the status evidence already delivered to the app.
+function buildOperationalSupport({ connectionReadiness, incidents = [] } = {}) {
+  const checks = Array.isArray(connectionReadiness?.checks) ? connectionReadiness.checks : [];
+  const actions = checks.filter((check) => check.ready === false &&
+    ['Render API', 'Background Worker', 'Control Actions', 'OpenAI', 'Alpaca', 'Kraken', 'Database', 'Supabase', 'Supabase Postgres'].includes(check.component))
+    .map((check) => ({
+      title: `${check.component}: support needed`,
+      recommendation: summariseReason(check.detail || check.status || 'The readiness check did not pass.'),
+      ifNothing: 'Ask your developer to check the connection or configuration. This is not a request to approve a trade.',
+    }));
+  for (const incident of incidents) {
+    if (incident.resolved || incident.resolved_at || incident.status === 'resolved') continue;
+    actions.push({
+      title: incident.title || 'An operational issue needs investigation',
+      recommendation: summariseReason(incident.message || incident.summary ||
+        'The status summary reports an unresolved operational issue; detailed cause is not included.'),
+      ifNothing: 'Ask your developer to diagnose this issue. No trading judgement is required from you.',
+    });
+  }
+  const seen = new Set();
+  return actions.filter((action) => {
+    const key = `${action.title}|${action.recommendation}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

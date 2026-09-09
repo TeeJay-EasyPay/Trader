@@ -37,6 +37,11 @@ class AddressingTests(unittest.TestCase):
         self.assertEqual(detect_addressee("Claude, why is that slow?"), CLAUDE)
         self.assertEqual(detect_addressee("ChatGPT, what did you see?"), TRADER)
 
+    def test_spoken_greeting_without_punctuation_overrides_other_mentions(self):
+        self.assertEqual(detect_addressee("Hey Chat GPT what did Claude mean"), TRADER)
+        self.assertEqual(detect_addressee("hey Claude explain what ChatGPT found"), CLAUDE)
+        self.assertEqual(detect_addressee("hey Claude explain that", mode=TRADER), TRADER)
+
     def test_a_name_mentioned_once_anywhere_routes_there(self):
         self.assertEqual(detect_addressee("what does the trader think about fees"), TRADER)
         self.assertEqual(detect_addressee("can Claude check that in the code"), CLAUDE)

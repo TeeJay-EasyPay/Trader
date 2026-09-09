@@ -1434,10 +1434,6 @@ class LocalApiService:
         it can answer with numbers.
         """
 
-        if report:
-            # The trader has no lookups to count -- it reasons over the evidence it is handed --
-            # so the only honest progress it can report is that it is working.
-            report({"speaker": STANDUP_TRADER, "stage": "thinking"})
         inventory = input_inventory(self.settings.db_path)
         if not self.settings.openai_api_key:
             return record_self_assessment(

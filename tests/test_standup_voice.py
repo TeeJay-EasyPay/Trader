@@ -74,8 +74,9 @@ class ScreenWiringTests(unittest.TestCase):
         dead end he already hit."""
         source = SCREEN.read_text(encoding="utf-8")
         self.assertIn("onTranscript:", source)
-        block = source[source.index("onTranscript:"):]
-        self.assertIn("sendRef.current(", block[:200])
+        block = source[source.index("onTranscript:"):source.index("onProblem:")]
+        self.assertIn("sendRef.current(text, { spoken: true })", block)
+        self.assertIn("pendingSpeechRef.current = text", block)
 
     def test_the_recording_state_is_visible_not_just_internal(self):
         """"there's no icon that's animated that shows me that it's listening." Two independent

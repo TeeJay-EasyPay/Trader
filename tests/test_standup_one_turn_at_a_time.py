@@ -198,7 +198,9 @@ class StaleReplyTests(unittest.TestCase):
         source = self._screen()
         self.assertIn("}, [mode]);", source)
         block = source[source.index("useEffect(() => {\n    exchangeRef.current += 1;"):]
-        self.assertIn("[mode]", block[:400])
+        effect = block[:block.index("}, [mode]);")]
+        self.assertIn("voice.cancel()", effect)
+        self.assertIn("speaker.stop()", effect)
 
     def test_the_app_asks_for_one_reply_at_a_time(self):
         source = self._screen()

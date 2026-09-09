@@ -1,5 +1,74 @@
 # Implementation Log
 
+## 2026-09-09 — Briefing support requests and Standup turn-taking (release verification)
+
+Founder authorised implementation, commit and deployment, with the broader
+whole-app duplication review explicitly deferred until after this release.
+
+- What I Need From You now uses existing operational readiness/incidents only;
+  it does not turn investment recommendations into requests for Founder approval.
+  Unknown readiness is not presented as healthy. No extra status/database reads.
+- The View Ahead opens to a short outlook; long detail remains separately
+  collapsed. Opportunities are deduplicated by broker/asset after eligibility
+  filtering and confidence sorting; a rejected record cannot hide a valid one.
+- Standup no longer reopens the mic between replies while another model is
+  working. Let me speak stops queued playback and takes the floor. Speech that
+  arrives during a server turn waits for that turn to persist, then starts the
+  new question; if the turn fails, words remain in the draft for explicit retry.
+- Full Standup replies play in bounded clips instead of silently truncating at
+  700 characters. Cancelled playback cannot release the floor during newer audio;
+  playback errors drain once instead of hanging the queue.
+- Hey ChatGPT/Hey Claude routes correctly without transcription punctuation.
+  Shared transcript and server safety/turn limits remain. The user can choose
+  0/2/4/8 peer follow-ups (default 4, at most 10 total replies including opening).
+  This is turn-based voice with explicit interruption, NOT simultaneous Realtime
+  speech or cancellation of an already-running model request.
+- Longer conversations can increase model/TTS costs and legitimate history reads.
+  The cost label excludes speech/transcription explicitly. No new polling or
+  database export was added, and there is no promise of unchanged total egress.
+- Emulator inspection reproduced the old duplicate DOT Founder requests. New
+  code compiles with Expo Babel; offline hook/component tests cover queue drain,
+  busy-mic timing, pending speech, failed reply preservation and named routing.
+  Android export passed. Full suite: 1,803 passed, five outdated source-string
+  assertions failed (21 subtests passed). Updated those assertions to the new
+  wiring/complete callback scopes; all 115 affected Standup tests then passed.
+  All 81 mobile Node tests passed, including actual component/hook regressions.
+  The earlier 150 learning/egress tests also passed. Published-device verification
+  remains pending at this pre-release entry; no live conversation/trade was run.
+
+This release also includes the bounded learning/egress fixes documented below.
+The deeper Alpaca learning-chain and outcome-classification gaps are documented,
+not repaired or backfilled by this UI release.
+
+## 2026-09-09 — Learning audit and recovered egress breakdown (local, not deployed)
+
+See `architecture/LEARNING_AND_EGRESS_AUDIT_2026-09-09.md` for the complete
+production evidence, recovered September 7 component table and Claude handoff.
+Kraken's 27 terminal trades all reached learning workflows, but Alpaca has no
+canonical terminal-learning chain and none of its 50 outcomes has the strategy
+link consumed by strategy_performance. Review classification/fee-basis defects
+and one missing experience link remain explicit follow-up findings.
+
+Locally fixed the scheduled self-assessment's undefined `report` crash and the
+historical-analogue prompt's omission of real net/gross outcome fields. Reduced
+Founder snapshot reads from 20 wide rows to one per broker (measured JSON bytes
+841,554 -> 84,150), and reused outcome rows inside strategy readiness calculations.
+150 targeted tests passed; no deployment, commit, live trade or production repair.
+
+The saved September 7 egress files yield an estimated 178 MB/day of SQL row data,
+not billed network traffic. Crucially, the supposedly clean 2.74-hour window had
+four worker starts; September 7/8 had 18/9 recorded starts. Removed the report's
+fixed "TWICE" billing claim. The Founder's subsequent project-filtered screenshots
+confirm essentially all visible usage belongs to AI Trader, not NexusPay; the
+remaining attribution question is its service/query/restart breakdown.
+Current tests use local SQLite; historical developer/live diagnostic traffic is
+not retrospectively quantified. Restoring the failed assessment restores reads;
+no guarantee of flat total billed egress is claimed. Release/measurement gates
+and remaining learning gaps are documented in the audit.
+
+Founder has also now confirmed the released chart palette looks good; earlier
+pending-visual-acceptance entries below are historical snapshots, not current status.
+
 ## 2026-09-09 — Light chart palette matching the app
 
 Founder confirmed the new charts are visible and requested a lighter palette.

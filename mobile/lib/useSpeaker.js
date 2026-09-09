@@ -27,7 +27,7 @@
 const React = require('react');
 const { useCallback, useEffect, useRef } = React;
 
-const { speechRequestOptions, playableAudioUri, spokenText } = require('./spokenReply');
+const { speechRequestOptions, playableAudioUri, spokenChunks } = require('./spokenReply');
 
 // Loaded on demand, never at module load. An installed app whose binary predates expo-av has no
 // such native code, and Expo's lookup throws out through the module registry rather than as an
@@ -109,9 +109,12 @@ function useSpeaker({ request, onFinished }) {
     const abandoned = () => !mountedRef.current || ticketRef.current !== ticket;
     // Whatever happens to this clip -- played, failed, or nothing to play -- the queue must
     // keep moving. A swallowed failure that stops the queue would leave the floor with nobody.
+    let finished = false;
     const carryOn = () => {
+      if (abandoned() || finished) return;
+      finished = true;
       playingRef.current = false;
-      if (!abandoned()) nextRef.current();
+      nextRef.current();
     };
 
     try {
@@ -119,22 +122,21 @@ function useSpeaker({ request, onFinished }) {
       if (!Audio) { carryOn(); return; }
       const payload = await request('/speak', speechRequestOptions(said));
       const uri = playableAudioUri(payload);
-      if (abandoned()) { playingRef.current = false; return; }
+      if (abandoned()) return;
       if (!uri) { carryOn(); return; }
       // Through the speaker rather than the earpiece, and still working when the phone is on
       // silent -- he asked out loud and expects to hear the answer.
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
-      if (abandoned()) { playingRef.current = false; return; }
+      if (abandoned()) return;
       const created = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
       if (abandoned()) {
         try { await created.sound.unloadAsync(); } catch (error) { /* gone already */ }
-        playingRef.current = false;
         return;
       }
       soundRef.current = created.sound;
       created.sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status || !status.didJustFinish) return;
-        if (abandoned()) return;
+        if (!status || (!status.didJustFinish && !status.error)) return;
+        if (abandoned() || finished) return;
         unload();
         carryOn();
       });
@@ -146,13 +148,14 @@ function useSpeaker({ request, onFinished }) {
 
   /** Add a reply to the queue. Starts playing if nothing is. */
   const speak = useCallback((text) => {
-    const said = spokenText(text);
-    if (!said) return;
-    queueRef.current.push(said);
+    const chunks = spokenChunks(text);
+    if (!chunks.length) return;
+    queueRef.current.push(...chunks);
     playNext();
   }, [playNext]);
 
-  return { speak, stop, canSpeak };
+  const isIdle = useCallback(() => !playingRef.current && queueRef.current.length === 0, []);
+  return { speak, stop, canSpeak, isIdle };
 }
 
 module.exports = { useSpeaker, canSpeak, loadAudio };

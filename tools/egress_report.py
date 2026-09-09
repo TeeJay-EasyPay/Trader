@@ -19,9 +19,10 @@ rather than by guessing, and reports calls per day beside megabytes per day.
 TWO HONEST LIMITS, both of which matter when reading the output:
 
   * This counts ROW DATA leaving Postgres. Supabase bills real network bytes across Database,
-    Auth, Realtime, Storage, Pooler and Log Drains, and measured about twice this. So use it to
-    rank and to compare one day against another -- never as the bill. Supabase's own chart is
-    the bill.
+    Auth, Realtime, Storage, Pooler and Log Drains. An earlier comparison was about twice
+    this estimate, but that is not a conversion factor or proof of where the difference
+    went. Use this to rank comparable workloads, never as the bill. Supabase's own
+    project-filtered chart is the usage authority.
   * A window containing deploys measures the deploys. Each restart replays history and
     re-derives schemas, so a "busy" component may just be a busy afternoon at the keyboard.
     The report says how many worker restarts fell inside the window for exactly this reason.
@@ -166,8 +167,8 @@ def report(before_path: str, after_path: str) -> None:
 
     print(f"WINDOW   {before['taken_at'][:19]} -> {after['taken_at'][:19]}  ({hours:.1f} hours)")
     print(f"MEASURED {total_bytes / 1e6:,.1f} MB of row data  ->  {total_bytes / 1e6 * per_day:,.0f} MB/day at this rate")
-    print("         Supabase bills roughly TWICE this: it counts real network bytes plus")
-    print("         Auth, Pooler and connection traffic. Use this to rank, not as the bill.\n")
+    print("         Estimated SQL row bytes, not billed network traffic; no fixed multiplier.")
+    print("         Compare the same project's Supabase service breakdown and time window.\n")
 
     header = f"  {'WHAT IS READING':<44}{'MB/day':>9}{'share':>8}{'reads/day':>11}{'rows/read':>11}"
     print(header)

@@ -98,11 +98,21 @@ function wasRejectedByCommittee(item) {
 // recommendations: fresh (non-expired), NOT rejected by AI Trader's own committee, sorted by
 // confidence, take the top `maxRecommendations`. themes: at most one, the highest-confidence
 // tracked theme, if any exists.
-function buildOpportunityCards({ recommendations, themes, maxRecommendations = 3 }) {
+function buildOpportunityCards({ recommendations, themes, maxRecommendations = 3, distinctAssets = false }) {
+  const seen = new Set();
   const fresh = (recommendations || [])
     .filter((item) => item.freshness_status !== 'Expired' && !wasRejectedByCommittee(item))
     .slice()
     .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
+    .filter((item) => {
+      if (!distinctAssets) return true;
+      const symbol = String(item.ticker || item.symbol || '').trim().toUpperCase();
+      if (!symbol) return true;
+      const key = `${String(item.broker || '').trim().toLowerCase()}:${symbol}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, maxRecommendations)
     .map(recommendationOpportunityCard);
 
