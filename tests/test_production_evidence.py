@@ -769,6 +769,19 @@ class ProductionEvidenceTests(unittest.TestCase):
             sell_row = next(row for row in trades if row["side"] == "sell")
             self.assertAlmostEqual(sell_row["realized_pnl"], 250.0)
 
+    def test_kraken_missing_reconciliation_never_falls_back_to_personal_fifo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            for side, price, day in [("buy", 1, "01"), ("sell", 2, "02")]:
+                record_trade_evidence(db_path, broker="kraken", event={
+                    "id": side, "status": "filled", "symbol": "XRPGBP", "side": side,
+                    "qty": 10, "filled_avg_price": price, "closed_at": f"2026-08-{day}T00:00:00Z",
+                })
+            result = backfill_realized_pnl(db_path, broker="kraken")
+            self.assertEqual(result["updated"], 0)
+            sell = next(row for row in list_production_trade_evidence(db_path, broker="kraken") if row["side"] == "sell")
+            self.assertIsNone(sell["realized_pnl"])
+
     def test_backfill_realized_pnl_leaves_partially_matched_exit_null(self):
         # A sell larger than all known buy history (a legacy position that existed before
         # trade-evidence tracking began) must never get a fabricated P&L against an unknown

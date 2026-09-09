@@ -605,6 +605,7 @@ def replay_kraken_evidence(
     events: list[dict[str, Any]],
     source: str = "kraken_evidence_replay",
     conn: Any = None,
+    only_unreconciled: bool = False,
 ) -> dict[str, Any]:
     """Reconcile persisted Kraken evidence. This function has no broker client or order path.
 
@@ -621,6 +622,30 @@ def replay_kraken_evidence(
     _ensure_schema(db_path)
     with _connection(db_path, conn) as conn:
         bootstrap_kraken_order_ownership(db_path, conn=conn)
+        if only_unreconciled and events:
+            # Account snapshots also persist broker history. "New history rows" is
+            # therefore not a reliable reconciliation cursor. Check this bounded,
+            # already-fetched batch against successful reconciliation instead.
+            # Return only missing hashes, not historical payloads (usually zero rows).
+            candidates = [(_stable_hash(raw), normalize_kraken_evidence(raw)["order_id"]) for raw in events]
+            missing = set()
+            for start in range(0, len(candidates), 100):
+                batch = candidates[start:start + 100]
+                placeholders = ",".join("(?, ?)" for _ in batch)
+                rows = conn.execute(
+                    f"""WITH candidates(raw_hash, order_id) AS (VALUES {placeholders})
+                    SELECT DISTINCT c.raw_hash FROM candidates c
+                    JOIN KRAKEN_AI_ORDER_OWNERSHIP o ON o.broker_order_id = c.order_id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM KRAKEN_RECONCILIATION_CASES r
+                        WHERE r.raw_event_hash = c.raw_hash
+                          AND r.logical_trade_id = o.logical_trade_id
+                          AND r.classification = 'owned_reconciled'
+                    )""",
+                    tuple(value for row in batch for value in row),
+                ).fetchall()
+                missing.update(row["raw_hash"] for row in rows)
+            events = [raw for raw in events if _stable_hash(raw) in missing]
         counts = {
             "owned_reconciled": 0,
             "unmanaged_excluded": 0,

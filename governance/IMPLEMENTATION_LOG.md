@@ -1,5 +1,58 @@
 # Implementation Log
 
+## 2026-09-09 — Portfolio P&L, scrolling and balance-scope investigation
+
+Founder reported blank sell P&L, requested exchange-coloured history rows and a
+scrolling table, and questioned differing account/cash/chart figures.
+
+Read-only production evidence at approximately 17:00 UTC:
+- Alpaca whole-account value $101,809.35 = $84,785.91 cash + $17,023.44 invested.
+- Kraken whole-account value £4,622.73 = £435.86 cash + £4,186.87 invested,
+  including personal holdings. The chart instead values AI capital, excluding
+  personal holdings. Its approximately £501 figure was an older known valuation,
+  not current available cash. Missing prices made the newer AI valuation unknown.
+  AI ledger cash £436.58611353 differs from broker cash by approximately £0.73;
+  that residual is not reconciled or silently overridden by this change.
+- Five recent filled Kraken exits (FIL, LTC, SUI, XRP, ALGO) had ownership links
+  but no closed reconciled result. Latest successful poll persisted zero new
+  history rows and reconciled zero events. Account-refresh paths also write
+  history: they can consume the history change detector before polling sees it.
+
+Implemented locally:
+- Kraken poll reconciliation checks its already-fetched, capped 100-event batch
+  against successful reconciliation, not solely newly inserted history. A bounded
+  key-only SQL anti-join returns only missing owned-event hashes, normally no rows.
+  Manual/unowned events are excluded; successful unchanged events are skipped.
+  P&L backfill now runs after reconciliation so new results reach history that poll.
+- Kraken P&L requires a closed reconciled result. An empty result map must never
+  fall through to FIFO matching against personal holdings. Unknown remains unknown.
+- History supports recorded net_pnl, explicitly labels unknown sell P&L Pending,
+  shows broker names and purple/gold text with semantic green/red P&L, and uses
+  a 320px-high scrolling table with readable 820px columns. An external pause-scroll
+  control provides a page-navigation escape from nested Android gestures. Expanded
+  details now stack below rather than beside the row.
+- Account totals are explicitly cash plus investments, not spendable cash. Kraken
+  chart is labelled AI capital value. Last-known timestamp and newer-missing-value
+  warning are visible without opening chart details. Existing chart shape retained.
+
+108 mobile tests and 72 targeted backend tests pass. PostgreSQL anti-join syntax
+was checked read-only. New tests cover already-persisted fill recovery, repeat-skip,
+personal-FIFO rejection, net losses/zero/pending, scrolling and stale valuation.
+No local Expo server, research cycle, live order or manual data backfill was run.
+No additional mobile requests or history payload reads. The recovery check adds a
+small bounded SQL request; steady-state billed egress is not yet measured, so zero
+increase is not claimed. Older fills outside the current broker batch may still
+need a separately scoped recovery. Device gesture verification remains outstanding.
+Full backend run with a fresh pytest temporary directory: 1,821 passed, 21 subtests
+passed, four failed. All four are unchanged Standup source-text assertions in
+test_standup_background_turn, test_standup_bubble_colours (two), test_standup_voice:
+old Conversation title, placeholder and voice-introduction wording. Both tests and
+Standup source are identical to HEAD (verified with git diff --exit-code), so these
+are existing copy-test mismatches, not Portfolio/reconciliation regressions. The
+first full attempt was interrupted after fixture permission errors in the default
+Windows pytest temp directory; the fresh directory resolved those setup errors.
+Release status will be recorded below once publication finishes.
+
 ## 2026-09-09 — Briefing background, cycle rows and Standup input repair
 
 Founder requested all three screens repaired and published after Portfolio approval.

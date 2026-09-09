@@ -114,6 +114,26 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertIn("kraken", kraken_only)
         self.assertNotIn("alpaca", kraken_only)
 
+    def test_kraken_poll_reconciles_existing_batch_before_pnl_backfill(self):
+        event = {"id": "known-fill", "status": "filled", "symbol": "XRPGBP"}
+        service = BrokerService.__new__(BrokerService)
+        service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))
+        service.orchestrator = SimpleNamespace(adapters={"kraken": SimpleNamespace(
+            configured=True, get_orders=lambda: [], get_trade_history=lambda: [event])})
+        order = []
+        with (
+            patch("ai_trader.application.broker_service.record_broker_trade_history", return_value=[]),
+            patch("ai_trader.application.broker_service.record_trade_evidence_batch", return_value=0),
+            patch("ai_trader.application.broker_service.backfill_missing_trade_evidence", return_value=0),
+            patch("ai_trader.application.broker_service.backfill_broker_evidence_timestamps"),
+            patch("ai_trader.application.broker_service.replay_kraken_evidence", side_effect=lambda *a, **k: order.append('reconcile') or {}) as replay,
+            patch("ai_trader.application.broker_service.backfill_realized_pnl", side_effect=lambda *a, **k: order.append('pnl')),
+        ):
+            service.poll_broker_activity(broker_filter="kraken")
+        self.assertEqual(replay.call_args.kwargs['events'], [event])
+        self.assertTrue(replay.call_args.kwargs['only_unreconciled'])
+        self.assertEqual(order, ['reconcile', 'pnl'])
+
     def test_broker_snapshot_does_not_duplicate_trade_evidence(self):
         service = LocalApiService.__new__(LocalApiService)
         service.settings = SimpleNamespace(db_path=Path("unused.sqlite3"))

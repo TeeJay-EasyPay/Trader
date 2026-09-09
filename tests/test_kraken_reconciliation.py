@@ -61,6 +61,26 @@ def trade_fill(order_id: str, fill_id: str, side: str, price: float, when: str) 
 
 
 class KrakenReconciliationTests(unittest.TestCase):
+    def test_poll_recovers_already_persisted_fills_without_replaying_successes(self):
+        from ai_trader.multi_broker import record_broker_trade_history
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            initialize_kraken_reconciliation_schema(db_path)
+            for order, role in [("entry-1", "entry"), ("exit-1", "exit")]:
+                register_kraken_order_ownership(db_path, broker_order_id=order,
+                    logical_trade_id="recovery-1", order_role=role, symbol="XRPGBP",
+                    side="buy" if role == "entry" else "sell")
+            events = [trade_fill("entry-1", "fill-1", "buy", 1, "2026-09-09T10:00:00Z"),
+                      trade_fill("exit-1", "fill-2", "sell", 1.2, "2026-09-09T11:00:00Z")]
+            record_broker_trade_history(db_path, "kraken", events)
+            self.assertEqual(record_broker_trade_history(db_path, "kraken", events), [])
+            first = replay_kraken_evidence(db_path, events=events, only_unreconciled=True)
+            second = replay_kraken_evidence(db_path, events=events, only_unreconciled=True)
+            self.assertEqual(first["terminal_trades"], 1)
+            self.assertEqual(second["owned_reconciled"], 0)
+            self.assertEqual(second["duplicates"], 0)
+            self.assertAlmostEqual(canonical_trade(db_path, "recovery-1")["net_pnl"], 1.8)
+
     def test_default_control_pauses_entries_and_failed_verification_cannot_resume(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"

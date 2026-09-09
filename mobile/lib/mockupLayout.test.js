@@ -11,7 +11,7 @@ function load(relative, extra = {}) {
   vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('babel-preset-expo')] }).code, {
     module, exports: module.exports, require: name => {
       if (name === 'react') return hooks;
-      if (name === 'react-native') return { TextInput: 'TextInput', Image: 'Image', View: 'View', Text: 'Text', TouchableOpacity: 'TouchableOpacity', ActivityIndicator: 'ActivityIndicator', StyleSheet: { create: x => x, absoluteFillObject: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 } } };
+      if (name === 'react-native') return { ScrollView: 'ScrollView', TextInput: 'TextInput', Image: 'Image', View: 'View', Text: 'Text', TouchableOpacity: 'TouchableOpacity', ActivityIndicator: 'ActivityIndicator', StyleSheet: { create: x => x, absoluteFillObject: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 } } };
       if (name.endsWith('.png')) return 'bundled-greeting-image';
       if (Object.hasOwn(extra, name)) return extra[name];
       return local(name);
@@ -24,6 +24,40 @@ function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   return [tree, ...nodes(tree.props?.children)];
 }
+test('trade history is bounded, names exchanges and retains a page-scroll escape', () => {
+  const { TradeHistoryTable, TradeHistoryRow } = load('../screens/Portfolio', {
+    '../styles': { styles: {} }, '../components/shared': {},
+    '../components/BrokerPanel': {}, '../components/ReportPanel': {},
+    '../components/PortfolioTrends': {}, '../components/ExchangeOverview': {},
+  });
+  const tree = TradeHistoryTable({ trades: Array.from({ length: 30 }, (_, i) => ({ id: i })), onCommand: () => {} });
+  const scrolls = nodes(tree).filter(n => n.type === 'ScrollView');
+  assert.equal(scrolls.length, 2);
+  assert.equal(scrolls.find(n => !n.props.horizontal).props.style.maxHeight, 320);
+  assert.ok(JSON.stringify(tree).includes('Pause table scrolling'));
+  for (const broker of ['kraken', 'alpaca']) {
+    const row = TradeHistoryRow({ item: { broker, side: 'sell', status: 'filled', symbol: 'TEST', net_pnl: 0 } });
+    const text = JSON.stringify(row);
+    assert.ok(text.includes(broker === 'kraken' ? '#7352C7' : '#9A6B00'));
+    assert.ok(text.includes(broker === 'kraken' ? 'Kraken' : 'Alpaca'));
+  }
+});
+
+test('unknown sell P&L is pending, known zero and net losses survive', () => {
+  const { tradeTableRow } = require('./tradeHistory');
+  assert.equal(tradeTableRow({ broker: 'kraken', side: 'sell', status: 'filled' }).pnlText, 'Pending');
+  assert.notEqual(tradeTableRow({ broker: 'kraken', side: 'sell', status: 'filled', net_pnl: 0 }).pnlText, 'Pending');
+  assert.equal(tradeTableRow({ broker: 'kraken', side: 'sell', status: 'filled', net_pnl: -2, profit_loss: 1 }).pnlSign, 'negative');
+});
+
+test('an older known AI value is visibly dated when a newer valuation is missing', () => {
+  const { BrokerTrends } = load('../components/PortfolioTrends', { '../styles': { styles: {} }, './shared': {}, '../api/client': {} });
+  const tree = BrokerTrends({ broker: { broker: 'kraken', currency: 'GBP', value_status: 'ok', values: [
+    { date: '2026-09-08', value: 501 }, { date: '2026-09-09', value: null },
+  ] }, days: 30, asOf: '2026-09-09' });
+  const text = JSON.stringify(tree);
+  for (const label of ['AI capital value', '2026-09-08', 'newer valuation unavailable', 'Not available cash']) assert.ok(text.includes(label));
+});
 const shared = { Section: 'Section', CollapsibleSection: 'CollapsibleSection', Metric: 'Metric', Button: 'Button' };
 
 test('account overview renders four labelled tiles, preserves zero/missing values and modes', () => {

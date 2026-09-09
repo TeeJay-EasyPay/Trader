@@ -24,6 +24,7 @@ function ExchangeOverview({ brokers = [], activity, detailed = false, children }
             </View>)}
           </View>
           <Text style={styles.smallText}>Includes manual holdings · {broker.captured_at ? formatDateTime(broker.captured_at) : 'Snapshot time unavailable'}</Text>
+          <Text style={styles.smallText}>Account value includes cash and investments; it is not cash available to trade.</Text>
         </> : counts.available ? <>
           <Text style={styles.smallText}>Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}</Text>
           <Metric label="Account change today" value={money(broker.todays_pnl)} />

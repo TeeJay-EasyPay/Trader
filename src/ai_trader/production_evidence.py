@@ -1545,7 +1545,7 @@ def _reconciled_pnl_by_exit_order(db_path: Path) -> dict[str, float]:
             SELECT o.broker_order_id AS broker_order_id, r.net_pnl AS net_pnl
             FROM KRAKEN_AI_ORDER_OWNERSHIP o
             JOIN KRAKEN_RECONCILED_RESULTS r ON r.logical_trade_id = o.logical_trade_id
-            WHERE o.order_role = {x} AND r.net_pnl IS NOT NULL
+            WHERE o.order_role = {x} AND r.status = 'closed' AND r.net_pnl IS NOT NULL
             """,
             ("exit",),
             limit=500,
@@ -1659,7 +1659,7 @@ def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
     # buy" routinely matches an AI exit against one of HIS holdings and invents a profit.
     # Reconciliation already links each exit to its own entry, so use it and never guess.
     reconciled = _reconciled_pnl_by_exit_order(db_path) if broker.lower() == "kraken" else {}
-    if reconciled:
+    if broker.lower() == "kraken":
         for fills in by_symbol.values():
             for row in fills:
                 order_id = str(row.get("broker_order_id") or "")

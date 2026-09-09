@@ -393,7 +393,7 @@ function normalizeTradeRow(item) {
     targetPrice: firstNumber(item?.take_profit, item?.target_price, raw.take_profit, raw.target_price),
     stopLoss: firstNumber(item?.stop_loss, raw.stop_loss),
     currentPrice: firstNumber(item?.current_price, raw.current_price, raw.last_price),
-    profitLoss: firstNumber(item?.profit_loss, item?.pnl, item?.realized_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
+    profitLoss: firstNumber(item?.net_pnl, item?.profit_loss, item?.pnl, item?.realized_pnl, raw.net_pnl, raw.profit_loss, raw.pnl, raw.realized_pnl),
     fee: firstNumber(item?.fee, raw.fee, raw.commission),
     openedAt,
     closedAt,
@@ -640,7 +640,7 @@ function tradeTableRow(item) {
     amountText: amountValue !== null ? historyMoneyOrText(normalized.broker, amountValue) : MISSING_NUMERIC_CELL,
     commissionPctText: commissionPct !== null ? `${commissionPct.toFixed(2)}%` : MISSING_NUMERIC_CELL,
     commissionText: hasFee ? historyMoneyOrText(normalized.broker, feeValue) : MISSING_NUMERIC_CELL,
-    pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : MISSING_NUMERIC_CELL),
+    pnlText: isOpen ? 'Unsold' : (hasPnl ? historyMoneyOrText(normalized.broker, pnlValue) : isSell(normalized.side) ? 'Pending' : MISSING_NUMERIC_CELL),
     pnlSign: hasPnl ? (pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'neutral') : 'neutral',
   };
 }

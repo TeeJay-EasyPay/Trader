@@ -68,3 +68,9 @@ test('exchange chart strokes remain visible on their tinted cards', () => {
     assert.ok(contrast(exchangeChartColour(broker), exchangePalette(broker).backgroundColor) >= 3);
   }
 });
+
+test('exchange-coloured history text is readable on white table rows', () => {
+  for (const broker of ['kraken', 'alpaca', 'future']) {
+    assert.ok(contrast(exchangeChartColour(broker), '#FFFFFF') >= 4.5);
+  }
+});

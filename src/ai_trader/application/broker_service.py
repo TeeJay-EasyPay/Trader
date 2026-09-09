@@ -329,7 +329,6 @@ class BrokerService:
             # the two tables directly every cycle, same self-healing shape as the realised-
             # P&L backfill on the next line.
             evidence_written += backfill_missing_trade_evidence(self.settings.db_path, broker=broker_name)
-            backfill_realized_pnl(self.settings.db_path, broker=broker_name)
             # 2026-08-19 hosted finding: a raw-epoch observed_at already sitting in
             # PRODUCTION_TRADE_EVIDENCE does NOT self-heal through ordinary polling the way
             # backfill_realized_pnl's own target field does -- record_broker_trade_history's
@@ -342,8 +341,9 @@ class BrokerService:
             if broker_name == "kraken":
                 reconciliation = replay_kraken_evidence(
                     self.settings.db_path,
-                    events=new_rows,
+                    events=events,
                     source="poll_broker_activity",
+                    only_unreconciled=True,
                 )
             else:
                 if broker_name == "alpaca":
@@ -378,6 +378,8 @@ class BrokerService:
                     )
                 elif alpaca_outcomes.get("status") == "failed":
                     print(f"[alpaca-reconciliation] failed: {alpaca_outcomes.get('error')}", flush=True)
+            # Publish P&L after reconciliation, not one poll before its result exists.
+            backfill_realized_pnl(self.settings.db_path, broker=broker_name)
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
             for row in new_rows:
                 status = str(row.get("status") or "").lower()

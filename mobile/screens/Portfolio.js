@@ -5,7 +5,7 @@
 
 const React = require('react');
 const { useState } = React;
-const { Text, TouchableOpacity, View } = require('react-native');
+const { Text, TouchableOpacity, View, ScrollView } = require('react-native');
 const { styles } = require('../styles');
 const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
@@ -13,6 +13,7 @@ const { ReportPanel } = require('../components/ReportPanel');
 const { PortfolioTrends } = require('../components/PortfolioTrends');
 const { ExchangeOverview } = require('../components/ExchangeOverview');
 const { exchangeMoney, currencyFor } = require('../lib/exchangeOverview');
+const { exchangeChartColour } = require('../lib/palette');
 const { moneyOrText, historyMoneyOrText, formatByCurrency } = require('../lib/money');
 const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
@@ -34,10 +35,6 @@ const {
   allTransactions,
   restingProtectiveOrders,
 } = require('../lib/tradeHistory');
-
-// Enough recent rows to read the table as a table without burying the cards below it. The
-// footnote always states the real total, and "Show all" renders every remaining row.
-const DEFAULT_TRADE_ROWS = 12;
 
 function TradeDetail({ item, onForceExit }) {
   const raw = item.raw || item.payload || {};
@@ -61,7 +58,7 @@ function TradeDetail({ item, onForceExit }) {
           enough for a number, where "0.00" and "we do not know" look identical and mean
           opposite things -- so the reason lives here, where there is room to say it. */}
       <TextBlock label="Commission" value={commissionExplanation(normalized)} />
-      <Metric label="P&L" value={isOpen ? 'Unsold' : tradeMoney(normalized.profitLoss)} />
+      <Metric label="P&L" value={isOpen ? 'Unsold' : normalized.profitLoss == null ? 'Pending reconciliation — not zero' : tradeMoney(normalized.profitLoss)} />
       <Metric label="Entry Date & Time" value={formatDateTime(normalized.openedAt)} />
       <Metric label="Exit Date & Time" value={isOpen ? 'Unsold' : formatDateTime(normalized.closedAt)} />
       <Metric label="Time Held" value={formatHoldingDuration(normalized.openedAt, normalized.closedAt, isOpen)} />
@@ -112,21 +109,23 @@ function TradeHistoryHeaderRow() {
 function TradeHistoryRow({ item, onCommand }) {
   const [open, setOpen] = useState(false);
   const row = tradeTableRow(item);
+  const broker = normalizeTradeRow(item).broker;
+  const brokerColour = { color: exchangeChartColour(broker) };
   const pnlStyle = row.pnlSign === 'positive' ? styles.tradeTablePnlPositive : row.pnlSign === 'negative' ? styles.tradeTablePnlNegative : null;
   return (
     <View style={styles.tradeTableRow}>
       <TouchableOpacity style={styles.tradeTableRowTouchable} onPress={() => setOpen((value) => !value)}>
         <View style={styles.tradeTableRowCells}>
-          <Text style={[styles.tradeTableCellText, styles.tradeTableCellDate]} numberOfLines={2}>{row.dateText}</Text>
-          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSymbol]} numberOfLines={1} adjustsFontSizeToFit>{row.symbol}</Text>
-          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSide]}>{row.side}</Text>
-          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPrice]} numberOfLines={1} adjustsFontSizeToFit>{row.priceText}</Text>
-          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellAmount]} numberOfLines={1} adjustsFontSizeToFit>{row.amountText}</Text>
-          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommissionPct]} numberOfLines={1} adjustsFontSizeToFit>{row.commissionPctText}</Text>
-          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommission]} numberOfLines={1} adjustsFontSizeToFit>{row.commissionText}</Text>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellDate, brokerColour]} numberOfLines={2}>{row.dateText}</Text>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSymbol, brokerColour]} numberOfLines={2}>{row.symbol}{'\n'}{broker}</Text>
+          <Text style={[styles.tradeTableCellText, styles.tradeTableCellSide, brokerColour]}>{row.side}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPrice, brokerColour]} numberOfLines={1}>{row.priceText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellAmount, brokerColour]} numberOfLines={1}>{row.amountText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommissionPct, brokerColour]} numberOfLines={1}>{row.commissionPctText}</Text>
+          <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellCommission, brokerColour]} numberOfLines={1}>{row.commissionText}</Text>
           <Text style={[styles.tradeTableCellTextRight, styles.tradeTableCellPnl, pnlStyle]} numberOfLines={1} adjustsFontSizeToFit>{row.pnlText}</Text>
         </View>
-        <Text style={styles.smallText}>{open ? 'Tap to collapse' : 'Tap for full detail'}</Text>
+        <Text style={[styles.smallText, brokerColour]}>{open ? 'Tap to collapse' : 'Tap for full detail'}</Text>
       </TouchableOpacity>
       {open ? (
         <View style={styles.tradeTableExpandedDetail}>
@@ -140,32 +139,24 @@ function TradeHistoryRow({ item, onCommand }) {
   );
 }
 
-// 2026-08-27 Founder-reported: "we run out of space, and I can't see if there were any more
-// trades placed today." The table was a hard slice(0, 20) rendered into the page, with no way
-// to reach the rest and nothing saying rows had been cut.
-//
-// First attempt was an inner ScrollView with nestedScrollEnabled, which is the textbook answer
-// and was wrong here. Verified on the emulator: it scrolled, but a 460dp scroll region sitting
-// in the middle of the app's own vertical page ScrollView captured essentially every vertical
-// drag -- including at the screen edge -- so the page could no longer be scrolled past the
-// table at all. Trading one navigation problem for a worse one.
-//
-// Expansion instead. Every row renders into the page and the page scrolls the ordinary way, so
-// there is no gesture to fight over. The Founder sees the most recent rows by default, the
-// footnote always states how many of how many, and "Show all" reveals the rest.
+// Bounded scrolling over the already-loaded history, never another database read.
+// Explicit pause control avoids trapping the page in a nested Android scroll view.
 function TradeHistoryTable({ trades, onCommand, protectiveOrders = 0 }) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? trades : trades.slice(0, DEFAULT_TRADE_ROWS);
+  const [tableScrolling, setTableScrolling] = useState(true);
   return (
     <View style={styles.tradeTable}>
-      <TradeHistoryHeaderRow />
-      {visible.map((item, index) => (
-        <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
-      ))}
+      <Text style={styles.smallText}>Kraken: purple · Alpaca: gold. P&L stays green/red. Pending means the sell result is not reconciled, not zero.</Text>
+      <Button label={tableScrolling ? 'Pause table scrolling' : 'Resume table scrolling'} tone="neutral" onPress={() => setTableScrolling(value => !value)} />
+      <ScrollView horizontal nestedScrollEnabled scrollEnabled={tableScrolling} showsHorizontalScrollIndicator style={{ marginHorizontal: 8, marginTop: 10 }}>
+        <ScrollView nestedScrollEnabled scrollEnabled={tableScrolling} showsVerticalScrollIndicator persistentScrollbar keyboardShouldPersistTaps="handled" stickyHeaderIndices={[0]} style={{ width: 820, maxHeight: 320 }}>
+          <View style={{ backgroundColor: '#FFFFFF', paddingTop: 8 }}><TradeHistoryHeaderRow /></View>
+          {trades.map((item, index) => (
+            <TradeHistoryRow key={tradeKey(item, index)} item={item} onCommand={onCommand} />
+          ))}
+        </ScrollView>
+      </ScrollView>
       <Text style={styles.tradeTableFootnote}>
-        {expanded
-          ? `Showing all ${trades.length} trade${trades.length === 1 ? '' : 's'}, newest first.`
-          : `Showing the ${visible.length} most recent of ${trades.length} trades.`}
+        {`${trades.length} loaded trades, newest first. Scroll sideways for all columns and vertically for older rows. Pause table scrolling to scroll the page freely.`}
       </Text>
       {/* 2026-08-31: resting take-profit and stop-loss orders used to appear here as SELL
           rows with blank price and amount, which read as phantom sales -- the Founder saw
@@ -178,15 +169,6 @@ function TradeHistoryTable({ trades, onCommand, protectiveOrders = 0 }) {
           {'are resting on your open positions (take-profit and stop-loss). They are not trades '}
           {'and appear here only once they execute.'}
         </Text>
-      ) : null}
-      {trades.length > DEFAULT_TRADE_ROWS ? (
-        <View style={styles.buttonGrid}>
-          <Button
-            label={expanded ? 'Show fewer' : `Show all ${trades.length}`}
-            tone="neutral"
-            onPress={() => setExpanded((value) => !value)}
-          />
-        </View>
       ) : null}
     </View>
   );
@@ -299,4 +281,4 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
   );
 }
 
-module.exports = { PortfolioCommandCentre };
+module.exports = { PortfolioCommandCentre, TradeHistoryTable, TradeHistoryRow };

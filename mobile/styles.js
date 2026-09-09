@@ -585,8 +585,8 @@ export const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   tradeTableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     borderBottomColor: '#dce8f5',
     borderBottomWidth: 1,
     paddingVertical: 9,

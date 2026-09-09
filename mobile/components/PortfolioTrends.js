@@ -9,6 +9,7 @@ const { apiRequest } = require('../api/client');
 const { seriesFor, outcomeBuckets, loadTrends } = require('../lib/portfolioTrends');
 const { accountChart, dateTicks, compactMoney } = require('../lib/chartPresentation');
 const { exchangeMoney: money } = require('../lib/exchangeOverview');
+const { formatDateTime } = require('../lib/datetime');
 const dateLabel = date => new Date(date + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const HEIGHT = 116, AXIS = 57, BAR_HEIGHT = 76;
 const s = StyleSheet.create({
@@ -99,9 +100,10 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
   return <View style={[s.card, exchangePalette(broker.broker)]}>
     <View style={s.heading}>
       <Text style={s.title}>{name} · {broker.currency}</Text>
-      <View style={s.balance}><Text style={s.label}>Account value ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latest ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
+      <View style={s.balance}><Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital value' : 'Account value'} ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latest ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
     </View>
     <Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital only · personal holdings excluded' : 'Whole account · cash plus investments'}{broker.account_mode ? ' · ' + broker.account_mode : ''}</Text>
+    {broker.value_status === 'ok' && latest && <Text style={s.label}>Last known value: {latest.captured_at ? formatDateTime(latest.captured_at) : latest.date}{series.values.at(-1) !== latest ? ' · newer valuation unavailable' : ''}. Not available cash.</Text>}
     {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} colour={broker.broker === 'kraken' ? '#8064DC' : broker.broker === 'alpaca' ? '#BC8800' : '#476582'} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
     <Text style={s.subheading}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'} ({days}d)</Text>
     {broker.outcome_status !== 'ok' ? <Text style={s.label}>Trade outcomes are temporarily unavailable.</Text> : <>
