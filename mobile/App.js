@@ -346,7 +346,7 @@ export default function App() {
       {/* AT-ED-015 Section 11: the Executive Briefing is the Founder's primary entry point, not
           one equal-weight tab among seven - a distinct, full-width button above the regular tab
           row, so it is always the first thing the Founder sees and can always return to. */}
-      <Pressable
+      {screen !== 'Learning' && <Pressable
         accessibilityRole="tab"
         accessibilityState={{ selected: screen === 'ExecutiveBriefing' }}
         style={({ pressed }) => [styles.primaryTab, screen === 'ExecutiveBriefing' && styles.primaryTabActive, pressed && styles.controlPressed]}
@@ -355,14 +355,14 @@ export default function App() {
         {({ pressed }) => <Text style={[styles.primaryTabText, (pressed || screen === 'ExecutiveBriefing') && styles.primaryTabTextActive]}>
           Executive Briefing
         </Text>}
-      </Pressable>
+      </Pressable>}
       <View style={styles.tabs}>
-        {SCREENS.filter((item) => item !== 'ExecutiveBriefing').map((item) => (
+        {(screen === 'Learning' ? SCREENS : SCREENS.filter((item) => item !== 'ExecutiveBriefing')).map((item, index) => (
           <Pressable
             key={item}
             accessibilityRole="tab"
             accessibilityState={{ selected: screen === item }}
-            style={({ pressed }) => [styles.tab, screen === item && styles.activeTab, pressed && styles.controlPressed]}
+            style={({ pressed }) => [styles.tab, screen === 'Learning' && { minHeight: 40, borderRadius: 6, flexBasis: index < 3 ? '30%' : '45%' }, screen === item && styles.activeTab, pressed && styles.controlPressed]}
             onPress={() => setScreen(item)}
           >
             {({ pressed }) => <Text

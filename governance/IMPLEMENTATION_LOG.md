@@ -1,5 +1,21 @@
 # Implementation Log
 
+## 2026-09-10 — Learning mockup density and responsive composition
+
+Rebuilt the overview against the Founder's folded/unfolded screenshots rather than
+merely recolouring the existing layout. Learning navigation now uses two compact
+rows. Reduced card padding, control size, chart height and typography spacing.
+At 600 logical pixels and above, filters sit beside headings, opportunity prices
+sit beside outcomes, and the strategy candidate has a horizontal composition.
+Completed trades use slim clickable exchange rows; the review action sits in a
+compact bottom-right footer instead of a full-width bar. Rejection decisions use
+the same footer pattern; tracked-opportunity access stays in the preview.
+Today/This week controls select actual daily/weekly summaries. Longer methodology
+notes are expandable; simulated status, unknown outcomes and unreconciled Alpaca
+fees stay visible. Native cloud decoration remains proportional at both widths.
+No fabricated graph results, strategy activation or backend changes. Emulator QA
+and release results follow after checking the exported build.
+
 ## 2026-09-09 — Complete Learning visual QA fixes
 
 Direct Android debugging/screencap access works on emulator-5554 independently

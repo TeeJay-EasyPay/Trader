@@ -2,11 +2,11 @@ const React = require('react');
 const { View } = require('react-native');
 
 // Native decorative artwork: fixed proportions at every display width, no download.
-function LearningCloud() {
+function LearningCloud({ wide = false }) {
   const cloud = { position: 'absolute', backgroundColor: '#FFFEF7', borderRadius: 60,
     shadowColor: '#CABD9E', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 2 };
   return <View pointerEvents="none" accessible={false} importantForAccessibility="no-hide-descendants"
-    style={{ position: 'absolute', right: -14, top: -10, width: 152, height: 105, opacity: 0.45, transform: [{ scale: 0.65 }] }}>
+    style={{ position: 'absolute', right: wide ? 14 : -40, top: wide ? 10 : -24, width: 152, height: 105, opacity: 0.9, transform: [{ scale: wide ? 1.1 : 0.42 }] }}>
     <View style={{ position: 'absolute', width: 52, height: 52, borderRadius: 26, right: 9, top: 2,
       backgroundColor: '#FFD778', borderWidth: 5, borderColor: '#FFE29C' }} />
     <View style={{ ...cloud, width: 76, height: 58, left: 30, top: 25 }} />

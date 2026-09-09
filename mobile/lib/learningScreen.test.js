@@ -31,6 +31,18 @@ test('calendar navigation handles leap years and month ends', () => {
   assert.equal(shiftedDate('2024-03-01', 'daily', -1), '2024-02-29');
   assert.equal(shiftedDate('2026-01-01', 'weekly', -1), '2025-12-25');
 });
+
+test('Learning overview has deliberate narrow/wide layouts and compact footer actions', () => {
+  const source = fs.readFileSync(require.resolve('../screens/Learning'), 'utf8');
+  assert.ok(source.includes('useWindowDimensions().width >= 600'));
+  assert.ok(source.includes("flexDirection: wide ? 'row' : 'column'"));
+  assert.ok(source.includes('<Action compact label="Review completed trades →"'));
+  assert.ok(source.includes('<Action compact label="View rejected decisions →"'));
+  assert.ok(source.includes('Evidence notes & limitations +'));
+  assert.ok(source.includes("onOpen('trades', b)"));
+  assert.ok(source.includes("['weekly', 'This week']"));
+  assert.ok(source.includes('No paired rule experiment recorded'));
+});
 test('unknown results are not zero, currencies and losses remain separate', () => {
   assert.equal(resultText(null, 'kraken'), 'Unknown');
   assert.equal(resultText(0, 'kraken'), '£0.00');
@@ -69,7 +81,7 @@ test('overview renders missing sources safely and wires all seven evidence pages
   const module = { exports: {} };
   vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('babel-preset-expo')] }).code, {
     module, exports: module.exports, require: name => name === 'react-native'
-      ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' } }
+      ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 840 }) }
       : name === 'react' ? { ...local(name), useState: value => [value, () => {}] }
       : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' } : local(name),
   });
