@@ -16,6 +16,21 @@ fees stay visible. Native cloud decoration remains proportional at both widths.
 No fabricated graph results, strategy activation or backend changes. Emulator QA
 and release results follow after checking the exported build.
 
+Verified through direct Android screenshots at 1080x2424 and 2160x2424 (density
+420), then restored the original display. The first wide capture exposed a
+heading flex-basis issue; corrected it in `77c80c81` and visually confirmed filters
+beside the heading. Confirmed compact right-aligned rejected/completed-trade
+footer actions at both widths, side-by-side wide opportunity details, narrow
+price readability, slim trade rows and the strategy footer. Review completed
+trades opened the live read-only detail page successfully. All 117 mobile tests
+pass. Main composition commit `e7a208b7`; final Android runtime 1.0.3 updates:
+preview `dc4507cd-8723-414f-bd7a-1a92a683f327`, hosted-preview
+`9f6af2a6-aea6-41bb-b3db-387e5f33099d`. Both published and code pushed to master.
+No local Expo server or trading cycle used. Not a pixel-identical reproduction:
+native cloud/letter exchange badges differ from the mockup's illustrative art,
+and real evidence/fee labels replace illustrative results. Wider viewport testing
+does not claim testing on a physical Honor Magic V3.
+
 ## 2026-09-09 — Complete Learning visual QA fixes
 
 Direct Android debugging/screencap access works on emulator-5554 independently
