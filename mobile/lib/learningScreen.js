@@ -24,7 +24,11 @@ function resultText(value, broker) {
   return `${value < 0 ? '−' : value > 0 ? '+' : ''}${broker === 'kraken' ? '£' : 'US$'}${Math.abs(value).toFixed(2)}`;
 }
 function humanStatus(value) {
-  return ({ pending: 'Still tracking', unsettleable: 'Outcome uncertain', stop_hit: 'Modelled stop reached',
+  return ({ ai_review_declined: 'Declined after AI review', pending: 'Still tracking', unsettleable: 'Outcome uncertain', stop_hit: 'Modelled stop reached',
     target_hit: 'Modelled target reached', expired: 'Tracking window ended' })[value] || String(value || 'Unknown').replace(/_/g, ' ');
 }
-module.exports = { learningRequest, shiftedDate, resultText, humanStatus };
+function priceText(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unknown';
+  return Number(value.toPrecision(6)).toString();
+}
+module.exports = { learningRequest, shiftedDate, resultText, humanStatus, priceText };

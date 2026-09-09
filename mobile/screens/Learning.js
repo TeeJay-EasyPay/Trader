@@ -4,7 +4,7 @@ const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, Platform, BackHandler } = require('react-native');
 const { LearningCloud } = require('../components/LearningCloud');
 const { exchangePalette, palette } = require('../lib/palette');
-const { learningRequest, shiftedDate, resultText, humanStatus } = require('../lib/learningScreen');
+const { learningRequest, shiftedDate, resultText, humanStatus, priceText } = require('../lib/learningScreen');
 const HEADINGS = { rejected: 'Tracked opportunities', decisions: 'Rejected decisions', trades: 'Completed trades',
   strategies: 'Strategy ideas', tests: 'Test results', reviews: 'Trade reviews', proposals: 'Proposed lessons' };
 const s = StyleSheet.create({
@@ -46,7 +46,7 @@ const s = StyleSheet.create({
   stageLine: { position: 'absolute', left: '12%', right: '12%', top: 9, height: 1, backgroundColor: '#ADB9D5' },
 });
 function SectionHeading({ icon, title }) {
-  return <View style={s.row}><Text accessible={false} style={{ color: '#006346', fontSize: 22 }}>{icon}</Text><Text style={[s.heading, { flexShrink: 1 }]}>{title}</Text></View>;
+  return <View style={[s.row, { flexWrap: 'nowrap' }]}><Text accessible={false} style={{ color: '#006346', fontSize: 22 }}>{icon}</Text><Text style={[s.heading, { flex: 1 }]}>{title}</Text></View>;
 }
 function BrokerBadge({ broker }) {
   return <View accessible={false} style={[s.brokerBadge, { backgroundColor: broker === 'kraken' ? '#7955DA' : '#F3CE59' }]}>
@@ -97,7 +97,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
     <View style={[s.card, s.summary]}>
       <LearningCloud />
       <View style={s.summaryContent}>
-        <View style={{ paddingRight: 112, minHeight: 56 }}><SectionHeading icon="▤" title="Learning summary" /></View>
+        <View style={{ minHeight: 68, justifyContent: 'center' }}><SectionHeading icon="▤" title="Learning summary" /></View>
         <View style={s.segmented}>{['daily', 'weekly', 'monthly'].map(p => <TouchableOpacity key={p} accessibilityRole="tab"
           accessibilityState={{ selected: p === period }} style={[s.segment, p === period && s.active]} onPress={() => onPeriod(p)}>
           <Text style={[s.buttonText, p === period && s.selectedText]}>{p[0].toUpperCase() + p.slice(1)}</Text></TouchableOpacity>)}</View>
@@ -129,8 +129,9 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       <Text style={s.body}>{data.unavailable.includes('rejection events') ? 'Rejection counts unavailable' : data.rejections.reduce((n, x) => n + Number(x.events), 0) + ' recorded rejection events'} · may include repeated checks.</Text>
       <BrokerCard broker={preview?.broker || (opportunityBroker === 'all' ? 'kraken' : opportunityBroker)}>
         {preview ? <><View style={s.row}><BrokerBadge broker={preview.broker} /><Text style={[s.body, { fontWeight: '700', flexShrink: 1 }]}>{preview.symbol} · {preview.broker}</Text><Text style={s.badge}>SIMULATED</Text></View>
-          <Text style={s.body}>{preview.reason || 'Rejection reason not recorded'}</Text>
-          <View style={[s.row, { backgroundColor: 'rgba(255,255,255,0.55)', borderRadius: 10 }]}>{[['Entry', preview.intended_entry], ['Target', preview.take_profit], ['Stop', preview.stop_loss]].map(([label, value]) => <View key={label} style={s.metric}><Text style={s.small}>{label}</Text><Text style={[s.body, { fontWeight: '700' }]}>{value ?? 'Unknown'}</Text></View>)}</View>
+          <Text style={s.body}>{preview.reason ? humanStatus(preview.reason) : 'Rejection reason not recorded'}</Text>
+          <View style={[s.row, { backgroundColor: 'rgba(255,255,255,0.55)', borderRadius: 10 }]}>{[['Entry', preview.intended_entry], ['Target', preview.take_profit], ['Stop', preview.stop_loss]].map(([label, value]) => <View key={label} style={s.metric}><Text style={s.small}>{label}</Text><Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} accessibilityLabel={label + ': ' + (value ?? 'Unknown')} style={[s.body, { fontWeight: '700' }]}>{priceText(value)}</Text></View>)}</View>
+          <Text style={s.small}>Prices rounded for display; exact values in tracked opportunities.</Text>
           <Text style={s.badge}>{humanStatus(preview.outcome_status)}</Text>
           <Text style={s.small}>{typeof preview.estimated_net_r === 'number' ? `Estimated net outcome: ${preview.estimated_net_r.toFixed(2)}R (planned risk, not currency).` : 'Estimated outcome pending / unknown.'}</Text>
         </> : <Text style={s.body}>No linked rejected-opportunity preview is available for this selection.</Text>}
@@ -167,7 +168,8 @@ function EvidenceRow({ row, kind }) {
     <Text style={s.small}>{row.created_at}</Text>
     {kind === 'rejected' && <><Text style={s.badge}>SIMULATED · {humanStatus(row.outcome_status)}</Text>
       <Text style={s.body}>{row.reason || 'Reason not recorded'}</Text><Text style={s.small}>{row.provenance}</Text>
-      <View style={s.row}>{[['Entry', row.intended_entry], ['Target', row.take_profit], ['Stop', row.stop_loss]].map(([label, v]) => <View key={label} style={s.metric}><Text style={s.small}>{label}</Text><Text style={[s.body, { fontWeight: '700' }]}>{v ?? 'Unknown'}</Text></View>)}</View>
+      <View style={s.row}>{[['Entry', row.intended_entry], ['Target', row.take_profit], ['Stop', row.stop_loss]].map(([label, v]) => <View key={label} style={s.metric}><Text style={s.small}>{label}</Text><Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={[s.body, { fontWeight: '700' }]}>{priceText(v)}</Text></View>)}</View>
+      <Text selectable style={s.small}>Exact recorded prices: entry {row.intended_entry ?? 'unknown'} · target {row.take_profit ?? 'unknown'} · stop {row.stop_loss ?? 'unknown'}</Text>
       <Text style={s.body}>Estimated net result: {typeof row.estimated_net_r === 'number' ? row.estimated_net_r.toFixed(2) + 'R' : 'Pending / unknown'}</Text>
       <Text style={s.small}>R means planned risk, not money. Entry unverified; stop-first daily-candle model.</Text></>}
     {kind === 'decisions' && <><Text style={s.body}>{row.reason || 'Reason not recorded'}</Text><Text style={s.small}>{row.provenance} · repeated checks may appear separately.</Text></>}

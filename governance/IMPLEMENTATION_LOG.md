@@ -1,5 +1,21 @@
 # Implementation Log
 
+## 2026-09-09 — Complete Learning visual QA fixes
+
+Direct Android debugging/screencap access works on emulator-5554 independently
+of Windows window capture. Two app restarts loaded the previously queued updates;
+latest Learning layout, summary, comparison frame and opportunity preview were
+visually inspected. The initial heading wrapped its icon to a separate line and
+GRT's long stop value broke inside its number.
+
+Fixes: section headings use a non-wrapping icon/title row; removed the oversized
+reserved title inset and reduced cloud decoration. Overview and detail price tiles
+use six-significant-digit display precision and one-line text. Exact recorded
+prices remain selectable in detail and available to accessibility in the preview.
+Unknowns stay unknown, zero remains zero, and tiny values remain nonzero. Internal
+AI-review rejection code is rendered in plain language. No trading/data changes.
+All 115 mobile tests passed. Release and post-update visual results follow below.
+
 ## 2026-09-09 — Learning mockup structure pass
 
 Reworked Learning's overview against the approved preview: joined period tabs,

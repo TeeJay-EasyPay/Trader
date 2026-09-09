@@ -2,6 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { learningRequest, shiftedDate, resultText, humanStatus } = require('./learningScreen');
+const { priceText } = require('./learningScreen');
+test('compact prices preserve small values and never turn missing data into zero', () => {
+  assert.equal(priceText(0.01346040756), '0.0134604');
+  assert.equal(priceText(0.000000001234567), '1.23457e-9');
+  assert.equal(priceText(0), '0');
+  assert.equal(priceText(null), 'Unknown');
+  assert.equal(priceText(NaN), 'Unknown');
+  const source = fs.readFileSync(require.resolve('../screens/Learning'), 'utf8');
+  assert.ok(source.includes("flexWrap: 'nowrap'"));
+  assert.ok(!source.includes('paddingRight: 112'));
+  assert.ok(source.includes('Exact recorded prices'));
+});
 
 test('calendar navigation handles leap years and month ends', () => {
   assert.equal(shiftedDate('2024-03-31', 'monthly', -1), '2024-02-01');
