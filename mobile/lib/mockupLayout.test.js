@@ -76,3 +76,17 @@ test('new conversation colours remain readable and distinctly identify all speak
   assert.equal(styles.composerInput.minHeight, 48);
   assert.equal(styles.accountMetricGrid.flexWrap, 'wrap');
 });
+
+test('portfolio chart cards retain fee warnings, unavailable states and real latest value', () => {
+  const { BrokerTrends, ValueChart, OutcomeChart } = load('../components/PortfolioTrends', { '../styles': { styles: {} }, './shared': shared, '../api/client': { apiRequest: () => { throw Error('Rendering must not request data'); } } });
+  const broker = { broker: 'alpaca', currency: 'USD', account_mode: 'paper', value_status: 'ok', outcome_status: 'ok', values: [{ date: '2026-09-09', value: 123 }], outcomes: [] };
+  const text = JSON.stringify(BrokerTrends({ broker, days: 30, weekly: false, asOf: '2026-09-09' }));
+  assert.ok(text.includes('paper'));
+  assert.ok(text.includes('123.00'));
+  assert.ok(text.includes('fees not fully reconciled'));
+  assert.ok(text.includes('counts, not money'));
+  assert.ok(JSON.stringify(BrokerTrends({ broker: { ...broker, value_status: 'failed' }, days: 30, asOf: '2026-09-09' })).includes('Unavailable'));
+  assert.ok(JSON.stringify(ValueChart({ rows: [], currency: 'GBP', colour: '#8064DC' })).includes('Missing values are not zero'));
+  const chart = OutcomeChart({ bins: [{ date: '2026-09-09', wins: 2, losses: 1, breakeven: 0, unknown: 0 }], currency: 'USD' });
+  assert.ok(JSON.stringify(chart).includes('2 won, 1 lost'));
+});

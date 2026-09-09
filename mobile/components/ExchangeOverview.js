@@ -18,7 +18,7 @@ function ExchangeOverview({ brokers = [], activity, detailed = false, children }
         <Text style={styles.smallText}>{broker.account_mode || 'Account mode unknown'} · whole account</Text>
         {detailed ? <>
           <View style={styles.accountMetricGrid}>
-            {[['Account value', broker.portfolio_value], ['Account change today', broker.todays_pnl], ['Cash', broker.cash_available], ['In investments', broker.estimated_in_positions]].map(([label, value]) => <View key={label} style={styles.accountMetricTile}>
+            {[['Account value', broker.portfolio_value], ['Account change today', broker.todays_pnl], ['Cash', broker.cash_available], ['In investments', broker.estimated_in_positions]].map(([label, value], index) => <View key={label} style={[styles.accountMetricTile, { flexBasis: '24%', minWidth: 140 }, index % 2 !== 0 && { borderLeftWidth: 1, borderLeftColor: '#DADDE8', paddingLeft: 12 }]}>
               <Text style={styles.smallText}>{label}</Text>
               <Text style={[styles.accountMetricValue, label === 'Account change today' && typeof value === 'number' && (value > 0 ? styles.tradeTablePnlPositive : value < 0 ? styles.tradeTablePnlNegative : null)]}>{money(value)}</Text>
             </View>)}

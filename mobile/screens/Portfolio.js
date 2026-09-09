@@ -253,7 +253,8 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         })}
       </CollapsibleSection>
 
-      <CollapsibleSection title="Trade History" subtitle="Every executed trade across brokers. Resting stop-loss and take-profit orders are not shown until they fill.">
+      <CollapsibleSection title="Trade history">
+        <Text style={styles.smallText}>Every executed trade across brokers. Resting stop-loss and take-profit orders are not shown until they fill.</Text>
         <View style={styles.buttonGrid}>
           {tradeHistoryBrokers(status).map((item) => (
             <Button key={`history-${item}`} label={item} tone={selectedExchange === item ? 'primary' : 'neutral'} onPress={() => setSelectedExchange(item)} />

@@ -1,5 +1,29 @@
 # Implementation Log
 
+## 2026-09-09 — Portfolio chart fidelity follow-up
+
+Founder requested screen-by-screen fidelity to the Portfolio mockup rather than
+another colour-only pass. Replaced the sparse chart renderer with labelled value
+axes, subtle gridlines, a stronger account-value stroke and translucent area fill.
+Compact daily win/loss bars now share a centre baseline (wins above, losses below;
+explicitly labelled as counts, not money). Period controls are segmented, latest
+value sits beside each broker heading, account tiles wrap responsively and Trade
+history is a compact collapsed heading. Daily is the initial trade-chart view;
+weekly remains available and all period switching uses already-loaded data.
+
+No fake observations or smoothing: both stroke and fill stop at explicit nulls
+and missing days. Flat, zero, negative and sparse series retain valid scale ranges.
+Fee uncertainty, account scope, mode and missing-history messages remain visible.
+Native shape rendering avoids a new native dependency, full app binary rebuild,
+remote chart/image service or any additional Supabase egress. Existing 10-minute
+history cache and request lifecycle are unchanged. Other screens are untouched.
+
+Tests cover geometry, missing-day fill boundaries, axis consistency, finite flat
+scales, bounded date labels, precision for small movements and currency separation.
+Release compilation and mobile suite run before publication. No local Expo server
+or emulator setup. Device visual fidelity is not yet independently verified;
+real graphs naturally differ from the illustrative mockup's data.
+
 ## 2026-09-09 — Approved mockup layouts, not only colours
 
 Founder reported that the published palette retained the old layouts. Implemented
