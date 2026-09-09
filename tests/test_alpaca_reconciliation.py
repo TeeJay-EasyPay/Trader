@@ -47,6 +47,36 @@ def fill(order, symbol, side, quantity, price, at, leaves=0):
 class CollapsingFillsTests(unittest.TestCase):
     """One order out of the several events Alpaca reports for it."""
 
+    def test_full_order_profit_replaces_final_increment_estimate_once(self):
+        from ai_trader.alpaca_reconciliation import _publish_order_result
+        from ai_trader.production_evidence import record_trade_evidence
+        orders = collapse_fills([
+            fill("entry", "NEE", "buy", 30, 84.04, "t1"),
+            fill("exit", "NEE", "sell", 28, 82.72, "t2", leaves=2),
+            fill("exit", "NEE", "sell", 1, 82.72, "t3", leaves=1),
+            fill("exit", "NEE", "sell", 1, 82.72, "t4", leaves=0),
+        ])
+        trips, unmatched = pair_round_trips(orders)
+        self.assertFalse(unmatched)
+        self.assertEqual(trips[0].exit_order_id, "exit")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "audit.sqlite3"
+            for trade_id in ("first", "duplicate"):
+                record_trade_evidence(db, broker="alpaca", event={
+                    "order_id": "exit", "trade_id": trade_id, "status": "filled",
+                    "symbol": "NEE", "side": "sell", "qty": 1,
+                    "filled_avg_price": 82.72, "realized_pnl": -1.04,
+                })
+            with closing(sqlite3.connect(db)) as conn:
+                _publish_order_result(conn, trips[0])
+                first_changes = conn.total_changes
+                _publish_order_result(conn, trips[0])
+                self.assertEqual(conn.total_changes, first_changes)
+                rows = conn.execute("SELECT quantity, realized_pnl FROM PRODUCTION_TRADE_EVIDENCE ORDER BY trade_evidence_id").fetchall()
+                self.assertEqual(rows[0][0], 30)
+                self.assertAlmostEqual(rows[0][1], -39.6)
+                self.assertIsNone(rows[1][1])
+
     def test_the_real_aapl_order_comes_out_as_333_not_666(self):
         """The exact shape from production, 2 July. Alpaca reported this order in eight pieces;
         it is one purchase of 333 shares at 299.328, and reading it as 666 would double a real
@@ -170,6 +200,7 @@ class PairingTests(unittest.TestCase):
         ))
         self.assertAlmostEqual(trips[0].quantity, 4.0)
         self.assertAlmostEqual(unmatched[0]["quantity"], 6.0)
+        self.assertTrue(trips[0].incomplete)
 
     def test_one_share_cannot_pay_for_another(self):
         """Lots are per symbol. Without that, a profitable AAPL sale could be matched against a

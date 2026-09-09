@@ -29,6 +29,23 @@ from ai_trader.self_assessment import (
 
 
 class InputInventoryTests(unittest.TestCase):
+    def test_missing_proposals_and_separate_exits_are_not_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'inventory.db'
+            with closing(connect(path)) as conn, conn:
+                conn.execute('CREATE TABLE PERFORMANCE_ATTRIBUTION (proposal_id TEXT, broker TEXT, symbol TEXT, closed_at TEXT, profit_loss REAL, exit_reason TEXT)')
+                conn.executemany('INSERT INTO PERFORMANCE_ATTRIBUTION VALUES (?,?,?,?,?,?)', [
+                    (None, 'alpaca', 'AAPL', '2026-09-01', 2, 'unknown'),
+                    (None, 'alpaca', 'MSFT', '2026-09-01', 3, 'unknown'),
+                    ('p1', 'alpaca', 'SPY', '2026-09-01', 1, 'partial exit'),
+                    ('p1', 'alpaca', 'SPY', '2026-09-02', 1, 'final exit'),
+                ])
+            inventory = input_inventory(path)
+            self.assertFalse(inventory['realised_record']['duplicate_rows_present'])
+            self.assertEqual(inventory['realised_record']['missing_proposal_ids'], 2)
+            self.assertIsNone(inventory['realised_record']['total_pnl'])
+            self.assertIsNone(inventory['realised_record_by_broker'][0]['net_pnl'])
+            self.assertEqual(inventory['realised_record_by_broker'][0]['recorded_pnl'], 7)
     def test_a_missing_feed_is_reported_not_skipped(self):
         """A feed that does not exist is the single most useful thing the census can say.
         Silently omitting it would let the AI assume coverage it does not have."""
@@ -53,7 +70,7 @@ class InputInventoryTests(unittest.TestCase):
                     conn.execute(
                         "CREATE TABLE PERFORMANCE_ATTRIBUTION (attribution_id INTEGER PRIMARY KEY"
                         " AUTOINCREMENT, proposal_id TEXT, closed_at TEXT, profit_loss REAL,"
-                        " exit_reason TEXT)"
+                        " exit_reason TEXT, broker TEXT DEFAULT 'kraken', symbol TEXT DEFAULT 'XRP')"
                     )
                     for _ in range(4):
                         conn.execute(

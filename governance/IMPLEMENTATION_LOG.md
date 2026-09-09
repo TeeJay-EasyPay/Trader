@@ -1,5 +1,69 @@
 # Implementation Log
 
+## 2026-09-09 — Account scope, fill results and learning-evidence reliability
+
+User supplied the Trader's self-assessment and requested trustworthy figures and
+emulator verification. Its answer is evidence to investigate, not proof of learning.
+
+Read-only findings:
+- Kraken's 17:29 UTC broker poll exceeded its 180-second worker boundary. Some
+  ownership checkpoints had been written before end-of-batch learning handoff;
+  five recent owned exits still had unavailable reconciled P&L. This is a real
+  reconciliation gap, not simply different cash/account labels.
+- The self-assessment compared attribution row count with DISTINCT proposal_id.
+  Forty Alpaca outcomes lacked proposal IDs, which falsely looked like duplicate
+  trades. Bounded aggregate checks found no broker/symbol/closing-time collisions
+  and no duplicated joined Alpaca fill IDs. Missing rationale links remain gaps.
+- NEE exit order 86374672-4378-480a-8bc9-119a84fc54ec filled 28 + 1 + 1 shares.
+  Attribution recorded -$39.60, but legacy terminal-event FIFO used a one-share
+  quantity and showed -$1.04. Partial activity increments are not whole orders.
+
+Changes:
+- Updated mobile chart explicitly requests whole-account history; Kraken account
+  value now has the same scope as Your accounts (cash plus all investments,
+  including manual holdings). Completed AI trade outcomes stay separately labelled.
+  Old clients keep their existing explicit AI-capital scope during rollout. No
+  interpolation or invented historical values, and no ledger allocation change.
+- Kraken poll recovery processes at most eight unreconciled events, fills first,
+  oldest first. Each terminal result is handed to the idempotent learning outbox
+  before its success checkpoint; old completed checkpoints without a learning
+  outbox entry remain recoverable. Ownership bootstrap only fetches missing links,
+  avoiding repeated reads of all managed-exit payloads.
+- Alpaca now publishes the already-computed full-order fill-pairing result to one
+  terminal evidence row by exact exit order ID. Older terminal-event FIFO is
+  disabled for Alpaca; duplicate evidence rows retain source data but not duplicate
+  P&L. Partial/unmatched outcomes are not published as a full-order result. Costs
+  remain unreconciled: these Alpaca results are before fees, not proven net profit.
+- Self-assessment distinguishes missing proposal links from suspected duplicate
+  outcomes and no longer sums GBP and USD or calls Alpaca's result net of costs.
+
+Egress: no new polling, full-history downloads, broker requests or trading cycles.
+The account chart retains the existing bounded daily-snapshot query and refresh
+interval; whole-account scope omits four ledger scalars. Alpaca publication reuses
+the reconciliation already in memory, with conditional database-side updates and
+no returned history. Alpaca fill loading now projects order ID and remaining
+quantity in SQL instead of returning each full broker payload. Two bounded cache slots support old/new chart scopes during
+rollout. Actual billed savings still require subsequent usage measurement.
+
+Verification: mobile suite 108 passed; focused backend suite 119
+passed (an initial Windows SQLite fixture cleanup issue was corrected). The final
+Alpaca payload-projection change separately passed all 23 Alpaca tests. Full backend
+suite: 1,825 passed, 21 subtests passed, four unchanged Standup source-copy checks
+failed (same named failures documented in the previous release; affected source
+and tests unchanged). A 100-fill SQL aggregate measured 34,351 bytes of full Alpaca
+payloads versus 3,704 bytes for the two projected fields, about 89% less for that
+payload portion, not a claim of 89% less total Supabase egress. Emulator was located, but
+native capture failed activation, then returned desktop wallpaper after a fresh
+window lookup. No blind clicks or trading cycle were attempted. User asked to
+foreground Pixel 9; actual visual/device interaction is not yet verified. No local
+Expo server was started. Optional purple/gold card artwork is deferred until the
+data checks are complete; no cosmetic asset change in this patch.
+
+Remaining: verify recovery in production, reconcile AI cash against owned fills,
+recover missing proposal/fee evidence, and measure whether lessons improve later
+after-cost outcomes at comparable risk. These changes do not prove profitability
+or daily improvement and do not alter trading permissions, sizing or stops.
+
 ## 2026-09-09 — Greeting content-box sizing follow-up; Kraken value clarification
 
 Founder device screenshot confirmed the previous image fix revealed the artwork

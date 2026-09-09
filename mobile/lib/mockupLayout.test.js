@@ -59,6 +59,16 @@ test('an older known AI value is visibly dated when a newer valuation is missing
   for (const label of ['AI capital value', '2026-09-08', 'newer valuation unavailable', 'Not available cash']) assert.ok(text.includes(label));
   assert.ok(text.includes('Unavailable'), 'a newer missing valuation must not show an old amount as its headline');
 });
+
+test('whole-account chart scope is explicit; completed Kraken trades remain AI-only', () => {
+  const { BrokerTrends } = load('../components/PortfolioTrends', { '../styles': { styles: {} }, './shared': {}, '../api/client': {} });
+  const text = JSON.stringify(BrokerTrends({ broker: { broker: 'kraken', currency: 'GBP', value_scope: 'whole_account', value_status: 'ok', values: [
+    { date: '2026-09-09', value: 4618.13 },
+  ] }, days: 30, asOf: '2026-09-09' }));
+  assert.ok(text.includes('Whole account'));
+  assert.ok(text.includes('Completed AI trades'));
+  assert.ok(!text.includes('AI capital value'));
+});
 const shared = { Section: 'Section', CollapsibleSection: 'CollapsibleSection', Metric: 'Metric', Button: 'Button' };
 
 test('account overview renders four labelled tiles, preserves zero/missing values and modes', () => {

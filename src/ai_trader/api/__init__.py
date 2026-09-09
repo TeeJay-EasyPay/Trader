@@ -797,7 +797,7 @@ class LocalApiService:
             return 200, self.portfolio(_first(query, "broker") or "all")
         if path == "/portfolio-trends":
             from ..portfolio_trends import portfolio_trends
-            return 200, portfolio_trends(self.settings.db_path)
+            return 200, portfolio_trends(self.settings.db_path, value_scope=_first(query, "scope") or 'ai_capital')
         if path == "/founder-brief":
             return 200, self.founder_brief()
         if path == "/recommendations":

@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from . import trade_reasons
-from .database import connect
+from .database import connect, uses_postgres
 from .models import utc_now_iso
 
 # Everything here is long-only stock: a "buy" opens and a "sell" closes. Short selling is
@@ -103,6 +103,7 @@ class RoundTrip:
     exit_proposal_id: str | None
     lots: int = 1
     incomplete: bool = False
+    exit_order_id: str | None = None
 
 
 def _number(value: Any) -> float | None:
@@ -241,16 +242,15 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
             quantity=round(consumed_quantity, 10),
             entry_price=entry_price,
             exit_price=order.price,
-            # Alpaca paper stock trading carries no commission and the fill rows record no fee,
-            # so gross and net are the same number here. Stated rather than assumed, because
-            # the Kraken side of this project is a standing lesson in what fees do.
+            # Before fees: absent per-fill fees do not prove there were no account costs.
             profit_loss=round((order.price - entry_price) * consumed_quantity, 6),
             opened_at=opened_at or order.filled_at,
             closed_at=order.filled_at,
             entry_proposal_id=entry_proposal,
             exit_proposal_id=order.proposal_id,
             lots=lots_used,
-            incomplete=order.incomplete,
+            incomplete=order.incomplete or remaining > QUANTITY_EPSILON,
+            exit_order_id=order.order_id,
         ))
 
         if remaining > QUANTITY_EPSILON:
@@ -273,9 +273,16 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
     recorded with its reason marked unknown rather than dropped for being inconvenient.
     """
 
+    # Pairing needs two payload fields, not a full broker response per historical fill.
+    def field(name: str) -> str:
+        if uses_postgres():
+            return f"h.payload_json::jsonb ->> '{name}'"
+        return f"json_extract(CASE WHEN json_valid(h.payload_json) THEN h.payload_json ELSE '{{}}' END, '$.{name}')"
+
     rows = conn.execute(
-        """
-        SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at, h.payload_json,
+        f"""
+        SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
+               {field('order_id')}, {field('leaves_qty')},
                t.proposal_id, t.logical_trade_id
         FROM BROKER_TRADE_HISTORY h
         LEFT JOIN LOGICAL_TRADE_FILLS f ON f.broker_fill_id = h.external_id
@@ -287,23 +294,19 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
 
     fills: list[dict[str, Any]] = []
     for row in rows:
-        try:
-            payload = json.loads(row[5] or "{}") or {}
-        except (TypeError, ValueError):
-            payload = {}
         fills.append({
             # The real Alpaca order id. Only the payload carries it; the stored external id
             # identifies the fill, not the order, so there is no fallback worth having -- a
             # fill that cannot name its order is dropped by collapse_fills rather than guessed.
-            "order_id": payload.get("order_id"),
+            "order_id": row[5],
             "symbol": row[0],
             "side": row[1],
             "quantity": row[2],
             "price": row[3],
             "filled_at": row[4],
-            "leaves_quantity": payload.get("leaves_qty"),
-            "proposal_id": row[6],
-            "logical_trade_id": row[7],
+            "leaves_quantity": row[6],
+            "proposal_id": row[7],
+            "logical_trade_id": row[8],
         })
     return fills
 
@@ -317,6 +320,8 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
     """
 
     try:
+        from .production_evidence import _ensure_local_production_evidence_schema
+        _ensure_local_production_evidence_schema(db_path)
         with closing(connect(db_path)) as conn:
             fills = _alpaca_fill_rows(conn)
             orders = collapse_fills(fills)
@@ -328,6 +333,7 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
             written = 0
             with conn:
                 for trip in round_trips:
+                    _publish_order_result(conn, trip)
                     existing = conn.execute(
                         """
                         SELECT 1 FROM PERFORMANCE_ATTRIBUTION
@@ -371,6 +377,8 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                                 "lots_consumed": trip.lots,
                                 "exit_proposal_id": trip.exit_proposal_id,
                                 "incomplete_fill_record": trip.incomplete,
+                                "exit_order_id": trip.exit_order_id,
+                                "pnl_basis": "before_unreconciled_fees",
                             }, sort_keys=True, default=str),
                         ),
                     )
@@ -387,6 +395,37 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
         "unmatched": unmatched,
         "realised_total": round(sum(trip.profit_loss for trip in round_trips), 2),
     }
+
+
+def _publish_order_result(conn: Any, trip: RoundTrip) -> None:
+    """Use full fill-pairing, never the last partial fill, for the order's result.
+
+    Retain all source events but publish P&L on one terminal evidence row only.
+    This repairs old FIFO estimates by exact broker order identity. No history is
+    downloaded here: the reconciliation already computed this result in memory.
+    """
+    if trip.incomplete or not trip.exit_order_id:
+        return
+    key = (trip.exit_order_id,)
+    conn.execute("""
+        UPDATE PRODUCTION_TRADE_EVIDENCE SET realized_pnl = NULL
+        WHERE broker = 'alpaca' AND broker_order_id = ? AND status = 'filled'
+          AND realized_pnl IS NOT NULL
+          AND trade_evidence_id <> (
+            SELECT MIN(trade_evidence_id) FROM PRODUCTION_TRADE_EVIDENCE
+            WHERE broker = 'alpaca' AND broker_order_id = ? AND status = 'filled'
+          )
+    """, key + key)
+    conn.execute("""
+        UPDATE PRODUCTION_TRADE_EVIDENCE
+        SET realized_pnl = ?, quantity = ?, average_fill_price = ?
+        WHERE trade_evidence_id = (
+            SELECT MIN(trade_evidence_id) FROM PRODUCTION_TRADE_EVIDENCE
+            WHERE broker = 'alpaca' AND broker_order_id = ? AND status = 'filled'
+        ) AND (realized_pnl IS NULL OR realized_pnl <> ? OR quantity IS NULL
+               OR quantity <> ? OR average_fill_price IS NULL OR average_fill_price <> ?)
+    """, (trip.profit_loss, trip.quantity, trip.exit_price, trip.exit_order_id,
+          trip.profit_loss, trip.quantity, trip.exit_price))
 
 
 def verify_against_account(db_path: Path, *, since: str | None = None) -> dict[str, Any]:

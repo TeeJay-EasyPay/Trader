@@ -417,6 +417,8 @@ def bootstrap_kraken_order_ownership(db_path: Path, *, conn: Any = None) -> dict
                 SELECT result_order_id, client_order_id, symbol, side
                 FROM ORDER_INTENT_LOCKS
                 WHERE broker = 'kraken' AND result_order_id IS NOT NULL AND result_order_id <> ''
+                  AND NOT EXISTS (SELECT 1 FROM KRAKEN_AI_ORDER_OWNERSHIP o
+                      WHERE o.broker_order_id = ORDER_INTENT_LOCKS.result_order_id)
                 """
             ).fetchall()
         except Exception:
@@ -426,7 +428,15 @@ def bootstrap_kraken_order_ownership(db_path: Path, *, conn: Any = None) -> dict
                 """
                 SELECT managed_exit_id, entry_order_id, exit_order_id, symbol, side, payload_json
                 FROM MANAGED_TRADE_EXITS
-                WHERE broker = 'kraken'
+                WHERE broker = 'kraken' AND (
+                    (entry_order_id IS NOT NULL AND entry_order_id <> '' AND NOT EXISTS (
+                        SELECT 1 FROM KRAKEN_AI_ORDER_OWNERSHIP o
+                        WHERE o.broker_order_id = MANAGED_TRADE_EXITS.entry_order_id
+                          AND o.managed_exit_id IS NOT NULL))
+                    OR (exit_order_id IS NOT NULL AND exit_order_id <> '' AND NOT EXISTS (
+                        SELECT 1 FROM KRAKEN_AI_ORDER_OWNERSHIP o
+                        WHERE o.broker_order_id = MANAGED_TRADE_EXITS.exit_order_id
+                          AND o.managed_exit_id IS NOT NULL)))
                 """
             ).fetchall()
         except Exception:
@@ -606,6 +616,7 @@ def replay_kraken_evidence(
     source: str = "kraken_evidence_replay",
     conn: Any = None,
     only_unreconciled: bool = False,
+    max_events: int | None = None,
 ) -> dict[str, Any]:
     """Reconcile persisted Kraken evidence. This function has no broker client or order path.
 
@@ -641,12 +652,36 @@ def replay_kraken_evidence(
                         WHERE r.raw_event_hash = c.raw_hash
                           AND r.logical_trade_id = o.logical_trade_id
                           AND r.classification = 'owned_reconciled'
+                          AND (NOT EXISTS (SELECT 1 FROM KRAKEN_RECONCILED_RESULTS k
+                                  WHERE k.logical_trade_id = o.logical_trade_id AND k.status = 'closed')
+                               OR EXISTS (SELECT 1 FROM SPRINT6_WORKFLOW_OUTBOX w
+                                  WHERE w.idempotency_key = 'closed-loop-learning:kraken:' || o.logical_trade_id))
                     )""",
                     tuple(value for row in batch for value in row),
                 ).fetchall()
                 missing.update(row["raw_hash"] for row in rows)
             events = [raw for raw in events if _stable_hash(raw) in missing]
+        deferred = 0
+        if max_events is not None:
+            # Fill evidence takes priority over closed-order paperwork. Preserve
+            # chronological fill ordering so older entries precede their exits.
+            def priority(raw):
+                event = normalize_kraken_evidence(raw)
+                stamp = event['timestamp']
+                try:
+                    timestamp = float(stamp)
+                except (ValueError, TypeError):
+                    try:
+                        timestamp = datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
+                    except (ValueError, TypeError):
+                        timestamp = 0
+                return (event['record_type'] != 'trade_fill', timestamp)
+            events = sorted(events, key=priority)
+            cap = max(1, int(max_events))
+            deferred = max(0, len(events) - cap)
+            events = events[:cap]
         counts = {
+            "deferred_events": deferred,
             "owned_reconciled": 0,
             "unmanaged_excluded": 0,
             "ambiguous": 0,
@@ -731,6 +766,18 @@ def replay_kraken_evidence(
             counts["owned_reconciled"] += int(not duplicate)
             if event["record_type"] == "trade_fill":
                 _record_ledger_fill(db_path, event=event, owner=owner, conn=conn)
+            logical_trade_id = str(reconciled["logical_trade_id"])
+            result = _refresh_reconciled_result(db_path, logical_trade_id, conn=conn)
+            if reconciled.get("terminal") and logical_trade_id not in terminals:
+                # Finish each trade before writing its success checkpoint. A killed
+                # worker must not leave all learning queued until the end of a batch.
+                trade = canonical_trade(db_path, logical_trade_id, conn=conn) or {}
+                _mark_managed_exit_reconciled(db_path, logical_trade_id=logical_trade_id, result=result, conn=conn)
+                learning = enqueue_learning_workflow(db_path, logical_trade_id=logical_trade_id,
+                    broker="kraken", payload=_learning_payload(trade, result))
+                counts["terminal_trades"] += 1
+                counts["learning_queued"] += int(learning["status"] == "queued")
+                terminals.add(logical_trade_id)
             _record_case(
                 db_path,
                 raw_hash=raw_hash,
@@ -741,21 +788,6 @@ def replay_kraken_evidence(
                 confidence=float(owner["confidence"]),
                 conn=conn,
             )
-            if reconciled.get("terminal"):
-                terminals.add(str(reconciled["logical_trade_id"]))
-            _refresh_reconciled_result(db_path, str(reconciled["logical_trade_id"]), conn=conn)
-        for logical_trade_id in terminals:
-            trade = canonical_trade(db_path, logical_trade_id, conn=conn) or {}
-            result = _refresh_reconciled_result(db_path, logical_trade_id, conn=conn)
-            _mark_managed_exit_reconciled(db_path, logical_trade_id=logical_trade_id, result=result, conn=conn)
-            learning = enqueue_learning_workflow(
-                db_path,
-                logical_trade_id=logical_trade_id,
-                broker="kraken",
-                payload=_learning_payload(trade, result),
-            )
-            counts["terminal_trades"] += 1
-            counts["learning_queued"] += int(learning["status"] == "queued")
         managed_exit_backfill = backfill_missing_managed_exits(db_path, conn=conn)
         counts["managed_exits_backfilled"] = managed_exit_backfill["backfilled"]
         now = utc_now_iso()

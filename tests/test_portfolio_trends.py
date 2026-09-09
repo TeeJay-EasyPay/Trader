@@ -58,6 +58,20 @@ def test_account_modes_not_stitched_together(db):
     assert result['cash_flows'] == 'unavailable'
 
 
+def test_whole_account_scope_does_not_substitute_stale_ai_capital(db):
+    with closing(connect(db)) as conn, conn:
+        snapshot(conn, 1, '2026-09-09T10:00:00Z', missing=True)
+        conn.execute('UPDATE PRODUCTION_BROKER_SNAPSHOTS SET portfolio_value=4618.13')
+    result = build_portfolio_trends(db, now=NOW, value_scope='whole_account')['brokers'][0]
+    assert result['value_scope'] == 'whole_account'
+    assert result['values'][0]['value'] == 4618.13
+    assert result['values'][0]['allocation'] is None
+    assert result['cash_flows'] == 'unavailable'
+    legacy = build_portfolio_trends(db, now=NOW)['brokers'][0]
+    assert legacy['value_scope'] == 'ai_capital'
+    assert legacy['values'][0]['value'] is None
+
+
 def test_closed_net_results_unknown_breakeven_epoch_and_broker_isolation(db):
     with closing(connect(db)) as conn, conn:
         for pnl in (2, -3, 0, None):

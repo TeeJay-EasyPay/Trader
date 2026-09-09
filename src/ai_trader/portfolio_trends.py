@@ -37,7 +37,7 @@ def _day(column):
         ELSE date({column}, 'unixepoch') END"""
 
 
-def build_portfolio_trends(db_path, *, now=None):
+def build_portfolio_trends(db_path, *, now=None, value_scope='ai_capital'):
     now = now or datetime.now(timezone.utc)
     since = (now - timedelta(days=89)).date().isoformat()
     until = now.date().isoformat()
@@ -45,10 +45,13 @@ def build_portfolio_trends(db_path, *, now=None):
     brokers = {name: {'broker': name, 'currency': currency, 'values': [], 'outcomes': [],
                      'value_status': 'unavailable', 'outcome_status': 'unavailable',
                      'pnl_basis': 'net_after_fees' if name == 'kraken' else 'recorded_before_unreconciled_fees',
-                     'cash_flows': 'allocation_changes' if name == 'kraken' else 'unavailable'}
+                     'value_scope': 'whole_account' if name != 'kraken' or value_scope == 'whole_account' else 'ai_capital',
+                     'cash_flows': 'allocation_changes' if name == 'kraken' and value_scope != 'whole_account' else 'unavailable'}
                for name, currency in [('kraken', 'GBP'), ('alpaca', 'USD')]}
     fields = ', '.join(_json_field('trading_permissions.ai_capital_ledger.' + key) + ' AS ' + key
                        for key in ['available_cash_gbp', 'deployed_capital_gbp', 'unrealized_pnl_gbp', 'allocation_gbp'])
+    if value_scope == 'whole_account':
+        fields = 'NULL, NULL, NULL, NULL'  # No ledger payload fields leave the DB for account charts.
     try:
         with closing(connect(db_path)) as conn:
             rows = conn.execute(f"""
@@ -73,7 +76,7 @@ def build_portfolio_trends(db_path, *, now=None):
             item['account_mode'] = row[3]
             value = _number(row[5])
             allocation = _number(row[10])
-            if row[0] == 'kraken':
+            if row[0] == 'kraken' and value_scope != 'whole_account':
                 parts = [_number(row[i]) for i in (7, 8, 9)]
                 value = sum(parts) if all(part is not None for part in parts) else None
             if row[6] or row[4] != item['currency']:
@@ -115,15 +118,17 @@ def build_portfolio_trends(db_path, *, now=None):
     return result
 
 
-def portfolio_trends(db_path):
-    # Single-flight and one bounded cache entry per process. Navigation doesn't
+def portfolio_trends(db_path, *, value_scope='ai_capital'):
+    # Single-flight and two bounded scope entries per process. Navigation doesn't
     # refetch history every time, and errors retry without a permanent empty cache.
-    key = (str(db_path), database_url())
+    value_scope = 'whole_account' if value_scope == 'whole_account' else 'ai_capital'
+    key = (str(db_path), database_url(), value_scope)
     with _lock:
         entry = _cache.get(key)
         if entry and time.monotonic() - entry[0] < CACHE_SECONDS:
             return entry[1]
-        result = build_portfolio_trends(db_path)
-        _cache.clear()
+        result = build_portfolio_trends(db_path, value_scope=value_scope)
+        if len(_cache) >= 2 and key not in _cache:
+            del _cache[min(_cache, key=lambda k: _cache[k][0])]
         _cache[key] = (time.monotonic(), result)
         return result

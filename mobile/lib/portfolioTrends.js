@@ -60,7 +60,7 @@ let pending = null;
 function loadTrends(request) {
   if (cached && Date.now() - cached.time < 600000) return Promise.resolve(cached.value);
   if (pending) return pending;
-  pending = request('/portfolio-trends').then(value => {
+  pending = request('/portfolio-trends?scope=whole_account').then(value => {
     if (!Array.isArray(value?.brokers) || !Number.isFinite(Date.parse(value.as_of))) throw new Error('Historical summary unavailable');
     cached = { time: Date.now(), value };
     return value;

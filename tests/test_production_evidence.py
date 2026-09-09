@@ -739,13 +739,9 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertIn("status", payload)
 
-    def test_backfill_realized_pnl_computes_fifo_matched_exit(self):
-        # 2026-08-17 hosted finding: Alpaca's order/fill API never reports realized_pnl, and
-        # the LOGICAL_TRADES reconciliation that does compute it can't link an Alpaca entry
-        # to its exit (MANAGED_TRADE_EXITS is Kraken-only) -- confirmed live, a real ~$645
-        # CSL profit was invisible everywhere in the app. This mirrors that shape with a
-        # simpler two-lot case: 10@100 then 5@110 bought, all 15 sold @120.
-        # Expected P&L: (120-100)*10 + (120-110)*5 = 200 + 50 = 250.
+    def test_alpaca_legacy_fifo_is_disabled_without_fill_pairing(self):
+        # Terminal evidence alone is not a complete fill ledger. Even a plausible
+        # FIFO result must wait for the authoritative Alpaca fill-pairing path.
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
             record_trade_evidence(db_path, broker="alpaca", event={
@@ -763,11 +759,11 @@ class ProductionEvidenceTests(unittest.TestCase):
 
             result = backfill_realized_pnl(db_path, broker="alpaca")
 
-            self.assertEqual(result["updated"], 1)
-            self.assertAlmostEqual(result["total_realized_pnl"], 250.0)
+            self.assertEqual(result["updated"], 0)
+            self.assertEqual(result["source"], "alpaca_fill_pairing")
             trades = list_production_trade_evidence(db_path, broker="alpaca")
             sell_row = next(row for row in trades if row["side"] == "sell")
-            self.assertAlmostEqual(sell_row["realized_pnl"], 250.0)
+            self.assertIsNone(sell_row["realized_pnl"])
 
     def test_kraken_missing_reconciliation_never_falls_back_to_personal_fifo(self):
         with tempfile.TemporaryDirectory() as tmp:

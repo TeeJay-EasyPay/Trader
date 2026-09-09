@@ -93,6 +93,7 @@ function OutcomeChart({ bins, currency, netKnown }) {
 function BrokerTrends({ broker, days, weekly, asOf }) {
   const [details, setDetails] = useState(false);
   const netKnown = broker.pnl_basis === 'net_after_fees';
+  const aiScope = broker.value_scope ? broker.value_scope === 'ai_capital' : broker.broker === 'kraken';
   const series = seriesFor(broker, days, asOf), bins = outcomeBuckets(series.outcomes, days, asOf, weekly);
   const latest = series.values.filter(row => typeof row.value === 'number' && Number.isFinite(row.value)).at(-1);
   const latestObservationKnown = latest && series.values.at(-1) === latest;
@@ -101,9 +102,9 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
   return <View style={[s.card, exchangePalette(broker.broker)]}>
     <View style={s.heading}>
       <Text style={s.title}>{name} · {broker.currency}</Text>
-      <View style={s.balance}><Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital value' : 'Account value'} ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latestObservationKnown ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
+      <View style={s.balance}><Text style={s.label}>{aiScope ? 'AI capital value' : 'Account value'} ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latestObservationKnown ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
     </View>
-    <Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital only · personal holdings excluded' : 'Whole account · cash plus investments'}{broker.account_mode ? ' · ' + broker.account_mode : ''}</Text>
+    <Text style={s.label}>{aiScope ? 'AI capital only · personal holdings excluded' : 'Whole account · cash plus investments, including personal holdings'}{broker.account_mode ? ' · ' + broker.account_mode : ''}</Text>
     {broker.value_status === 'ok' && latest && <Text style={s.label}>Last known value: {money(latest.value, broker.currency)} · {latest.captured_at ? formatDateTime(latest.captured_at) : latest.date}{!latestObservationKnown ? ' · newer valuation unavailable' : ''}. Not available cash.</Text>}
     {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} colour={broker.broker === 'kraken' ? '#8064DC' : broker.broker === 'alpaca' ? '#BC8800' : '#476582'} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
     <Text style={s.subheading}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'} ({days}d)</Text>
@@ -119,7 +120,7 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
     {details && <View>
       <Text style={s.label}>Green bars above zero count wins; red bars below zero count losses, not negative trade counts or money. Break-even {totals.breakeven} · Unknown {totals.unknown}. Tap chart points or bars for details.</Text>
       <Text style={s.label}>Last observation each UTC day; today is partial. Missing days remain gaps, not zero. {latest ? 'Latest value: ' + latest.date : ''}</Text>
-      <Text style={s.label}>{broker.broker === 'kraken' ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
+      <Text style={s.label}>{aiScope ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
       {!netKnown && <Text style={s.label}>Small recorded wins may become losses after fees; these are not verified net wins.</Text>}
       <Text style={s.label}>Open positions are excluded. First and current weeks may be partial. Historical results may include earlier account modes.</Text>
     </View>}

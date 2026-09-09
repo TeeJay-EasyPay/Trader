@@ -207,12 +207,20 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
         record = {
             "closed_trades": _scalar(conn, "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION"),
             "distinct_trades": _scalar(
-                conn, "SELECT COUNT(DISTINCT proposal_id) FROM PERFORMANCE_ATTRIBUTION"
+                conn, "SELECT COUNT(*) FROM (SELECT broker, symbol, closed_at "
+                "FROM PERFORMANCE_ATTRIBUTION WHERE broker IS NOT NULL AND symbol IS NOT NULL "
+                "AND closed_at IS NOT NULL GROUP BY broker, symbol, closed_at) AS outcomes"
             ),
+            "missing_proposal_ids": _scalar(conn, "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION "
+                "WHERE proposal_id IS NULL OR proposal_id = ''"),
+            "duplicate_outcome_groups": _scalar(conn, "SELECT COUNT(*) FROM ("
+                "SELECT broker, symbol, closed_at FROM PERFORMANCE_ATTRIBUTION "
+                "WHERE broker IS NOT NULL AND symbol IS NOT NULL AND closed_at IS NOT NULL "
+                "GROUP BY broker, symbol, closed_at HAVING COUNT(*) > 1) AS duplicates"),
             "wins": _scalar(
                 conn, "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE profit_loss > 0"
             ),
-            "total_pnl": _scalar(conn, "SELECT SUM(profit_loss) FROM PERFORMANCE_ATTRIBUTION"),
+            "total_pnl": None,  # Never add GBP and USD together.
             "missing_exit_reason": _scalar(
                 conn,
                 "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION "
@@ -222,11 +230,11 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
 
     # Stated outright rather than left for the model to spot, because it is the exact defect it
     # raised on 2026-09-06 and the exact thing that would make it distrust every other number.
-    closed = record.get("closed_trades")
-    distinct = record.get("distinct_trades")
-    record["duplicate_rows_present"] = bool(
-        closed is not None and distinct is not None and int(closed) != int(distinct)
-    )
+    duplicates = record.get("duplicate_outcome_groups")
+    record["duplicate_rows_present"] = None if duplicates is None else duplicates > 0
+    record["identity_note"] = ("Missing proposal IDs are linkage gaps, not duplicates. "
+        "Broker/symbol/closing-time collisions are suspected duplicates requiring evidence; "
+        "separate partial exits may legitimately share a proposal ID. Improvement is not proven by activity.")
     return {
         "generated_at": utc_now_iso(),
         "feeds": feeds,
@@ -269,7 +277,9 @@ def _record_by_broker(db_path: Path) -> list[dict[str, Any]]:
             "currency": "GBP" if broker.lower() == "kraken" else "USD",
             "closed_trades": values[1],
             "wins": values[2],
-            "net_pnl": values[3],
+            "net_pnl": values[3] if broker.lower() == "kraken" else None,
+            "recorded_pnl": values[3],
+            "pnl_basis": "net_after_recorded_fees" if broker.lower() == "kraken" else "before_unreconciled_fees",
         })
     return out
 

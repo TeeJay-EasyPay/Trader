@@ -61,6 +61,29 @@ def trade_fill(order_id: str, fill_id: str, side: str, price: float, when: str) 
 
 
 class KrakenReconciliationTests(unittest.TestCase):
+    def test_capped_recovery_finishes_learning_before_success_checkpoint(self):
+        from unittest.mock import patch
+        from ai_trader.kraken_reconciliation import bootstrap_kraken_order_ownership
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'bounded.db'
+            initialize_kraken_reconciliation_schema(path)
+            for order, role in [('entry', 'entry'), ('exit', 'exit')]:
+                register_kraken_order_ownership(path, broker_order_id=order,
+                    logical_trade_id='bounded', order_role=role, symbol='XRPGBP',
+                    side='buy' if role == 'entry' else 'sell')
+            events = [trade_fill('exit', 'exit-fill', 'sell', 1.2, '2026-09-09T11:00:00Z'),
+                      trade_fill('entry', 'entry-fill', 'buy', 1, '2026-09-09T10:00:00Z')]
+            first = replay_kraken_evidence(path, events=events, only_unreconciled=True, max_events=1)
+            self.assertEqual(first['deferred_events'], 1)
+            self.assertEqual(first['terminal_trades'], 0)
+            with patch('ai_trader.kraken_reconciliation.enqueue_learning_workflow', side_effect=RuntimeError('interrupted')):
+                with self.assertRaises(RuntimeError):
+                    replay_kraken_evidence(path, events=events, only_unreconciled=True, max_events=1)
+            recovered = replay_kraken_evidence(path, events=events, only_unreconciled=True, max_events=1)
+            self.assertEqual(recovered['learning_queued'], 1)
+            repeated = replay_kraken_evidence(path, events=events, only_unreconciled=True, max_events=1)
+            self.assertEqual(repeated['learning_queued'], 0)
+
     def test_poll_recovers_already_persisted_fills_without_replaying_successes(self):
         from ai_trader.multi_broker import record_broker_trade_history
         with tempfile.TemporaryDirectory() as tmp:

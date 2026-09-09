@@ -344,6 +344,7 @@ class BrokerService:
                     events=events,
                     source="poll_broker_activity",
                     only_unreconciled=True,
+                    max_events=8,
                 )
             else:
                 if broker_name == "alpaca":

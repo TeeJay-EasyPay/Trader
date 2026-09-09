@@ -1634,6 +1634,10 @@ def backfill_realized_pnl(db_path: Path, *, broker: str) -> dict[str, Any]:
     safe to call on every broker-poll cycle: it backfills existing history the first time it
     runs and keeps up with new exits going forward, with no separate one-time script needed.
     """
+    if broker.lower() == "alpaca":
+        # Alpaca terminal activity may contain only its final one-share increment.
+        # Full-order results are now published by reconcile_alpaca from ALL fills.
+        return {"broker": "alpaca", "updated": 0, "source": "alpaca_fill_pairing"}
     _ensure_local_production_evidence_schema(db_path)
     rows = _query(
         db_path,
