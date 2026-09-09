@@ -40,7 +40,16 @@ detail projections. At that check: 7 closed outcomes, 92 shadow candidates,
 3 reviews. No database schema migration or live trading cycle was needed.
 Pixel 9 visual check remains blocked: Windows capture showed wallpaper and
 activation failed with "failed to activate captured window" after one recovery.
-No local Expo server was created. Publication status is recorded below after release.
+No local Expo server was created; EAS used a one-shot production bundle export.
+
+Release: implementation commit `2068bc70a6015f8a9779c789d4cc9c9815f01757`
+pushed to master. Android runtime 1.0.3 published to both channels:
+- preview: `cf8fbd70-3111-4991-bfc2-2cc5aee16293`
+- hosted-preview: `933f99b1-e078-4b05-bff8-2d5267b5fe4f`
+Live API health, daily summary (no unavailable sources), weekly summary and trade
+detail endpoint verified after publication. Worker heartbeat still advertised the
+prior commit at this check; no new worker behavior is required by this read-only UI.
+Emulator visual verification remains outstanding, not passed.
 
 
 ## 2026-09-09 — Account scope, fill results and learning-evidence reliability
