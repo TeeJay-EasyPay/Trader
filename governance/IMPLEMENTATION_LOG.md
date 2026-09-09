@@ -20,6 +20,14 @@ Chart headline now says Unavailable if a newer observation lacks a valuation;
 the older known amount remains explicitly dated in the supporting text/history.
 The proposed switch to whole-account chart values is not implemented in this fix.
 
+108 mobile tests passed. Published commit
+`69b3b5263f486c0d125a68a4ada872b64080e0de`, Android runtime 1.0.3:
+- preview: `1a0d9b9b-cb85-4e14-89a7-a8d7d44551d5`
+- hosted-preview: `f859a506-8b53-47bd-b0ac-7b4a4996ad8f`
+No backend restart, new assets or mobile database requests. No local Expo server.
+Physical-device edge-to-edge appearance remains unverified; this is a tested
+layout correction, not a claim of observed device success.
+
 ## 2026-09-09 — Greeting artwork clipped by intrinsic image dimensions
 
 Founder screenshot showed the cream texture but no sun/clouds. The bundled PNG
