@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text, TouchableOpacity } from 'react-native';
+import { Text, Pressable } from 'react-native';
 import { styles } from '../../styles';
 
 // 2026-09-04, Founder-reported: "the microphone icon on the speak button is barely visible.
@@ -12,14 +12,17 @@ import { styles } from '../../styles';
 // larger size, rather than being squeezed into a style built for 13px uppercase words.
 export function Button({ label, onPress, tone = 'primary', disabled = false, icon = false, accessibilityLabel }) {
   return (
-    <TouchableOpacity
-      style={[styles.button, styles[tone], icon && styles.iconButton, disabled && styles.disabledButton]}
+    <Pressable
+      style={({ pressed }) => [styles.button, styles[tone], icon && styles.iconButton,
+        pressed && !disabled && !icon && tone === 'primary' && styles.controlPressed,
+        disabled && styles.disabledButton]}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
       accessibilityLabel={accessibilityLabel || (typeof label === 'string' ? label : undefined)}
     >
       <Text style={[styles.buttonText, icon && styles.iconButtonText]}>{label}</Text>
-    </TouchableOpacity>
+    </Pressable>
   );
 }

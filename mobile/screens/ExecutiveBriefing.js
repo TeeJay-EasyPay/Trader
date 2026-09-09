@@ -99,8 +99,11 @@ const { ExchangeOverview } = require('../components/ExchangeOverview');
 
 function ExecutiveSummaryCard({ status }) {
   const ready = status?.connection_readiness?.trade_ready;
-  return <View style={styles.summaryCard}>
-    <Text style={styles.cardTitle}>{cioGreeting()}</Text>
+  return <View style={[styles.summaryCard, styles.greetingCard]}>
+    <View style={styles.greetingHeading}>
+      <Text style={[styles.cardTitle, styles.greetingTitle]}>{cioGreeting()}</Text>
+      <Text style={styles.greetingSun} accessible={false} importantForAccessibility="no">☀</Text>
+    </View>
     <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
   </View>;
 }

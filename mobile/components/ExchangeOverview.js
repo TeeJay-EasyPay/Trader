@@ -5,6 +5,7 @@ const { Section, CollapsibleSection, Metric } = require('./shared');
 const { styles } = require('../styles');
 const { exchangeName, currencyFor, exchangeMoney, activityByExchange, periodLabel } = require('../lib/exchangeOverview');
 const { formatDateTime } = require('../lib/datetime');
+const { exchangePalette } = require('../lib/palette');
 function ExchangeOverview({ brokers = [], activity, detailed = false, children }) {
   return <Section title={detailed ? 'Your accounts' : 'Activity by exchange'}>
     {!detailed && <Text style={styles.smallText}>{periodLabel(activity?.period)} · evidence updated {activity?.generated_at ? formatDateTime(activity.generated_at) : 'unknown'}</Text>}
@@ -12,7 +13,7 @@ function ExchangeOverview({ brokers = [], activity, detailed = false, children }
     {brokers.map(broker => {
       const currency = currencyFor(broker), counts = activityByExchange(activity, broker);
       const money = value => exchangeMoney(value, currency);
-      return <View key={broker.broker} style={styles.compactRow}>
+      return <View key={broker.broker} style={[styles.exchangeCard, exchangePalette(broker.broker)]}>
         <Text style={styles.cardTitle}>{exchangeName(broker)} · {currency || 'Currency unknown'}</Text>
         <Text style={styles.smallText}>{broker.account_mode || 'Account mode unknown'} · whole account, including any manual holdings</Text>
         <Text style={styles.smallText}>Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}</Text>

@@ -1,5 +1,39 @@
 # Implementation Log
 
+## 2026-09-09 — Warm palette approved for publication
+
+Founder approved all four screen previews and requested publication. Finalised
+exchange-coloured Portfolio chart strokes and a clearly separated real-order
+warning on Run a Cycle. No illustrative preview balances, chat messages, chart
+data or cycle outcomes were copied into the app: all screens retain real data.
+Only the current navigation tab is selected. Mobile tests: 93 passed, including
+text/chart contrast, disabled/pressed controls, neutral future-broker fallback and
+the exact Tarik spelling. Publishing mobile-only with [skip render], avoiding a
+backend restart and any additional Supabase query/polling changes. Native visual
+verification remains outstanding; no local Expo server or trading cycle started.
+
+## 2026-09-09 — Approved warm mobile palette (local, not published)
+
+Applied the Founder-approved mockup palette across shared navigation/actions,
+Executive Briefing, Portfolio account and trend cards, Standup selectors/start/send
+and Run a Cycle's shared controls. Selected navigation and primary actions use
+British racing green with white text; navigation and shared primary buttons have
+an explicit darker pressed state. Canvas is warm ivory, briefing greeting apricot,
+Kraken cards lavender and Alpaca cards pale yellow. Broker identity tints are kept
+separate from loss, warning, recording and disabled states. Future/unknown brokers
+use a neutral fallback rather than borrowing another exchange's colour.
+
+The app already used the correct Founder spelling `Tarik`; the spelling error was
+in the generated mockup. Added an exact-name regression test. Contrast tests caught
+secondary text that was too light on tinted backgrounds; darkened that text.
+No generated image assets or approximate broker logos were inserted into the app.
+
+Validation: all 92 mobile tests pass; all 20 screen/component/App/styles files
+compile with the existing Babel/Expo preset. No local Expo server, emulator setup,
+new API/database reads, polling, trading or financial calculations. Native visual
+verification remains outstanding. Changes are local and uncommitted/unpublished;
+the separately released learning changes remain at `0c073e2c`.
+
 ## 2026-09-09 — Learning fixes released
 
 Founder authorised commit/deployment. Code commit

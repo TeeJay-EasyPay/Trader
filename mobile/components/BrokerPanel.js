@@ -6,6 +6,7 @@
 const React = require('react');
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
+const { exchangePalette } = require('../lib/palette');
 const { StatusPill, Metric, TextBlock, Button, CollapsibleSection } = require('./shared');
 const { notAvailable } = require('../lib/notAvailable');
 const {
@@ -36,7 +37,7 @@ function BrokerPanel({ broker, onCommand, onReport }) {
   const isKraken = broker.broker === 'kraken';
   const aiCapitalLedger = broker.trading_permissions?.ai_capital_ledger;
   return (
-    <View style={styles.compactRow}>
+    <View style={[styles.exchangeCard, exchangePalette(broker.broker)]}>
       <Text style={styles.cardTitle}>{label}</Text>
       <StatusPill label={readiness.label} tone={readiness.tone} />
       <Text style={styles.bodyText}>{brokerReadinessSentence(broker)}</Text>

@@ -1,27 +1,21 @@
-// PALETTE (2026-08-24, Founder-directed): "I like the combination of a lighter blue,
-// yellow, red and white... it feels too serious right now."
-//
-// Light blue and white do ALL the mood work. Green, red and amber are deliberately NOT used
-// as decoration anywhere in here -- in a trading app they already carry meaning (money up,
-// money down, needs your attention). Spending them on styling would cost the one signal
-// that has to be unmissable: that you are losing money.
-//
-// Aiming for calm and confident rather than cheerful. At 2am with a trade going against
-// you, a happy-looking app reads as mocking.
+// 2026-09-09 Founder-approved warm palette and British racing-green controls.
+// Exchange tint denotes identity, never profit or health. Keep semantic warning,
+// loss, recording and disabled states distinct and preserve their explicit labels.
 //
 // Previous dark palette preserved at styles.js.darkbackup for an easy revert.
 import { StyleSheet } from 'react-native';
+import { palette } from './lib/palette';
 
 export const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: '#eef4fb',
+    backgroundColor: palette.canvas,
   },
   header: {
     paddingHorizontal: 18,
     paddingTop: 10,
     paddingBottom: 8,
-    backgroundColor: '#eef4fb',
+    backgroundColor: palette.canvas,
     borderBottomColor: '#cfe0f2',
     borderBottomWidth: 1,
   },
@@ -38,7 +32,7 @@ export const styles = StyleSheet.create({
   subtitle: {
     marginTop: 2,
     fontSize: 13,
-    color: '#5a7897',
+    color: '#476582',
   },
   cacheBanner: {
     marginTop: 8,
@@ -69,7 +63,7 @@ export const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     padding: 10,
-    backgroundColor: '#eef4fb',
+    backgroundColor: palette.canvas,
   },
   tab: {
     flexGrow: 1,
@@ -84,8 +78,8 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   activeTab: {
-    backgroundColor: '#3d8bfd',
-    borderColor: '#3d8bfd',
+    backgroundColor: palette.primary,
+    borderColor: palette.primary,
   },
   tabText: {
     fontSize: 12,
@@ -103,16 +97,17 @@ export const styles = StyleSheet.create({
     minHeight: 56,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#3d8bfd',
-    backgroundColor: '#dceafc',
+    borderColor: palette.primary,
+    backgroundColor: '#ffffff',
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 10,
     marginTop: 10,
   },
   primaryTabActive: {
-    backgroundColor: '#3d8bfd',
+    backgroundColor: palette.primary,
   },
+  controlPressed: { backgroundColor: palette.pressed, borderColor: palette.pressed },
   primaryTabText: {
     fontSize: 15,
     fontWeight: '800',
@@ -159,7 +154,7 @@ export const styles = StyleSheet.create({
   },
   collapsibleChevron: {
     fontSize: 13,
-    color: '#5a7897',
+    color: '#476582',
     marginLeft: 6,
   },
   collapsibleBody: {
@@ -173,6 +168,11 @@ export const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
   },
+  greetingCard: { backgroundColor: palette.greeting, borderColor: palette.greetingBorder },
+  greetingHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  greetingTitle: { flex: 1 },
+  greetingSun: { fontSize: 32, color: '#B77400' },
+  exchangeCard: { borderWidth: 1, borderRadius: 14, padding: 12, marginTop: 14 },
   summaryReason: {
     marginTop: 4,
     marginBottom: 10,
@@ -191,7 +191,7 @@ export const styles = StyleSheet.create({
   metricLabel: {
     flex: 1,
     fontSize: 13,
-    color: '#5a7897',
+    color: '#476582',
     fontWeight: '700',
   },
   metricValue: {
@@ -229,7 +229,7 @@ export const styles = StyleSheet.create({
     marginTop: 3,
     fontSize: 12,
     lineHeight: 17,
-    color: '#5a7897',
+    color: '#476582',
   },
   buttonGrid: {
     flexDirection: 'row',
@@ -245,7 +245,7 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primary: {
-    backgroundColor: '#3d8bfd',
+    backgroundColor: palette.primary,
   },
   warn: {
     backgroundColor: '#9a6700',
@@ -319,14 +319,14 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#f7f9fc',
   },
-  standupModeActive: { backgroundColor: '#1f2d3d', borderColor: '#1f2d3d' },
+  standupModeActive: { backgroundColor: palette.primary, borderColor: palette.primary },
   standupModeText: { fontSize: 13, fontWeight: '600', color: '#41506a' },
   standupModeTextActive: { color: '#ffffff' },
   standupStart: {
     marginTop: 10,
     paddingVertical: 12,
     borderRadius: 8,
-    backgroundColor: '#1f8b4c',
+    backgroundColor: palette.primary,
     alignItems: 'center',
   },
   standupStartText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
@@ -362,7 +362,7 @@ export const styles = StyleSheet.create({
     height: 48,
     justifyContent: 'center',
     borderRadius: 8,
-    backgroundColor: '#1f2d3d',
+    backgroundColor: palette.primary,
     alignItems: 'center',
   },
   // The X. 2026-09-07, Founder-directed: a way out mid-sentence, before the words are sent.
@@ -567,7 +567,7 @@ export const styles = StyleSheet.create({
   tradeTableHeaderText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#5a7897',
+    color: '#476582',
     textTransform: 'uppercase',
   },
   tradeTableRow: {

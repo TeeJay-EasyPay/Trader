@@ -7,6 +7,7 @@ import {
   StatusBar,
   Text,
   TouchableOpacity,
+  Pressable,
   View,
 } from 'react-native';
 import { styles } from './styles';
@@ -332,28 +333,32 @@ export default function App() {
       {/* AT-ED-015 Section 11: the Executive Briefing is the Founder's primary entry point, not
           one equal-weight tab among seven - a distinct, full-width button above the regular tab
           row, so it is always the first thing the Founder sees and can always return to. */}
-      <TouchableOpacity
-        style={[styles.primaryTab, screen === 'ExecutiveBriefing' && styles.primaryTabActive]}
+      <Pressable
+        accessibilityRole="tab"
+        accessibilityState={{ selected: screen === 'ExecutiveBriefing' }}
+        style={({ pressed }) => [styles.primaryTab, screen === 'ExecutiveBriefing' && styles.primaryTabActive, pressed && styles.controlPressed]}
         onPress={() => setScreen('ExecutiveBriefing')}
       >
-        <Text style={[styles.primaryTabText, screen === 'ExecutiveBriefing' && styles.primaryTabTextActive]}>
+        {({ pressed }) => <Text style={[styles.primaryTabText, (pressed || screen === 'ExecutiveBriefing') && styles.primaryTabTextActive]}>
           Executive Briefing
-        </Text>
-      </TouchableOpacity>
+        </Text>}
+      </Pressable>
       <View style={styles.tabs}>
         {SCREENS.filter((item) => item !== 'ExecutiveBriefing').map((item) => (
-          <TouchableOpacity
+          <Pressable
             key={item}
-            style={[styles.tab, screen === item && styles.activeTab]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: screen === item }}
+            style={({ pressed }) => [styles.tab, screen === item && styles.activeTab, pressed && styles.controlPressed]}
             onPress={() => setScreen(item)}
           >
-            <Text
+            {({ pressed }) => <Text
               numberOfLines={2}
-              style={[styles.tabText, screen === item && styles.activeTabText]}
+              style={[styles.tabText, (pressed || screen === item) && styles.activeTabText]}
             >
               {SCREEN_LABELS[item] || item}
-            </Text>
-          </TouchableOpacity>
+            </Text>}
+          </Pressable>
         ))}
       </View>
       {/* AT-ED-011.5 requirement 13/14: the full-screen indicator is reserved for the initial

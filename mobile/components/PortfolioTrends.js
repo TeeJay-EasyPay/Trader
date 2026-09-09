@@ -4,6 +4,7 @@ const { useEffect, useState } = React;
 const { Text, View, ScrollView, TouchableOpacity, StyleSheet } = require('react-native');
 const { Section, Button } = require('./shared');
 const { styles } = require('../styles');
+const { palette, exchangePalette, exchangeChartColour } = require('../lib/palette');
 const { apiRequest } = require('../api/client');
 const { seriesFor, outcomeBuckets, lineGeometry, loadTrends } = require('../lib/portfolioTrends');
 
@@ -16,7 +17,7 @@ const s = StyleSheet.create({
   value: { color: '#123a63', fontSize: 26, fontWeight: '700', marginBottom: 4 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
   chip: { paddingHorizontal: 13, paddingVertical: 11, borderRadius: 10, backgroundColor: '#eef4fb' },
-  selected: { backgroundColor: '#dceafc', borderColor: '#3d8bfd', borderWidth: 1 },
+  selected: { backgroundColor: palette.primary, borderColor: palette.primary, borderWidth: 1 },
   chipText: { color: '#1f4c78', fontWeight: '600' },
   axis: { flexDirection: 'row', justifyContent: 'space-between' },
   plot: { height: 126, marginHorizontal: 5, borderBottomColor: '#b9cdea', borderBottomWidth: 1 },
@@ -29,10 +30,10 @@ const s = StyleSheet.create({
 });
 
 function Choice({ value, selected, onPress }) {
-  return <TouchableOpacity accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress} style={[s.chip, selected && s.selected]}><Text style={s.chipText}>{value}</Text></TouchableOpacity>;
+  return <TouchableOpacity accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress} style={[s.chip, selected && s.selected]}><Text style={[s.chipText, selected && { color: '#ffffff' }]}>{value}</Text></TouchableOpacity>;
 }
 
-function ValueChart({ rows, currency }) {
+function ValueChart({ rows, currency, colour }) {
   const [width, setWidth] = useState(260);
   const [chosen, setChosen] = useState(null);
   const graph = lineGeometry(rows, width, 126);
@@ -45,8 +46,8 @@ function ValueChart({ rows, currency }) {
     <Text style={s.label}>Latest recorded value · {dateLabel(latest.date)}</Text>
     <View style={s.axis}><Text style={s.label}>{money(graph.max, currency)} high</Text><Text style={s.label}>{money(graph.min, currency)} low</Text></View>
     <View style={s.plot} onLayout={event => setWidth(Math.max(20, event.nativeEvent.layout.width - 8))} accessible accessibilityLabel={`Account value history. ${valid.length} observations. Latest ${money(latest.value, currency)}. High ${money(graph.max, currency)}. Low ${money(graph.min, currency)}.`}>
-      {graph.segments.map((seg, i) => <View key={i} style={[s.segment, { left: seg.x - seg.length / 2, top: seg.y, width: seg.length, transform: [{ rotate: `${seg.angle}rad` }] }]} />)}
-      {graph.points.filter(p => p.y !== null).map(p => <TouchableOpacity key={p.date} onPress={() => setChosen(p.date)} hitSlop={{ top: 8, bottom: 8, left: 5, right: 5 }} accessibilityLabel={`${p.date}: ${money(p.value, currency)}`} style={[s.dot, p.flow ? s.flow : null, { left: p.x - 3, top: p.y - 3 }]} />)}
+      {graph.segments.map((seg, i) => <View key={i} style={[s.segment, { backgroundColor: colour, left: seg.x - seg.length / 2, top: seg.y, width: seg.length, transform: [{ rotate: `${seg.angle}rad` }] }]} />)}
+      {graph.points.filter(p => p.y !== null).map(p => <TouchableOpacity key={p.date} onPress={() => setChosen(p.date)} hitSlop={{ top: 8, bottom: 8, left: 5, right: 5 }} accessibilityLabel={`${p.date}: ${money(p.value, currency)}`} style={[s.dot, { backgroundColor: colour }, p.flow ? s.flow : null, { left: p.x - 3, top: p.y - 3 }]} />)}
     </View>
     <View style={s.axis}><Text style={s.label}>{dateLabel(rows[0].date)}</Text><Text style={s.label}>{dateLabel(rows[rows.length - 1].date)}</Text></View>
     <Text style={s.label}>{dateLabel(detail.date)}: {money(detail.value, currency)}{detail.flow ? ` · allocation change ${detail.flow > 0 ? '+' : ''}${money(detail.flow, currency)}` : ''}</Text>
@@ -63,11 +64,11 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
   const totals = bins.reduce((acc, b) => { for (const key of Object.keys(acc)) acc[key] += b[key]; return acc; }, { wins: 0, losses: 0, breakeven: 0, unknown: 0, net_pnl: 0 });
   const peak = Math.max(1, ...bins.flatMap(b => [b.wins, b.losses]));
   const detail = bins.find(b => b.date === selected);
-  return <View style={s.card}>
+  return <View style={[s.card, exchangePalette(broker.broker)]}>
     <Text style={s.title}>{broker.broker === 'kraken' ? 'Kraken · GBP' : 'Alpaca · USD'}</Text>
     <Text style={s.label}>{broker.broker === 'kraken' ? 'AI trading capital only · personal holdings excluded' : 'Alpaca account value · cash plus investments'}{broker.account_mode ? ` · ${broker.account_mode}` : ''}</Text>
     <Text style={s.title}>Account value</Text>
-    {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
+    {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} colour={exchangeChartColour(broker.broker)} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
     <Text style={s.label}>{broker.broker === 'kraken' ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
     <Text style={[s.title, { marginTop: 18 }]}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'}</Text>
     {broker.outcome_status !== 'ok' ? <Text style={s.label}>Trade outcomes are temporarily unavailable.</Text> : <View>
