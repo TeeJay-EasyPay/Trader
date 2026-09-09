@@ -64,6 +64,13 @@ recover missing proposal/fee evidence, and measure whether lessons improve later
 after-cost outcomes at comparable risk. These changes do not prove profitability
 or daily improvement and do not alter trading permissions, sizing or stops.
 
+Release: code commit `cb481a7c4b3c867ab8555da82a72da138bb6d98c` pushed to
+GitHub master. Android runtime 1.0.3 published to preview group
+`e0b0398d-3717-43bd-bf27-ca2a8518e853` and hosted-preview group
+`59c2e46d-2c95-4dfc-9203-a797b2d99e15`. No new image assets were uploaded.
+API health passed at 18:27:55 UTC. Worker heartbeat at 18:28:52 UTC still named
+the prior `0be7dab1` release; new backend activation/recovery is not yet verified.
+
 ## 2026-09-09 — Greeting content-box sizing follow-up; Kraken value clarification
 
 Founder device screenshot confirmed the previous image fix revealed the artwork
