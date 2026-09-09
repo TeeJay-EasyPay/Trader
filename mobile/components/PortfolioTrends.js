@@ -11,19 +11,19 @@ const money = (n, currency) => typeof n === 'number' && Number.isFinite(n)
   ? `${currency === 'GBP' ? '£' : '$'}${n.toFixed(2)}` : 'Unavailable';
 const dateLabel = date => `${date.slice(8)}/${date.slice(5, 7)}`;
 const s = StyleSheet.create({
-  card: { backgroundColor: '#101d30', borderColor: '#29405b', borderWidth: 1, borderRadius: 16, padding: 14, marginTop: 14 },
-  title: { color: '#f1f5f9', fontSize: 19, fontWeight: '700', marginBottom: 6 },
-  label: { color: '#cbd5e1', fontSize: 13, marginVertical: 5 },
-  value: { color: '#f8fafc', fontSize: 26, fontWeight: '700', marginBottom: 4 },
+  card: { backgroundColor: '#f5f9ff', borderColor: '#cfe0f2', borderWidth: 1, borderRadius: 16, padding: 14, marginTop: 14 },
+  title: { color: '#16324f', fontSize: 19, fontWeight: '700', marginBottom: 6 },
+  label: { color: '#476582', fontSize: 13, marginVertical: 5 },
+  value: { color: '#123a63', fontSize: 26, fontWeight: '700', marginBottom: 4 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
-  chip: { paddingHorizontal: 13, paddingVertical: 11, borderRadius: 10, backgroundColor: '#1d3048' },
-  selected: { backgroundColor: '#285982', borderColor: '#70c9fa', borderWidth: 1 },
-  chipText: { color: '#f1f5f9', fontWeight: '600' },
+  chip: { paddingHorizontal: 13, paddingVertical: 11, borderRadius: 10, backgroundColor: '#eef4fb' },
+  selected: { backgroundColor: '#dceafc', borderColor: '#3d8bfd', borderWidth: 1 },
+  chipText: { color: '#1f4c78', fontWeight: '600' },
   axis: { flexDirection: 'row', justifyContent: 'space-between' },
-  plot: { height: 126, marginHorizontal: 5, borderBottomColor: '#456079', borderBottomWidth: 1 },
-  segment: { position: 'absolute', height: 2, backgroundColor: '#60c7fa' },
-  dot: { position: 'absolute', width: 6, height: 6, borderRadius: 3, backgroundColor: '#60c7fa' },
-  flow: { backgroundColor: '#facc15', width: 9, height: 9, borderRadius: 2 },
+  plot: { height: 126, marginHorizontal: 5, borderBottomColor: '#b9cdea', borderBottomWidth: 1 },
+  segment: { position: 'absolute', height: 2, backgroundColor: '#2563eb' },
+  dot: { position: 'absolute', width: 6, height: 6, borderRadius: 3, backgroundColor: '#2563eb' },
+  flow: { backgroundColor: '#a16207', width: 9, height: 9, borderRadius: 2 },
   bars: { flexDirection: 'row', alignItems: 'flex-end', height: 95, gap: 3 },
   bar: { width: 8, borderTopLeftRadius: 2, borderTopRightRadius: 2 },
   bin: { alignItems: 'center', marginRight: 12, minWidth: 36 },
@@ -69,7 +69,7 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
     <Text style={s.label}>{broker.broker === 'kraken' ? 'AI trading capital only · personal holdings excluded' : 'Alpaca account value · cash plus investments'}{broker.account_mode ? ` · ${broker.account_mode}` : ''}</Text>
     <Text style={s.title}>Account value</Text>
     {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
-    <Text style={s.label}>{broker.broker === 'kraken' ? 'Yellow markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
+    <Text style={s.label}>{broker.broker === 'kraken' ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
     <Text style={[s.title, { marginTop: 18 }]}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'}</Text>
     {broker.outcome_status !== 'ok' ? <Text style={s.label}>Trade outcomes are temporarily unavailable.</Text> : <View>
       <Text style={s.label}>{netKnown ? 'After recorded fees' : 'Provisional: before unreconciled fees'} · {weekly ? 'weekly, Monday start' : 'daily'} · UTC</Text>
@@ -78,7 +78,7 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
       <Text style={s.label}>Green: won · Red: lost. Counts, not profit amounts.</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={true} accessibilityLabel="Daily or weekly completed trade counts">
         {bins.map(bin => <TouchableOpacity key={bin.date} style={s.bin} onPress={() => setSelected(bin.date)} accessibilityLabel={`${bin.date}: ${bin.wins} won, ${bin.losses} lost, ${bin.breakeven} break-even, ${bin.unknown} unknown`}>
-          <View style={s.bars}><View style={[s.bar, { height: bin.wins / peak * 84, backgroundColor: '#42d6a4' }]} /><View style={[s.bar, { height: bin.losses / peak * 84, backgroundColor: '#fb7185' }]} /></View>
+          <View style={s.bars}><View style={[s.bar, { height: bin.wins / peak * 84, backgroundColor: '#16815b' }]} /><View style={[s.bar, { height: bin.losses / peak * 84, backgroundColor: '#ce4054' }]} /></View>
           <Text style={s.label}>{dateLabel(bin.date)}</Text>
         </TouchableOpacity>)}
       </ScrollView>

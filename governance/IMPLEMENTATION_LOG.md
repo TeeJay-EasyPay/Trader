@@ -1,5 +1,14 @@
 # Implementation Log
 
+## 2026-09-09 — Light chart palette matching the app
+
+Founder confirmed the new charts are visible and requested a lighter palette.
+Changed chart cards to pale blue with navy text, light-blue selected controls,
+blue value lines, amber allocation markers and darker green/red outcome bars.
+Data, calculations, cache/request frequency and database access are unchanged.
+The running emulator was observed displaying the original chart bars, confirming
+the previous OTA loaded. This palette-only update does not require a Render restart.
+
 ## 2026-09-09 — Cycle/chart release deployed; visual acceptance still pending
 
 - Code commit `564b0377a38bbb205baab4457b79859e7c603685` pushed to `origin/master`.
