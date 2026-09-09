@@ -40,12 +40,8 @@ export function RunCycleScreen({ cycleRun }) {
     <View>
       <Section title="Run a cycle now">
         <Text style={styles.bodyText}>
-          Runs the whole process end to end: refresh the market data, research every asset,
-          check each idea against the two rules, and place any orders that pass. Run one
-          broker on its own to test a change without waiting on the other. Duration depends on
-          the assets reviewed and external services; a run can take 30 minutes or longer.
-          Order submission does not necessarily mean a fill. Check Trade History on the Portfolio
-          screen.
+          Research assets and apply risk and execution checks. This can place real orders;
+          a run may take 30 minutes or longer. Confirm fills in Portfolio trade history.
         </Text>
         {/* 2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken...
             especially if we are doing test runs after upgrades or updates." One button per

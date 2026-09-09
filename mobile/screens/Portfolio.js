@@ -11,12 +11,13 @@ const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../com
 const { BrokerPanel } = require('../components/BrokerPanel');
 const { ReportPanel } = require('../components/ReportPanel');
 const { PortfolioTrends } = require('../components/PortfolioTrends');
+const { ExchangeOverview } = require('../components/ExchangeOverview');
+const { exchangeMoney, currencyFor } = require('../lib/exchangeOverview');
 const { moneyOrText, historyMoneyOrText, formatByCurrency } = require('../lib/money');
 const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
 const { formatJsonText } = require('../lib/json');
-const { connectedFounderBrokers, formatReconciliation, positionOwnership, portfolioHeadline } = require('../lib/founderPresentation');
-const { portfolioProjection } = require('../lib/cio');
+const { connectedFounderBrokers, formatReconciliation, positionOwnership } = require('../lib/founderPresentation');
 const { sumBrokerFieldByCurrency } = require('../lib/portfolioPosition');
 const {
   combinedTransactions,
@@ -191,7 +192,7 @@ function TradeHistoryTable({ trades, onCommand, protectiveOrders = 0 }) {
   );
 }
 
-function PortfolioCommandCentre({ status, portfolio, recommendations, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport }) {
+function PortfolioCommandCentre({ status, portfolio, recommendations, performanceAttribution, latestReport, selectedExchange, setSelectedExchange, onCommand, onReport, trendsRequest }) {
   const portfolioCommand = status?.founder_experience?.portfolio_command || {};
   const evidence = status?.world_class_evidence || {};
   const trades = combinedTransactions(status, portfolio, selectedExchange, performanceAttribution, 200);
@@ -216,47 +217,11 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
       .map((position) => ({ position, broker, ownership: positionOwnership(position, broker.managed_exits) }))
       .filter((row) => row.ownership.isAiManaged)
   );
-  const positionsRequiringAttention = (portfolio?.open_positions || []).filter((position) => Number(position.unrealized_pl || 0) < 0);
-  const todaysPnl = portfolio?.todays_pnl;
-  const headline = portfolioHeadline({
-    openPositionsCount: portfolio?.open_positions ? portfolio.open_positions.length : null,
-    pnlText: typeof todaysPnl === 'number' ? moneyOrText(Math.abs(todaysPnl)) : null,
-    pnlIsPositive: typeof todaysPnl === 'number' ? todaysPnl >= 0 : null,
-    atLossCount: positionsRequiringAttention.length,
-  });
-
-  // AT-ED-013 Section 8: 7/30/90-day figures only where evidence supports them - this backend
-  // has no portfolio-value forecasting model, so portfolioProjection() always returns the
-  // honest unavailable state (see lib/cio.js). Calculations above are untouched; this only adds
-  // a clearly-labelled Forecast line beneath the Facts, per the directive's "distinguish Facts
-  // from Forecasts" and "do NOT alter calculations, improve clarity only" instructions.
-  const projection = portfolioProjection();
-
   return (
     <View>
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryReason}>{headline}</Text>
-        {/* 2026-08-22 Founder-flagged: these four used moneyOrText() directly against
-            `portfolio`, a figure blended across brokers regardless of currency -- Alpaca
-            (USD) and Kraken (GBP) summed under one $ sign, the exact mistake AT-ED-017
-            already fixed on Executive Briefing's equivalent card via sumBrokerFieldByCurrency/
-            formatByCurrency. Sourced from status.brokers here for the same reason. */}
-        <Metric label="Portfolio Value (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'portfolio_value'))} />
-        <Metric label="Cash Available (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'cash_available'))} />
-        <Metric label="Deployed Capital (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'estimated_in_positions'))} />
-        <Metric label="Today's P&L (Fact)" value={formatByCurrency(sumBrokerFieldByCurrency(status?.brokers, 'todays_pnl'))} />
-        <Metric label="Open Positions" value={(portfolio?.open_positions || []).length} />
-        <Metric label="Positions Requiring Attention" value={positionsRequiringAttention.length} />
-        {positionsRequiringAttention.length ? (
-          <TextBlock
-            label="At a Loss"
-            value={positionsRequiringAttention.map((position) => `${position.symbol || 'Unknown'}: ${moneyOrText(position.unrealized_pl)}`).join('\n')}
-          />
-        ) : null}
-        <TextBlock label="Portfolio Projection (Forecast - 7/30/90 Day)" value={projection.reason} />
-      </View>
+      <ExchangeOverview brokers={status?.brokers || []} detailed />
 
-      <PortfolioTrends />
+      <PortfolioTrends request={trendsRequest} />
       <CollapsibleSection
         title="AI-Managed Positions"
         subtitle="Positions the AI opened and is tracking to a stop-loss/take-profit exit. Manual holdings are never included here."
@@ -272,16 +237,17 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
             <View key={`ai-managed-${broker.broker}-${position.symbol || index}`} style={styles.compactRow}>
               <Text style={styles.cardTitle}>{position.symbol || 'Unknown symbol'}</Text>
               <Metric label="Broker" value={broker.label} />
-              <Metric label="Originating Recommendation" value={proposalId || 'Not linked in this evidence'} />
               <Metric label="Strategy" value={recommendation?.strategy_name || recommendation?.strategy_id || 'Not available'} />
               <Metric label="Entry Time" value={formatDateTime(ownership.managedExit?.created_at)} />
-              <Metric label="Current State" value={ownership.managedExit?.status} />
               <Metric label="Managed-Exit Status" value={ownership.managedExit?.status === 'open' ? 'Monitoring for stop-loss/take-profit' : ownership.managedExit?.status} />
               <Metric label="Quantity" value={position.qty ?? position.quantity ?? 'Not available'} />
               {position.unrealized_pl !== undefined && position.unrealized_pl !== null ? (
-                <Metric label="Unrealised Result" value={moneyOrText(position.unrealized_pl)} />
+                <Metric label="Unrealised Result" value={exchangeMoney(position.unrealized_pl, currencyFor(broker))} />
               ) : null}
-              <Metric label="Latest Learning State" value="Not available yet - learning only follows a closed, reconciled trade." />
+              <CollapsibleSection title="Position detail" defaultExpanded={false}>
+                <Metric label="Recommendation reference" value={proposalId || 'Not linked in this evidence'} />
+                <Text style={styles.smallText}>Learning follows a closed, reconciled trade. An unrealised loss alone is not a support issue.</Text>
+              </CollapsibleSection>
             </View>
           );
         })}
@@ -296,7 +262,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         <Metric label="Daily P&L" value={formatByCurrency(summary.dailyPnlByCurrency)} />
         {/* Calendar day since midnight, deliberately distinct from the Trade Scorecard's
             rolling 24-hour window on the briefing -- see lib/tradeScorecard.js. */}
-        <Metric label="Completed today (since midnight)" value={summary.completedTradesToday} />
+        <Metric label="Completed today (since midnight on this device)" value={summary.completedTradesToday} />
         <Metric label="Open Positions" value={summary.openPositions} />
         {trades.length ? (
           <TradeHistoryTable trades={trades} onCommand={onCommand} protectiveOrders={protectiveOrders} />

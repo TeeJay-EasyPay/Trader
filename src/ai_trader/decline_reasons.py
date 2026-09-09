@@ -94,6 +94,7 @@ def summarize_decline(payload: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         confidence_value = None
     return {
+        "broker": str(payload.get("broker") or "unknown").lower(),
         "symbol": str(payload.get("symbol") or "").upper() or None,
         "outcome": label,
         "why": headline,
@@ -140,24 +141,18 @@ def recent_decline_reasons(db_path: Path, *, limit: int = 8) -> dict[str, Any]:
         declines.append(summary)
         if len(declines) >= limit:
             break
-    if declines:
-        return {"declines": declines, "available": True}
-    # 2026-09-01, Founder-questioned: "I wonder whether the View Ahead card and Trades I
-    # turned down cards are giving me up to date information."
-    #
-    # The View Ahead was current. This one had been empty for days -- correctly, by its own
-    # design, because it shows only the AI reviewer's JUDGEMENT calls and nothing had reached
-    # the reviewer: 4,562 agent_no_trade events since 25 August and every one of them a
-    # mechanical gate. A card headed "Trades I Turned Down" showing nothing, on a day the app
-    # turned down hundreds, answers a narrower question than its title asks.
-    #
-    # So when there is no judgement to report, it reports the mechanical reasons instead,
-    # labelled as such. Empty now means genuinely nothing refused, not "refused for a kind of
-    # reason this card does not cover".
+    # Both categories reuse the same bounded rows. This is a sample, never a daily total.
+    # No extra database read is needed for grouping or the evidence date range.
     return {
-        "declines": [],
+        "declines": declines,
         "available": True,
         "mechanical_summary": _mechanical_decline_summary(rows),
+        "sample": {
+            "events_examined": len(rows),
+            "oldest": rows[-1]["created_at"] if rows else None,
+            "newest": rows[0]["created_at"] if rows else None,
+            "complete_period_total": False,
+        },
     }
 
 
@@ -180,27 +175,31 @@ def _mechanical_decline_summary(rows: list[Any]) -> list[dict[str, Any]]:
         "stop_loss_too_tight": "the safety net was set so close it would trigger on normal price wobble",
         "reward_risk_below_minimum": "aiming to win less than it was risking",
     }
-    counts: dict[str, int] = {}
-    symbols: dict[str, set] = {}
+    counts: dict[tuple[str, str], int] = {}
+    symbols: dict[tuple[str, str], set] = {}
     for row in rows:
         try:
             payload = json.loads(row["payload_json"] or "{}")
         except (TypeError, ValueError):
             continue
-        reason = str(payload.get("reason") or "")
-        if not reason:
+        if not isinstance(payload, dict):
             continue
-        counts[reason] = counts.get(reason, 0) + 1
+        reason = str(payload.get("reason") or "")
+        if not reason or reason in _JUDGMENT_REASONS:
+            continue
+        group = (str(payload.get("broker") or "unknown").lower(), reason)
+        counts[group] = counts.get(group, 0) + 1
         symbol = str(payload.get("symbol") or "").upper()
         if symbol:
-            symbols.setdefault(reason, set()).add(symbol)
+            symbols.setdefault(group, set()).add(symbol)
     ordered = sorted(counts.items(), key=lambda kv: -kv[1])[:5]
     return [
         {
+            "broker": broker,
             "reason": reason,
             "count": count,
             "explanation": plain.get(reason, reason.replace("_", " ")),
-            "examples": sorted(symbols.get(reason, set()))[:4],
+            "examples": sorted(symbols.get((broker, reason), set()))[:4],
         }
-        for reason, count in ordered
+        for (broker, reason), count in ordered
     ]

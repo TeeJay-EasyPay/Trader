@@ -410,9 +410,8 @@ function StandupScreen({ request }) {
     <View>
       <Section title="Standup">
         <Text style={styles.bodyText}>
-          You chair it. Name someone to direct a question - "Claude, why is that slow?" - or just
-          speak and whoever was last talking continues. Ask out loud and the replies are read
-          back to you, with the microphone reopening when they finish.
+          Say "Hey ChatGPT" or "Hey Claude" to choose who answers. Otherwise the last speaker
+          continues. Voice replies are read aloud; this conversation does not place trades.
         </Text>
 
         <View style={styles.standupModeRow}>

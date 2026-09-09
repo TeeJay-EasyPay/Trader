@@ -10,9 +10,14 @@
 
 'use strict';
 
-const NO_DECLINES_MESSAGE = 'I have not turned down any trades on judgement recently.';
+const NO_DECLINES_MESSAGE = 'No refusals appear in the returned evidence sample.';
 
 const NOT_LOADED_MESSAGE = 'Recent decisions have not loaded yet.';
+
+function brokerLabel(value) {
+  if (!value || value === 'unknown') return 'Exchange unknown';
+  return ({ kraken: 'Kraken', alpaca: 'Alpaca' })[value] || value;
+}
 
 function confidenceNote(confidence) {
   if (confidence === null || confidence === undefined || confidence === '') return null;
@@ -24,7 +29,9 @@ function confidenceNote(confidence) {
 function declineRow(record) {
   if (!record || !record.symbol || !record.why) return null;
   return {
-    key: `${record.symbol}-${record.created_at || ''}`,
+    key: `${record.broker || 'unknown'}-${record.symbol}-${record.created_at || ''}`,
+    broker: brokerLabel(record.broker),
+    created_at: record.created_at,
     symbol: record.symbol,
     outcome: record.outcome || 'Declined',
     why: record.why,
@@ -47,8 +54,7 @@ function declineRows(payload) {
 // reviewer. But a card headed "Trades I Turned Down" showing nothing, on a day the app turned
 // down hundreds of ideas on mechanical rules, reads as broken rather than as precise.
 //
-// So when there is no judgement to report, the mechanical reasons are shown instead, plainly
-// labelled. Empty now means genuinely nothing was refused.
+// Both categories are now shown. Empty describes only the returned evidence sample.
 function mechanicalRows(payload) {
   const summary = payload && Array.isArray(payload.mechanical_summary)
     ? payload.mechanical_summary
@@ -60,9 +66,10 @@ function mechanicalRows(payload) {
         ? ` (${item.examples.join(', ')})`
         : '';
       return {
-        key: `mechanical-${item.reason}`,
-        symbol: `${item.count} idea${item.count === 1 ? '' : 's'}`,
-        outcome: 'not taken',
+        key: `mechanical-${item.broker || 'unknown'}-${item.reason}`,
+        broker: brokerLabel(item.broker),
+        symbol: `${item.count} decision check${item.count === 1 ? '' : 's'}`,
+        outcome: 'blocked by rules',
         why: `${item.explanation}${examples}.`,
         assessment: '',
         confidence: '',
@@ -72,15 +79,12 @@ function mechanicalRows(payload) {
 
 function declineReasonsCard(payload) {
   const rows = declineRows(payload);
-  if (rows.length) {
-    return { loaded: Boolean(payload), rows, mechanical: false, emptyMessage: NO_DECLINES_MESSAGE };
-  }
   const mechanical = mechanicalRows(payload);
   return {
     loaded: Boolean(payload),
-    rows: mechanical,
-    mechanical: mechanical.length > 0,
-    emptyMessage: payload ? NO_DECLINES_MESSAGE : NOT_LOADED_MESSAGE,
+    rows: [...rows, ...mechanical],
+    mechanical: !rows.length && mechanical.length > 0,
+    emptyMessage: payload?.available === false ? 'Decision evidence is unavailable.' : payload ? NO_DECLINES_MESSAGE : NOT_LOADED_MESSAGE,
   };
 }
 

@@ -1,5 +1,60 @@
 # Implementation Log
 
+## 2026-09-09 — Exchange-first briefing and Portfolio redesign
+
+Implemented the approved review: greeting no longer repeats account results;
+Activity by exchange replaces Where We Stand / What I Did, with evidence period,
+asset checks, candidates and distinct observed/fill order counts. Completed results
+remain available in a collapsed detail section. Portfolio now has individually
+named exchange/currency/live-or-paper account summaries, preserving progress
+charts, managed positions and history. Unknown currencies/values stay explicit.
+Per-asset forecasts are easier to reach; duplicate research-status prose removed
+from the detailed outlook. Standup and Run a Cycle introductions are shorter.
+
+Refusal summaries now show both judgement and rule refusals, group explicit
+broker metadata separately, include the sampled date range and explain that
+repeated decision checks are neither unique ideas nor complete daily totals.
+Historical records lacking broker metadata remain Exchange unknown; no symbol-
+based guessing. Scorecard/refusal cards retain their own loaded timestamp and
+flag a failed refresh instead of implying that the fresh page header applies.
+
+Egress: no new endpoint calls, polling, database columns, rows or query loops.
+The refusal formatter reuses the identical bounded SELECT of created_at and
+payload_json. Additional grouping/sample metadata is generated in application
+memory; API-to-phone payload can grow slightly, but database result bytes do not
+change for the same sample. This does not establish a measured reduction in
+total Supabase usage. No macro ingestion or trading-policy changes.
+
+Verification before release: initial 83 mobile tests and 16 targeted backend
+tests passed; final suite checks recorded in the release follow-up. Emulator QA
+was attempted using a separate review AVD because the original lacked space;
+the redesign was NOT visually verified. Founder then explicitly requested stopping
+local Expo and proceeding with GitHub/publication. Metro stopped, temporary entry
+removed, package main restored. Original Pixel 9 app/data untouched. Separate
+review AVD and pre-existing cached Expo Go installation remain for future use.
+No live trading cycle was started. Release identifiers/status follow below.
+
+Final verification: 85/85 mobile tests; production Android export succeeded from
+the normal Expo AppEntry (not a preview entry). Full backend run: 1,808 passed,
+21 subtests passed, one stale source-text assertion expected the removed phrase
+"You chair it." Updated that assertion to check the Standup introduction still
+explicitly says replies are read aloud and does not place trades; all 38 tests
+in that test module then passed. Targeted refusal/sample tests: 16 passed.
+The full backend suite was not repeated after this test-only correction.
+
+## 2026-09-09 — Remaining screen review completed (documentation only)
+
+Founder confirmed Ask is absent and requested the rest of the review. Updated
+`architecture/FOUNDER_UX_REVIEW_2026-09-09.md` with a five-section briefing layout,
+exchange-first Portfolio overview and retained charts/positions/history. Reviewed
+all four screen sources and the relevant summary, refusal and refresh mappings.
+Additional findings: order counts can include protection; order identity lacks
+broker namespace in the greeting helper; secondary cards can retain stale data
+under a fresh main timestamp; chart currency formatting assumes GBP/USD; daily
+windows differ. Prioritise correct definitions/labels before cosmetic reduction.
+No redesign, macro ingestion, production query, commit or deployment in this
+follow-up review. This entry and the review are local documentation updates.
+
 ## 2026-09-09 — Remove embedded Ask card (release authorised)
 
 Released: `44a3012cb449ce95ff8b591ac000cc4610965163` pushed to master.

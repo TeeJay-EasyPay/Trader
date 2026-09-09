@@ -495,20 +495,26 @@ function useFounderEvidence() {
         // that the rest of the briefing depends on. null means "not loaded yet", which
         // the card renders as its own honest empty state rather than as zero trades.
         apiRequest('/trade-scorecard', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
-          .catch(() => null)
+          .catch(() => {
+            if (isMountedRef.current) setTradeScorecard(previous => previous ? { ...previous, refresh_failed: true } : null);
+            return null;
+          })
           .then((nextScorecard) => {
             if (isMountedRef.current && nextScorecard) {
-              setTradeScorecard(nextScorecard);
+              setTradeScorecard({ ...nextScorecard, fetched_at: new Date().toISOString() });
             }
           });
         // Founder-requested 2026-08-20: why the AI turned trades down, in short plain
         // English. Same fire-and-forget shape -- an explanation query must never be able
         // to fail or delay the refresh the rest of the briefing depends on.
         apiRequest('/decline-reasons', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
-          .catch(() => null)
+          .catch(() => {
+            if (isMountedRef.current) setDeclineReasons(previous => previous ? { ...previous, refresh_failed: true } : null);
+            return null;
+          })
           .then((nextDeclines) => {
             if (isMountedRef.current && nextDeclines) {
-              setDeclineReasons(nextDeclines);
+              setDeclineReasons({ ...nextDeclines, fetched_at: new Date().toISOString() });
             }
           });
         return;

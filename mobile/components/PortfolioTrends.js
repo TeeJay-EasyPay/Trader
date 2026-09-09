@@ -7,8 +7,7 @@ const { styles } = require('../styles');
 const { apiRequest } = require('../api/client');
 const { seriesFor, outcomeBuckets, lineGeometry, loadTrends } = require('../lib/portfolioTrends');
 
-const money = (n, currency) => typeof n === 'number' && Number.isFinite(n)
-  ? `${currency === 'GBP' ? '£' : '$'}${n.toFixed(2)}` : 'Unavailable';
+const { exchangeMoney: money } = require('../lib/exchangeOverview');
 const dateLabel = date => `${date.slice(8)}/${date.slice(5, 7)}`;
 const s = StyleSheet.create({
   card: { backgroundColor: '#f5f9ff', borderColor: '#cfe0f2', borderWidth: 1, borderRadius: 16, padding: 14, marginTop: 14 },

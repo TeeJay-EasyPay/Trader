@@ -94,31 +94,14 @@ function proseOrBullets(items) {
 // "Would I genuinely present this exact wording to my CEO?" - pure narrative up top, no metrics,
 // no percentages, no labels; the real numbers follow immediately below under the same heading.
 
-function ExecutiveSummaryCard({ status, activity, marketCentre }) {
-  const executive = status?.founder_experience?.executive_dashboard || {};
-  const activitySummary = activity?.summary || {};
-  const headlineSummary = cioExecutiveSummary({ headline: executive.headline, whatToDo: executive.what_to_do, whatToWorryAbout: executive.what_to_worry_about });
-  const overnightSummary = cioOvernightActivity({
-    researchRuns: activitySummary.research?.runs,
-    recommendationsCreated: activitySummary.research?.recommendations_created,
-    ordersSubmitted: activitySummary.execution?.orders_submitted,
-  });
-  const marketSummary = marketOutlookText(marketCentre);
-  const hasEvidence = Boolean(executive.headline || activitySummary.research || marketCentre?.market_health);
-  return (
-    <View style={styles.summaryCard}>
-      <Text style={styles.cardTitle}>{cioGreeting()}</Text>
-      {hasEvidence ? (
-        <>
-          <Text style={styles.summaryReason}>{headlineSummary}</Text>
-          <Text style={styles.summaryReason}>{overnightSummary}</Text>
-          <Text style={styles.summaryReason}>{marketSummary}</Text>
-        </>
-      ) : (
-        <Text style={styles.summaryReason}>{cioExecutiveBriefingSummary({})}</Text>
-      )}
-    </View>
-  );
+const { ExchangeOverview } = require('../components/ExchangeOverview');
+
+function ExecutiveSummaryCard({ status }) {
+  const ready = status?.connection_readiness?.trade_ready;
+  return <View style={styles.summaryCard}>
+    <Text style={styles.cardTitle}>{cioGreeting()}</Text>
+    <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
+  </View>;
 }
 
 function PositionLine({ label, value }) {
@@ -321,6 +304,8 @@ function TradeScorecardCard({ tradeScorecard, forecastAccountability }) {
       subtitle="How many of my trades worked out, and what I have learned from them."
       defaultExpanded={true}
     >
+      {tradeScorecard?.fetched_at && <Text style={styles.smallText}>Across recorded exchanges · last loaded {formatDateTime(tradeScorecard.fetched_at)}</Text>}
+      {tradeScorecard?.refresh_failed && <Text style={styles.smallText}>Refresh failed — showing previously loaded results.</Text>}
       {card.rows.map((row) => (
         <View key={row.key} style={styles.compactRow}>
           <Text style={styles.metricLabel}>{row.label}</Text>
@@ -428,13 +413,13 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
     // was technical jargon concluding "Unclear". Now collapsed by default with a one-line
     // summary at the top -- the detail is one tap away for when it is actually wanted.
     <CollapsibleSection title="The View Ahead" subtitle={forecastHeadline(forecastCards)} defaultExpanded={false}>
-      <Text style={styles.bodyText}>{summariseReason(marketOutlookText(marketCentre))}</Text>
+      <Text style={styles.smallText}>Forecasts describe possible direction, not a promise of returns. Open an asset forecast for its evidence date.</Text>
       <StatusPill label={`Confidence: ${conviction.level}`} tone={convictionTone(conviction.level)} />
       <Text style={styles.smallText}>Trading choices remain with AI Trader, within the existing risk rules.</Text>
+      <CollapsibleSection title="Per-asset forecasts" subtitle="Price history and technical evidence" defaultExpanded={false}>
+        {forecastCards.map((forecast) => <MarketForecastCard key={forecast.horizonKey} forecast={forecast} />)}
+      </CollapsibleSection>
       <CollapsibleSection title="Detailed outlook" subtitle="Supporting analysis, forecasts, risks and opportunities" defaultExpanded={false}>
-      <Text style={styles.metricLabel}>Market assessment</Text>
-      <Text style={styles.bodyText}>{marketOutlookText(marketCentre)}</Text>
-
       <Text style={styles.metricLabel}>Investment thesis - current view</Text>
       <Text style={styles.bodyText}>{thesis.statement}</Text>
       <Text style={styles.metricLabel}>Why</Text>
@@ -454,13 +439,6 @@ function TheViewAheadSection({ marketCentre, themes, recommendations, factors, c
       {/* Nested and collapsed: 19 per-asset cards of trend/momentum/ATR detail is analyst
           material, not founder material. It stays reachable rather than deleted, because
           when a trade goes wrong this is where the reasoning lives. */}
-      <CollapsibleSection
-        title="Per-asset forecasts"
-        subtitle="Built from real price history and technical analysis, not from my own past trade results."
-        defaultExpanded={false}
-      >
-        {forecastCards.map((forecast) => <MarketForecastCard key={forecast.horizonKey} forecast={forecast} />)}
-      </CollapsibleSection>
 
       <Text style={styles.metricLabel}>Principal risks</Text>
       {risks.length ? risks.map((risk, index) => <RiskCard key={`${risk.title}-${index}`} risk={risk} />) : <Text style={styles.bodyText}>Nothing stands out as a principal risk right now.</Text>}
@@ -482,17 +460,19 @@ function DeclineReasonsCard({ declineReasons }) {
   const card = declineReasonsCard(declineReasons);
   return (
     <CollapsibleSection
-      title="Trades I Turned Down"
-      subtitle={card.mechanical
-        ? 'Why ideas did not become trades. No judgement calls were needed - the rules stopped them first.'
-        : 'Where I judged a trade was not worth taking, and why.'}
+      title="Ideas not taken"
+      subtitle="Recent decision checks, grouped by exchange and reason. Repeated checks are not unique ideas or daily totals."
       defaultExpanded={false}
     >
+      {declineReasons?.sample && <Text style={styles.smallText}>Sample: {declineReasons.sample.events_examined} checks · {formatDateTime(declineReasons.sample.oldest)} to {formatDateTime(declineReasons.sample.newest)}. Leading rule reasons and recent judgement calls shown.</Text>}
+      {declineReasons?.fetched_at && <Text style={styles.smallText}>Last loaded {formatDateTime(declineReasons.fetched_at)}</Text>}
+      {declineReasons?.refresh_failed && <Text style={styles.smallText}>Refresh failed — showing previously loaded decisions.</Text>}
       {card.rows.length === 0 ? (
         <Text style={styles.bodyText}>{card.emptyMessage}</Text>
       ) : (
         card.rows.map((row) => (
           <View key={row.key} style={styles.compactRow}>
+            <Text style={styles.smallText}>{row.broker}{row.created_at ? ` · ${formatDateTime(row.created_at)}` : ''}</Text>
             <Text style={styles.metricLabel}>{row.symbol} - {row.outcome}</Text>
             <Text style={styles.bodyText}>{row.why}</Text>
             {row.assessment ? <Text style={styles.smallText}>{row.assessment}</Text> : null}
@@ -525,7 +505,7 @@ function FounderActionsSection({ incidents, connectionReadiness, onRefresh, onCo
     ? 'No operational support request is reported in the current status. AI Trader handles trade selection within its risk rules.'
     : 'Operational readiness is not fully confirmed. Refresh the status; if this persists, ask your developer to investigate. You do not need to select trades.';
   return (
-    <Section title="What I Need From You">
+    <Section title="Support needed">
       {actions.length ? (
         actions.map((action, index) => <FounderActionCard key={`${action.title}-${index}`} action={action} />)
       ) : (
@@ -612,10 +592,12 @@ function ExecutiveBriefing({
     <View>
       <ExecutiveSummaryCard status={status} activity={activity} marketCentre={marketCentre} />
       {/* Conversations now live in Standup; explicit cycle controls remain separate. */}
-      <CurrentPositionCard portfolio={portfolio} status={status} performanceAttribution={performanceAttribution} />
+      <ExchangeOverview brokers={status?.brokers || []} activity={activity}>
+        <CollapsibleSection title="Completed-trade results" defaultExpanded={false}>
+          <TradeScorecardCard tradeScorecard={tradeScorecard} forecastAccountability={forecastAccountabilitySummary} />
+        </CollapsibleSection>
+      </ExchangeOverview>
       {onOpenPortfolio && <Button label="View account trends in Portfolio" tone="neutral" onPress={onOpenPortfolio} />}
-      <WhatIDidCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
-      <TradeScorecardCard tradeScorecard={tradeScorecard} forecastAccountability={forecastAccountabilitySummary} />
       <TheViewAheadSection
         marketCentre={marketCentre}
         themes={themes}

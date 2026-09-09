@@ -80,17 +80,17 @@ test('mechanical reasons fill the card when there is no judgement call to report
   assert.strictEqual(card.mechanical, true);
   assert.strictEqual(card.rows.length, 1);
   assert.ok(card.rows[0].why.includes('fees'));
-  assert.ok(card.rows[0].symbol.includes('3 ideas'));
+  assert.ok(card.rows[0].symbol.includes('3 decision checks'));
 });
 
-test('a real judgement call still takes precedence over the mechanical summary', () => {
+test('judgement calls and rule checks are both visible', () => {
   const card = declineReasonsCard({
     // declineRow needs symbol AND why; anything else is dropped as unrenderable.
     declines: [{ symbol: 'SCCO', why: 'The setup was already too extended to buy safely.' }],
     mechanical_summary: [{ reason: 'fee_hurdle_not_cleared', count: 9, explanation: 'fees', examples: [] }],
   });
   assert.strictEqual(card.mechanical, false);
-  assert.ok(card.rows.length >= 1);
+  assert.strictEqual(card.rows.length, 2);
 });
 
 test('genuinely nothing refused still reads as empty', () => {

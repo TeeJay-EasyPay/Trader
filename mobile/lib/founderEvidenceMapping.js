@@ -147,7 +147,7 @@ function countDistinctOrders(trades) {
     // trades carry the same identity as broker_order_id. A row with neither is counted on
     // its own rather than dropped -- undercounting is as dishonest as overcounting.
     const id = String(trade?.external_id || trade?.broker_order_id || '').trim();
-    if (id) seen.add(id);
+    if (id) seen.add(`${String(trade.broker || 'unknown').toLowerCase()}:${id}`);
     else withoutId += 1;
   });
   return seen.size + withoutId;
@@ -194,10 +194,11 @@ function statusFromFounderEvidence(evidence) {
     return {
       ...raw,
       broker: row.broker,
-      label: String(row.broker || '').toLowerCase() === 'alpaca' ? 'Alpaca' : 'Kraken',
+      label: ({ alpaca: 'Alpaca', kraken: 'Kraken' })[String(row.broker || '').toLowerCase()] || raw.label || row.broker || 'Unknown exchange',
       connection_status: row.connection_status,
       account_mode: row.account_mode,
       currency: row.currency,
+      captured_at: row.captured_at,
       portfolio_value: row.portfolio_value,
       cash_available: row.cash,
       buying_power: row.buying_power,

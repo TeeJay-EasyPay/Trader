@@ -423,7 +423,9 @@ class ScreenWiringTests(unittest.TestCase):
     def test_the_screen_says_out_loud_that_it_speaks(self):
         """Shipping a half and not saying which half is the specific habit being broken."""
         source = SCREEN.read_text(encoding="utf-8")
-        self.assertIn("read", source[source.index("You chair it."):][:600].lower())
+        introduction = source[source.index('<Section title="Standup">'):][:600].lower()
+        self.assertIn("replies are read aloud", introduction)
+        self.assertIn("does not place trades", introduction)
 
 
 class SpeakingHookTests(unittest.TestCase):
