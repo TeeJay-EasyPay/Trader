@@ -80,6 +80,15 @@ an explicit regression assertion preventing unnamed extracted columns.
 The latest completed broker polls at verification still preceded this release;
 new-version reconciliation remains outstanding.
 
+Final hosted check: worker running `9bdcde179f50087120881d7cbbeafdfd2e185ded`
+at 18:35:27 UTC; API health passed at 18:35:48 UTC. Both chart scopes returned
+whole_account/status ok. Latest chart points exactly matched broker snapshots:
+Kraken £4,604.58 (cash £406.53), Alpaca $101,807.86 (cash $82,264.31), snapshots
+18:26 UTC. The diagnostic helper truncates arrays to twelve items; latest-point
+verification explicitly inspected the full bounded response before summarising,
+not its truncated sample. Final projection/Alpaca tests: 33 passed. Recovery of
+the outstanding ledger/results must still be verified after a new-version poll.
+
 ## 2026-09-09 — Greeting content-box sizing follow-up; Kraken value clarification
 
 Founder device screenshot confirmed the previous image fix revealed the artwork
