@@ -798,6 +798,19 @@ class LocalApiService:
         if path == "/portfolio-trends":
             from ..portfolio_trends import portfolio_trends
             return 200, portfolio_trends(self.settings.db_path, value_scope=_first(query, "scope") or 'ai_capital')
+        if path in ("/learning-summary", "/learning-details"):
+            from ..learning_screen import learning_summary, learning_details
+            try:
+                options = {'period': _first(query, 'period') or 'daily', 'anchor': _first(query, 'date')}
+                if path == '/learning-summary':
+                    return 200, learning_summary(self.settings.db_path, **options)
+                return 200, learning_details(self.settings.db_path, **options,
+                    kind=_first(query, 'kind') or 'rejected', broker=_first(query, 'broker') or 'all',
+                    page=_first(query, 'page') or 0)
+            except (ValueError, TypeError):
+                return 400, {'error': 'Choose a valid learning period, date, exchange and page.'}
+            except Exception:
+                return 503, {'error': 'Learning evidence is temporarily unavailable. Please retry.'}
         if path == "/founder-brief":
             return 200, self.founder_brief()
         if path == "/recommendations":

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useCallback } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -17,6 +17,7 @@ import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
 import { StandupScreen } from './screens/Standup';
 import { RunCycleScreen } from './screens/RunCycle';
+import { LearningScreen } from './screens/Learning';
 import { useCycleRun, cycleProgressLabel } from './hooks/useCycleRun';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
@@ -61,12 +62,19 @@ const { shortApiBase, apiRequest } = require('./api/client');
 // 2026-09-07: Standup is its own screen, and its own endpoint. Not a mode on Ask -- Ask
 // carries the voice-action detector, and a question phrased unluckily once started a real
 // trading cycle. A standup must never be able to place a trade.
-const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'Standup', 'RunCycle'];
+const SCREENS = ['ExecutiveBriefing', 'Portfolio', 'Standup', 'RunCycle', 'Learning'];
 const SCREEN_LABELS = { ExecutiveBriefing: 'Executive Briefing', RunCycle: 'Run a Cycle' };
 
 export default function App() {
   const [screen, setScreen] = useState('ExecutiveBriefing');
   const [selectedExchange, setSelectedExchange] = useState('All');
+  const pageScroll = useRef(null), pageY = useRef(0), learningPosition = useRef(0), learningDetail = useRef(false);
+  const learningNavigate = useCallback((detail) => {
+    if (detail === learningDetail.current) return;
+    if (detail) learningPosition.current = pageY.current;
+    learningDetail.current = detail;
+    pageScroll.current?.scrollTo({ y: detail ? 0 : learningPosition.current, animated: false });
+  }, []);
   // 2026-09-01, Founder-directed: "can we remove the 'conversation' card from executive
   // briefing as it is just explaining something I already know."
   //
@@ -182,6 +190,11 @@ export default function App() {
           />
         </ErrorBoundary>
       );
+    }
+    if (screen === 'Learning') {
+      return <ErrorBoundary label="Learning" title="Learning could not be displayed." message="Your other screens are unaffected.">
+        <LearningScreen request={apiRequest} onNavigate={learningNavigate} />
+      </ErrorBoundary>;
     }
     if (screen === 'Standup') {
       // Its own ErrorBoundary, like every other screen: a render failure in the standup must
@@ -378,10 +391,13 @@ export default function App() {
         </View>
       )}
       <ScrollView
+        ref={pageScroll}
+        onScroll={event => { pageY.current = event.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={100}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={activeRefreshing} onRefresh={activeOnRefresh} />}
+        refreshControl={screen === 'Learning' ? undefined : <RefreshControl refreshing={activeRefreshing} onRefresh={activeOnRefresh} />}
       >
         {content}
       </ScrollView>

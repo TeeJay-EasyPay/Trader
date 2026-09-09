@@ -1,5 +1,48 @@
 # Implementation Log
 
+## 2026-09-09 — Learning screen: period reports and traceable evidence
+
+Implemented the approved Learning-screen concept as a new navigation destination:
+Daily/Weekly/Monthly summaries and previous-period navigation, recorded reviews,
+an honest improvement assessment, shadow opportunities and rejected events,
+completed outcomes, strategy catalogue and recorded backtest/proposal details.
+Cream cloud/sun summary art is bundled; serif headings, racing-green controls and
+soft native white/lavender or gold card waves follow the preview's aesthetic.
+
+All seven detail routes are read-only and paginated (20 rows, at most 21 fetched).
+Two new authenticated GET projections aggregate in SQL and cache 24 reports/pages
+for ten minutes. The mobile client also caches/coalesces requests. No new polling,
+LLM call, research run, simulation settlement, rule activation or order is triggered
+by opening the screen. Existing /daily-learning-update is deliberately NOT called:
+that legacy route performs learning-side effects. Texture adds no network fetch.
+
+Evidence contracts and remaining gaps:
+- UTC calendar periods; trade outcomes by closing date, reviews by creation date,
+  shadow cohorts by decision date. Prior reports are reconstructed from current
+  records and can change with late outcomes: no immutable day-end archive yet.
+- Summaries combine counts with the three latest recorded review lessons; they
+  are deterministic evidence reports, not a new AI-written daily assessment.
+- Kraken recorded net P&L and Alpaca before-unreconciled-fee outcomes remain
+  separate. Missing sections say unavailable, not zero. Historical modes may vary.
+- Shadow candidates are not all confirmed rejected decisions. Provenance is
+  explicit. Existing daily-candle simulations assume entry and use stop-first
+  for ambiguous candles; no verified fill or exact rejection/simulation linkage
+  is invented. Repeated rejection events are not called unique ideas.
+- No named-rule paired experiment engine is connected. The preview's illustrative
+  comparison graph is replaced by an evidence-pending panel, not fake performance.
+  External strategy portal discovery is also not implemented; catalogue and
+  existing backtest records are viewable without starting tests or changing rules.
+
+Verification: 40 focused backend tests + 19 subtests passed; all 113 existing/new
+mobile tests passed, followed by an additional passing overview-render/link test.
+Read-only production SQL validation passed every summary source and all seven
+detail projections. At that check: 7 closed outcomes, 92 shadow candidates,
+3 reviews. No database schema migration or live trading cycle was needed.
+Pixel 9 visual check remains blocked: Windows capture showed wallpaper and
+activation failed with "failed to activate captured window" after one recovery.
+No local Expo server was created. Publication status is recorded below after release.
+
+
 ## 2026-09-09 — Account scope, fill results and learning-evidence reliability
 
 User supplied the Trader's self-assessment and requested trustworthy figures and
