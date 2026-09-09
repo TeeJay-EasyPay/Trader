@@ -9,6 +9,10 @@ No illustrative points, lines, returns or numeric scale are shown. This is the
 requested visual empty state; paired experiment/result integration remains
 outstanding and is explicitly labelled. No database requests or trading changes.
 Mobile render checks cover the empty frame, legend, period and lack of fake values.
+All 114 mobile tests passed. Published commit `ece8c126` to Android runtime 1.0.3:
+preview `c45297f9-2b7f-46a8-bac0-a6dcb2da39a9`, hosted-preview
+`8e53c309-033b-475f-a133-fe23c0f40a65`. No new emulator visual verification was
+performed; the broader mockup-alignment work is not completed by this chart fix.
 
 ## 2026-09-09 — Foldable background proportions and compact Learning summary
 
