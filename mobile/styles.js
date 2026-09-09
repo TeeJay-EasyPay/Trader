@@ -168,9 +168,10 @@ export const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
   },
-  greetingCard: { backgroundColor: palette.greeting, borderColor: palette.greetingBorder },
+  greetingCard: { backgroundColor: palette.greeting, borderColor: palette.greetingBorder, overflow: 'hidden', minHeight: 148, padding: 20 },
+  portfolioLinkSpacing: { marginTop: 4, marginBottom: 20 },
   greetingHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  greetingTitle: { flex: 1 },
+  greetingTitle: { flex: 1, fontSize: 23, paddingRight: 42 },
   greetingSun: { fontSize: 32, color: '#B77400' },
   bareSection: { marginBottom: 18 },
   accountMetricGrid: { flexDirection: 'row', flexWrap: 'wrap', borderTopWidth: 1, borderTopColor: '#DADDE8', marginTop: 10, paddingTop: 6 },
@@ -182,7 +183,7 @@ export const styles = StyleSheet.create({
   cycleWarningText: { flex: 1, color: '#78350F', fontSize: 14, lineHeight: 21 },
   bubbleHeading: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
   bubbleTimestamp: { fontSize: 12, color: '#476582' },
-  composerInput: { flex: 1, minWidth: 120, minHeight: 48, maxHeight: 120, borderWidth: 1, borderColor: '#CFE0F2', borderRadius: 12, padding: 12, color: '#16324F', fontSize: 14 },
+  composerInput: { width: '100%', minHeight: 92, maxHeight: 160, textAlignVertical: 'top', borderWidth: 1, borderColor: '#CFE0F2', backgroundColor: '#FFFFFF', borderRadius: 12, padding: 12, color: '#16324F', fontSize: 16 },
   exchangeCard: { borderWidth: 1, borderRadius: 14, padding: 12, marginTop: 14 },
   summaryReason: {
     marginTop: 4,
@@ -365,7 +366,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   standupEndText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
-  standupComposer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CFE0F2', borderRadius: 16, padding: 12, marginBottom: 16 },
+  standupComposer: { gap: 12, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CFE0F2', borderRadius: 16, padding: 14, marginBottom: 16 },
   standupSend: {
     // flex:1 so it fills the row beside the microphone. Without it the button collapses to its
     // own text width and the padding squeezes "Send" over its own edges -- which is exactly
@@ -675,9 +676,9 @@ export const styles = StyleSheet.create({
   },
   cycleStepLabel: {
     flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#212529',
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#16324F',
   },
   cycleStepSummary: {
     fontSize: 13,

@@ -101,9 +101,9 @@ const { ExchangeOverview } = require('../components/ExchangeOverview');
 function ExecutiveSummaryCard({ status }) {
   const ready = status?.connection_readiness?.trade_ready;
   return <View style={[styles.summaryCard, styles.greetingCard]}>
+    <GreetingIllustration />
     <View style={styles.greetingHeading}>
       <Text style={[styles.cardTitle, styles.greetingTitle]}>{cioGreeting()}</Text>
-      <GreetingIllustration />
     </View>
     <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
   </View>;
@@ -602,7 +602,7 @@ function ExecutiveBriefing({
           <TradeScorecardCard tradeScorecard={tradeScorecard} forecastAccountability={forecastAccountabilitySummary} />
         </CollapsibleSection>
       </ExchangeOverview>
-      {onOpenPortfolio && <Button label="View account trends in Portfolio" tone="neutral" onPress={onOpenPortfolio} />}
+      {onOpenPortfolio && <View style={styles.portfolioLinkSpacing}><Button label="View account trends in Portfolio" tone="neutral" onPress={onOpenPortfolio} /></View>}
       <TheViewAheadSection
         marketCentre={marketCentre}
         themes={themes}

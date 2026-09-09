@@ -21,7 +21,7 @@ const { useCallback, useEffect, useMemo, useRef, useState } = React;
 const { ActivityIndicator, Text, TextInput, TouchableOpacity, View } = require('react-native');
 
 const { styles } = require('../styles');
-const { Section, Button } = require('../components/shared');
+const { Section, Button, CollapsibleSection } = require('../components/shared');
 const { withDayStamps, newestExchangesFirst } = require('../lib/chatBubbles');
 const { normalizeChatText } = require('../lib/chat');
 const { formatPence } = require('../lib/cost');
@@ -434,7 +434,7 @@ function StandupScreen({ request }) {
         </View>
         <Text style={styles.smallText}>{(MODES.find((m) => m.key === mode) || {}).hint}</Text>
         {mode === 'both' ? (
-          <View>
+          <CollapsibleSection title={`Conversation settings · ${exchangeBudget} follow-ups`}>
             <View style={styles.standupModeRow}>
               {[0, 2, 4, 8].map((count) => (
                 <TouchableOpacity key={count} disabled={busy} onPress={() => setExchangeBudget(count)}
@@ -444,7 +444,7 @@ function StandupScreen({ request }) {
               ))}
             </View>
             <Text style={styles.smallText}>AI-to-AI replies per question. Longer exchanges cost more; you can take the floor at any time.</Text>
-          </View>
+          </CollapsibleSection>
         ) : null}
 
         {running ? (
@@ -488,6 +488,74 @@ function StandupScreen({ request }) {
 
 
       </Section>
+
+          <View style={styles.standupComposer}>
+            <TextInput
+              style={styles.composerInput}
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Type your question…"
+              multiline
+              editable={true}
+              accessibilityLabel="Your message to AI Trader"
+            />
+
+            {/* 2026-09-07, Founder-reported: "I clicked start conversation. Nothing gets picked
+                up, and there's no icon that's animated that shows me that it's listening."
+                There was no microphone on this screen at all. Speaking is how he uses this app.
+
+                Recording turns the button red and the status line becomes a ticking counter --
+                the count is the proof it is hearing him, which is the specific thing whose
+                absence he reported. */}
+            <View style={styles.standupActions}>
+              <TouchableOpacity
+                style={[styles.standupMic, voice.isRecording && styles.standupMicRecording]}
+                onPress={() => {
+                  if (voice.isRecording) voice.stop();
+                  else { if (!running) start(); speaker.stop(); handsFreeRef.current = true; voice.start(); }
+                }}
+                disabled={(busy && !voice.isRecording) || voice.isBusy}
+                accessibilityRole="button"
+                accessibilityLabel={micButtonAccessibilityLabel(voice.voiceState)}
+              >
+                <Text style={styles.standupMicText}>{micButtonLabel(voice.voiceState)}</Text>
+              </TouchableOpacity>
+
+              {/* 2026-09-07, Founder-directed: "there should be an x button if I want to cancel
+                  the transcription or my voice in case I get it wrong."
+
+                  Shown while recording AND while transcribing, because both are moments where
+                  he can already tell it has gone wrong and the only alternative is to let it
+                  finish and then delete the result. Cancelling discards the audio and abandons
+                  any transcription already in flight, so the words never arrive at all. */}
+              {voice.isRecording || voice.isBusy ? (
+                <TouchableOpacity
+                  style={styles.standupCancel}
+                  onPress={() => voice.cancel()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel what I just said"
+                >
+                  <Text style={styles.standupCancelText}>✕</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              <TouchableOpacity
+                style={[styles.standupSend, (busy || !draft.trim()) && styles.standupSendBusy]}
+                onPress={() => { if (!running) start(); send(draft); }}
+                disabled={busy || !draft.trim()}
+              >
+                {busy ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.standupSendText}>Send</Text>}
+              </TouchableOpacity>
+            </View>
+
+            {/* Send is disabled with an empty box, which on its own looks identical to a broken
+                button -- he pressed it, nothing happened, and he had no way to tell which. */}
+            {!draft.trim() && !voice.isRecording && !busy ? (
+              <Text style={styles.smallText}>
+                Tap the microphone and just talk - it sends when you stop. Or type instead.
+              </Text>
+            ) : null}
+          </View>
 
       {/* 2026-09-07, Founder-directed: "it doesn't show your conversation in a scrollable
           section like in the executive briefing."
@@ -536,74 +604,7 @@ function StandupScreen({ request }) {
           {turns.filter(turn => turn.speaker === 'founder').length > 1 && <Button label={showOlder ? 'Show latest exchange' : 'Show older conversation'} tone="neutral" onPress={() => setShowOlder(value => !value)} />}
         </Section>
       ) : null}
-        {running ? (
-          <View style={styles.standupComposer}>
-            <TextInput
-              style={styles.composerInput}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Type your question…"
-              multiline
-              editable={!busy}
-            />
 
-            {/* 2026-09-07, Founder-reported: "I clicked start conversation. Nothing gets picked
-                up, and there's no icon that's animated that shows me that it's listening."
-                There was no microphone on this screen at all. Speaking is how he uses this app.
-
-                Recording turns the button red and the status line becomes a ticking counter --
-                the count is the proof it is hearing him, which is the specific thing whose
-                absence he reported. */}
-            <View style={styles.standupActions}>
-              <TouchableOpacity
-                style={[styles.standupMic, voice.isRecording && styles.standupMicRecording]}
-                onPress={() => {
-                  if (voice.isRecording) voice.stop();
-                  else { speaker.stop(); handsFreeRef.current = true; voice.start(); }
-                }}
-                disabled={(busy && !voice.isRecording) || voice.isBusy}
-                accessibilityRole="button"
-                accessibilityLabel={micButtonAccessibilityLabel(voice.voiceState)}
-              >
-                <Text style={styles.standupMicText}>{micButtonLabel(voice.voiceState)}</Text>
-              </TouchableOpacity>
-
-              {/* 2026-09-07, Founder-directed: "there should be an x button if I want to cancel
-                  the transcription or my voice in case I get it wrong."
-
-                  Shown while recording AND while transcribing, because both are moments where
-                  he can already tell it has gone wrong and the only alternative is to let it
-                  finish and then delete the result. Cancelling discards the audio and abandons
-                  any transcription already in flight, so the words never arrive at all. */}
-              {voice.isRecording || voice.isBusy ? (
-                <TouchableOpacity
-                  style={styles.standupCancel}
-                  onPress={() => voice.cancel()}
-                  accessibilityRole="button"
-                  accessibilityLabel="Cancel what I just said"
-                >
-                  <Text style={styles.standupCancelText}>✕</Text>
-                </TouchableOpacity>
-              ) : null}
-
-              <TouchableOpacity
-                style={[styles.standupSend, (busy || !draft.trim()) && styles.standupSendBusy]}
-                onPress={() => send(draft)}
-                disabled={busy || !draft.trim()}
-              >
-                {busy ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.standupSendText}>Send</Text>}
-              </TouchableOpacity>
-            </View>
-
-            {/* Send is disabled with an empty box, which on its own looks identical to a broken
-                button -- he pressed it, nothing happened, and he had no way to tell which. */}
-            {!draft.trim() && !voice.isRecording && !busy ? (
-              <Text style={styles.smallText}>
-                Tap the microphone and just talk - it sends when you stop. Or type instead.
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
     </View>
   );
 }

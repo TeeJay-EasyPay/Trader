@@ -7,7 +7,7 @@ const { exchangeName, currencyFor, exchangeMoney, activityByExchange, periodLabe
 const { formatDateTime } = require('../lib/datetime');
 const { exchangePalette } = require('../lib/palette');
 function ExchangeOverview({ brokers = [], activity, detailed = false, children }) {
-  return <Section bare title={detailed ? 'Your accounts' : 'Activity by exchange'}>
+  return <Section bare={detailed} title={detailed ? 'Your accounts' : 'Activity by exchange'}>
     {!detailed && <Text style={styles.smallText}>{periodLabel(activity?.period)} · evidence updated {activity?.generated_at ? formatDateTime(activity.generated_at) : 'unknown'}</Text>}
     {!brokers.length && <Text style={styles.bodyText}>Account evidence has not loaded.</Text>}
     {brokers.map(broker => {
@@ -25,11 +25,10 @@ function ExchangeOverview({ brokers = [], activity, detailed = false, children }
           </View>
           <Text style={styles.smallText}>Includes manual holdings · {broker.captured_at ? formatDateTime(broker.captured_at) : 'Snapshot time unavailable'}</Text>
         </> : counts.available ? <>
-          <View style={styles.accountMetricGrid}>
-            <View style={styles.accountMetricTile}><Text style={styles.smallText}>Account change today</Text><Text style={styles.accountMetricValue}>{money(broker.todays_pnl)}</Text></View>
-            <View style={styles.accountMetricTile}><Text style={styles.smallText}>Orders with fills</Text><Text style={styles.accountMetricValue}>{counts.fills}</Text></View>
-          </View>
-          <Text style={styles.smallText}>{counts.checks} asset checks · {counts.candidates} candidates</Text>
+          <Text style={styles.smallText}>Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}</Text>
+          <Metric label="Account change today" value={money(broker.todays_pnl)} />
+          <Text style={styles.bodyText}>{counts.checks} asset checks · {counts.candidates} candidates</Text>
+          <Text style={styles.bodyText}>{counts.fills} orders with fills recorded</Text>
           <CollapsibleSection title="Activity detail" defaultExpanded={false}>
             <Text style={styles.smallText}>Includes manual holdings. Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}.</Text>
             <Text style={styles.smallText}>{counts.orders} identified orders observed, including protection. Repeated research checks are not unique ideas. Fills may be partial; an observed order is not necessarily a new submission.</Text>

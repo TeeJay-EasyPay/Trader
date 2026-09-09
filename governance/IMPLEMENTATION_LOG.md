@@ -1,5 +1,39 @@
 # Implementation Log
 
+## 2026-09-09 — Briefing background, cycle rows and Standup input repair
+
+Founder requested all three screens repaired and published after Portfolio approval.
+
+- Briefing greeting is now a bundled full-card raster background with cream/apricot
+  sun and layered clouds, positioned absolutely behind actual text. Removed the
+  space-consuming sibling icon; retained Tarik spelling. Added 20px separation
+  below the Portfolio navigation button. Restored the briefing activity-card shell,
+  snapshot and metric/list arrangement; Portfolio layout remains unchanged.
+- Run a Cycle uses shorter, exact-match presentation labels and checkmarked Done
+  badges. Full original labels/results remain expanded on tap; unknown step labels
+  pass through unchanged, and running/failure evidence stays visible. Actual stages
+  and order behaviour are not replaced by the mockup's illustrative five stages.
+- Standup composer is always present before history, with a full-width 92px text
+  box and a separate mic/cancel/send row. Mic opens the conversation and begins
+  capture without requiring Start; typing stays editable while a reply is pending,
+  while Send remains guarded. Follow-up settings collapse to keep controls reachable.
+  Parent scroll view retains taps with keyboard open. No extra polling or API reads.
+
+104 mobile tests pass, including an initial-render test that invokes the mic without
+Start, verifies full-width editable input and verifies no render-time request.
+Pixel 9 emulator was visible but showed an older blue-themed build. Navigation
+automation failed (overview control reported a point outside window bounds), so
+updated-device visual/keyboard/live-voice verification remains outstanding. No
+trading cycle or local Expo development server was started.
+
+Image generated with built-in imagegen and saved to
+`mobile/assets/greeting-sun-cloud.png` (1,714,725 bytes). Prompt: production UI
+background only; 3:1 wide premium softly textured ivory/cream and pale apricot;
+small golden sun with short rays at upper right; layered pale golden clouds along
+bottom/right; left 75% quiet for text; edge-to-edge, no text/logos/UI/border.
+This adds a one-time EAS update asset download, not Supabase egress or runtime
+image requests. No backend release, database migrations or trading-rule changes.
+
 ## 2026-09-09 — Portfolio chart fidelity follow-up
 
 Founder requested screen-by-screen fidelity to the Portfolio mockup rather than

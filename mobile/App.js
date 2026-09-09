@@ -378,6 +378,7 @@ export default function App() {
         </View>
       )}
       <ScrollView
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={activeRefreshing} onRefresh={activeOnRefresh} />}
       >

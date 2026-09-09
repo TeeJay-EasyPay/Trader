@@ -5,6 +5,7 @@ import { Section } from '../components/shared/Section';
 import { Button } from '../components/shared/Button';
 import { StatusPill } from '../components/shared/StatusPill';
 const { cycleElapsedLabel } = require('../lib/cycleProgress');
+const { cycleStepLabel } = require('../lib/cycleStepPresentation');
 
 // 2026-08-29, Founder-directed: "add a card to the app UI where I can click on a button for
 // it to start a research cycle and potentially trade. the card should show every step of the
@@ -26,7 +27,7 @@ function stepTone(status) {
 }
 
 function stepMark(status) {
-  if (status === 'completed') return 'Done';
+  if (status === 'completed') return '✓  Done';
   if (status === 'failed') return 'Failed';
   if (status === 'running') return 'Running';
   return 'To do';
@@ -100,7 +101,7 @@ export function RunCycleScreen({ cycleRun }) {
             <View key={step.seq} style={styles.cycleStep}>
               <TouchableOpacity style={styles.cycleStepHeader} accessibilityRole="button" accessibilityState={{ expanded: !!expandedSteps[`${cycle?.cycle_id}-${step.seq}`] || step.status === 'failed' || step.status === 'running' }} onPress={() => setExpandedSteps(prev => ({ ...prev, [`${cycle?.cycle_id}-${step.seq}`]: !prev[`${cycle?.cycle_id}-${step.seq}`] }))}>
                 <Text style={styles.cycleStepLabel}>
-                  {step.seq}. {step.label}
+                  {cycleStepLabel(step.label)}
                 </Text>
                 <StatusPill label={stepMark(step.status)} tone={stepTone(step.status)} />
               </TouchableOpacity>
@@ -108,7 +109,7 @@ export function RunCycleScreen({ cycleRun }) {
                   in flight or still queued -- and saying "working on this now" for a step
                   that has not started would be the same overstatement as "step 1 of 1". */}
               {(expandedSteps[`${cycle?.cycle_id}-${step.seq}`] || step.status === 'failed' || step.status === 'running') && (step.summary ? (
-                <Text style={styles.cycleStepSummary}>{step.summary}</Text>
+                <Text style={styles.cycleStepSummary}>{step.label}{'\n'}{step.summary}</Text>
               ) : (
                 <Text style={styles.cycleStepPending}>
                   {step.status === 'running' ? 'Working on this now...' : 'Not started yet.'}

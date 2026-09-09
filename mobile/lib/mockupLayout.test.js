@@ -7,11 +7,12 @@ const React = require('react');
 
 function load(relative, extra = {}) {
   const file = require.resolve(relative), local = createRequire(file), module = { exports: {} };
-  const hooks = { ...React, useState: x => [x, () => {}] };
+  const hooks = { ...React, useState: x => [x, () => {}], useRef: x => ({ current: x }), useMemo: fn => fn(), useEffect: () => {}, useCallback: fn => fn };
   vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('babel-preset-expo')] }).code, {
     module, exports: module.exports, require: name => {
       if (name === 'react') return hooks;
-      if (name === 'react-native') return { View: 'View', Text: 'Text', TouchableOpacity: 'TouchableOpacity', ActivityIndicator: 'ActivityIndicator', StyleSheet: { create: x => x } };
+      if (name === 'react-native') return { TextInput: 'TextInput', Image: 'Image', View: 'View', Text: 'Text', TouchableOpacity: 'TouchableOpacity', ActivityIndicator: 'ActivityIndicator', StyleSheet: { create: x => x, absoluteFillObject: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 } } };
+      if (name.endsWith('.png')) return 'bundled-greeting-image';
       if (Object.hasOwn(extra, name)) return extra[name];
       return local(name);
     },
@@ -59,11 +60,13 @@ test('failed cycle detail stays visible while completed detail is initially coll
   assert.ok(!JSON.stringify(tree).includes('HIDDEN_SUCCESS_DETAIL'));
 });
 
-test('sun and cloud are decorative native shapes with no image URI', () => {
+test('greeting is a bundled absolute background, not a sibling icon or remote URI', () => {
   const { GreetingIllustration } = load('../components/GreetingIllustration');
   const tree = GreetingIllustration();
   assert.equal(tree.props.importantForAccessibility, 'no-hide-descendants');
-  assert.equal(nodes(tree).filter(x => x.type === 'View').length, 6);
+  assert.equal(tree.type, 'Image');
+  assert.equal(tree.props.source, 'bundled-greeting-image');
+  assert.equal(tree.props.style.position, 'absolute');
   assert.ok(!JSON.stringify(tree).includes('uri'));
 });
 
@@ -73,7 +76,8 @@ test('new conversation colours remain readable and distinctly identify all speak
   assert.equal(styles.standupTrader.backgroundColor, '#FFFFFF');
   assert.equal(styles.standupClaude.backgroundColor, '#F5F1FF');
   assert.equal(styles.standupMineText.color, '#16324F');
-  assert.equal(styles.composerInput.minHeight, 48);
+  assert.equal(styles.composerInput.minHeight, 92);
+  assert.equal(styles.composerInput.width, '100%');
   assert.equal(styles.accountMetricGrid.flexWrap, 'wrap');
 });
 
@@ -89,4 +93,25 @@ test('portfolio chart cards retain fee warnings, unavailable states and real lat
   assert.ok(JSON.stringify(ValueChart({ rows: [], currency: 'GBP', colour: '#8064DC' })).includes('Missing values are not zero'));
   const chart = OutcomeChart({ bins: [{ date: '2026-09-09', wins: 2, losses: 1, breakeven: 0, unknown: 0 }], currency: 'USD' });
   assert.ok(JSON.stringify(chart).includes('2 won, 1 lost'));
+});
+
+test('Standup exposes microphone and full-width editable composer before Start', () => {
+  const { styles } = load('../styles');
+  let recordings = 0;
+  const { StandupScreen } = load('../screens/Standup', {
+    '../styles': { styles }, '../components/shared': shared,
+    '../lib/useVoiceCapture': { useVoiceCapture: () => ({ voiceState: 'idle', start: () => recordings++, cancel: () => {} }) },
+    '../lib/useSpeaker': { useSpeaker: () => ({ stop: () => {}, isIdle: () => true }) },
+  });
+  const tree = StandupScreen({ request: () => { throw Error('No requests during initial render'); } });
+  const elements = nodes(tree);
+  const input = elements.find(n => n.type === 'TextInput');
+  assert.ok(input);
+  assert.equal(input.props.editable, true);
+  assert.equal(input.props.style.width, '100%');
+  const mic = elements.find(n => Array.isArray(n.props?.style) && n.props.style[0] === styles.standupMic);
+  assert.ok(mic && !mic.props.disabled);
+  mic.props.onPress();
+  assert.equal(recordings, 1);
+  assert.ok(elements.find(n => n.props?.style === styles.standupStart));
 });
