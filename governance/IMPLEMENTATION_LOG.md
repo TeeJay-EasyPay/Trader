@@ -1,5 +1,19 @@
 # Implementation Log
 
+## 2026-09-09 — Warm mobile palette published
+
+Commit `aca37cfad208c50b6ee1d721fec3183dddc95215` pushed to master. Android
+runtime 1.0.3 publication succeeded on both installed-app channels:
+
+- preview: `843b053b-9589-4220-8b93-f75d94422d8e`
+- hosted-preview: `66fd4730-2cb0-4a34-8e0b-da2c4d8201c2`
+
+Both use the same production bundle; no new image assets. Release export compiled
+623 modules successfully. All 93 mobile tests passed before publication. No backend
+release, database query changes or live trading actions. Device visual confirmation
+is still outstanding; generated mockups were design previews, not emulator proof.
+Open the installed app online to download, then fully close/reopen to apply.
+
 ## 2026-09-09 — Warm palette approved for publication
 
 Founder approved all four screen previews and requested publication. Finalised
