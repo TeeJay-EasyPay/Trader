@@ -24,6 +24,21 @@ request effect cleared it. Added a shape/route guard in render and scroll-restor
 effect, covering detail-to-summary and detail-to-detail transitions too. All 116
 mobile tests now pass. This was found by real navigation, not by static layout tests.
 
+Release complete: code commits `9f817383` and `cd865b04` pushed to master.
+Final Android runtime 1.0.3 update groups: preview
+`ceac3bb5-00cc-4547-897e-fe7347c944f7`, hosted-preview
+`b631d744-ef5c-4fd0-ba03-97ac3811c2d8`. The updated emulator successfully
+opened Strategy ideas and returned to Learning without the previous crash.
+Inspected the summary, empty comparison graph, rejection price preview, compact
+completed-trade rows and strategy stage diagram. Also temporarily tested a
+2160x2424 Android viewport at density 420: the Executive greeting sun remained
+round and the Learning cloud remained proportional, with no heading overlap.
+Restored the emulator's original 1080x2424 display afterwards. This is a wide
+viewport check, not a physical folding-device test. All 116 mobile tests passed.
+No local Expo server, real orders, trading cycle, or backend restart was used.
+Comparison results remain honestly empty: paired rule-result integration is a
+separate outstanding learning capability, not demonstrated by this visual release.
+
 ## 2026-09-09 — Learning mockup structure pass
 
 Reworked Learning's overview against the approved preview: joined period tabs,
