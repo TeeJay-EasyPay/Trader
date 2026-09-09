@@ -22,6 +22,7 @@
 const React = require('react');
 const { Text, View } = require('react-native');
 const { styles } = require('../styles');
+const { GreetingIllustration } = require('../components/GreetingIllustration');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
 const { money, gbp, brokerMoney } = require('../lib/money');
 const { formatList } = require('../lib/lists');
@@ -102,7 +103,7 @@ function ExecutiveSummaryCard({ status }) {
   return <View style={[styles.summaryCard, styles.greetingCard]}>
     <View style={styles.greetingHeading}>
       <Text style={[styles.cardTitle, styles.greetingTitle]}>{cioGreeting()}</Text>
-      <Text style={styles.greetingSun} accessible={false} importantForAccessibility="no">☀</Text>
+      <GreetingIllustration />
     </View>
     <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
   </View>;

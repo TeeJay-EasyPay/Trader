@@ -2,7 +2,7 @@
 const React = require('react');
 const { useEffect, useState } = React;
 const { Text, View, ScrollView, TouchableOpacity, StyleSheet } = require('react-native');
-const { Section, Button } = require('./shared');
+const { Section, Button, CollapsibleSection } = require('./shared');
 const { styles } = require('../styles');
 const { palette, exchangePalette, exchangeChartColour } = require('../lib/palette');
 const { apiRequest } = require('../api/client');
@@ -20,6 +20,7 @@ const s = StyleSheet.create({
   selected: { backgroundColor: palette.primary, borderColor: palette.primary, borderWidth: 1 },
   chipText: { color: '#1f4c78', fontWeight: '600' },
   axis: { flexDirection: 'row', justifyContent: 'space-between' },
+  heading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   plot: { height: 126, marginHorizontal: 5, borderBottomColor: '#b9cdea', borderBottomWidth: 1 },
   segment: { position: 'absolute', height: 2, backgroundColor: '#2563eb' },
   dot: { position: 'absolute', width: 6, height: 6, borderRadius: 3, backgroundColor: '#2563eb' },
@@ -42,17 +43,15 @@ function ValueChart({ rows, currency, colour }) {
   const latest = valid[valid.length - 1];
   const detail = rows.find(row => row.date === chosen) || latest;
   return <View>
-    <Text style={s.value}>{money(latest.value, currency)}</Text>
-    <Text style={s.label}>Latest recorded value · {dateLabel(latest.date)}</Text>
+    <View style={s.heading}><Text style={s.label}>Account value · {dateLabel(latest.date)}</Text><Text style={s.value}>{money(latest.value, currency)}</Text></View>
     <View style={s.axis}><Text style={s.label}>{money(graph.max, currency)} high</Text><Text style={s.label}>{money(graph.min, currency)} low</Text></View>
     <View style={s.plot} onLayout={event => setWidth(Math.max(20, event.nativeEvent.layout.width - 8))} accessible accessibilityLabel={`Account value history. ${valid.length} observations. Latest ${money(latest.value, currency)}. High ${money(graph.max, currency)}. Low ${money(graph.min, currency)}.`}>
       {graph.segments.map((seg, i) => <View key={i} style={[s.segment, { backgroundColor: colour, left: seg.x - seg.length / 2, top: seg.y, width: seg.length, transform: [{ rotate: `${seg.angle}rad` }] }]} />)}
       {graph.points.filter(p => p.y !== null).map(p => <TouchableOpacity key={p.date} onPress={() => setChosen(p.date)} hitSlop={{ top: 8, bottom: 8, left: 5, right: 5 }} accessibilityLabel={`${p.date}: ${money(p.value, currency)}`} style={[s.dot, { backgroundColor: colour }, p.flow ? s.flow : null, { left: p.x - 3, top: p.y - 3 }]} />)}
     </View>
     <View style={s.axis}><Text style={s.label}>{dateLabel(rows[0].date)}</Text><Text style={s.label}>{dateLabel(rows[rows.length - 1].date)}</Text></View>
-    <Text style={s.label}>{dateLabel(detail.date)}: {money(detail.value, currency)}{detail.flow ? ` · allocation change ${detail.flow > 0 ? '+' : ''}${money(detail.flow, currency)}` : ''}</Text>
+    {chosen && <Text style={s.label}>{dateLabel(detail.date)}: {money(detail.value, currency)}{detail.flow ? ` · allocation change ${detail.flow > 0 ? '+' : ''}${money(detail.flow, currency)}` : ''}</Text>}
     {valid.length === 1 && <Text style={s.label}>One observation so far; more history is needed for a trend.</Text>}
-    <Text style={s.label}>Last observation each UTC day; today is partial. Gaps mean missing data.</Text>
   </View>;
 }
 
@@ -65,16 +64,14 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
   const peak = Math.max(1, ...bins.flatMap(b => [b.wins, b.losses]));
   const detail = bins.find(b => b.date === selected);
   return <View style={[s.card, exchangePalette(broker.broker)]}>
-    <Text style={s.title}>{broker.broker === 'kraken' ? 'Kraken · GBP' : 'Alpaca · USD'}</Text>
+    <Text style={s.title}>{broker.broker === 'kraken' ? 'Kraken' : broker.broker === 'alpaca' ? 'Alpaca' : broker.broker} · {broker.currency}</Text>
     <Text style={s.label}>{broker.broker === 'kraken' ? 'AI trading capital only · personal holdings excluded' : 'Alpaca account value · cash plus investments'}{broker.account_mode ? ` · ${broker.account_mode}` : ''}</Text>
-    <Text style={s.title}>Account value</Text>
     {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} colour={exchangeChartColour(broker.broker)} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
-    <Text style={s.label}>{broker.broker === 'kraken' ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
     <Text style={[s.title, { marginTop: 18 }]}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'}</Text>
     {broker.outcome_status !== 'ok' ? <Text style={s.label}>Trade outcomes are temporarily unavailable.</Text> : <View>
       <Text style={s.label}>{netKnown ? 'After recorded fees' : 'Provisional: before unreconciled fees'} · {weekly ? 'weekly, Monday start' : 'daily'} · UTC</Text>
       <Text style={s.label}>Won {totals.wins} · Lost {totals.losses} · Break-even {totals.breakeven} · Unknown {totals.unknown}</Text>
-      <Text style={s.value}>{money(totals.net_pnl, broker.currency)} {netKnown ? 'net' : 'recorded P&L'}</Text>
+      <Text style={[s.title, { fontSize: 17 }]}>{money(totals.net_pnl, broker.currency)} {netKnown ? 'net' : 'recorded P&L'}</Text>
       <Text style={s.label}>Green: won · Red: lost. Counts, not profit amounts.</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={true} accessibilityLabel="Daily or weekly completed trade counts">
         {bins.map(bin => <TouchableOpacity key={bin.date} style={s.bin} onPress={() => setSelected(bin.date)} accessibilityLabel={`${bin.date}: ${bin.wins} won, ${bin.losses} lost, ${bin.breakeven} break-even, ${bin.unknown} unknown`}>
@@ -82,12 +79,16 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
           <Text style={s.label}>{dateLabel(bin.date)}</Text>
         </TouchableOpacity>)}
       </ScrollView>
-      <Text style={s.label}>{detail ? `${detail.date}: ${detail.wins} won / ${detail.losses} lost · ${money(detail.net_pnl, broker.currency)} ${netKnown ? 'net' : 'before unreconciled fees'}` : 'Tap a bar for details; swipe sideways for more dates.'}</Text>
-      {!netKnown && <Text style={s.label}>Alpaca's historical result record does not establish all fees. Small recorded wins may become losses after fees; these are not verified net wins.</Text>}
+      {detail && <Text style={s.label}>{`${detail.date}: ${detail.wins} won / ${detail.losses} lost · ${money(detail.net_pnl, broker.currency)} ${netKnown ? 'net' : 'before unreconciled fees'}`}</Text>}
       {!totals.wins && !totals.losses && !totals.breakeven && !totals.unknown && <Text style={s.label}>No completed trades recorded in this period.</Text>}
       {!!totals.unknown && <Text style={s.label}>Net total excludes outcomes whose profit is unknown.</Text>}
-      <Text style={s.label}>Open positions are excluded. First and current weeks may be partial. Historical results may include earlier account modes.</Text>
     </View>}
+    <CollapsibleSection title="About these charts">
+      <Text style={s.label}>Tap chart points or bars for details; swipe bars for more dates. Last observation each UTC day; today is partial. Gaps mean missing data.</Text>
+      <Text style={s.label}>{broker.broker === 'kraken' ? 'Amber markers show recorded allocation changes, not trading profit. Earlier unrecorded funding is not inferred.' : 'Deposit and withdrawal history is unavailable. Balance changes are not necessarily trading profit.'}</Text>
+      {!netKnown && <Text style={s.label}>Historical results do not establish all fees. Small recorded wins may become losses after fees; these are not verified net wins.</Text>}
+      <Text style={s.label}>Open positions are excluded. First and current weeks may be partial. Historical results may include earlier account modes.</Text>
+    </CollapsibleSection>
   </View>;
 }
 
@@ -99,9 +100,9 @@ function PortfolioTrends({ request = apiRequest }) {
     loadTrends(request).then(value => { if (active) { setData(value); setError(null); } }).catch(() => { if (active) setError('History could not be loaded. Your trading is unaffected.'); });
     return () => { active = false; };
   }, [request, retry]);
-  return <Section title="Your progress">
-    <Text style={styles.bodyText}>See how each account is changing and how completed trades performed.</Text>
-    <View style={s.row}>{[7, 30, 90].map(n => <Choice key={n} value={`${n} days`} selected={days === n} onPress={() => setDays(n)} />)}</View>
+  return <Section bare title="Your progress">
+    <View style={s.heading}><Text style={styles.smallText}>Account value & completed trades</Text>
+    <View style={s.row}>{[7, 30, 90].map(n => <Choice key={n} value={`${n}d`} selected={days === n} onPress={() => setDays(n)} />)}</View></View>
     <View style={s.row}><Choice value="Daily trades" selected={!weekly} onPress={() => setWeekly(false)} /><Choice value="Weekly trades" selected={weekly} onPress={() => setWeekly(true)} /></View>
     {error ? <View><Text style={styles.bodyText}>{error}</Text><Button label="Retry history" onPress={() => setRetry(retry + 1)} /></View> : !data ? <Text style={styles.bodyText}>Loading compact history…</Text> : <View>
       <Text style={styles.smallText}>Updated {data.as_of.replace('T', ' ').slice(0, 16)} UTC · cached up to 10 minutes</Text>

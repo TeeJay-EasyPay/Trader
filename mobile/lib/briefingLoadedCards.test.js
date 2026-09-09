@@ -13,6 +13,7 @@ vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('ba
     if (name === '../styles') return { styles: {} };
     if (name === '../components/shared') return { Section: 'Section', CollapsibleSection: 'CollapsibleSection', StatusPill: 'StatusPill', Button: 'Button' };
     if (name === '../components/ExchangeOverview') return { ExchangeOverview: 'ExchangeOverview' };
+    if (name === '../components/GreetingIllustration') return { GreetingIllustration: 'GreetingIllustration' };
     if (name === '../hooks/useForecastHistory') return { useForecastHistory: () => ({}) };
     return localRequire(name);
   },

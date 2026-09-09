@@ -90,6 +90,7 @@ function StandupScreen({ request }) {
   const [mode, setMode] = useState('both');
   const [running, setRunning] = useState(false);
   const [turns, setTurns] = useState([]);
+  const [showOlder, setShowOlder] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -402,16 +403,19 @@ function StandupScreen({ request }) {
   // Newest exchange first, matching Ask -- the Founder asked for that on 2026-09-04 so the
   // reply to what he just said needs no scrolling to find.
   const rendered = useMemo(
-    () => withDayStamps(newestExchangesFirst(turns.map((turn) => ({ ...turn, role: turn.speaker === 'founder' ? 'founder' : 'assistant' })))),
-    [turns]
+    () => {
+      const exchanges = newestExchangesFirst(turns.map(turn => ({ ...turn, role: turn.speaker === 'founder' ? 'founder' : 'assistant' })));
+      return withDayStamps(showOlder ? exchanges : exchanges.slice(0, 1));
+    },
+    [turns, showOlder]
   );
 
   return (
     <View>
       <Section title="Standup">
         <Text style={styles.bodyText}>
-          Say "Hey ChatGPT" or "Hey Claude" to choose who answers. Otherwise the last speaker
-          continues. Voice replies are read aloud; this conversation does not place trades.
+          Say "Hey ChatGPT" or "Hey Claude" to choose who answers.
+          This conversation does not place trades.
         </Text>
 
         <View style={styles.standupModeRow}>
@@ -431,7 +435,6 @@ function StandupScreen({ request }) {
         <Text style={styles.smallText}>{(MODES.find((m) => m.key === mode) || {}).hint}</Text>
         {mode === 'both' ? (
           <View>
-            <Text style={styles.smallText}>AI-to-AI follow-up replies per question. Longer exchanges cost more; you can take the floor at any time.</Text>
             <View style={styles.standupModeRow}>
               {[0, 2, 4, 8].map((count) => (
                 <TouchableOpacity key={count} disabled={busy} onPress={() => setExchangeBudget(count)}
@@ -440,7 +443,7 @@ function StandupScreen({ request }) {
                 </TouchableOpacity>
               ))}
             </View>
-            <Text style={styles.smallText}>Say “Hey ChatGPT” or “Hey Claude” to choose who answers first. Both share the transcript.</Text>
+            <Text style={styles.smallText}>AI-to-AI replies per question. Longer exchanges cost more; you can take the floor at any time.</Text>
           </View>
         ) : null}
 
@@ -482,13 +485,64 @@ function StandupScreen({ request }) {
           </Text>
         ) : null}
 
+
+
+      </Section>
+
+      {/* 2026-09-07, Founder-directed: "it doesn't show your conversation in a scrollable
+          section like in the executive briefing."
+
+          It was crammed into the controls card inside a fixed 460px nested ScrollView, which
+          on a tall screen sat mostly below the fold -- so the conversation was there but
+          effectively unreachable. The briefing has no nested scrolling anywhere: it is a run
+          of titled Section cards that flow into the app's own page scroll. This now does the
+          same, which is both what he asked for and less machinery.
+
+          Ask keeps its nested scroll deliberately (he asked for it on 2026-09-04), and the
+          difference is real: there the composer must stay put while you page through history.
+          Here the newest exchange is already at the top, so the answer to what you just said
+          needs no scrolling at all. */}
+      {turns.length ? (
+        <Section title="Recent conversation">
+          {rendered.map((item, index) =>
+            item.type === 'stamp' ? (
+              <View key={item.key} style={styles.chatDayStampRow}>
+                <Text style={styles.chatDayStamp}>{item.label}</Text>
+              </View>
+            ) : (
+              <View key={item.key || `x-${index}`} style={styles.chatExchange}>
+                {item.exchange.map((turn, position) => {
+                  const bubble = bubbleFor(turn.speaker);
+                  return (
+                    <View key={`${turn.key || position}`} style={styles[bubble.row]}>
+                      {/* Colour says who at a glance; the label confirms it. Two AI replies
+                          one after the other were unreadable when they shared a colour. */}
+                      <View style={styles.bubbleHeading}>
+                        <Text style={styles[bubble.speaker] || styles.standupTraderSpeaker}>
+                          {SPEAKER_LABEL[turn.speaker] || 'AI'}
+                          {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
+                        </Text>
+                        <Text style={styles.bubbleTimestamp}>{turn.createdAt && Number.isFinite(new Date(turn.createdAt).getTime()) ? new Date(turn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</Text>
+                      </View>
+                      <Text style={styles[bubble.text]} selectable>
+                        {turn.text}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )
+          )}
+          {turns.filter(turn => turn.speaker === 'founder').length > 1 && <Button label={showOlder ? 'Show latest exchange' : 'Show older conversation'} tone="neutral" onPress={() => setShowOlder(value => !value)} />}
+        </Section>
+      ) : null}
         {running ? (
           <View style={styles.standupComposer}>
             <TextInput
-              style={styles.multilineInput}
+              style={styles.composerInput}
               value={draft}
               onChangeText={setDraft}
-              placeholder="Tap the microphone and speak, or type here"
+              placeholder="Type your question…"
               multiline
               editable={!busy}
             />
@@ -550,54 +604,6 @@ function StandupScreen({ request }) {
             ) : null}
           </View>
         ) : null}
-
-      </Section>
-
-      {/* 2026-09-07, Founder-directed: "it doesn't show your conversation in a scrollable
-          section like in the executive briefing."
-
-          It was crammed into the controls card inside a fixed 460px nested ScrollView, which
-          on a tall screen sat mostly below the fold -- so the conversation was there but
-          effectively unreachable. The briefing has no nested scrolling anywhere: it is a run
-          of titled Section cards that flow into the app's own page scroll. This now does the
-          same, which is both what he asked for and less machinery.
-
-          Ask keeps its nested scroll deliberately (he asked for it on 2026-09-04), and the
-          difference is real: there the composer must stay put while you page through history.
-          Here the newest exchange is already at the top, so the answer to what you just said
-          needs no scrolling at all. */}
-      {turns.length ? (
-        <Section title="Conversation">
-          {rendered.map((item, index) =>
-            item.type === 'stamp' ? (
-              <View key={item.key} style={styles.chatDayStampRow}>
-                <Text style={styles.chatDayStamp}>{item.label}</Text>
-              </View>
-            ) : (
-              <View key={item.key || `x-${index}`} style={styles.chatExchange}>
-                {item.exchange.map((turn, position) => {
-                  const bubble = bubbleFor(turn.speaker);
-                  return (
-                    <View key={`${turn.key || position}`} style={styles[bubble.row]}>
-                      {/* Colour says who at a glance; the label confirms it. Two AI replies
-                          one after the other were unreadable when they shared a colour. */}
-                      {turn.speaker !== 'founder' ? (
-                        <Text style={styles[bubble.speaker]}>
-                          {SPEAKER_LABEL[turn.speaker] || 'AI'}
-                          {turn.toolCalls ? `  ·  checked ${turn.toolCalls} thing${turn.toolCalls === 1 ? '' : 's'}` : ''}
-                        </Text>
-                      ) : null}
-                      <Text style={styles[bubble.text]} selectable>
-                        {turn.text}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-            )
-          )}
-        </Section>
-      ) : null}
     </View>
   );
 }

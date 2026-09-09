@@ -1,5 +1,5 @@
-import React from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Text, View, TouchableOpacity } from 'react-native';
 import { styles } from '../styles';
 import { Section } from '../components/shared/Section';
 import { Button } from '../components/shared/Button';
@@ -33,6 +33,7 @@ function stepMark(status) {
 }
 
 export function RunCycleScreen({ cycleRun }) {
+  const [expandedSteps, setExpandedSteps] = useState({});
   const { cycle, steps, running, starting, busy, error, lastChecked, start } = cycleRun;
   const elapsed = cycleElapsedLabel(cycle, lastChecked);
 
@@ -40,19 +41,18 @@ export function RunCycleScreen({ cycleRun }) {
     <View>
       <Section title="Run a cycle now">
         <Text style={styles.bodyText}>
-          Research assets and apply risk and execution checks. A run may take 30 minutes
-          or longer. Confirm fills in Portfolio trade history.
+          Research and review opportunities. Orders are placed only when the trading rules allow them.
         </Text>
-        <View style={styles.cacheBanner}>
-          <Text style={styles.cacheBannerHeadline}>A cycle may place real orders when live trading is enabled.</Text>
-          <Text style={styles.cacheBannerDetail}>An order is not guaranteed on every cycle.</Text>
+        <View style={styles.cycleWarning}>
+          <Text style={styles.cycleWarningIcon} accessible={false}>!</Text>
+          <Text style={styles.cycleWarningText}>A cycle may place real orders when live trading is enabled.</Text>
         </View>
         {/* 2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken...
             especially if we are doing test runs after upgrades or updates." One button per
             venue, so a change to one broker can be tested without running the other and
             without waiting on it. The backend already supported an equities-only scope; it
             had simply never been offered here. */}
-        <View style={styles.buttonGrid}>
+        <View style={styles.cycleButtonStack}>
           <Button
             label={busy ? 'Running...' : 'Run everything'}
             onPress={() => start('all')}
@@ -71,6 +71,7 @@ export function RunCycleScreen({ cycleRun }) {
             disabled={busy}
           />
         </View>
+        <Text style={styles.smallText}>A run may take 30 minutes or longer. An order is not guaranteed; confirm fills in Portfolio trade history.</Text>
         {busy && (
           <View style={styles.cycleBusyRow}>
             <ActivityIndicator />
@@ -97,24 +98,25 @@ export function RunCycleScreen({ cycleRun }) {
         <Section title="What happened, step by step">
           {steps.map((step) => (
             <View key={step.seq} style={styles.cycleStep}>
-              <View style={styles.cycleStepHeader}>
+              <TouchableOpacity style={styles.cycleStepHeader} accessibilityRole="button" accessibilityState={{ expanded: !!expandedSteps[`${cycle?.cycle_id}-${step.seq}`] || step.status === 'failed' || step.status === 'running' }} onPress={() => setExpandedSteps(prev => ({ ...prev, [`${cycle?.cycle_id}-${step.seq}`]: !prev[`${cycle?.cycle_id}-${step.seq}`] }))}>
                 <Text style={styles.cycleStepLabel}>
                   {step.seq}. {step.label}
                 </Text>
                 <StatusPill label={stepMark(step.status)} tone={stepTone(step.status)} />
-              </View>
+              </TouchableOpacity>
               {/* The whole plan is written up front, so a step with no summary is either
                   in flight or still queued -- and saying "working on this now" for a step
                   that has not started would be the same overstatement as "step 1 of 1". */}
-              {step.summary ? (
+              {(expandedSteps[`${cycle?.cycle_id}-${step.seq}`] || step.status === 'failed' || step.status === 'running') && (step.summary ? (
                 <Text style={styles.cycleStepSummary}>{step.summary}</Text>
               ) : (
                 <Text style={styles.cycleStepPending}>
                   {step.status === 'running' ? 'Working on this now...' : 'Not started yet.'}
                 </Text>
-              )}
+              ))}
             </View>
           ))}
+          <Text style={styles.smallText}>Tap a step for its full result. Running steps and errors stay visible.</Text>
         </Section>
       )}
 

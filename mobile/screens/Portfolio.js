@@ -224,10 +224,10 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
       <PortfolioTrends request={trendsRequest} />
       <CollapsibleSection
         title="AI-Managed Positions"
-        subtitle="Positions the AI opened and is tracking to a stop-loss/take-profit exit. Manual holdings are never included here."
-        defaultExpanded={true}
+        defaultExpanded={false}
         badge={{ label: `${aiManagedPositions.length}`, tone: aiManagedPositions.length ? 'good' : 'neutral' }}
       >
+        <Text style={styles.smallText}>AI-opened positions tracked to a stop-loss/take-profit exit. Manual holdings are excluded.</Text>
         {aiManagedPositions.length === 0 ? (
           <Empty />
         ) : aiManagedPositions.map(({ position, broker, ownership }, index) => {

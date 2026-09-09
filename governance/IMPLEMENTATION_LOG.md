@@ -1,5 +1,34 @@
 # Implementation Log
 
+## 2026-09-09 — Approved mockup layouts, not only colours
+
+Founder reported that the published palette retained the old layouts. Implemented
+the structural follow-up across Briefing, Portfolio, Standup and Run a Cycle:
+
+- Removed redundant outer card shells around exchange summaries and progress.
+  Account metrics use a wrapping grid (two columns on narrow phones), explicitly
+  retaining currency, paper/live mode, manual-holding scope and snapshot evidence.
+- Portfolio keeps real chart data and fee-basis labels; explanatory history notes
+  move into an expandable section. Managed positions start collapsed, with their
+  count still visible; positions and trade history remain available.
+- Standup has light blue You, white Trader and lavender Claude bubbles with
+  speaker/time labels, shorter instructions and a compact composer after the
+  newest exchange. Older exchanges remain reachable with Show older conversation.
+  No voice routing, polling, model budgets or network behaviour was changed.
+- Run a Cycle uses full-width stacked actions and an amber real-order warning.
+  Completed step details expand on tap; running/failed details remain visible.
+  The exact all/kraken/alpaca scope callbacks and busy protection are unchanged.
+- Greeting uses a decorative sun-behind-cloud illustration drawn from bundled
+  native shapes, not an emoji, remote image or weather feed. Name remains Tarik.
+
+Verification: 98 mobile tests passed, including new render/callback tests for the
+account grid, busy cycle actions, visible failures and illustration. No backend,
+Supabase queries, fetch frequency, trading decisions or database migrations changed.
+No local Expo server or emulator setup was started, per Founder instruction.
+Device visual fidelity remains unverified; mockup illustrative data was not copied.
+Mobile-only release uses [skip render] to avoid restarting the trading backend.
+Publication identifiers will be recorded once EAS confirms the release.
+
 ## 2026-09-09 — Warm mobile palette published
 
 Commit `aca37cfad208c50b6ee1d721fec3183dddc95215` pushed to master. Android

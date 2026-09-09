@@ -7,7 +7,7 @@ const { exchangeName, currencyFor, exchangeMoney, activityByExchange, periodLabe
 const { formatDateTime } = require('../lib/datetime');
 const { exchangePalette } = require('../lib/palette');
 function ExchangeOverview({ brokers = [], activity, detailed = false, children }) {
-  return <Section title={detailed ? 'Your accounts' : 'Activity by exchange'}>
+  return <Section bare title={detailed ? 'Your accounts' : 'Activity by exchange'}>
     {!detailed && <Text style={styles.smallText}>{periodLabel(activity?.period)} · evidence updated {activity?.generated_at ? formatDateTime(activity.generated_at) : 'unknown'}</Text>}
     {!brokers.length && <Text style={styles.bodyText}>Account evidence has not loaded.</Text>}
     {brokers.map(broker => {
@@ -15,21 +15,27 @@ function ExchangeOverview({ brokers = [], activity, detailed = false, children }
       const money = value => exchangeMoney(value, currency);
       return <View key={broker.broker} style={[styles.exchangeCard, exchangePalette(broker.broker)]}>
         <Text style={styles.cardTitle}>{exchangeName(broker)} · {currency || 'Currency unknown'}</Text>
-        <Text style={styles.smallText}>{broker.account_mode || 'Account mode unknown'} · whole account, including any manual holdings</Text>
-        <Text style={styles.smallText}>Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}</Text>
-        {detailed && <Metric label="Account value" value={money(broker.portfolio_value)} />}
-        <Metric label="Account change today" value={money(broker.todays_pnl)} />
+        <Text style={styles.smallText}>{broker.account_mode || 'Account mode unknown'} · whole account</Text>
         {detailed ? <>
-          <Metric label="Cash" value={money(broker.cash_available)} />
-          <Metric label="In investments" value={money(broker.estimated_in_positions)} />
+          <View style={styles.accountMetricGrid}>
+            {[['Account value', broker.portfolio_value], ['Account change today', broker.todays_pnl], ['Cash', broker.cash_available], ['In investments', broker.estimated_in_positions]].map(([label, value]) => <View key={label} style={styles.accountMetricTile}>
+              <Text style={styles.smallText}>{label}</Text>
+              <Text style={[styles.accountMetricValue, label === 'Account change today' && typeof value === 'number' && (value > 0 ? styles.tradeTablePnlPositive : value < 0 ? styles.tradeTablePnlNegative : null)]}>{money(value)}</Text>
+            </View>)}
+          </View>
+          <Text style={styles.smallText}>Includes manual holdings · {broker.captured_at ? formatDateTime(broker.captured_at) : 'Snapshot time unavailable'}</Text>
         </> : counts.available ? <>
-          <Text style={styles.bodyText}>{counts.checks} asset checks · {counts.candidates} candidates</Text>
-          <Text style={styles.bodyText}>{counts.fills} orders with fills recorded</Text>
+          <View style={styles.accountMetricGrid}>
+            <View style={styles.accountMetricTile}><Text style={styles.smallText}>Account change today</Text><Text style={styles.accountMetricValue}>{money(broker.todays_pnl)}</Text></View>
+            <View style={styles.accountMetricTile}><Text style={styles.smallText}>Orders with fills</Text><Text style={styles.accountMetricValue}>{counts.fills}</Text></View>
+          </View>
+          <Text style={styles.smallText}>{counts.checks} asset checks · {counts.candidates} candidates</Text>
           <CollapsibleSection title="Activity detail" defaultExpanded={false}>
+            <Text style={styles.smallText}>Includes manual holdings. Snapshot {broker.captured_at ? formatDateTime(broker.captured_at) : 'time unavailable'}.</Text>
             <Text style={styles.smallText}>{counts.orders} identified orders observed, including protection. Repeated research checks are not unique ideas. Fills may be partial; an observed order is not necessarily a new submission.</Text>
             {!!counts.unidentified && <Text style={styles.smallText}>{counts.unidentified} records lack order IDs and are excluded from order counts.</Text>}
           </CollapsibleSection>
-        </> : <Text style={styles.smallText}>Activity breakdown is unavailable.</Text>}
+        </> : <><Metric label="Account change today" value={money(broker.todays_pnl)} /><Text style={styles.smallText}>Activity breakdown is unavailable. Includes manual holdings.</Text></>}
       </View>;
     })}
     {children}

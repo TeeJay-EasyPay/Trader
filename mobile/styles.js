@@ -132,13 +132,13 @@ export const styles = StyleSheet.create({
   section: {
     marginBottom: 14,
     backgroundColor: '#ffffff',
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#cfe0f2',
-    padding: 12,
+    padding: 16,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: 21,
     fontWeight: '800',
     color: '#16324f',
     marginBottom: 8,
@@ -172,6 +172,17 @@ export const styles = StyleSheet.create({
   greetingHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   greetingTitle: { flex: 1 },
   greetingSun: { fontSize: 32, color: '#B77400' },
+  bareSection: { marginBottom: 18 },
+  accountMetricGrid: { flexDirection: 'row', flexWrap: 'wrap', borderTopWidth: 1, borderTopColor: '#DADDE8', marginTop: 10, paddingTop: 6 },
+  accountMetricTile: { flexGrow: 1, flexBasis: '48%', minWidth: 120, paddingVertical: 8, paddingRight: 8 },
+  accountMetricValue: { color: '#16324F', fontWeight: '800', fontSize: 22, marginTop: 3 },
+  cycleButtonStack: { gap: 10, marginTop: 14 },
+  cycleWarning: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#FFF2DD', padding: 14, borderRadius: 14, marginTop: 12 },
+  cycleWarningIcon: { color: '#78350F', fontSize: 26, fontWeight: '800' },
+  cycleWarningText: { flex: 1, color: '#78350F', fontSize: 14, lineHeight: 21 },
+  bubbleHeading: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
+  bubbleTimestamp: { fontSize: 12, color: '#476582' },
+  composerInput: { flex: 1, minWidth: 120, minHeight: 48, maxHeight: 120, borderWidth: 1, borderColor: '#CFE0F2', borderRadius: 12, padding: 12, color: '#16324F', fontSize: 14 },
   exchangeCard: { borderWidth: 1, borderRadius: 14, padding: 12, marginTop: 14 },
   summaryReason: {
     marginTop: 4,
@@ -308,11 +319,13 @@ export const styles = StyleSheet.create({
   // 2026-09-07: the three-way standup. Mode row, start/end, and speaker-labelled bubbles --
   // in a conversation with two AI participants the LABEL is load-bearing, because two replies
   // in the same colour one after the other are unreadable without knowing who is speaking.
-  standupModeRow: { flexDirection: 'row', marginTop: 10, marginBottom: 4 },
+  standupModeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12, marginBottom: 8 },
   standupMode: {
     flex: 1,
-    paddingVertical: 8,
-    marginRight: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    minHeight: 48,
+    justifyContent: 'center',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#d6dbe4',
@@ -320,7 +333,7 @@ export const styles = StyleSheet.create({
     backgroundColor: '#f7f9fc',
   },
   standupModeActive: { backgroundColor: palette.primary, borderColor: palette.primary },
-  standupModeText: { fontSize: 13, fontWeight: '600', color: '#41506a' },
+  standupModeText: { fontSize: 13, fontWeight: '600', color: '#41506a', textAlign: 'center' },
   standupModeTextActive: { color: '#ffffff' },
   standupStart: {
     marginTop: 10,
@@ -352,7 +365,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
   },
   standupEndText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
-  standupComposer: { marginTop: 10 },
+  standupComposer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CFE0F2', borderRadius: 16, padding: 12, marginBottom: 16 },
   standupSend: {
     // flex:1 so it fills the row beside the microphone. Without it the button collapses to its
     // own text width and the padding squeezes "Send" over its own edges -- which is exactly
@@ -381,7 +394,7 @@ export const styles = StyleSheet.create({
   standupSendText: { color: '#ffffff', fontWeight: '700', fontSize: 15 },
   // The microphone, beside Send rather than hidden in it. 2026-09-07: the screen had none at
   // all, so speaking into it did nothing and looked identical to a fault.
-  standupActions: { flexDirection: 'row', alignItems: 'stretch', gap: 8, marginTop: 8 },
+  standupActions: { flexDirection: 'row', alignItems: 'stretch', gap: 8, minWidth: 122 },
   standupMic: {
     width: 56,
     height: 48,
@@ -398,13 +411,13 @@ export const styles = StyleSheet.create({
   standupMine: {
     alignSelf: 'flex-end',
     maxWidth: '86%',
-    backgroundColor: '#1f2d3d',
+    backgroundColor: '#E7F2FF',
     borderRadius: 12,
     paddingVertical: 8,
     paddingHorizontal: 12,
     marginBottom: 6,
   },
-  standupMineText: { color: '#ffffff', fontSize: 14, lineHeight: 20 },
+  standupMineText: { color: '#16324F', fontSize: 15, lineHeight: 22 },
   standupTheirs: {
     alignSelf: 'flex-start',
     maxWidth: '92%',
@@ -430,29 +443,29 @@ export const styles = StyleSheet.create({
   standupTrader: {
     alignSelf: 'flex-start',
     maxWidth: '92%',
-    backgroundColor: '#e7f4ec',   // green: the one that runs the account
-    borderLeftWidth: 3,
-    borderLeftColor: '#2e7d5b',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CFE0F2',
     borderRadius: 12,
     paddingVertical: 8,
     paddingHorizontal: 12,
     marginBottom: 6,
   },
-  standupTraderText: { color: '#14352a', fontSize: 14, lineHeight: 20 },
-  standupTraderSpeaker: { fontSize: 11, fontWeight: '700', color: '#2e7d5b', marginBottom: 3 },
+  standupTraderText: { color: '#16324F', fontSize: 15, lineHeight: 22 },
+  standupTraderSpeaker: { fontSize: 13, fontWeight: '700', color: '#16324F', marginBottom: 3 },
   standupClaude: {
     alignSelf: 'flex-start',
     maxWidth: '92%',
-    backgroundColor: '#fdf1e0',   // amber: the one that reads the code
-    borderLeftWidth: 3,
-    borderLeftColor: '#b4681a',
+    backgroundColor: '#F5F1FF',
+    borderWidth: 1,
+    borderColor: '#D8CBFF',
     borderRadius: 12,
     paddingVertical: 8,
     paddingHorizontal: 12,
     marginBottom: 6,
   },
-  standupClaudeText: { color: '#4a2c0a', fontSize: 14, lineHeight: 20 },
-  standupClaudeSpeaker: { fontSize: 11, fontWeight: '700', color: '#b4681a', marginBottom: 3 },
+  standupClaudeText: { color: '#16324F', fontSize: 15, lineHeight: 22 },
+  standupClaudeSpeaker: { fontSize: 13, fontWeight: '700', color: '#65459B', marginBottom: 3 },
   chatDayStampRow: {
     alignItems: 'center',
     marginTop: 4,
@@ -650,11 +663,9 @@ export const styles = StyleSheet.create({
     paddingTop: 12,
   },
   cycleStep: {
-    borderLeftWidth: 3,
-    borderLeftColor: '#dee2e6',
-    paddingLeft: 10,
-    paddingVertical: 8,
-    marginBottom: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#DFE7F0',
+    paddingVertical: 14,
   },
   cycleStepHeader: {
     flexDirection: 'row',
