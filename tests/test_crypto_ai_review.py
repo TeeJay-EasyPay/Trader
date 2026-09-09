@@ -178,3 +178,17 @@ class CryptoReviewBehaviourTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_policy_boundary_stop_does_not_fail_due_to_float_or_eight_decimal_rounding(tmp_path):
+    from unittest.mock import patch
+    for index, price in enumerate((0.16337, 0.13926, 0.00001234, 100.0, 63123.47)):
+        prices = {'BTCGBP': {'c': [str(price), '1'], 'h': [str(price * 1.1)] * 2,
+                             'l': [str(price * .9)] * 2, 'o': str(price * .98)}}
+        with patch.object(FakeAdapter, 'current_prices', return_value=prices), \
+             patch('ai_trader.agent.volatility_stop_pct', return_value=.05), \
+             patch('ai_trader.agent.technical_stop_loss', return_value=round(price * .95, 8)):
+            proposals = _run(tmp_path / f'boundary-{index}.db', max_stop_loss_pct=.05)
+        assert len(proposals) == 1
+        trade = proposals[0]
+        assert 0 < (trade.entry_price - trade.stop_loss) / trade.entry_price <= .05

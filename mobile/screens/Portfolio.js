@@ -10,6 +10,7 @@ const { styles } = require('../styles');
 const { CollapsibleSection, Metric, TextBlock, Button, Empty } = require('../components/shared');
 const { BrokerPanel } = require('../components/BrokerPanel');
 const { ReportPanel } = require('../components/ReportPanel');
+const { PortfolioTrends } = require('../components/PortfolioTrends');
 const { moneyOrText, historyMoneyOrText, formatByCurrency } = require('../lib/money');
 const { formatDateTime } = require('../lib/datetime');
 const { formatList } = require('../lib/lists');
@@ -255,6 +256,7 @@ function PortfolioCommandCentre({ status, portfolio, recommendations, performanc
         <TextBlock label="Portfolio Projection (Forecast - 7/30/90 Day)" value={projection.reason} />
       </View>
 
+      <PortfolioTrends />
       <CollapsibleSection
         title="AI-Managed Positions"
         subtitle="Positions the AI opened and is tracking to a stop-loss/take-profit exit. Manual holdings are never included here."

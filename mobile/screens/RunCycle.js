@@ -4,6 +4,7 @@ import { styles } from '../styles';
 import { Section } from '../components/shared/Section';
 import { Button } from '../components/shared/Button';
 import { StatusPill } from '../components/shared/StatusPill';
+const { cycleElapsedLabel } = require('../lib/cycleProgress');
 
 // 2026-08-29, Founder-directed: "add a card to the app UI where I can click on a button for
 // it to start a research cycle and potentially trade. the card should show every step of the
@@ -33,6 +34,7 @@ function stepMark(status) {
 
 export function RunCycleScreen({ cycleRun }) {
   const { cycle, steps, running, starting, busy, error, lastChecked, start } = cycleRun;
+  const elapsed = cycleElapsedLabel(cycle, lastChecked);
 
   return (
     <View>
@@ -40,8 +42,9 @@ export function RunCycleScreen({ cycleRun }) {
         <Text style={styles.bodyText}>
           Runs the whole process end to end: refresh the market data, research every asset,
           check each idea against the two rules, and place any orders that pass. Run one
-          broker on its own to test a change without waiting on the other. It normally takes
-          two to four minutes. Any trades it makes appear in Trade History on the Portfolio
+          broker on its own to test a change without waiting on the other. Duration depends on
+          the assets reviewed and external services; a run can take 30 minutes or longer.
+          Order submission does not necessarily mean a fill. Check Trade History on the Portfolio
           screen.
         </Text>
         {/* 2026-09-01, Founder-directed: "alpaca should have its own cycle like kraken...
@@ -78,6 +81,7 @@ export function RunCycleScreen({ cycleRun }) {
             </Text>
           </View>
         )}
+        {elapsed && <Text style={styles.smallText}>{elapsed}</Text>}
         {error && <Text style={styles.cycleError}>{error}</Text>}
       </Section>
 

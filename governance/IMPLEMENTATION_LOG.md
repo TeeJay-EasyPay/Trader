@@ -1,5 +1,57 @@
 # Implementation Log
 
+## 2026-09-09 — Founder authorised deployment before emulator acceptance
+
+The Founder explicitly requested committing/pushing all pending cycle and chart
+changes, deploying them, then checking the already-installed Pixel 9 app. This
+supersedes the earlier pre-deployment emulator gate below. Local preview remains
+a future setup task; no emulator data will be erased or trading cycle triggered
+for the UI check. Deployment outcomes will be recorded after verification.
+
+## 2026-09-09 — Portfolio trend charts (local; emulator release gate pending)
+
+Founder requested two charts per broker in Portfolio, a briefing tap-through,
+an emulator check, then commit/deployment of all pending work. Implemented the
+cards, 7/30/90-day selection, daily/weekly outcomes and a cached, bounded read-only
+`/portfolio-trends` projection. No automatic chart polling or new database tables.
+
+Production summary checked read-only: complete response 9,964 bytes. Kraken's
+AI-only history preserves missing valuations; Alpaca outcomes are clearly marked
+provisional because historical fees are not fully reconciled. See
+`architecture/PORTFOLIO_TRENDS_2026-09-09.md` for sources, semantics and limitations.
+
+Emulator acceptance is incomplete: insufficient install storage, a blocked local
+preview-start command, and failed window activation. Existing emulator data was
+preserved. The requested release is therefore pending, not silently declared done.
+
+Verification: 70 mobile Node tests passed; changed app files compile. Full backend
+run had 1,798 passes, 21 passing subtests and one Windows temp-folder cleanup
+failure in an existing background-turn test. Its suite plus the final chart/egress
+tests passed on rerun (61 tests). Full-run failure is documented, not concealed.
+
+
+## 2026-09-09 — Honest cycle reporting, aligned crypto stops and leaner manual runs
+
+Founder requested fixes after the authorised live cycle filled an XLM order while
+the app reported no trades, plus protection against increased Supabase egress and
+a review of further savings. See `architecture/KRAKEN_CYCLE_AND_EGRESS_2026-09-09.md`.
+
+- Count real execution decisions, deduplicated and broker-scoped; distinguish
+  submission from fill and unavailable evidence from no orders.
+- Aggregate latest proposal decisions in SQL and show the true modal rejection.
+- Use the stricter saved/crypto stop cap with no extra policy read. Keep the live
+  5% limit; protect compliant boundary prices from rounding errors.
+- Remove hidden duplicate research from manual universe refresh; keep standalone
+  behavior. Correct duration guidance, show elapsed time from existing data and
+  reduce progress polling from 3 to 10 seconds.
+- No additional recurring query paths or new live cycle. Documented further
+  reductions in broker snapshots, outcome reuse, strategy context and metadata.
+- Full backend suite: 1,794 passed plus 21 subtests. Final targeted cycle/egress
+  suite: 38 passed. Mobile Node suite: 66 passed; changed files compile with Expo's
+  Babel preset. Read-only production aggregates confirmed the completed cycle's
+  submitted order. Local changes only; not committed or deployed in this follow-up.
+
+
 ## 2026-09-08 — Pre-deployment hardening of the independent Kraken review
 
 Following Claude's independent review, the Founder authorised Codex to finish the cautious

@@ -38,4 +38,12 @@ function currentStepOf(steps) {
   return steps.find((step) => step && step.status === 'running') || null;
 }
 
-module.exports = { cycleProgressLabel, currentStepOf, isTerminal, TERMINAL_STATUSES };
+// Use the existing progress response timestamp: no extra timer or database request.
+function cycleElapsedLabel(cycle, lastChecked) {
+  const start = Date.parse(cycle?.started_at || '');
+  const end = cycle?.completed_at ? Date.parse(cycle.completed_at) : Number(lastChecked);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !end) return null;
+  return `${Math.floor(Math.max(0, end - start) / 60000)} min elapsed`;
+}
+
+module.exports = { cycleProgressLabel, currentStepOf, cycleElapsedLabel, isTerminal, TERMINAL_STATUSES };

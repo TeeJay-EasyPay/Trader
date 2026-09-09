@@ -1,5 +1,10 @@
 # Independent Kraken trading review — 8 September 2026
 
+> **9 September follow-up:** The original fix was deployed as `7ac212b`; the authorised
+> manual cycle then filled an XLM order. Further reporting/stop-policy defects and
+> local corrections are documented in [Kraken cycle and egress follow-up](KRAKEN_CYCLE_AND_EGRESS_2026-09-09.md).
+> Earlier local/deployment statements below are historical snapshots.
+
 > **Follow-up implementation:** After the review, the Founder authorised implementing the fixes and updating the implementation log. The working tree now contains a separate AI sizing contract, premature-expiry fix and corrected fee explanation. These are local changes, not a production deployment. The original findings below describe the production version inspected during the review; implementation details follow at the end.
 
 **Opinion:** Kraken's current inactivity is explained by the research and AI-review gates, rather than a demonstrated exchange outage. There is a confirmed mismatch between the reviewer's instructions and the software's treatment of its answer. However, the evidence does **not** establish that the blocked candidates would have been profitable. The earlier conclusion that historical simulations prove today's refusals correct is also unsupported.

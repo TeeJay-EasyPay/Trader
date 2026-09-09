@@ -689,11 +689,11 @@ class LocalApiService:
         # cli.py and run_server()'s scheduled job wiring call this externally.
         return self._operations_service.dispatch_pending_push_notifications()
 
-    def refresh_crypto_universe(self) -> dict[str, Any]:
+    def refresh_crypto_universe(self, *, include_analysis: bool = True) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5, architecture/AI_TRADER_MODULARISATION_
         # ARCHITECTURE_2026-08-02.md). Kept as a thin wrapper -- "delegation before
         # deletion" -- since run_server() calls this externally on a scheduled interval.
-        return self._research_service.refresh_crypto_universe()
+        return self._research_service.refresh_crypto_universe(include_analysis=include_analysis)
 
     def refresh_strategy_lab(self) -> dict[str, Any]:
         # Delegates to ResearchService (Phase 5). Kept as a thin wrapper since cli.py
@@ -795,6 +795,9 @@ class LocalApiService:
             ).to_dict()
         if path == "/portfolio":
             return 200, self.portfolio(_first(query, "broker") or "all")
+        if path == "/portfolio-trends":
+            from ..portfolio_trends import portfolio_trends
+            return 200, portfolio_trends(self.settings.db_path)
         if path == "/founder-brief":
             return 200, self.founder_brief()
         if path == "/recommendations":

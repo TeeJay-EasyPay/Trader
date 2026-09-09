@@ -17,7 +17,9 @@ const { cycleProgressLabel, currentStepOf, isTerminal } = require('../lib/cycleP
 // only renders what it is given. Polling continues on every screen, which is also what makes
 // the "a cycle is running" line in the header possible -- the Founder can be on Portfolio and
 // still see that something is in flight.
-const POLL_MS = 3000;
+// Progress steps take minutes. Ten-second polling cuts these reads by 70% versus
+// three seconds, without changing server execution or adding database queries.
+const POLL_MS = 10000;
 // Long enough to cover a Render cold start on the first tap of the day (the hosted web
 // service sleeps), short enough that a genuinely dead request still surfaces as an error.
 const START_TIMEOUT_MS = Math.max(COMMAND_TIMEOUT_MS || 30000, 45000);

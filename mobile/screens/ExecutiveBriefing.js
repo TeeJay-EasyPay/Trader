@@ -580,6 +580,7 @@ function ExecutiveBriefing({
   askMessages,
   setAskMessages,
   request,
+  onOpenPortfolio,
 }) {
   const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const confidence = cioAverageConfidence(recommendations);
@@ -626,6 +627,7 @@ function ExecutiveBriefing({
         <AskAiTrader messages={askMessages || []} setMessages={setAskMessages} request={request} />
       ) : null}
       <CurrentPositionCard portfolio={portfolio} status={status} performanceAttribution={performanceAttribution} />
+      {onOpenPortfolio && <Button label="View account trends in Portfolio" tone="neutral" onPress={onOpenPortfolio} />}
       <WhatIDidCard activity={activity} connectionReadiness={connectionReadiness} unresolvedIncidentCount={unresolvedIncidentCount} />
       <TradeScorecardCard tradeScorecard={tradeScorecard} forecastAccountability={forecastAccountabilitySummary} />
       <TheViewAheadSection

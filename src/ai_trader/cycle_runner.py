@@ -91,7 +91,7 @@ def _scalar(conn, sql: str, params: tuple = ()) -> Any:
     # run_cycle for the same principle applied one level up.
     try:
         row = conn.execute(sql, params).fetchone()
-    except Exception:  # noqa: BLE001 - a missing table means "nothing recorded", i.e. zero
+    except Exception:  # noqa: BLE001 - unavailable, not proof of zero submissions
         return None
     if row is None:
         return None
@@ -249,8 +249,9 @@ def _drops_before_the_checks(db_path: Path, since: str) -> list[tuple[str, str]]
             conn,
             """SELECT proposal_id, payload_json FROM EXECUTION_EVENTS
                WHERE event_type = 'agent_no_trade' AND created_at >= ?
+                 AND proposal_id LIKE ?
                ORDER BY created_at""",
-            (since,),
+            (since, 'no-trade-crypto-%'),
         )
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -275,20 +276,24 @@ def _drops_before_the_checks(db_path: Path, since: str) -> list[tuple[str, str]]
     return out
 
 
-def _summarise_proposals(db_path: Path, since: str) -> str:
+def _summarise_proposals(db_path: Path, since: str, broker: str = "kraken") -> str:
     with closing(connect(db_path)) as conn:
         made = int(_scalar(
             conn,
-            "SELECT COUNT(*) FROM TRADE_AUDIT WHERE event_type = 'agent_proposal' AND created_at >= ?",
-            (since,),
+            "SELECT COUNT(DISTINCT proposal_id) FROM TRADE_AUDIT WHERE event_type = 'agent_proposal' AND created_at >= ? AND broker = ?",
+            (since, broker),
         ) or 0)
         rows = _rows(
             conn,
-            """SELECT symbol, result, reason FROM BROKER_DECISIONS
-               WHERE created_at >= ? ORDER BY created_at DESC""",
-            (since,),
+            """SELECT result, reason, COUNT(*) FROM BROKER_DECISIONS
+               WHERE broker_decision_id IN (
+                   SELECT MAX(broker_decision_id) FROM BROKER_DECISIONS
+                   WHERE created_at >= ? AND selected_broker = ? GROUP BY proposal_id
+               ) GROUP BY result, reason""",
+            (since, broker),
         )
-    approved = [r for r in rows if str(r[1] or "").lower() in {"approved", "accepted", "executed"}]
+    approved = sum(int(r[2]) for r in rows if str(r[0] or "").lower() in {"approved", "accepted", "executed"})
+    rejected = sum(int(r[2]) for r in rows) - approved
     if not made and not rows:
         # 2026-08-30, Founder-caught: this used to stop at "nothing reached the checks",
         # directly under a line saying two coins had cleared the bar. It never accounted for
@@ -303,26 +308,48 @@ def _summarise_proposals(db_path: Path, since: str) -> str:
         return "No trade ideas reached the checks, so there was nothing to approve or reject."
     parts = [f"{made} trade idea(s) put forward"]
     if rows:
-        parts.append(f"{len(approved)} passed the checks, {len(rows) - len(approved)} rejected")
-        if len(rows) > len(approved):
-            reason = str(rows[0][2] or "").split(",")[0].strip().replace("_", " ")
+        parts.append(f"{approved} passed the checks, {rejected} rejected")
+        if rejected:
+            reasons: dict[str, int] = {}
+            for row in rows:
+                result, raw_reason, count = row[0], row[1], row[2]
+                if str(result).lower() not in {"approved", "accepted", "executed"}:
+                    reason = str(raw_reason or "").split(",")[0].strip()
+                    reasons[reason] = reasons.get(reason, 0) + int(count)
+            reason = sorted(reasons, key=lambda key: (-reasons[key], key))[0].replace("_", " ")
             if reason:
                 parts.append(f"most common reason: {reason}")
     return ". ".join(parts) + "."
 
 
+def _order_count(conn, since: str, brokers: tuple[str, ...]) -> int | None:
+    """Actual submitted orders, not event names that the execution path never writes.
+
+    This is a same-broker time-window count, not causal attribution to one process.
+    SQL returns one scalar; neither proposal dossiers nor order histories cross the wire.
+    """
+    placeholders = ",".join("?" for _ in brokers)
+    value = _scalar(conn, f"""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT ta.broker, ed.order_id
+            FROM EXECUTION_DECISIONS ed
+            JOIN trade_audit ta ON ta.proposal_id = ed.proposal_id
+            WHERE ed.created_at >= ? AND ed.decision = 'approved'
+              AND ed.order_id IS NOT NULL AND ed.order_id <> ''
+              AND ta.event_type = 'agent_proposal' AND ta.broker IN ({placeholders})
+        ) submitted
+    """, (since, *brokers))
+    return None if value is None else int(value)
+
+
 def _summarise_orders(db_path: Path, since: str, broker: str) -> str:
     with closing(connect(db_path)) as conn:
-        placed = int(_scalar(
-            conn,
-            """SELECT COUNT(*) FROM TRADE_AUDIT
-               WHERE event_type IN ('order_submitted', 'execution_submitted')
-                 AND created_at >= ?""",
-            (since,),
-        ) or 0)
+        placed = _order_count(conn, since, (broker.lower(),))
+    if placed is None:
+        return f"Could not verify order submissions on {broker}. Check Trade History."
     if placed:
-        return f"{placed} order(s) submitted to {broker}. Check Trade History for the fills."
-    return f"No orders were placed on {broker} this cycle."
+        return f"{placed} order(s) submitted to {broker} during this run. Check Trade History for the fills."
+    return f"No order submissions recorded on {broker} during this run. See the decision results."
 
 
 def _summarise_equity_research(db_path: Path, since: str) -> str:
@@ -330,7 +357,7 @@ def _summarise_equity_research(db_path: Path, since: str) -> str:
         made = int(_scalar(
             conn,
             """SELECT COUNT(*) FROM TRADE_AUDIT WHERE event_type = 'agent_proposal'
-               AND created_at >= ?""",
+               AND created_at >= ? AND broker = 'alpaca'""",
             (since,),
         ) or 0)
         # The LIKE pattern is BOUND, not inlined. Inlining it works on SQLite and is a hard
@@ -340,7 +367,7 @@ def _summarise_equity_research(db_path: Path, since: str) -> str:
         closed = _scalar(
             conn,
             """SELECT COUNT(*) FROM BROKER_DECISIONS
-               WHERE created_at >= ? AND reason LIKE ?""",
+               WHERE created_at >= ? AND selected_broker = 'alpaca' AND reason LIKE ?""",
             (since, "%market_closed%"),
         )
     if int(closed or 0):
@@ -601,7 +628,7 @@ def run_cycle(service, cycle_id: str, *, scope: str = "all") -> None:
              _run_reconciliation,
              lambda since: _summarise_reconciliation(reconciliation)),
             ("Refresh the list of coins we are allowed to trade",
-             lambda: service.refresh_crypto_universe(),
+             lambda: service.refresh_crypto_universe(include_analysis=False),
              lambda since: _summarise_universe(db_path, since)),
             ("Get fresh prices, liquidity and news for each coin",
              lambda: service.refresh_crypto_candle_history(),
@@ -680,17 +707,14 @@ def _conclusion(db_path: Path, cycle_id: str, *, failed: bool) -> str:
     steps = status.get("steps") or []
     started = status.get("started_at") or ""
     with closing(connect(db_path)) as conn:
-        orders = int(_scalar(
-            conn,
-            """SELECT COUNT(*) FROM TRADE_AUDIT
-               WHERE event_type IN ('order_submitted', 'execution_submitted') AND created_at >= ?""",
-            (started,),
-        ) or 0)
+        orders = _order_count(conn, started, tuple(brokers_for_scope(status.get("scope") or "all")))
     broken = [s for s in steps if s.get("status") == FAILED]
-    if orders:
-        head = f"{orders} order(s) placed - they will appear in Trade History."
+    if orders is None:
+        head = "Order submissions could not be verified. Check Trade History."
+    elif orders:
+        head = f"{orders} order(s) submitted during this run - check Trade History for fills."
     else:
-        head = "No trades placed. Nothing today met both rules."
+        head = "No order submissions recorded during this run. See the step results for refusals, deferrals or failures."
     if failed or broken:
         return f"{head} {len(broken)} step(s) failed - see the red step(s) above."
     return head
@@ -725,7 +749,7 @@ def start_cycle_in_background(service, *, scope: str = "all", trigger_source: st
                 print(f"[cycle] cycle={cycle_id} crashed\n{traceback.format_exc()}", flush=True)
                 _finish_cycle(
                     db_path, cycle_id, status=FAILED,
-                    conclusion="The cycle stopped unexpectedly. Nothing was traded.",
+                    conclusion="The cycle stopped unexpectedly. Orders may already have been submitted; check Trade History before retrying.",
                 )
 
     threading.Thread(target=_worker, name=f"cycle-{cycle_id}", daemon=True).start()

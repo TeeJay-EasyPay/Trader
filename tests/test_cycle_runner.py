@@ -49,7 +49,8 @@ class _Service:
         self._stage("reconcile")
         return {"status": "ok", "checked": 0, "closed": [], "kept": []}
 
-    def refresh_crypto_universe(self):
+    def refresh_crypto_universe(self, *, include_analysis=True):
+        assert include_analysis is False, "manual cycles research once, after refreshing data"
         return self._stage("universe")
 
     def refresh_crypto_candle_history(self):

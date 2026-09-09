@@ -188,7 +188,7 @@ class ResearchService:
         self._recommendations_lookup = recommendations_lookup
         self._broker_factory = broker_factory
 
-    def refresh_crypto_universe(self) -> dict[str, Any]:
+    def refresh_crypto_universe(self, *, include_analysis: bool = True) -> dict[str, Any]:
         # 2026-08-31, Founder-directed: the exchange is the source of truth for what can be
         # traded, and CoinGecko is only a labeller. Falls back to the old CoinGecko seed if
         # Kraken cannot be reached, so an outage leaves a stale-but-real universe rather
@@ -219,8 +219,8 @@ class ResearchService:
                 payload=result,
             )
         logger.info("Crypto universe refresh: %s", result)
-        crypto_analysis = self.run_crypto_analysis()
-        result["crypto_analysis"] = crypto_analysis
+        if include_analysis:
+            result["crypto_analysis"] = self.run_crypto_analysis()
         return result
 
     def refresh_strategy_lab(self) -> dict[str, Any]:
@@ -764,6 +764,10 @@ class ResearchService:
                 last_recommendation=symbol_proposals[-1].symbol if symbol_proposals else None,
             )
 
+        policy = load_trading_policy(
+            self.settings.db_path, auto_trade=self.settings.auto_trade,
+            guardrails=self.settings.guardrails,
+        )
         proposals = propose_crypto_trades(
             self.settings.db_path,
             adapter,
@@ -792,11 +796,7 @@ class ResearchService:
             #
             # Confirmed live 2026-08-30: SOL scored 0.7137 with a healthy 0.7701 trend --
             # above the bar shown in the app on both counts -- and was silently dropped.
-            min_confidence=load_trading_policy(
-                self.settings.db_path,
-                auto_trade=self.settings.auto_trade,
-                guardrails=self.settings.guardrails,
-            ).min_ai_confidence,
+            min_confidence=policy.min_ai_confidence,
             # Founder-directed 2026-08-20: "I would rather they be a percentage of the
             # available cash rather than a fixed value... that way they can scale with the
             # cash available." account.equity is the AI's own allocated capital for this
@@ -813,7 +813,7 @@ class ResearchService:
             # clamp defaulted to the same value as default_stop_loss_pct, making Phase
             # 5.5's technical stop placement inert -- see agent.py's technical_stop_loss
             # call for the live evidence.
-            max_stop_loss_pct=self.settings.auto_trade.crypto_max_stop_loss_pct,
+            max_stop_loss_pct=min(policy.max_stop_loss_pct, self.settings.auto_trade.crypto_max_stop_loss_pct),
             # Founder-directed 2026-08-20: size from money at risk, and refuse trades that
             # cannot pay their own trading costs. The fee rate is MEASURED from settled
             # trades rather than taken from Kraken's published schedule, because the two

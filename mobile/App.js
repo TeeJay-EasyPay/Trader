@@ -182,6 +182,7 @@ export default function App() {
             askMessages={askMessages}
             setAskMessages={setAskMessages}
             request={apiRequest}
+            onOpenPortfolio={() => setScreen('Portfolio')}
           />
         </ErrorBoundary>
       );

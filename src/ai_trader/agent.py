@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import math
 from .database import connect
 from contextlib import closing
 from dataclasses import replace
@@ -752,6 +753,12 @@ def propose_crypto_trades(
             volatility_floor_price = price * (1.0 - effective_stop_pct)
             if stop_loss > volatility_floor_price:
                 stop_loss = volatility_floor_price
+            if effective_stop_pct <= max_stop_loss_pct:
+                # Rounding a technical level to eight decimals (or binary subtraction)
+                # must not turn a policy-compliant boundary stop into a rejection.
+                # If the volatility floor itself exceeds policy, leave it for the
+                # existing risk gate to refuse; do not silently override that floor.
+                stop_loss = max(stop_loss, math.nextafter(price * (1.0 - max_stop_loss_pct), price))
             take_profit = technical_take_profit(
                 entry_price=price,
                 stop_loss=stop_loss,
