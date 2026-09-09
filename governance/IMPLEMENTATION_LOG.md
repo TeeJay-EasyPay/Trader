@@ -1,5 +1,22 @@
 # Implementation Log
 
+## 2026-09-09 — Foldable background proportions and compact Learning summary
+
+User screenshots showed an oval sun on unfolded displays and an abrupt edge below
+the Learning illustration. Replaced independent-axis stretching with measured,
+uniform cover scaling of the bundled 3:1 asset, anchored top-right. Layout changes
+recalculate dimensions for folded/unfolded widths. Learning adds a native cream
+fade at the artwork's lower boundary. No asset downloads or database changes.
+The summary now features one latest lesson; all reviews remain on its detail page.
+Blank broker labels no longer create doubled separators. Removed repeated help text.
+
+Verification: all 114 mobile tests passed, including proportional sizing at widths
+340, 840 and 1100 and a taller accessibility-sized card. This is automated layout
+verification, not a claim of pixel-identical emulator verification. The emulator
+was previously observed running an older blue-layout app; latest-version visual
+comparison remains outstanding. No local Expo development server is used.
+
+
 ## 2026-09-09 — Learning screen: period reports and traceable evidence
 
 Implemented the approved Learning-screen concept as a new navigation destination:

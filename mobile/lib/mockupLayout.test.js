@@ -106,14 +106,18 @@ test('failed cycle detail stays visible while completed detail is initially coll
 });
 
 test('greeting is a bundled absolute background, not a sibling icon or remote URI', () => {
-  const { GreetingIllustration } = load('../components/GreetingIllustration');
+  const { GreetingIllustration, artworkSize } = load('../components/GreetingIllustration');
   const tree = GreetingIllustration();
   assert.equal(tree.props.importantForAccessibility, 'no-hide-descendants');
-  assert.equal(tree.type, 'Image');
-  assert.equal(tree.props.source, 'bundled-greeting-image');
-  assert.equal(tree.props.style.position, 'absolute');
-  assert.equal(tree.props.style.width, '100%', 'must override the bundled asset intrinsic width');
-  assert.equal(tree.props.style.height, '100%', 'must override the bundled asset intrinsic height');
+  const picture = nodes(tree).find(n => n.type === 'Image');
+  assert.equal(picture.props.source, 'bundled-greeting-image');
+  assert.equal(picture.props.resizeMode, 'cover');
+  for (const [width, height] of [[340, 148], [840, 148], [1100, 160], [340, 240]]) {
+    const size = artworkSize(width, height);
+    assert.ok(Math.abs(size.width / size.height - 3) < 0.00001, 'sun must remain circular');
+    assert.ok(size.width >= width && size.height >= height, 'card must be covered');
+  }
+  assert.equal(nodes(GreetingIllustration({ fadeToCream: true })).filter(n => n.props?.style?.backgroundColor).length, 32);
   assert.ok(!JSON.stringify(tree).includes('uri'));
 });
 

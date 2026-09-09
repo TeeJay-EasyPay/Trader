@@ -55,7 +55,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
   return <View style={s.page}>
     <View><Text style={s.title}>What are we learning?</Text><Text style={s.body}>From decisions to evidence.</Text></View>
     <View style={[s.card, s.summary]}>
-      <View pointerEvents="none" style={s.summaryArt}><GreetingIllustration /></View>
+      <View pointerEvents="none" style={s.summaryArt}><GreetingIllustration fadeToCream /></View>
       <View style={s.summaryContent}>
         <Text style={s.heading}>Learning summary</Text>
         <View style={s.row}>{['daily', 'weekly', 'monthly'].map(p => <Action key={p} grow label={p[0].toUpperCase() + p.slice(1)} selected={p === period} onPress={() => onPeriod(p)} />)}</View>
@@ -66,15 +66,14 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
         <Text style={s.heading}>{period === 'daily' ? "The day's learning" : period === 'weekly' ? "The week's learning" : "The month's learning"}</Text>
         <Text style={s.body}>{data.summary}</Text>
         {data.unavailable.length > 0 && <Text style={s.badge}>Unavailable: {data.unavailable.join(', ')}</Text>}
-        {data.reviews.map(review => <View key={review.review_id} style={s.divider}>
-          <Text style={[s.body, { fontWeight: '700' }]}>{review.symbol} · {review.broker} · recorded review</Text>
+        {data.reviews.slice(0, 1).map(review => <View key={review.review_id} style={s.divider}>
+          <Text style={[s.body, { fontWeight: '700' }]}>{[review.symbol, review.broker, 'Latest recorded lesson'].filter(Boolean).join(' · ')}</Text>
           <Text style={s.body}>{review.lessons[0] || review.what_happened || 'No lesson text recorded.'}</Text>
           <Text style={s.small}>Hypothesis from a review—not a validated rule change.</Text>
         </View>)}
         {!data.reviews.length && <Text style={s.body}>No review text is available for this period. That is not evidence of improvement.</Text>}
         <Text style={s.small}>Next: {data.next_step}</Text>
         <Action label="Read trade reviews →" onPress={() => onOpen('reviews')} />
-        <Text style={s.small}>Browse earlier periods using the arrows. Weekly and monthly views combine recorded evidence.</Text>
       </View>
     </View>
     <View style={s.card}>
