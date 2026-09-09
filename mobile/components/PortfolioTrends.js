@@ -95,15 +95,16 @@ function BrokerTrends({ broker, days, weekly, asOf }) {
   const netKnown = broker.pnl_basis === 'net_after_fees';
   const series = seriesFor(broker, days, asOf), bins = outcomeBuckets(series.outcomes, days, asOf, weekly);
   const latest = series.values.filter(row => typeof row.value === 'number' && Number.isFinite(row.value)).at(-1);
+  const latestObservationKnown = latest && series.values.at(-1) === latest;
   const totals = bins.reduce((acc, b) => { for (const key of Object.keys(acc)) acc[key] += b[key]; return acc; }, { wins: 0, losses: 0, breakeven: 0, unknown: 0, net_pnl: 0 });
   const name = broker.broker === 'kraken' ? 'Kraken' : broker.broker === 'alpaca' ? 'Alpaca' : broker.broker;
   return <View style={[s.card, exchangePalette(broker.broker)]}>
     <View style={s.heading}>
       <Text style={s.title}>{name} · {broker.currency}</Text>
-      <View style={s.balance}><Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital value' : 'Account value'} ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latest ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
+      <View style={s.balance}><Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital value' : 'Account value'} ({days}d)</Text><Text style={s.value}>{broker.value_status === 'ok' && latestObservationKnown ? money(latest.value, broker.currency) : 'Unavailable'}</Text></View>
     </View>
     <Text style={s.label}>{broker.broker === 'kraken' ? 'AI capital only · personal holdings excluded' : 'Whole account · cash plus investments'}{broker.account_mode ? ' · ' + broker.account_mode : ''}</Text>
-    {broker.value_status === 'ok' && latest && <Text style={s.label}>Last known value: {latest.captured_at ? formatDateTime(latest.captured_at) : latest.date}{series.values.at(-1) !== latest ? ' · newer valuation unavailable' : ''}. Not available cash.</Text>}
+    {broker.value_status === 'ok' && latest && <Text style={s.label}>Last known value: {money(latest.value, broker.currency)} · {latest.captured_at ? formatDateTime(latest.captured_at) : latest.date}{!latestObservationKnown ? ' · newer valuation unavailable' : ''}. Not available cash.</Text>}
     {broker.value_status === 'ok' ? <ValueChart rows={series.values} currency={broker.currency} colour={broker.broker === 'kraken' ? '#8064DC' : broker.broker === 'alpaca' ? '#BC8800' : '#476582'} /> : <Text style={s.label}>Value history is temporarily unavailable.</Text>}
     <Text style={s.subheading}>{broker.broker === 'kraken' ? 'Completed AI trades' : 'Completed recorded trades'} ({days}d)</Text>
     {broker.outcome_status !== 'ok' ? <Text style={s.label}>Trade outcomes are temporarily unavailable.</Text> : <>

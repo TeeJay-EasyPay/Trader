@@ -102,10 +102,12 @@ function ExecutiveSummaryCard({ status }) {
   const ready = status?.connection_readiness?.trade_ready;
   return <View style={[styles.summaryCard, styles.greetingCard]}>
     <GreetingIllustration />
-    <View style={styles.greetingHeading}>
-      <Text style={[styles.cardTitle, styles.greetingTitle]}>{cioGreeting()}</Text>
+    <View style={styles.greetingContent}>
+      <View style={styles.greetingHeading}>
+        <Text style={[styles.cardTitle, styles.greetingTitle]}>{cioGreeting()}</Text>
+      </View>
+      <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
     </View>
-    <Text style={styles.summaryReason}>{ready === true ? 'The system is ready. Account activity and outlook are below.' : 'Readiness needs checking. See Support needed below.'}</Text>
   </View>;
 }
 

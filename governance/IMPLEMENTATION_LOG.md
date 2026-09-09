@@ -1,5 +1,25 @@
 # Implementation Log
 
+## 2026-09-09 — Greeting content-box sizing follow-up; Kraken value clarification
+
+Founder device screenshot confirmed the previous image fix revealed the artwork
+but left uncovered right/bottom strips. The card still had 20px padding, affecting
+the percentage-sized background's containing box. Removed padding from the clipped
+outer card and put the same padding/minimum height on a separate text-content
+layer. The image remains absolutely positioned and fills an unpadded card. Added
+regression assertions separating those responsibilities. No asset or API changes.
+
+Read-only latest Kraken snapshot (17:50:16 UTC): whole-account value £4,614.59 =
+£406.53 cash + £4,208.06 invested. AI ledger still reports £436.58611353 cash,
+£56.73371828 deployed, and unknown unrealized P&L. Thus £501.86 on the chart is an
+older valuation, not verified current AI capital or available cash. The residual
+cash discrepancy is now approximately £30.06, superseding the earlier £0.73
+observation. Do not present this as merely a label difference or reconciled data.
+No account values, trading rules, ledger records or chart scope changed here.
+Chart headline now says Unavailable if a newer observation lacks a valuation;
+the older known amount remains explicitly dated in the supporting text/history.
+The proposed switch to whole-account chart values is not implemented in this fix.
+
 ## 2026-09-09 — Greeting artwork clipped by intrinsic image dimensions
 
 Founder screenshot showed the cream texture but no sun/clouds. The bundled PNG

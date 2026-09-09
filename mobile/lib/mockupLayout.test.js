@@ -57,6 +57,7 @@ test('an older known AI value is visibly dated when a newer valuation is missing
   ] }, days: 30, asOf: '2026-09-09' });
   const text = JSON.stringify(tree);
   for (const label of ['AI capital value', '2026-09-08', 'newer valuation unavailable', 'Not available cash']) assert.ok(text.includes(label));
+  assert.ok(text.includes('Unavailable'), 'a newer missing valuation must not show an old amount as its headline');
 });
 const shared = { Section: 'Section', CollapsibleSection: 'CollapsibleSection', Metric: 'Metric', Button: 'Button' };
 
@@ -115,6 +116,8 @@ test('new conversation colours remain readable and distinctly identify all speak
   assert.equal(styles.composerInput.minHeight, 92);
   assert.equal(styles.composerInput.width, '100%');
   assert.equal(styles.accountMetricGrid.flexWrap, 'wrap');
+  assert.equal(styles.greetingCard.padding, 0, 'background percentage sizing must not inherit a padded content box');
+  assert.equal(styles.greetingContent.padding, 20, 'only text content owns the greeting inset');
 });
 
 test('portfolio chart cards retain fee warnings, unavailable states and real latest value', () => {
