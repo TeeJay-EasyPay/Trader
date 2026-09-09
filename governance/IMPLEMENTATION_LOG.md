@@ -51,7 +51,16 @@ Standup source are identical to HEAD (verified with git diff --exit-code), so th
 are existing copy-test mismatches, not Portfolio/reconciliation regressions. The
 first full attempt was interrupted after fixture permission errors in the default
 Windows pytest temp directory; the fresh directory resolved those setup errors.
-Release status will be recorded below once publication finishes.
+Released commit `0be7dab17e6a51a9649aa6f6ffa754a373378147` to GitHub master.
+Production worker heartbeat confirmed that exact commit at 17:27:01 UTC; API
+health passed at 17:27:23 UTC. Android runtime 1.0.3 published to both channels:
+- preview: `e9f67723-68d5-4fff-812e-aaeeaa5409dc`
+- hosted-preview: `b7914ab0-cb2e-4321-b975-3dd611c2922f`
+Same 627-module / 1.16 MB bundle reused; no new image assets uploaded. Final
+read-only check still showed all five missing sell results pending. Deployment is
+verified; live recovery after the next reconciliation poll is NOT yet verified.
+No manual poll/trading cycle was triggered. This release-record commit uses
+`[skip render]` to avoid a second backend restart.
 
 ## 2026-09-09 — Briefing background, cycle rows and Standup input repair
 
