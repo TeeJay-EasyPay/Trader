@@ -25,6 +25,12 @@ is bounded within the existing ten-minute cache. Emulator capture returned black
 and activation failed; user asked to foreground/wake it for visual comparison.
 No local Expo development server or trading cycle started.
 
+Published commit `2e08557ddc1eab66cd16f315f91b7669d44169de`, runtime 1.0.3:
+preview `0902a198-f791-41e2-a8aa-4f855b305f77`, hosted-preview
+`d078a6e5-b3af-466b-9bce-d48a541058e1`. Live summary returned the new bounded
+GRT rejection preview with pending/unknown outcome, confirming API deployment.
+Emulator comparison remains outstanding; no pixel-identical claim is made.
+
 ## 2026-09-09 — Keep the comparison chart visible while awaiting evidence
 
 Replaced the dashed explanatory placeholder in Learning with the actual empty
