@@ -249,7 +249,8 @@ class WritingTests(unittest.TestCase):
                 conn.execute("""CREATE TABLE LOGICAL_TRADE_FILLS (
                     fill_id INTEGER PRIMARY KEY, broker_fill_id TEXT, logical_trade_id TEXT)""")
                 conn.execute("""CREATE TABLE LOGICAL_TRADES (
-                    logical_trade_id TEXT, proposal_id TEXT)""")
+                    logical_trade_id TEXT, proposal_id TEXT, broker TEXT)""")
+                conn.execute('CREATE TABLE LOGICAL_TRADE_EVENTS (logical_trade_id TEXT, broker_order_id TEXT)')
                 conn.execute("""CREATE TABLE PERFORMANCE_ATTRIBUTION (
                     attribution_id INTEGER PRIMARY KEY, created_at TEXT, proposal_id TEXT,
                     broker TEXT, symbol TEXT, asset_type TEXT, side TEXT, entry_price REAL,
@@ -321,6 +322,23 @@ class WritingTests(unittest.TestCase):
         """This runs inside a trading cycle. It must never be able to stop one."""
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(reconcile_alpaca(Path(tmp))["status"], "failed")
+
+    def test_existing_outcome_recovers_exact_entry_order_link_and_stop_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'audit.sqlite3'
+            self._seed(db)
+            self.assertEqual(reconcile_alpaca(db)['status'], 'completed')
+            with closing(sqlite3.connect(db)) as c:
+                with c:
+                    c.execute("INSERT INTO LOGICAL_TRADES VALUES ('logical', 'proposal', 'alpaca')")
+                    c.execute("INSERT INTO LOGICAL_TRADE_EVENTS VALUES ('logical', 'order-buy')")
+                    c.execute("INSERT INTO BROKER_TRADE_HISTORY (broker,external_id,status,payload_json) VALUES ('alpaca','order-sell','filled','{\"type\":\"stop\"}')")
+            self.assertEqual(reconcile_alpaca(db)['status'], 'completed')
+            with closing(sqlite3.connect(db)) as c:
+                row = c.execute('SELECT proposal_id,exit_reason,primary_factors_json FROM PERFORMANCE_ATTRIBUTION').fetchone()
+            self.assertEqual(row[0], 'proposal')
+            self.assertEqual(row[1], 'Broker stop order filled.')
+            self.assertEqual(json.loads(row[2])['exit_evidence']['order_id'], 'order-sell')
 
 
 class AccountCheckTests(unittest.TestCase):

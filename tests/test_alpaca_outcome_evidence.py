@@ -34,3 +34,18 @@ def test_reference_identity_versions_the_supplied_passage_without_copying_it():
     assert first['document_sha256'] != second['document_sha256']
     assert first['passage_sha256'] == second['passage_sha256']
     assert 'excerpt' not in first
+
+
+def test_exit_evidence_requires_exact_order_and_unambiguous_stop_type(tmp_path):
+    from ai_trader.alpaca_reconciliation import recorded_exit_evidence
+    with closing(sqlite3.connect(tmp_path / 'exit.sqlite')) as c:
+        c.execute('CREATE TABLE BROKER_TRADE_HISTORY (broker, external_id, payload_json)')
+        c.executemany('INSERT INTO BROKER_TRADE_HISTORY VALUES (?,?,?)', [
+            ('alpaca', 'stop', '{"type":"stop"}'),
+            ('alpaca', 'limit', '{"type":"limit"}'),
+            ('alpaca', 'mixed', '{"type":"stop"}'),
+            ('alpaca', 'mixed', '{"type":"market"}'),
+            ('kraken', 'foreign', '{"type":"stop"}')])
+        result = recorded_exit_evidence(c, ['stop', 'limit', 'mixed', 'foreign', 'absent'])
+    assert set(result) == {'stop'}
+    assert result['stop']['reason'] == 'Broker stop order filled.'

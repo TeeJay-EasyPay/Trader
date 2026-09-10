@@ -213,6 +213,7 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
         consumed_cost = 0.0
         opened_at: str | None = None
         entry_proposal: str | None = None
+        entry_proposals: set[str | None] = set()
         lots_used = 0
 
         while remaining > QUANTITY_EPSILON and lots:
@@ -221,6 +222,7 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
             consumed_quantity += take
             consumed_cost += take * lot.price
             lots_used += 1
+            entry_proposals.add(lot.proposal_id)
             if opened_at is None:
                 opened_at, entry_proposal = lot.filled_at, lot.proposal_id
             lot.quantity -= take
@@ -246,7 +248,7 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
             profit_loss=round((order.price - entry_price) * consumed_quantity, 6),
             opened_at=opened_at or order.filled_at,
             closed_at=order.filled_at,
-            entry_proposal_id=entry_proposal,
+            entry_proposal_id=entry_proposal if len(entry_proposals) == 1 else None,
             exit_proposal_id=order.proposal_id,
             lots=lots_used,
             incomplete=order.incomplete or remaining > QUANTITY_EPSILON,
@@ -283,10 +285,20 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
         f"""
         SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
                {field('order_id')} AS broker_order_id, {field('leaves_qty')} AS leaves_quantity,
-               t.proposal_id, t.logical_trade_id
+               COALESCE(t.proposal_id, linked.proposal_id),
+               CASE WHEN t.proposal_id IS NOT NULL THEN t.logical_trade_id ELSE linked.logical_trade_id END
         FROM BROKER_TRADE_HISTORY h
         LEFT JOIN LOGICAL_TRADE_FILLS f ON f.broker_fill_id = h.external_id
         LEFT JOIN LOGICAL_TRADES t ON t.logical_trade_id = f.logical_trade_id
+        LEFT JOIN (
+            SELECT ev.broker_order_id, MIN(original.proposal_id) AS proposal_id,
+                   MIN(original.logical_trade_id) AS logical_trade_id
+            FROM LOGICAL_TRADE_EVENTS ev
+            JOIN LOGICAL_TRADES original ON original.logical_trade_id=ev.logical_trade_id
+            WHERE original.broker='alpaca' AND original.proposal_id IS NOT NULL
+            GROUP BY ev.broker_order_id
+            HAVING COUNT(DISTINCT original.logical_trade_id)=1
+        ) linked ON linked.broker_order_id={field('order_id')}
         WHERE LOWER(h.broker) = 'alpaca' AND h.status IN ('fill', 'partial_fill')
         ORDER BY h.opened_at
         """
@@ -311,6 +323,30 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
     return fills
 
 
+def recorded_exit_evidence(conn: Any, order_ids: list[str]) -> dict[str, dict[str, str]]:
+    """Match actual closing fill order IDs to recorded order types, never P&L signs."""
+    result = {}
+    unique = sorted(set(order_ids))
+    for start in range(0, len(unique), 100):
+        batch = unique[start:start + 100]
+        marks = ','.join('?' for _ in batch)
+        kind = "payload_json::jsonb->>'type'" if uses_postgres() else "json_extract(payload_json, '$.type')"
+        rows = conn.execute(f"""SELECT external_id,{kind} FROM BROKER_TRADE_HISTORY
+            WHERE broker='alpaca' AND external_id IN ({marks})""", tuple(batch)).fetchall()
+        types: dict[str, set[str]] = {}
+        for order_id, order_type in (tuple(row[i] for i in range(2)) for row in rows):
+            types.setdefault(order_id, set()).add(str(order_type or '').lower())
+        for order_id, values in types.items():
+            if len(values) != 1:
+                continue
+            order_type = next(iter(values))
+            if order_type in {'stop', 'stop_limit', 'trailing_stop'}:
+                result[order_id] = {'order_id': order_id, 'order_type': order_type,
+                    'basis': 'closing_fill_order_id_matches_recorded_broker_order_type',
+                    'reason': f'Broker {order_type.replace("_", "-")} order filled.'}
+    return result
+
+
 def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
     """Work out every finished Alpaca trade and write the ones that are missing.
 
@@ -326,6 +362,7 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
             fills = _alpaca_fill_rows(conn)
             orders = collapse_fills(fills)
             round_trips, unmatched = pair_round_trips(orders)
+            exits = recorded_exit_evidence(conn, [trip.exit_order_id for trip in round_trips if trip.exit_order_id])
 
             entry_reasons = trade_reasons.entry_reasons_for_proposals(
                 conn, [trip.entry_proposal_id for trip in round_trips if trip.entry_proposal_id]
@@ -336,13 +373,22 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                     _publish_order_result(conn, trip)
                     existing = conn.execute(
                         """
-                        SELECT 1 FROM PERFORMANCE_ATTRIBUTION
+                        SELECT attribution_id, exit_reason, primary_factors_json, proposal_id FROM PERFORMANCE_ATTRIBUTION
                         WHERE broker = 'alpaca' AND symbol = ? AND closed_at = ?
                         LIMIT 1
                         """,
                         (trip.symbol, trip.closed_at),
                     ).fetchone()
                     if existing:
+                        if not existing[3] and trip.entry_proposal_id:
+                            conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET proposal_id = ?, entry_reason = ? WHERE attribution_id = ? AND proposal_id IS NULL',
+                                         (trip.entry_proposal_id, entry_reasons.get(trip.entry_proposal_id) or trade_reasons.UNRECORDED_ENTRY, existing[0]))
+                        evidence = exits.get(trip.exit_order_id)
+                        if evidence and (not existing[1] or 'not recorded' in existing[1].lower()):
+                            factors = json.loads(existing[2] or '{}')
+                            factors['exit_evidence'] = evidence
+                            conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET exit_reason = ?, primary_factors_json = ? WHERE attribution_id = ?',
+                                         (evidence['reason'], json.dumps(factors, sort_keys=True), existing[0]))
                         continue
                     conn.execute(
                         """
@@ -371,7 +417,7 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                             # rather than invented: a constant string here would send the
                             # learning loop the same false lesson the Kraken side had to have
                             # removed on 2026-08-27.
-                            trade_reasons.UNRECORDED_EXIT,
+                            exits.get(trip.exit_order_id, {}).get('reason', trade_reasons.UNRECORDED_EXIT),
                             json.dumps({
                                 "reconstructed_from": "alpaca_fill_pairing",
                                 "lots_consumed": trip.lots,
@@ -379,6 +425,7 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                                 "incomplete_fill_record": trip.incomplete,
                                 "exit_order_id": trip.exit_order_id,
                                 "pnl_basis": "before_unreconciled_fees",
+                                "exit_evidence": exits.get(trip.exit_order_id),
                             }, sort_keys=True, default=str),
                         ),
                     )
