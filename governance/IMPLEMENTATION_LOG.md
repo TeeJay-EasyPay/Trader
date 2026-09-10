@@ -8,6 +8,12 @@ image and shared GreetingIllustration renderer. The Learning header uses a bound
 shape without stretching or making the image fill the entire report height.
 No new image download, data requests or trading changes. All 119 mobile tests pass.
 
+Committed/pushed as `873c1421`; Android runtime 1.0.3 published to preview
+`d865de05-446e-4771-8197-ea4ebaa01bc4` and hosted-preview
+`b2a4fa09-f5a9-4940-b075-84c3ded00b7e`. Direct emulator screenshot after OTA
+restart confirmed the detailed greeting artwork in the Learning header, with
+readable title and controls. No local Expo server was started.
+
 ## 2026-09-10 — Consistent navigation across all screens
 
 Founder requested one button arrangement throughout the app and authorised either
