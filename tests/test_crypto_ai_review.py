@@ -82,6 +82,16 @@ def _run(db_path: Path, reviewer=None, min_confidence: float = 0.85, **kwargs):
 
 
 class CryptoReviewParsingTests(unittest.TestCase):
+    def test_nonpositive_model_return_after_fees_is_refused(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        from ai_trader.agent import evaluate_trade_intelligence
+        def low_return(*args, **kwargs):
+            packet = evaluate_trade_intelligence(*args, **kwargs)
+            return replace(packet, probability={**packet.probability, 'expected_return_r': 0.00001})
+        with tempfile.TemporaryDirectory() as tmp, patch('ai_trader.agent.evaluate_trade_intelligence', side_effect=low_return):
+            self.assertEqual(_run(Path(tmp) / 'audit.sqlite3'), [])
+
     def test_accepted_proposal_preserves_decision_time_fee_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             proposal = _run(Path(tmp) / 'audit.sqlite3')[0]

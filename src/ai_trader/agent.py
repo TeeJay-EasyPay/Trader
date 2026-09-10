@@ -1031,6 +1031,23 @@ def propose_crypto_trades(
                 if on_symbol_complete:
                     on_symbol_complete(symbol, [])
                 continue
+            economics = decision_economics(entry=price, stop=stop_loss, target=take_profit,
+                fee_rate=round_trip_fee_pct, minimum_ratio=min_net_reward_risk,
+                probability=intelligence.probability)
+            expected_net = economics['model_expected_net_r']
+            if expected_net is None or expected_net <= 0:
+                audit.record_execution_event(proposal_id=proposal.proposal_id,
+                    event_type='agent_no_trade', payload={'symbol': symbol,
+                        'reason': 'expected_net_return_unavailable_or_nonpositive',
+                        'decision_economics': economics})
+                record_crypto_rejection(db_path, symbol=symbol,
+                    reason='expected_net_return_unavailable_or_nonpositive',
+                    entry_price=price, stop_loss=stop_loss, take_profit=take_profit,
+                    confidence=confidence, notional=sized_notional,
+                    evidence={'decision_economics': economics})
+                if on_symbol_complete:
+                    on_symbol_complete(symbol, [])
+                continue
             validation = validate_trade_proposal(
                 proposal, account, guardrails, now=now,
                 # 2026-08-25: a coin the Founder holds personally is not a position this
