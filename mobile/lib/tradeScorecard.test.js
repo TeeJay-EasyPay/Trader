@@ -133,4 +133,12 @@ test('broker summaries preserve missing Alpaca fees and currencies', () => {
   assert.strictEqual(card.fees, null);
 });
 
+test('a failed initial fetch is explicit and never renders zero trades', () => {
+  const card = tradeScorecardCard({ load_failed: true });
+  assert.strictEqual(card.loaded, false);
+  assert.deepStrictEqual(card.rows, []);
+  assert(card.lessons.includes('could not be loaded'));
+  assert(card.lessons.includes('does not mean there were no trades'));
+});
+
 console.log(`\n${passed} test(s) passed.`);

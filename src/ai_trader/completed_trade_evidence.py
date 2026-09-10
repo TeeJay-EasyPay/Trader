@@ -41,12 +41,14 @@ def completed_trade_evidence(db, *, now_epoch=None):
         item = {'currency': currency,
                 'pnl_basis': 'net_after_recorded_fees' if broker == 'kraken' else 'before_unreconciled_fees',
                 'periods': {}}
-        for name, days in (('day', 1), ('week', 7), ('month', 30)):
-            try:
-                with closing(connect(db)) as conn:
-                    conn.row_factory = sqlite3.Row
-                    row = conn.execute(f"""WITH outcomes AS ({source})
-                      SELECT COUNT(*) AS total,
+        try:
+            # One aggregate read for all windows, not three separate remote
+            # connections. LEFT JOIN retains an honest empty bucket for each period.
+            with closing(connect(db)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(f"""WITH outcomes AS ({source}),
+                      windows(period, start_epoch) AS (VALUES ('day', ?), ('week', ?), ('month', ?))
+                      SELECT windows.period, COUNT(outcomes.closed_epoch) AS total,
                       SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) AS successful,
                       SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) AS unsuccessful,
                       SUM(CASE WHEN pnl=0 THEN 1 ELSE 0 END) AS breakeven,
@@ -57,11 +59,14 @@ def completed_trade_evidence(db, *, now_epoch=None):
                         AND ABS(gross-fees-pnl)>0.01 THEN 1 ELSE 0 END) AS accounting_mismatches,
                       COUNT(CASE WHEN holding>=0 THEN 1 END) AS holding_known,
                       AVG(CASE WHEN holding>=0 THEN holding END) AS average_holding_seconds,
-                      SUM(CASE WHEN proposal_id IS NULL OR proposal_id='' THEN 1 ELSE 0 END) AS missing_proposal_links,
+                      SUM(CASE WHEN outcomes.closed_epoch IS NOT NULL AND (proposal_id IS NULL OR proposal_id='') THEN 1 ELSE 0 END) AS missing_proposal_links,
                       COUNT(stop) AS recorded_stop_count
-                      FROM outcomes WHERE closed_epoch>=? AND closed_epoch<=?""",
-                      (now-days*86400, now)).fetchone()
+                      FROM windows LEFT JOIN outcomes ON closed_epoch>=windows.start_epoch AND closed_epoch<=?
+                      GROUP BY windows.period""",
+                      (now-86400, now-7*86400, now-30*86400, now)).fetchall()
+                for row in rows:
                     bucket = dict(row)
+                    name = bucket.pop('period')
                     for field in ('successful', 'unsuccessful', 'breakeven', 'accounting_mismatches', 'missing_proposal_links'):
                         bucket[field] = bucket[field] or 0
                     total = bucket['total']
@@ -74,7 +79,8 @@ def completed_trade_evidence(db, *, now_epoch=None):
                     bucket['net_pnl'] = bucket['recorded_pnl'] if broker == 'kraken' else None
                     bucket['available'] = True
                     item['periods'][name] = bucket
-            except Exception:
+        except Exception:
+            for name in ('day', 'week', 'month'):
                 item['periods'][name] = {'available': False, 'reason': 'Completed-trade evidence unavailable; not zero trades.'}
         try:
             with closing(connect(db)) as conn:

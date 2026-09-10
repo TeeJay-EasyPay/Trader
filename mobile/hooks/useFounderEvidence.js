@@ -494,9 +494,12 @@ function useFounderEvidence() {
         // reason -- a reporting query must never be able to fail or delay the refresh
         // that the rest of the briefing depends on. null means "not loaded yet", which
         // the card renders as its own honest empty state rather than as zero trades.
-        apiRequest('/trade-scorecard', { timeoutMs: SECONDARY_REFRESH_TIMEOUT_MS })
+        // This aggregate report measured ~10s in production. Give it the primary
+        // request budget; it still runs independently of the main refresh.
+        apiRequest('/trade-scorecard', { timeoutMs: PRIMARY_REFRESH_TIMEOUT_MS })
           .catch(() => {
-            if (isMountedRef.current) setTradeScorecard(previous => previous ? { ...previous, refresh_failed: true } : null);
+            if (isMountedRef.current) setTradeScorecard(previous => previous && !previous.load_failed
+              ? { ...previous, refresh_failed: true } : { load_failed: true });
             return null;
           })
           .then((nextScorecard) => {

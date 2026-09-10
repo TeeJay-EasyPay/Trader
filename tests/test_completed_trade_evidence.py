@@ -20,8 +20,9 @@ def test_shared_periods_keep_currencies_and_missing_costs_separate(tmp_path):
           ('alpaca','2026-09-10T10:00:00+00:00',20,3600,NULL,12,'target',NULL);
         ''')
     with patch('ai_trader.completed_trade_evidence.uses_postgres', return_value=False), \
-         patch('ai_trader.completed_trade_evidence.connect', side_effect=lambda _: sqlite3.connect(db)):
+         patch('ai_trader.completed_trade_evidence.connect', side_effect=lambda _: sqlite3.connect(db)) as connections:
         result = completed_trade_evidence(db, now_epoch=1789041600)
+    assert connections.call_count == 4  # two period reads and two exit-reason reads
     kraken = result['brokers']['kraken']['periods']
     assert kraken['day']['total'] == 1
     assert kraken['day']['gross_pnl'] == 3
@@ -34,6 +35,21 @@ def test_shared_periods_keep_currencies_and_missing_costs_separate(tmp_path):
     assert alpaca['periods']['day']['gross_pnl'] == 20
     assert alpaca['periods']['day']['net_pnl'] is None
     assert alpaca['recorded_exit_reasons_30d'][0]['reason'] == 'target'
+
+
+def test_empty_windows_preserve_zero_counts_and_unknown_amounts(tmp_path):
+    db = tmp_path / 'empty.sqlite'
+    with sqlite3.connect(db) as c:
+        c.execute('''CREATE TABLE KRAKEN_RECONCILED_RESULTS(status,exit_time,net_pnl,gross_pnl,
+          exchange_fee,broker_fee,holding_seconds,proposal_id,original_stop,entry_time)''')
+    c.close()
+    with patch('ai_trader.completed_trade_evidence.uses_postgres', return_value=False), \
+         patch('ai_trader.completed_trade_evidence.connect', side_effect=lambda _: sqlite3.connect(db)):
+        result = completed_trade_evidence(db, now_epoch=1789041600)
+    for bucket in result['brokers']['kraken']['periods'].values():
+        assert bucket['available'] is True
+        assert bucket['total'] == bucket['missing_proposal_links'] == 0
+        assert bucket['net_pnl'] is None
 
 
 def test_missing_tables_are_unavailable_not_zero(tmp_path):

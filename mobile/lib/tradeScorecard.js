@@ -68,7 +68,7 @@ function netText(bucket) {
 }
 
 function scorecardRows(scorecard) {
-  if (!scorecard) return NO_SCORECARD_ROWS;
+  if (!scorecard || scorecard.load_failed) return NO_SCORECARD_ROWS;
   const brokers = scorecard.completed_trade_periods?.brokers;
   if (brokers) return PERIOD_LABELS.flatMap(([period, label]) =>
     Object.entries(brokers).map(([broker, evidence]) => {
@@ -109,6 +109,7 @@ function feesText(scorecard) {
 
 function lessonsText(scorecard) {
   if (!scorecard) return NO_SCORECARD_MESSAGE;
+  if (scorecard.load_failed) return 'Trade results could not be loaded. Refresh to try again; this does not mean there were no trades.';
   const lessons = typeof scorecard.lessons === 'string' ? scorecard.lessons.trim() : '';
   if (!lessons) return 'No lessons recorded yet.';
   return lessons;
@@ -116,7 +117,7 @@ function lessonsText(scorecard) {
 
 function tradeScorecardCard(scorecard) {
   return {
-    loaded: Boolean(scorecard),
+    loaded: Boolean(scorecard && !scorecard.load_failed),
     rows: scorecardRows(scorecard),
     lessons: scorecard?.completed_trade_periods ? 'Recorded results are not proof of learning improvement. Missing costs and accounting mismatches need reconciliation.' : lessonsText(scorecard),
     fees: scorecard?.completed_trade_periods ? null : feesText(scorecard),
