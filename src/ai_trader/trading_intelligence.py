@@ -356,17 +356,26 @@ def select_strategy(
     db_path: Path | None = None,
 ) -> dict[str, Any]:
     p = proposal.normalized()
+    # One fresh outcome snapshot for this selection, shared by every candidate and
+    # the winning profile. Never cache across proposals or weaken readiness checks.
+    statistics = {}
+    if db_path is not None:
+        try:
+            from .strategy_performance import strategy_records
+            statistics = {key: record.to_statistics() for key, record in strategy_records(db_path).items()}
+        except Exception:  # unavailable evidence remains unavailable for this selection
+            statistics = {}
     if "demo" in p.plain_english_reasoning.lower() or source == "demo":
-        selected = strategy_definition("paper_validation_2r", db_path)
+        selected = strategy_definition("paper_validation_2r", db_path, statistics=statistics)
         selected["selection_reason"] = "Demo/test proposal selected the paper validation strategy."
         selected["candidate_scores"] = [{"strategy_id": "paper_validation_2r", "score": 1.0, "reason": "Operational validation path."}]
         selected["rejected_strategies"] = []
         return selected
     candidates = _candidate_strategy_ids(p)
-    scored = [_score_strategy_candidate(strategy_definition(strategy_id, db_path), p, market_intelligence or {}, regime or {}, crypto_score) for strategy_id in candidates]
+    scored = [_score_strategy_candidate(strategy_definition(strategy_id, db_path, statistics=statistics), p, market_intelligence or {}, regime or {}, crypto_score) for strategy_id in candidates]
     scored.sort(key=lambda item: item["score"], reverse=True)
-    winner = scored[0] if scored else _score_strategy_candidate(strategy_definition("equity_conservative_ai_assisted", db_path), p, market_intelligence or {}, regime or {}, crypto_score)
-    selected = strategy_definition(winner["strategy_id"], db_path)
+    winner = scored[0] if scored else _score_strategy_candidate(strategy_definition("equity_conservative_ai_assisted", db_path, statistics=statistics), p, market_intelligence or {}, regime or {}, crypto_score)
+    selected = strategy_definition(winner["strategy_id"], db_path, statistics=statistics)
     selected["selection_reason"] = winner["reason"]
     selected["candidate_scores"] = scored
     selected["rejected_strategies"] = [
@@ -386,7 +395,7 @@ def select_strategy(
     return selected
 
 
-def strategy_definition(strategy_id: str, db_path: Path | None = None) -> dict[str, Any]:
+def strategy_definition(strategy_id: str, db_path: Path | None = None, *, statistics: dict[str, Any] | None = None) -> dict[str, Any]:
     base = dict(STRATEGIES.get(strategy_id, STRATEGIES["equity_conservative_ai_assisted"]))
     base.setdefault("entry_conditions", list(base.get("minimum_evidence", [])))
     base.setdefault("exit_conditions", [base.get("exit_methodology", "Defined stop and target.")])
@@ -404,7 +413,9 @@ def strategy_definition(strategy_id: str, db_path: Path | None = None) -> dict[s
     # returns nothing the old placeholder stands, so a strategy with no record is treated as
     # unproven rather than as average -- and never as good.
     live_statistics = None
-    if db_path is not None:
+    if statistics is not None:
+        live_statistics = statistics.get(strategy_id)
+    elif db_path is not None:
         try:
             from .strategy_performance import historical_statistics_for
 

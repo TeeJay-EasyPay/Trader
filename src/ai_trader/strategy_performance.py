@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect
+from .database import PostgresConnection, connect
 from .learning_readiness import _parse as _parse_stamp
 from .learning_readiness import readiness_from_outcomes
 
@@ -105,6 +105,26 @@ def _float(value: Any) -> float | None:
     return result
 
 
+def _strategy_context_projection(*, postgres: bool) -> str:
+    """Project only required context; malformed JSON produces an empty context.
+
+    PostgreSQL 16+ supports the guarded input check (production is 17). SQLite's
+    json_valid guard likewise prevents one corrupt dossier breaking every result.
+    Return JSON text to preserve numeric/string/null semantics across both engines.
+    """
+    if postgres:
+        return """CASE WHEN pg_input_is_valid(payload_json, 'json') THEN
+            json_build_object('proposal', json_build_object(
+                'strategy_id', payload_json::json #> '{proposal,strategy_id}',
+                'stop_loss', payload_json::json #> '{proposal,stop_loss}'))::text
+            ELSE '{}' END"""
+    return """CASE WHEN json_valid(payload_json) THEN
+        json_object('proposal', json_object(
+            'strategy_id', json_extract(payload_json, '$.proposal.strategy_id'),
+            'stop_loss', json_extract(payload_json, '$.proposal.stop_loss')))
+        ELSE '{}' END"""
+
+
 def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
                       by_symbol: bool = False) -> dict[Any, StrategyRecord]:
     """Per-strategy live results, or {} when the outcome record cannot be trusted.
@@ -147,9 +167,10 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
             # behind this project's egress blowout, and it timed this function out the first
             # time it was run. The IN-list is at most the number of closed trades.
             placeholders = ",".join("?" for _ in proposal_ids)
+            projection = _strategy_context_projection(postgres=isinstance(conn, PostgresConnection))
             audits = conn.execute(
                 f"""
-                SELECT proposal_id, payload_json FROM TRADE_AUDIT
+                SELECT proposal_id, {projection} AS strategy_context FROM TRADE_AUDIT
                 WHERE event_type = 'agent_proposal' AND proposal_id IN ({placeholders})
                 """,
                 tuple(proposal_ids),
@@ -164,7 +185,10 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
         if row[0] not in wanted or row[0] in context:
             continue
         try:
-            proposal = (json.loads(row[1] or "{}") or {}).get("proposal") or {}
+            decoded = json.loads(row[1] or "{}")
+            proposal = decoded.get("proposal") if isinstance(decoded, dict) else None
+            if not isinstance(proposal, dict):
+                continue
         except (TypeError, ValueError):
             continue
         strategy_id = str(proposal.get("strategy_id") or "").strip()
