@@ -10,6 +10,20 @@ Removed screen-dependent navigation composition so controls no longer move when
 switching screens. All 118 mobile tests pass, including a shared-layout regression
 check. No trading, data-fetching or backend behaviour changed.
 
+Published commit `1d0644b3`, Android runtime 1.0.3: preview
+`eabc6fa8-2edc-4a60-b319-f260e50bdcaf`, hosted-preview
+`bef75a44-1074-4c59-af44-5f333c14c3c1`. Direct emulator screenshot confirmed
+the new shared layout on Executive Briefing after loading the update.
+
+Wiring clarification requested by Founder: Learning cards/details read actual
+outcomes, shadow trades, decisions, reviews, proposals and strategy/test records.
+The summary headline uses a recent recorded lesson, not a newly generated
+cross-source end-of-period assessment. Paired-rule comparisons and external
+strategy discovery are not connected; insufficient-evidence status is currently
+fixed, not an automated improving/deteriorating verdict. Past reports are
+reconstructed, not immutable day-end snapshots. These remain capability gaps,
+not completed by the visual/navigation changes.
+
 ## 2026-09-10 — Learning mockup density and responsive composition
 
 Rebuilt the overview against the Founder's folded/unfolded screenshots rather than
