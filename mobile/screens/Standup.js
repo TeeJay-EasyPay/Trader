@@ -18,7 +18,7 @@
 
 const React = require('react');
 const { useCallback, useEffect, useMemo, useRef, useState } = React;
-const { ActivityIndicator, Text, TextInput, TouchableOpacity, View } = require('react-native');
+const { ActivityIndicator, AppState, Text, TextInput, TouchableOpacity, View } = require('react-native');
 
 const { styles } = require('../styles');
 const { Section, Button, CollapsibleSection } = require('../components/shared');
@@ -108,8 +108,8 @@ function StandupScreen({ request }) {
   // transcript was being stored the whole time; nothing read it back.
   useEffect(() => {
     let cancelled = false;
-    request('/standup/history?conversation_id=standup&limit=40')
-      .then((payload) => {
+    const loadHistory = async () => {
+      const payload = await request('/standup/history?conversation_id=standup&limit=40');
         if (cancelled || !mountedRef.current) return;
         const stored = (payload && payload.turns) || [];
         setTurns(stored.map((turn) => ({
@@ -117,11 +117,38 @@ function StandupScreen({ request }) {
           text: normalizeChatText(turn.text),
           createdAt: turn.created_at,
         })));
-      })
-      // A history that will not load is not worth an error message: the conversation still
-      // works, and the turns from this session will appear as normal.
-      .catch(() => {});
-    return () => { cancelled = true; };
+    };
+    // Reconnect to existing work with GETs only. Never resend a question or start
+    // peer replies merely because the screen/phone has been reopened.
+    const recover = async () => {
+      if (busyRef.current || cancelled) return;
+      busyRef.current = true;
+      setBusy(true);
+      try {
+        let state = await request('/standup/turn?conversation_id=standup', { timeoutMs: POLL_TIMEOUT_MS });
+        await loadHistory();
+        const beganAt = Date.now();
+        while (!cancelled && mountedRef.current && state?.status === 'running') {
+          setStatusLine(progressLine(state.progress, state.elapsed_seconds) + ' · Reply will be saved in history.');
+          if (pollOutcome(state, Date.now() - beganAt).action === 'failed') break;
+          await new Promise(resolve => setTimeout(resolve, POLL_MS));
+          if (cancelled || !mountedRef.current) return;
+          state = await request('/standup/turn?turn_id=' + encodeURIComponent(state.turn_id), { timeoutMs: POLL_TIMEOUT_MS });
+        }
+        if (!cancelled && mountedRef.current) {
+          if (state?.status !== 'idle') await loadHistory();
+          setStatusLine(state?.status === 'done' ? 'Reply saved in history.' :
+            state?.status === 'idle' ? 'Not started' : 'Check history for the result. No question was resent.');
+        }
+      } catch (_) {
+        if (!cancelled && mountedRef.current) setStatusLine('Could not reconnect. Existing work may still finish; reopen to check history.');
+      } finally {
+        if (!cancelled && mountedRef.current) { busyRef.current = false; setBusy(false); }
+      }
+    };
+    recover();
+    const subscription = AppState.addEventListener('change', state => { if (state === 'active') recover(); });
+    return () => { cancelled = true; subscription.remove(); };
   }, [request]);
 
   // 2026-09-07, Founder-reported: he opened the standup, spoke, and nothing happened -- there
@@ -416,6 +443,7 @@ function StandupScreen({ request }) {
         <Text style={styles.bodyText}>
           Say "Hey ChatGPT" or "Hey Claude" to choose who answers.
           This conversation does not place trades.
+          Spoken replies are read aloud. Leaving the screen does not cancel an answer already running.
         </Text>
 
         <View style={styles.standupModeRow}>

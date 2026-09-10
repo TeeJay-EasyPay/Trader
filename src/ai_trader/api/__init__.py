@@ -913,7 +913,8 @@ class LocalApiService:
             # How a background turn is going: who is working, how far in, and the answer once
             # there is one. Polled every couple of seconds, so it must stay cheap -- it reads
             # memory and touches no database.
-            return 200, standup_turn_state(_first(query, "turn_id") or "")
+            return 200, standup_turn_state(_first(query, "turn_id") or "",
+                conversation_id=_first(query, "conversation_id") or "")
         if path == "/standup/history":
             # 2026-09-07. Without this, reopening the Standup screen shows an empty card until
             # you ask something new -- the exact complaint the Founder made about Ask on
@@ -1089,7 +1090,8 @@ class LocalApiService:
             # /standup/turn for it. The synchronous path is kept for tests and scripts, where
             # waiting is exactly what the caller wants.
             if bool(body.get("background")):
-                turn_id = start_standup_turn(lambda report: self.run_standup_turn(body, report))
+                turn_id = start_standup_turn(lambda report: self.run_standup_turn(body, report),
+                    conversation_id=str(body.get('conversation_id') or 'standup'))
                 return 200, {"status": "started", "turn_id": turn_id}
             return 200, self.run_standup_turn(body)
         if path == "/ask-ai-trader":
@@ -1525,9 +1527,14 @@ class LocalApiService:
         if not self.settings.openai_api_key:
             return {"status": "not_configured",
                     "text": "The trader cannot answer: OPENAI_API_KEY is not set on this deployment."}
-        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_reasoning_model)
+        if report:
+            report({'speaker': STANDUP_TRADER, 'stage': 'thinking', 'budget_seconds': 180})
+        explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_reasoning_model,
+            timeout_seconds=180, max_output_tokens=6000)
         try:
             answer = explainer.answer(question, {"input_inventory": inventory}, history)
+        except TimeoutError:
+            return {'status': 'failed', 'text': 'Trader reached its 3-minute response timeout. No answer was received and no automatic retry was made.'}
         except Exception as exc:  # noqa: BLE001 - one silent participant must not end the standup
             logger.exception("Trader turn failed in standup.")
             return {"status": "failed", "text": f"The trader could not answer ({type(exc).__name__})."}

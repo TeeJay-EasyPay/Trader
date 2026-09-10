@@ -351,10 +351,12 @@ class OpenAIReadOnlyExplainer:
     # Failing fast here lets the caller return the deterministic evidence answer instead.
     DEFAULT_TIMEOUT_SECONDS = 35.0
 
-    def __init__(self, api_key: str, model: str, timeout_seconds: float | None = None):
+    def __init__(self, api_key: str, model: str, timeout_seconds: float | None = None,
+                 max_output_tokens: int | None = None):
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
+        self.max_output_tokens = max_output_tokens
 
     def answer(self, question: str, context: dict[str, Any], history: list[dict[str, Any]] | None = None) -> str:
         prompt = {
@@ -443,9 +445,17 @@ class OpenAIReadOnlyExplainer:
                 "Content-Type": "application/json",
             },
         )
+        if self.max_output_tokens is not None:
+            payload['max_output_tokens'] = int(self.max_output_tokens)
+            request.data = json.dumps(payload).encode('utf-8')
         with urlopen(request, timeout=self.timeout_seconds) as response:
             raw = json.loads(response.read().decode("utf-8"))
-        return _extract_response_text(raw).strip()
+        text = _extract_response_text(raw).strip()
+        if raw.get('status') == 'incomplete':
+            return (text + '\n\n' if text else '') + 'This response stopped before completion at its generation limit. It has not been retried automatically.'
+        if not text:
+            raise ValueError('The model returned no answer.')
+        return text
 
 
 def _extract_response_text(response: dict[str, Any]) -> str:

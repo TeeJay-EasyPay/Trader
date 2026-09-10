@@ -69,6 +69,9 @@ function progressLine(progress, elapsedSeconds) {
   const who = SPEAKER_WORDS[state.speaker] || 'They';
   const clock = clockText(elapsedSeconds);
   const subject = who === 'They' ? 'Working' : `${who} is`;
+  if (state.speaker === 'trader' && state.budget_seconds) {
+    return `Trader is preparing the answer · ${clock} · response limit ${clockText(state.budget_seconds)}`;
+  }
 
   if (state.stage === 'looking') {
     const doing = TOOL_WORDS[state.last_tool] || 'checking something';

@@ -71,7 +71,7 @@ def _reap(now: float) -> None:
         _TURNS.pop(turn_id, None)
 
 
-def start_turn(work: Callable[[Callable[[dict[str, Any]], None]], dict[str, Any]]) -> str:
+def start_turn(work: Callable[[Callable[[dict[str, Any]], None]], dict[str, Any]], *, conversation_id: str = '') -> str:
     """Begin a turn in a background thread and hand back its id straight away.
 
     `work` is given a `report` callback to describe what it is doing as it goes. Anything it
@@ -89,6 +89,7 @@ def start_turn(work: Callable[[Callable[[dict[str, Any]], None]], dict[str, Any]
             "result": None,
             "started_at": now,
             "finished_at": None,
+            "conversation_id": conversation_id,
         }
 
     def _report(update: dict[str, Any]) -> None:
@@ -125,7 +126,7 @@ def start_turn(work: Callable[[Callable[[dict[str, Any]], None]], dict[str, Any]
     return turn_id
 
 
-def turn_state(turn_id: str) -> dict[str, Any]:
+def turn_state(turn_id: str, *, conversation_id: str = '') -> dict[str, Any]:
     """How a turn is going, for the app to poll.
 
     An id this process has never seen comes back as "unknown" rather than an error. That is the
@@ -137,6 +138,12 @@ def turn_state(turn_id: str) -> dict[str, Any]:
     now = _now()
     with _LOCK:
         _reap(now)
+        if not wanted and conversation_id:
+            active = [(key, value) for key, value in _TURNS.items()
+                      if value.get('conversation_id') == conversation_id and value['status'] == 'running']
+            if not active:
+                return {'status': 'idle'}
+            wanted = max(active, key=lambda pair: pair[1]['started_at'])[0]
         turn = _TURNS.get(wanted)
         if turn is None:
             return {

@@ -207,7 +207,8 @@ class EndpointTests(unittest.TestCase):
 
     def test_a_background_request_answers_with_an_id_not_an_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            status, payload = self._service(tmp).post("/standup", {
+            service = self._service(tmp)
+            status, payload = service.post("/standup", {
                 "message": "Claude, why is that slow?", "exchange_budget": 0,
                 "max_replies": 1, "background": True,
             })
@@ -215,6 +216,11 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(payload["status"], "started")
             self.assertTrue(payload["turn_id"])
             self.assertNotIn("turns", payload, "the answer is not ready yet and must not be faked")
+            # The client can leave immediately; the server still writes the answer.
+            # Wait before removing SQLite on Windows, not before checking the response.
+            self.assertTrue(_wait_for(lambda: standup_turns.turn_state(payload['turn_id'])['status'] == 'done'))
+            history = service.standup_history()['turns']
+            self.assertTrue(any(turn['speaker'] == CLAUDE and turn['text'] == 'claude says something' for turn in history))
 
     def test_the_answer_arrives_on_the_polling_route(self):
         with tempfile.TemporaryDirectory() as tmp:
