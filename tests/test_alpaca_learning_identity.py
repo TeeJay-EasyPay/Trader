@@ -50,6 +50,30 @@ def test_unlinked_same_symbol_exit_is_not_assumed_to_close_governed_trade(tmp_pa
     assert canonical_trade(db,logical)['terminal'] == 0
 
 
+def test_health_aggregates_have_unique_postgres_column_names_and_bound_patterns(tmp_path):
+    import sqlite3
+    from ai_trader.database import HybridRow
+    from ai_trader.learning_monitor import learning_health_snapshot
+    test_bracket_activity_fills_close_one_governed_trade_once(tmp_path)
+    class Connection:
+        def __init__(self, path):
+            self.conn=sqlite3.connect(path)
+        def execute(self, sql, params=()):
+            assert '%' not in sql  # LIKE patterns must be bound, not psycopg format tokens.
+            cursor=self.conn.execute(sql,params)
+            names=[column[0] for column in cursor.description]
+            assert len(names)==len(set(names))
+            class Result:
+                def fetchall(self):
+                    return [HybridRow(dict(zip(names,row))) for row in cursor.fetchall()]
+            return Result()
+        def close(self):
+            self.conn.close()
+    result=learning_health_snapshot(tmp_path/'learning.db',connection_factory=Connection)
+    assert result['all_run_stages'][0]['completed_missing_experience']==0
+    assert result['experience_coverage'][0]['reporting_reviews_not_canonical_closures']==0
+
+
 def test_polled_bracket_child_recovers_explicit_parent_link_without_symbol_pairing(tmp_path):
     db = tmp_path / 'learning.db'
     p = proposal()

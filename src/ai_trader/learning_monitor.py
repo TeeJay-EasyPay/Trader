@@ -36,21 +36,22 @@ def learning_health_snapshot(db_path: Path, *, connection_factory=connect, place
             GROUP BY COALESCE(t.broker, 'unknown'), o.status
         """).fetchall()
         stages = conn.execute("""
-            SELECT l.broker, COUNT(*),
-              SUM(CASE WHEN e.experience_id IS NOT NULL THEN 1 ELSE 0 END),
-              SUM(CASE WHEN r.review_id IS NOT NULL THEN 1 ELSE 0 END),
-              SUM(CASE WHEN r.experience_id=e.experience_id THEN 1 ELSE 0 END),
-              SUM(CASE WHEN l.status='completed_insufficient_evidence' THEN 1 ELSE 0 END),
-              SUM(CASE WHEN l.status='completed' AND e.experience_id IS NULL THEN 1 ELSE 0 END)
+            SELECT l.broker, COUNT(*) AS runs,
+              SUM(CASE WHEN e.experience_id IS NOT NULL THEN 1 ELSE 0 END) AS experience_linked,
+              SUM(CASE WHEN r.review_id IS NOT NULL THEN 1 ELSE 0 END) AS review_recorded,
+              SUM(CASE WHEN r.experience_id=e.experience_id THEN 1 ELSE 0 END) AS review_experience_linked,
+              SUM(CASE WHEN l.status='completed_insufficient_evidence' THEN 1 ELSE 0 END) AS insufficient_evidence,
+              SUM(CASE WHEN l.status='completed' AND e.experience_id IS NULL THEN 1 ELSE 0 END) AS completed_missing_experience
             FROM CLOSED_LOOP_LEARNING_RUNS l
             LEFT JOIN EXPERIENCE_RECORDS e ON e.experience_id=l.experience_id
             LEFT JOIN POST_TRADE_REVIEWS r ON r.review_id=l.review_id
             GROUP BY l.broker
         """).fetchall()
-        experiences = conn.execute("""SELECT broker,COUNT(*),
-            SUM(CASE WHEN result_context_json LIKE '%"record_kind": "outcome_only"%' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN result_context_json LIKE '%"record_kind": "reconciled_reporting_review"%' THEN 1 ELSE 0 END)
-            FROM EXPERIENCE_RECORDS GROUP BY broker""").fetchall()
+        experiences = conn.execute(f"""SELECT broker,COUNT(*) AS records,
+            SUM(CASE WHEN result_context_json LIKE {placeholder} THEN 1 ELSE 0 END) AS outcome_only,
+            SUM(CASE WHEN result_context_json LIKE {placeholder} THEN 1 ELSE 0 END) AS reporting_reviews
+            FROM EXPERIENCE_RECORDS GROUP BY broker""",
+            ('%"record_kind": "outcome_only"%', '%"record_kind": "reconciled_reporting_review"%')).fetchall()
     return {'brokers': brokers,
             'coverage_population': 'brokers counts cover canonical terminal trades; all_run_stages also includes legacy learning runs',
             'all_run_stages': [{key: row[index] for index, key in enumerate(['broker','runs','experience_linked','review_recorded','review_experience_linked','insufficient_evidence','completed_missing_experience'])} for row in stages],
