@@ -226,7 +226,8 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
             "missing_exit_reason": _scalar(
                 conn,
                 "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION "
-                "WHERE exit_reason IS NULL OR exit_reason = ''",
+                "WHERE exit_reason IS NULL OR TRIM(exit_reason) = '' "
+                "OR LOWER(exit_reason) LIKE '%not recorded%' OR LOWER(exit_reason) = 'unknown'",
             ),
         }
 

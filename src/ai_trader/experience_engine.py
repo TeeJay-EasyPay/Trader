@@ -157,10 +157,14 @@ def record_experience(
                     immutable_hash,
                 ),
             )
-            if not cursor.rowcount:
-                row = conn.execute("SELECT experience_id FROM EXPERIENCE_RECORDS WHERE immutable_hash = ?", (immutable_hash,)).fetchone()
-                return {"status": "duplicate", "experience_id": row[0] if row else None, "immutable_hash": immutable_hash}
-    return {"status": "recorded", "experience_id": cursor.lastrowid, "immutable_hash": immutable_hash}
+            status = 'recorded' if cursor.rowcount else 'duplicate'
+            # INSERT ... ON CONFLICT has no portable lastrowid on PostgreSQL.
+            # The immutable unique key identifies both new and existing records.
+            row = conn.execute("SELECT experience_id FROM EXPERIENCE_RECORDS WHERE immutable_hash = ?", (immutable_hash,)).fetchone()
+            if row is None:
+                raise RuntimeError('Experience insert did not resolve its immutable key')
+            experience_id = row[0]
+    return {"status": status, "experience_id": experience_id, "immutable_hash": immutable_hash}
 
 
 def classify_trade_review(attribution: dict[str, Any], decision_context: dict[str, Any]) -> dict[str, Any]:
@@ -264,7 +268,9 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(f"SELECT * FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 50", tuple(params)).fetchall()
-    cases = [dict(row) for row in rows]
+    # Reporting-only outcomes lack the decision evidence required for precedent.
+    cases = [dict(row) for row in rows
+             if json.loads(row["result_context_json"] or "{}").get("record_kind") != "outcome_only"]
     comparable = len(cases)
     confidence = "low" if comparable < minimum_cases else "medium"
     result = {

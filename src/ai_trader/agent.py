@@ -150,6 +150,9 @@ class AITradingAgent:
                     except Exception:  # noqa: BLE001 - richer context is additive; its failure must never block a proposal
                         context = None
                     proposal = self.analyzer.propose(symbol, market, news, account, context=context)
+                    if proposal is not None:
+                        proposal = replace(proposal, intelligence={**(proposal.intelligence or {}),
+                            'reference_provenance': (context or {}).get('reference_provenance', [])})
                     if proposal is None:
                         self._no_trade_probe(symbol, market, news)
                     elif proposal.asset_type != "crypto":
@@ -186,7 +189,7 @@ class AITradingAgent:
                     proposal,
                     ai_guardrails_passed=validation.passed,
                     ai_guardrail_failures=validation.failures,
-                    intelligence=intelligence.to_dict(),
+                    intelligence={**intelligence.to_dict(), 'reference_provenance': (proposal.intelligence or {}).get('reference_provenance', [])},
                     strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
                 )
                 self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
@@ -1091,7 +1094,8 @@ def propose_crypto_trades(
                         f"{context['backtest_evidence']} {context['external_intelligence']}\n\n"
                         f"Reference material: {context['reference_material']}"
                     ).strip()
-                    proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note)
+                    proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note,
+                        intelligence={**(proposal.intelligence or {}), 'reference_provenance': context.get('reference_provenance', [])})
                 except Exception:  # noqa: BLE001 - enrichment is additive; its failure must never block a proposal
                     context = None
                 # Phase 5 of the CIO-level forecasting build (2026-08-20, Founder-directed):

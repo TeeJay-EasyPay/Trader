@@ -141,6 +141,20 @@ def _serialize_backtest(backtest: dict[str, Any] | None, *, source_wired: bool =
     )
 
 
+def reference_provenance(excerpts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Identities of supplied text, not claims that a model followed it."""
+    import hashlib
+    from datetime import datetime, timezone
+    supplied_at = datetime.now(timezone.utc).isoformat()
+    return [{'document': Path(str(entry.get('file_path') or '')).name,
+        'title': entry.get('title'),
+        'supplied_at': supplied_at,
+        'document_hash_scope': 'retrieved_document_body',
+        'document_sha256': hashlib.sha256(str(entry.get('excerpt') or '').encode()).hexdigest(),
+        'passage_sha256': hashlib.sha256(_serialize_knowledge([entry]).encode()).hexdigest(),
+        'passage': 'first_1200_characters'} for entry in excerpts]
+
+
 def _serialize_knowledge(excerpts: list[dict[str, Any]], *, source_wired: bool = True) -> str:
     if not excerpts:
         # Same distinction as _serialize_backtest. The knowledge-base tables do not
@@ -306,6 +320,7 @@ def build_proposal_context(
 
     return {
         "historical_analogues": _serialize_historical_analogues(analogues),
+        "reference_provenance": reference_provenance(excerpts),
         # Whether the SOURCE holds anything at all, not just whether it held something
         # for this symbol -- see the comment in each serializer.
         "backtest_evidence": _serialize_backtest(

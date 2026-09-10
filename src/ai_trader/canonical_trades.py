@@ -153,6 +153,10 @@ def register_execution_intent(
     # Freeze the actual candidate's economics even when a caller supplies a separate
     # intelligence packet that predates this enrichment.
     economics = (proposal.intelligence or {}).get('decision_economics')
+    references = (proposal.intelligence or {}).get('reference_provenance')
+    if references is not None:
+        decision_context = {**decision_context, 'intelligence': {
+            **(decision_context.get('intelligence') or {}), 'reference_provenance': references}}
     if isinstance(economics, dict):
         decision_context = {**decision_context, 'intelligence': {
             **(decision_context.get('intelligence') or {}), 'decision_economics': economics}}

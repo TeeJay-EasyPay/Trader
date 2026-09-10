@@ -386,8 +386,16 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - a reconciliation fault must not stop a cycle
         return {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "written": 0}
 
+    # Completed reporting evidence must not disappear merely because original
+    # decision links are missing. Keep this distinct from full canonical learning.
+    from .alpaca_learning import capture_outcome_evidence
+    try:
+        learning_evidence = capture_outcome_evidence(db_path)
+    except Exception as exc:
+        learning_evidence = {'status': 'failed', 'error_type': type(exc).__name__}
     return {
         "status": "completed",
+        "learning_evidence": learning_evidence,
         "orders": len(orders),
         "round_trips": len(round_trips),
         "written": written,

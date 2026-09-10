@@ -305,13 +305,15 @@ def record_lifecycle_event(
                     key,
                 ),
             )
-            if not cursor.rowcount:
-                existing = conn.execute(
-                    "SELECT * FROM CANONICAL_TRADE_LIFECYCLE WHERE idempotency_key = ?",
-                    (key,),
-                ).fetchone()
-                return {"status": "duplicate", "idempotency_key": key, "lifecycle_id": existing[0] if existing else None}
-    return {"status": "recorded", "stage": normalized_stage, "idempotency_key": key, "lifecycle_id": cursor.lastrowid}
+            status = 'recorded' if cursor.rowcount else 'duplicate'
+            existing = conn.execute(
+                "SELECT lifecycle_id FROM CANONICAL_TRADE_LIFECYCLE WHERE idempotency_key = ?",
+                (key,),
+            ).fetchone()
+            if existing is None:
+                raise RuntimeError('Lifecycle insert did not resolve its idempotency key')
+            lifecycle_id = existing[0]
+    return {"status": status, "stage": normalized_stage, "idempotency_key": key, "lifecycle_id": lifecycle_id}
 
 
 def latest_lifecycle_stage(
