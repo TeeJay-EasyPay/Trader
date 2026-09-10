@@ -15,7 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.agent import propose_crypto_trades
+from ai_trader.agent import propose_crypto_trades as _propose_crypto_trades
+
+
+def propose_crypto_trades(*args, **kwargs):
+    # Reviewer tests have an explicitly known cost; absent-fee rejection has its own tests.
+    kwargs.setdefault('round_trip_fee_pct', .001)
+    return _propose_crypto_trades(*args, **kwargs)
 from ai_trader.ai import _review_from_response_text
 from ai_trader.audit import AuditDatabase
 from ai_trader.foundation import initialize_foundation_schema
@@ -76,6 +82,15 @@ def _run(db_path: Path, reviewer=None, min_confidence: float = 0.85, **kwargs):
 
 
 class CryptoReviewParsingTests(unittest.TestCase):
+    def test_accepted_proposal_preserves_decision_time_fee_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proposal = _run(Path(tmp) / 'audit.sqlite3')[0]
+            evidence = proposal.intelligence['decision_economics']
+            self.assertTrue(evidence['fee_hurdle_passed'])
+            self.assertEqual(evidence['round_trip_fee_rate'], .001)
+            self.assertIsNone(evidence['probability_of_target_reached'])
+            self.assertIn('model_expected_net_r', evidence)
+
     def test_parses_a_valid_review(self):
         parsed = _review_from_response_text(json.dumps({"proceed": True, "confidence": 0.8, "reasoning": "Setup is clean.", "concerns": ["thin volume"]}))
         self.assertTrue(parsed["proceed"])

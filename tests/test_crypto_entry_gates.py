@@ -13,7 +13,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_trader.agent import propose_crypto_trades
+from ai_trader.agent import propose_crypto_trades as _propose_crypto_trades
+
+
+def propose_crypto_trades(*args, **kwargs):
+    # These tests isolate other gates with a known synthetic fee estimate.
+    kwargs.setdefault('round_trip_fee_pct', .001)
+    return _propose_crypto_trades(*args, **kwargs)
 from ai_trader.audit import AuditDatabase
 from ai_trader.foundation import initialize_foundation_schema
 from ai_trader.models import AccountContext, GuardrailConfig

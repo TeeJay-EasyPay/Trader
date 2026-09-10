@@ -334,8 +334,8 @@ class FeeHurdleTests(unittest.TestCase):
         )
         self.assertEqual(ratio, 0.0)
 
-    def test_an_unknown_fee_rate_does_not_block_everything(self):
-        self.assertTrue(
+    def test_an_unknown_fee_rate_blocks_new_candidates(self):
+        self.assertFalse(
             clears_fee_hurdle(entry_price=100.0, stop_loss=98.0, take_profit=101.0, round_trip_fee_pct=0.0)
         )
 

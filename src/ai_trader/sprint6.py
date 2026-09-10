@@ -1497,6 +1497,7 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
         "asset_type": trade.get("asset_type"),
         "side": trade.get("side"),
         "reconciliation_confidence": trade.get("reconciliation_confidence"),
+        "intelligence": intelligence,
         "guardrails_passed": guardrails.get("passed"),
         "strongest_argument_for": committee.get("strongest_argument_for"),
         "strongest_argument_against": committee.get("strongest_argument_against"),

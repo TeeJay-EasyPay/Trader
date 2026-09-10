@@ -150,6 +150,12 @@ def register_execution_intent(
 
     _ensure_canonical_trade_schema(db_path)
     logical_trade_id = proposal.proposal_id
+    # Freeze the actual candidate's economics even when a caller supplies a separate
+    # intelligence packet that predates this enrichment.
+    economics = (proposal.intelligence or {}).get('decision_economics')
+    if isinstance(economics, dict):
+        decision_context = {**decision_context, 'intelligence': {
+            **(decision_context.get('intelligence') or {}), 'decision_economics': economics}}
     now = utc_now_iso()
     with closing(connect(db_path)) as conn:
         with conn:

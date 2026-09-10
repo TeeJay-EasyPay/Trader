@@ -204,6 +204,8 @@ class Phase5ProductionSpineTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertIn("learning_proposal", result)
             self.assertEqual(duplicate["status"], "duplicate")
+            with closing(sqlite3.connect(db_path)) as conn:
+                self.assertEqual(conn.execute('SELECT broker FROM POST_TRADE_REVIEWS').fetchone()[0], 'alpaca')
             self.assertIn("production unchanged", result["learning_proposal"]["current_value"])
 
     def test_portfolio_manager_can_reject_concentration(self):

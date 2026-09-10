@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .audit import AuditDatabase
+from .decision_economics import decision_economics
 from .database import connect
 from .broker_adapters import _kraken_last_price, _kraken_pair
 from .guardrails import validate_trade_proposal
@@ -545,8 +546,8 @@ def propose_crypto_trades(
     on_symbol_complete: Callable[[str, list[TradeProposal]], None] | None = None,
     reviewer: Any = None,
     # Founder-directed 2026-08-20. risk_budget=None keeps the previous flat sizing, so an
-    # existing caller is unaffected until it opts in. round_trip_fee_pct=0 disables the
-    # fee gate entirely rather than blocking every trade on an unknown cost.
+    # existing caller is unaffected until it opts in. A missing fee estimate now blocks
+    # new candidates, as requested; this function never handles protective exits.
     risk_budget: float | None = None,
     round_trip_fee_pct: float = 0.0,
     min_net_reward_risk: float = 1.0,
@@ -797,7 +798,10 @@ def propose_crypto_trades(
                     proposal_id=f"fee-hurdle-{symbol}",
                     event_type="agent_no_trade",
                     payload={"symbol": symbol, "reason": "fee_hurdle_not_cleared",
-                             "round_trip_fee_pct": round_trip_fee_pct},
+                             "round_trip_fee_pct": round_trip_fee_pct,
+                             "decision_economics": decision_economics(entry=price, stop=stop_loss,
+                                 target=take_profit, fee_rate=round_trip_fee_pct,
+                                 minimum_ratio=min_net_reward_risk)},
                 )
                 # 2026-09-08: keep the refusal as a shadow trade, so in a week we know whether
                 # refusing was right. See crypto_shadow.py -- nothing has been recorded since
@@ -1046,7 +1050,12 @@ def propose_crypto_trades(
                 proposal,
                 ai_guardrails_passed=validation.passed,
                 ai_guardrail_failures=validation.failures,
-                intelligence=intelligence.to_dict(),
+                intelligence={**intelligence.to_dict(), "decision_economics": {
+                    **decision_economics(entry=price, stop=stop_loss, target=take_profit,
+                        fee_rate=round_trip_fee_pct, minimum_ratio=min_net_reward_risk,
+                        probability=intelligence.probability),
+                    "assessed_at": utc_now_iso(),
+                }},
                 strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
             )
             if validation.passed:

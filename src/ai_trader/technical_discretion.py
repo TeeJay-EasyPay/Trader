@@ -22,6 +22,7 @@ isolation -- the same reason _kraken_min_order_floor_notional was written this w
 """
 
 from __future__ import annotations
+import math
 
 
 def technical_stop_loss(
@@ -261,11 +262,11 @@ def clears_fee_hurdle(
     """Whether a trade is still worth taking once trading costs are paid.
 
     Deliberately permissive by default (1.0) -- this is a floor that removes trades which
-    are pointless after costs, not a second opinion on trade quality. With no fee estimate
-    available it passes rather than blocking everything on an unknown.
+    are pointless after costs, not a second opinion on trade quality. Missing or invalid
+    fee estimates block new candidates; they never disable protective exits.
     """
-    if round_trip_fee_pct <= 0:
-        return True
+    if not math.isfinite(round_trip_fee_pct) or round_trip_fee_pct <= 0:
+        return False
     ratio = net_reward_risk_after_fees(
         entry_price=entry_price,
         stop_loss=stop_loss,
@@ -273,5 +274,5 @@ def clears_fee_hurdle(
         round_trip_fee_pct=round_trip_fee_pct,
     )
     if ratio is None:
-        return True
+        return False
     return ratio >= float(min_net_reward_risk)

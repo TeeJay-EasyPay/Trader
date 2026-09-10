@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from .database import POSTGRES_BACKENDS, connect, selected_backend
+from .decision_economics import learning_context
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -454,6 +455,8 @@ def run_closed_loop_learning(
     )
     if existing:
         return {**existing, "status": "duplicate", "plain_english": "Closed-loop learning already ran for this logical trade."}
+    decision_context = learning_context(decision_context)
+    attribution = {**attribution, "broker": broker}
     costs = calculate_execution_costs(
         db_path,
         proposal_id=attribution.get("proposal_id"),
