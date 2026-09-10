@@ -42,3 +42,12 @@ Validation: 95 tests passed across identity, outcome evidence, Alpaca reconcilia
 - Missing historical fees, expectations and stop activation remain unknown. No live trading rule changes or baseline-test results were invented. After-cost improvement and calibrated entry expectations remain unproved; prospective changes must remain tests until their evidence criteria pass.
 
 The replay utility defaults to preview; --apply only addresses the four identified runs and preserves prior payloads. Tests include replay idempotency, duplicate-fill ID semantics, exact order linkage and unknown-cost reporting reviews.
+
+### Final verification snapshot
+
+- Kraken: 40 runs, 40 experiences linked, 40 reviews linked; four historical workflow statuses reconciled to completed, with their prior status recorded.
+- Alpaca: 62 reporting outcomes; 56 single-decision links, one multi-decision outcome with source IDs preserved, five unknown. 44 recorded stop-order exits. 44 reporting reviews with linked experiences, distinct from the 62 outcome-only snapshots.
+- Canonical Alpaca closure and after-cost performance remain unverified. Historical fee assumptions were not found for the reviewed stock decisions. Five unmatched entry orders also lacked exact proposal matches in the September 1 audit records and client-order-ID check; symbol/time matching was rejected.
+- No strategy changes were deployed. Controlled after-cost improvement is not established; missing costs/expectations and canonical closure must not be disguised by review counts.
+- 102 tests passed. A direct production PostgreSQL health read caught and fixed bound-LIKE-pattern and duplicate aggregate-column-name issues; the regression test now exercises mapping-row semantics.
+- Public API health returned HTTP 200. Worker deployment is checked separately by deployment_commit.

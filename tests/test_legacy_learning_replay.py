@@ -30,3 +30,21 @@ def test_replay_rejects_missing_exact_identities(tmp_path):
     with pytest.raises(ValueError):
         run_closed_loop_learning(db,logical_trade_id='legacy',broker='kraken',symbol='ABC',
             attribution={},decision_context={},repair_evidence={'attempt':True})
+
+
+def test_fill_reconciliation_deduplicates_and_uses_original_buy_direction():
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('repair_legacy',Path(__file__).parents[1]/'tools'/'repair_legacy_learning.py')
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    entry=('entry','buy',1,'10','0.1','100')
+    exit=('exit','sell',1,'9','0.1','200')
+    result=module.reconcile_fills([entry,entry,exit])
+    assert result['gross_realized_pnl']==-1
+    assert result['net_realized_pnl']==-1.2
+    assert result['holding_seconds']==100
+    with pytest.raises(ValueError):
+        module.reconcile_fills([entry,('entry','buy',1,'11','0.1','100'),exit])
+    with pytest.raises(ValueError):
+        module.reconcile_fills([entry,('exit','sell',0.5,'4.5','0.1','200')])
