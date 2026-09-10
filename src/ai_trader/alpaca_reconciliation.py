@@ -104,6 +104,8 @@ class RoundTrip:
     lots: int = 1
     incomplete: bool = False
     exit_order_id: str | None = None
+    entry_proposal_ids: tuple[str, ...] = ()
+    mixed_entry_decisions: bool = False
 
 
 def _number(value: Any) -> float | None:
@@ -253,6 +255,8 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
             lots=lots_used,
             incomplete=order.incomplete or remaining > QUANTITY_EPSILON,
             exit_order_id=order.order_id,
+            entry_proposal_ids=tuple(sorted(p for p in entry_proposals if p)),
+            mixed_entry_decisions=len(entry_proposals)>1,
         ))
 
         if remaining > QUANTITY_EPSILON:
@@ -380,6 +384,13 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                         (trip.symbol, trip.closed_at),
                     ).fetchone()
                     if existing:
+                        if trip.mixed_entry_decisions:
+                            factors = json.loads(existing[2] or '{}')
+                            factors.update(entry_proposal_ids=list(trip.entry_proposal_ids),mixed_entry_decisions=True)
+                            if existing[3]:
+                                factors['previous_single_proposal_id']=existing[3]
+                            conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET proposal_id=NULL, primary_factors_json=? WHERE attribution_id=?',
+                                         (json.dumps(factors,sort_keys=True),existing[0]))
                         if not existing[3] and trip.entry_proposal_id:
                             conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET proposal_id = ?, entry_reason = ? WHERE attribution_id = ? AND proposal_id IS NULL',
                                          (trip.entry_proposal_id, entry_reasons.get(trip.entry_proposal_id) or trade_reasons.UNRECORDED_ENTRY, existing[0]))
@@ -426,6 +437,8 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
                                 "exit_order_id": trip.exit_order_id,
                                 "pnl_basis": "before_unreconciled_fees",
                                 "exit_evidence": exits.get(trip.exit_order_id),
+                                "entry_proposal_ids": list(trip.entry_proposal_ids),
+                                "mixed_entry_decisions": trip.mixed_entry_decisions,
                             }, sort_keys=True, default=str),
                         ),
                     )
@@ -435,9 +448,10 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
 
     # Completed reporting evidence must not disappear merely because original
     # decision links are missing. Keep this distinct from full canonical learning.
-    from .alpaca_learning import capture_outcome_evidence
+    from .alpaca_learning import capture_outcome_evidence, review_linked_outcomes
     try:
         learning_evidence = capture_outcome_evidence(db_path)
+        learning_evidence['linked_reviews'] = review_linked_outcomes(db_path)
     except Exception as exc:
         learning_evidence = {'status': 'failed', 'error_type': type(exc).__name__}
     return {

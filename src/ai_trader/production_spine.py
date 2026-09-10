@@ -446,6 +446,7 @@ def run_closed_loop_learning(
     attribution: dict[str, Any],
     decision_context: dict[str, Any],
     observations: list[dict[str, Any]] | None = None,
+    repair_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     initialize_production_spine_schema(db_path)
     existing = _row(
@@ -453,7 +454,11 @@ def run_closed_loop_learning(
         "SELECT * FROM CLOSED_LOOP_LEARNING_RUNS WHERE logical_trade_id = ?",
         (logical_trade_id,),
     )
-    if existing:
+    repairing = bool(existing and repair_evidence and existing.get('status') == 'completed_insufficient_evidence'
+                     and not existing.get('experience_id') and not existing.get('review_id'))
+    if repairing and (not repair_evidence.get('broker_fill_ids') or not repair_evidence.get('original_proposal_id')):
+        raise ValueError('Historical replay requires exact fill and original proposal identities')
+    if existing and not repairing:
         return {**existing, "status": "duplicate", "plain_english": "Closed-loop learning already ran for this logical trade."}
     decision_context = learning_context(decision_context)
     attribution = {**attribution, "broker": broker}
@@ -551,6 +556,24 @@ def run_closed_loop_learning(
     )
     status = "completed" if lifecycle["status"] in {"recorded", "duplicate"} else "manual_review_required"
     explanation = "Closed-loop learning completed without changing production parameters."
+    if repairing:
+        explanation = 'Replayed from reconciled broker fills and original decision; previous insufficient-evidence record retained in payload.'
+        repaired_payload = {'costs': costs, 'r_multiple': r_multiple, 'excursions': excursions,
+            'experience': experience, 'review': review, 'analogues': analogues,
+            'learning_proposal': learning_proposal, 'lifecycle': lifecycle,
+            'repair_evidence': repair_evidence, 'prior_insufficient_evidence': json.loads(existing['payload_json'])}
+        with closing(connect(db_path)) as conn:
+            with conn:
+                changed = conn.execute('''UPDATE CLOSED_LOOP_LEARNING_RUNS SET status=?,
+                    experience_id=?,review_id=?,learning_proposal_id=?,explanation=?,payload_json=?
+                    WHERE learning_run_id=? AND status='completed_insufficient_evidence'
+                    AND experience_id IS NULL AND review_id IS NULL''',
+                    (status, experience['experience_id'], review['review_id'], learning_proposal['proposal_id'],
+                     explanation,json.dumps(repaired_payload,sort_keys=True,default=str),existing['learning_run_id'])).rowcount
+                if changed != 1:
+                    raise RuntimeError('Historical learning run changed during repair')
+        return {'status': status, 'logical_trade_id': logical_trade_id, 'experience': experience,
+                'review': review, 'repair_evidence': repair_evidence, 'plain_english': explanation}
     with closing(connect(db_path)) as conn:
         with conn:
             conn.execute(

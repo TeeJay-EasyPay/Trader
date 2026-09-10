@@ -48,12 +48,13 @@ def learning_health_snapshot(db_path: Path, *, connection_factory=connect, place
             GROUP BY l.broker
         """).fetchall()
         experiences = conn.execute("""SELECT broker,COUNT(*),
-            SUM(CASE WHEN result_context_json LIKE '%"record_kind": "outcome_only"%' THEN 1 ELSE 0 END)
+            SUM(CASE WHEN result_context_json LIKE '%"record_kind": "outcome_only"%' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN result_context_json LIKE '%"record_kind": "reconciled_reporting_review"%' THEN 1 ELSE 0 END)
             FROM EXPERIENCE_RECORDS GROUP BY broker""").fetchall()
     return {'brokers': brokers,
             'coverage_population': 'brokers counts cover canonical terminal trades; all_run_stages also includes legacy learning runs',
             'all_run_stages': [{key: row[index] for index, key in enumerate(['broker','runs','experience_linked','review_recorded','review_experience_linked','insufficient_evidence','completed_missing_experience'])} for row in stages],
-            'experience_coverage': [{'broker': row[0], 'records': row[1], 'outcome_only': row[2]} for row in experiences],
+            'experience_coverage': [{'broker': row[0], 'records': row[1], 'outcome_only': row[2], 'reporting_reviews_not_canonical_closures': row[3]} for row in experiences],
             'workflow_counts': [{key: row[index] for index, key in enumerate(['broker','status','count'])} for row in queued],
             'improvement_status': 'not_established',
             'explanation': 'Coverage shows whether closed trades reached learning. Improved trading requires a prospective baseline comparison; these counts do not prove it.'}

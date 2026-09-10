@@ -49,3 +49,30 @@ def test_exit_evidence_requires_exact_order_and_unambiguous_stop_type(tmp_path):
         result = recorded_exit_evidence(c, ['stop', 'limit', 'mixed', 'foreign', 'absent'])
     assert set(result) == {'stop'}
     assert result['stop']['reason'] == 'Broker stop order filled.'
+
+
+def test_linked_reporting_review_keeps_net_and_canonical_closure_unknown(tmp_path):
+    from ai_trader.canonical_trades import register_execution_intent
+    from ai_trader.multi_broker import initialize_multi_broker_schema
+    from ai_trader.alpaca_learning import review_linked_outcomes
+    from test_sprint6_institutional_spine import proposal
+    db=tmp_path/'linked.sqlite'
+    p=proposal()
+    initialize_multi_broker_schema(db)
+    register_execution_intent(db,proposal=p,broker='alpaca',decision_context={'proposal':p.to_dict()})
+    with closing(sqlite3.connect(db)) as c:
+        with c:
+            c.execute('''INSERT INTO PERFORMANCE_ATTRIBUTION
+                (created_at,proposal_id,broker,symbol,asset_type,side,entry_price,exit_price,
+                 quantity,profit_loss,opened_at,closed_at,primary_factors_json)
+                VALUES ('2026-09-01',?,'alpaca','AAPL','stock','buy',100,105,1,5,'2026-08-31','2026-09-01','{}')''',(p.proposal_id,))
+    assert review_linked_outcomes(db)['queued_reporting_reviews']==1
+    assert review_linked_outcomes(db)['queued_reporting_reviews']==0
+    from ai_trader.sprint6 import process_learning_outbox
+    assert process_learning_outbox(db,worker_id='test')['processed']==1
+    with closing(sqlite3.connect(db)) as c:
+        result=json.loads(c.execute('SELECT result_context_json FROM EXPERIENCE_RECORDS').fetchone()[0])
+        assert c.execute('SELECT terminal FROM LOGICAL_TRADES').fetchone()[0]==0
+    assert result['net_realized_pnl'] is None
+    assert result['fees_status']=='unavailable'
+    assert result['canonical_closure_verified'] is False

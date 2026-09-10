@@ -30,3 +30,15 @@ Runs 1–4 retain insufficient-evidence status. Exact managed-entry broker order
 - Prospective baseline comparisons remain gated on reliable evidence. No live strategy change or improved profitability is claimed.
 
 Validation: 95 tests passed across identity, outcome evidence, Alpaca reconciliation/canonical learning, context, production spine, review quality, egress audit, knowledge and crypto review tests. No paid model calls were used.
+
+## Follow-up — 11 September
+
+- First two commits verified on production worker: 4f5c957d and aeb2e9b1.
+- All four old Kraken runs replayed from deduplicated broker fill IDs, executed costs and recorded fees. Original decision identity matched by entry order. Original insufficient-evidence payload preserved, not deleted. New experience IDs 188–191; all 40 Kraken runs now have reviews and experiences.
+- Corrected four net results: -0.06764823, +0.07991, +0.12207, +0.05485 GBP. These are review-source corrections, not a claim that every historical reporting table has been rewritten.
+- Alpaca exact broker-order fallback recovered 44 additional proposal links. Five single-entry outcomes have no exact stored decision mapping; same-symbol/date inference was rejected. CSL combines multiple entry decisions and must not be assigned exclusively to the first proposal; its individual proposal IDs are preserved in reporting metadata.
+- 44 Alpaca exits have matching recorded broker stop-order types. Remaining exit reasons are not inferred from outcomes or limit prices.
+- Reporting outcomes with original stop/entry decision evidence can enter a separate, labelled reporting-review path. These do not assert canonical closure or verified fees. Forward reviews are queued through the existing idempotent work queue, not executed on every reconciliation poll.
+- Missing historical fees, expectations and stop activation remain unknown. No live trading rule changes or baseline-test results were invented. After-cost improvement and calibrated entry expectations remain unproved; prospective changes must remain tests until their evidence criteria pass.
+
+The replay utility defaults to preview; --apply only addresses the four identified runs and preserves prior payloads. Tests include replay idempotency, duplicate-fill ID semantics, exact order linkage and unknown-cost reporting reviews.
