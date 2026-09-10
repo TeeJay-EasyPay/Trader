@@ -4,6 +4,13 @@ const fs = require('node:fs');
 const { learningRequest, shiftedDate, resultText, humanStatus } = require('./learningScreen');
 const { priceText } = require('./learningScreen');
 
+test('Learning and Executive Briefing reuse the same proportional artwork', () => {
+  const source = fs.readFileSync(require.resolve('../components/LearningCloud'), 'utf8');
+  assert.ok(source.includes("require('./GreetingIllustration')"));
+  assert.ok(source.includes('<GreetingIllustration fadeToCream />'));
+  assert.ok(!source.includes('borderRadius: 60'));
+});
+
 test('all screens share the same three-plus-two navigation layout', () => {
   const source = fs.readFileSync(require.resolve('../App'), 'utf8');
   assert.ok(source.includes('SCREENS.map((item, index)'));

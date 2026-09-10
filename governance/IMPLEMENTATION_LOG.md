@@ -1,5 +1,13 @@
 # Implementation Log
 
+## 2026-09-10 — Reuse Executive artwork in Learning summary
+
+Replaced the simplified native sun/cloud drawing with the exact bundled greeting
+image and shared GreetingIllustration renderer. The Learning header uses a bounded
+130/160px artwork area with a cream fade; uniform scaling preserves the sun's
+shape without stretching or making the image fill the entire report height.
+No new image download, data requests or trading changes. All 119 mobile tests pass.
+
 ## 2026-09-10 — Consistent navigation across all screens
 
 Founder requested one button arrangement throughout the app and authorised either
