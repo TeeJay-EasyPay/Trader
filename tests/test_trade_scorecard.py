@@ -132,7 +132,7 @@ class ExplainTradeOutcomesTests(unittest.TestCase):
         line = explain_trade_outcomes(trades, now_epoch=NOW)
         self.assertIsNotNone(line)
         self.assertIn("fees", line.lower())
-        self.assertIn("too small", line.lower(), "Must name the actionable cause, not just report a fee total.")
+        self.assertIn("does not establish", line.lower())
         self.assertNotIn("made money and", line, "Must not fall back to restating the win/loss count.")
 
     def test_names_stop_overrun_when_a_trade_lost_more_than_its_planned_risk(self):
@@ -142,7 +142,7 @@ class ExplainTradeOutcomesTests(unittest.TestCase):
         ]
         line = explain_trade_outcomes(trades, now_epoch=NOW)
         self.assertIsNotNone(line)
-        self.assertIn("past their stop", line.lower())
+        self.assertIn("does not prove stop slippage", line.lower())
         self.assertIn("ETH", line)
         self.assertIn("2.0x", line)
 

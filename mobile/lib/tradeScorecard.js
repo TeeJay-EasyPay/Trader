@@ -69,6 +69,23 @@ function netText(bucket) {
 
 function scorecardRows(scorecard) {
   if (!scorecard) return NO_SCORECARD_ROWS;
+  const brokers = scorecard.completed_trade_periods?.brokers;
+  if (brokers) return PERIOD_LABELS.flatMap(([period, label]) =>
+    Object.entries(brokers).map(([broker, evidence]) => {
+      const b = evidence.periods?.[period];
+      const money = (v) => isFiniteNumber(v) ? `${evidence.currency} ${Number(v).toFixed(2)}` : 'unavailable';
+      const basis = broker === 'alpaca' ? 'before unreconciled fees' : 'after recorded fees';
+      return {
+        key: `${period}-${broker}`, label: `${label} · ${broker === 'kraken' ? 'Kraken' : 'Alpaca'}`,
+        counts: b?.available ? `${b.successful} positive / ${b.unsuccessful} negative (${basis})` : 'Evidence unavailable',
+        winRate: b?.available ? winRateText(b) : null, pending: b?.available ? pendingText(b) : null,
+        net: null,
+        bullets: b?.available ? [
+          `Before fees: ${money(b.gross_pnl)} · ${b.total} completed records.`,
+          `Recorded fees: ${money(b.recorded_fees)}; net: ${money(b.net_pnl)}.${b.accounting_mismatches ? ' Accounting mismatch — needs review.' : ''}`,
+        ] : [],
+      };
+    }));
   return PERIOD_LABELS.map(([key, label]) => {
     const bucket = scorecard[key];
     return {
@@ -101,8 +118,8 @@ function tradeScorecardCard(scorecard) {
   return {
     loaded: Boolean(scorecard),
     rows: scorecardRows(scorecard),
-    lessons: lessonsText(scorecard),
-    fees: feesText(scorecard),
+    lessons: scorecard?.completed_trade_periods ? 'Recorded results are not proof of learning improvement. Missing costs and accounting mismatches need reconciliation.' : lessonsText(scorecard),
+    fees: scorecard?.completed_trade_periods ? null : feesText(scorecard),
   };
 }
 

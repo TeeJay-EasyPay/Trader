@@ -27,6 +27,7 @@ from typing import Any, Iterable
 
 from .database import connect
 from .expectancy import expectancy_summary
+from .completed_trade_evidence import completed_trade_evidence
 
 
 _PERIODS: dict[str, float] = {
@@ -177,6 +178,8 @@ def trade_scorecard(db_path: Path, *, now_epoch: float | None = None) -> dict[st
     why = explain_trade_outcomes(trades, now_epoch=now, window="month")
     return {
         "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "completed_trade_periods": completed_trade_evidence(db_path, now_epoch=now),
+        "legacy_scope": "Kraken only; use completed_trade_periods for broker-separated results",
         "day": buckets["day"],
         "week": buckets["week"],
         "month": buckets["month"],
@@ -254,22 +257,20 @@ def explain_trade_outcomes(trades: Iterable[dict[str, Any]], *, now_epoch: float
     #    too small relative to costs; changing notional alone does not fix that ratio.
     if fees > 0 and gross_wins > 0 and fees >= gross_wins * 0.5:
         return (
-            f"The trades themselves were not the main problem: fees of {fees:.2f} came to more than "
-            f"{fees / gross_wins:.1f}x everything the winners made before costs ({gross_wins:.2f}), "
-            "so the price moves captured were too small to cover the percentage trading costs. "
-            "Increasing position size alone would scale both gains and fees, not improve that ratio."
+            f"Recorded fees were {fees:.2f}, compared with {gross_wins:.2f} earned by winning trades before costs. "
+            "This comparison excludes losing trades' price losses and does not establish that fees were the main cause."
         )
     # 2. Exits filling past the stop.
     if overruns:
         return (
-            f"The damage came from exits filling past their stop rather than from bad entries: "
-            f"{overruns[0]}. Tightening how exits are placed matters more here than picking different trades."
+            f"Recorded risk overrun: {overruns[0]}. "
+            "The cause requires checking fills, costs and active stops; this ratio alone does not prove stop slippage."
         )
     # 3. Fees material but not dominant.
     if fees > 0 and abs(net_total) > 0 and fees >= abs(net_total) * 0.3:
         return (
-            f"Trading costs are a meaningful drag: {fees:.2f} of fees against a net result of "
-            f"{net_total:+.2f}, so a large share of the outcome is the cost of trading rather than the calls themselves."
+            f"Recorded fees total {fees:.2f}, alongside a recorded net result of {net_total:+.2f}. "
+            "Check the complete gross result and fee coverage before attributing the loss."
         )
     return None
 
@@ -361,8 +362,8 @@ def fee_summary(trades: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "fee_pct_round_trip": round_trip_pct,
         "break_even_move_pct": round_trip_pct,
         "plain_english": (
-            f"Every buy and every sell costs {per_leg_pct:.2f}% of the amount traded, so a "
-            f"complete trade must gain {round_trip_pct:.2f}% before it breaks even. "
+            f"In this historical sample, recorded fees averaged {per_leg_pct:.2f}% per buy/sell leg; "
+            f"the approximate fee-only break-even move is {round_trip_pct:.2f}%, not a guaranteed future rate. "
             f"{total_fee:.2f} paid in fees across {counted} completed trade(s)."
         ),
     }

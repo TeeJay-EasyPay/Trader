@@ -311,7 +311,7 @@ function TradeScorecardCard({ tradeScorecard, forecastAccountability }) {
       subtitle="How many of my trades worked out, and what I have learned from them."
       defaultExpanded={true}
     >
-      {tradeScorecard?.fetched_at && <Text style={styles.smallText}>Across recorded exchanges · last loaded {formatDateTime(tradeScorecard.fetched_at)}</Text>}
+      {tradeScorecard?.fetched_at && <Text style={styles.smallText}>{tradeScorecard?.completed_trade_periods ? 'Results separated by exchange' : 'Kraken results'} · last loaded {formatDateTime(tradeScorecard.fetched_at)}</Text>}
       {tradeScorecard?.refresh_failed && <Text style={styles.smallText}>Refresh failed — showing previously loaded results.</Text>}
       {card.rows.map((row) => (
         <View key={row.key} style={styles.compactRow}>
@@ -324,6 +324,7 @@ function TradeScorecardCard({ tradeScorecard, forecastAccountability }) {
           {/* Closed but not yet reconciled: shown separately so it can never be mistaken
               for a win or a loss. */}
           {row.pending ? <Text style={styles.smallText}>{row.pending}</Text> : null}
+          {(row.bullets || []).map((line, index) => <Text key={index} style={styles.smallText}>• {line}</Text>)}
         </View>
       ))}
       <Text style={styles.summaryReason}>{card.lessons}</Text>

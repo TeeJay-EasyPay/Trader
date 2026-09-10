@@ -122,4 +122,15 @@ test('a missing period renders as no completed trades, not a crash', () => {
   rows.forEach((row) => assert.strictEqual(row.counts, 'No completed trades'));
 });
 
+test('broker summaries preserve missing Alpaca fees and currencies', () => {
+  const b = { available: true, successful: 1, unsuccessful: 2, total: 3, gross_pnl: 20, recorded_fees: null, net_pnl: null };
+  const card = tradeScorecardCard({ completed_trade_periods: { brokers: {
+    alpaca: { currency: 'USD', periods: { day: b, week: b, month: b } },
+  } } });
+  assert(card.rows[0].bullets[0].includes('USD 20.00'));
+  assert(card.rows[0].bullets[1].includes('net: unavailable'));
+  assert(card.rows[0].counts.includes('before unreconciled fees'));
+  assert.strictEqual(card.fees, null);
+});
+
 console.log(`\n${passed} test(s) passed.`);

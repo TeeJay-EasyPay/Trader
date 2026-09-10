@@ -352,10 +352,13 @@ def create_learning_proposal(
 
 def _what_happened(attribution: dict[str, Any]) -> str:
     symbol = attribution.get("symbol") or "unknown"
-    pnl = _float(attribution.get("profit_loss"))
-    if pnl is None:
-        return f"{symbol} closed, but realised profit/loss is unavailable."
-    return f"{symbol} closed with profit/loss of {pnl:.2f}."
+    gross = _float(attribution.get("gross_realized_pnl"))
+    net = _float(attribution.get("net_realized_pnl"))
+    if attribution.get("fees_status") in {"unknown", "unavailable", "estimated"}:
+        net = None
+    gross_text = 'unavailable' if gross is None else f'{gross:.2f}'
+    net_text = 'unavailable' if net is None else f'{net:.2f}'
+    return f"{symbol} closed; before-fee result {gross_text}; net after recorded fees {net_text}."
 
 
 def _float(value: Any) -> float | None:

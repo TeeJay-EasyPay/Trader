@@ -1764,15 +1764,6 @@ def _number(value: Any) -> float | None:
 
 
 def _elapsed_seconds(start: Any, end: Any) -> float | None:
-    if not start or not end:
-        return None
-    try:
-        start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
-        return max(0.0, (end_dt - start_dt).total_seconds())
-    except (TypeError, ValueError):
-        return None
+    # Kraken fills can carry epoch strings, not just ISO dates. The ISO-only
+    # parser silently dropped real holding times before the learning handoff.
+    return trade_reasons.holding_seconds(start, end)

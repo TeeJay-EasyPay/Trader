@@ -178,6 +178,8 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
     between a question it can answer and one it has to duck.
     """
 
+    from .completed_trade_evidence import completed_trade_evidence
+    from .learning_monitor import learning_health_snapshot
     feeds: list[dict[str, Any]] = []
     with closing(connect(db_path)) as conn:
         for table, column, purpose, decision_input in _FEEDS:
@@ -235,11 +237,17 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
     record["identity_note"] = ("Missing proposal IDs are linkage gaps, not duplicates. "
         "Broker/symbol/closing-time collisions are suspected duplicates requiring evidence; "
         "separate partial exits may legitimately share a proposal ID. Improvement is not proven by activity.")
+    try:
+        learning_coverage = learning_health_snapshot(db_path)
+    except Exception:
+        learning_coverage = {'available': False, 'reason': 'Learning handoff coverage unavailable'}
     return {
         "generated_at": utc_now_iso(),
         "feeds": feeds,
         "realised_record": record,
         "realised_record_by_broker": _record_by_broker(db_path),
+        "completed_trade_periods": completed_trade_evidence(db_path),
+        "learning_handoff_coverage": learning_coverage,
         "how_a_decision_is_priced": _PRICING_NOTE,
     }
 
