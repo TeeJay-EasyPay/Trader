@@ -3,6 +3,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { learningRequest, shiftedDate, resultText, humanStatus } = require('./learningScreen');
 const { priceText } = require('./learningScreen');
+
+test('all screens share the same three-plus-two navigation layout', () => {
+  const source = fs.readFileSync(require.resolve('../App'), 'utf8');
+  assert.ok(source.includes('SCREENS.map((item, index)'));
+  assert.ok(source.includes("flexBasis: index < 3 ? '30%' : '45%'"));
+  assert.ok(!source.includes("screen !== 'Learning' && <Pressable"));
+  assert.ok(!source.includes("screen === 'Learning' ? SCREENS"));
+  assert.ok(source.includes('selected: screen === item'));
+  assert.ok(source.includes('onPress={() => setScreen(item)}'));
+});
 test('summary/detail navigation cannot render stale data using the wrong shape', () => {
   const { matchesLearningView } = require('./learningScreen');
   const summary = { outcomes: [], assessment: {} };

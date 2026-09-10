@@ -1,5 +1,15 @@
 # Implementation Log
 
+## 2026-09-10 — Consistent navigation across all screens
+
+Founder requested one button arrangement throughout the app and authorised either
+existing layout. Applied Learning's compact three-plus-two arrangement globally:
+Executive Briefing, Portfolio, Standup / Run a Cycle, Learning. Briefing remains
+the default entry; selected/pressed states, labels and destinations are unchanged.
+Removed screen-dependent navigation composition so controls no longer move when
+switching screens. All 118 mobile tests pass, including a shared-layout regression
+check. No trading, data-fetching or backend behaviour changed.
+
 ## 2026-09-10 — Learning mockup density and responsive composition
 
 Rebuilt the overview against the Founder's folded/unfolded screenshots rather than
