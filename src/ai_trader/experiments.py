@@ -69,8 +69,9 @@ def digest(value):
 def baseline_fingerprint():
     """UI/docs-only deployments must not reset a 60-day experiment."""
     root = Path(__file__).parent
-    return hashlib.sha256(b''.join((root / name).read_bytes() for name in
-        ('experiments.py', 'sprint6.py', 'guardrails.py', 'decision_economics.py'))).hexdigest()
+    return hashlib.sha256(b''.join((root / name).read_text(encoding='utf-8').replace('\r\n', '\n').encode() for name in
+        ('experiments.py', 'experiment_worker.py', 'experiment_market_data.py', 'experiment_assurance.py',
+         'sprint6.py', 'guardrails.py', 'decision_economics.py'))).hexdigest()
 
 
 @contextmanager
@@ -115,7 +116,7 @@ def number(value, low, high):
 
 
 def validate_spec(raw):
-    if raw.get('rule_type') != 'minimum_target_r':
+    if raw.get('rule_type') not in ('minimum_target_r', 'replace_target_r_gate'):
         raise ValueError('Development required: unsupported rule type')
     ids = raw.get('evidence_ids', [])
     if not isinstance(ids, list) or not 1 <= len(ids) <= 30:
@@ -124,17 +125,25 @@ def validate_spec(raw):
     if not 15 <= len(hypothesis) <= 1000:
         raise ValueError('A specific falsifiable hypothesis is required')
     # Narrow executable DSL, never arbitrary code or model-supplied SQL.
-    return dict(rule_type='minimum_target_r', threshold=number(raw['threshold'], 1, 4),
+    broker = raw.get('broker', 'alpaca')
+    if broker not in ('alpaca', 'kraken'):
+        raise ValueError('Unsupported shadow broker')
+    return dict(rule_type=raw['rule_type'], threshold=number(raw['threshold'], 1, 4),
                 hypothesis=hypothesis, evidence_ids=sorted(set(int(x) for x in ids)),
-                broker='alpaca', asset_type='equity', side='buy',
+                problem=str(raw.get('problem') or hypothesis)[:1000],
+                expected_benefit=str(raw.get('expected_benefit') or 'Test net improvement at comparable risk; benefit not established.')[:1000],
+                priority=int(number(raw.get('priority', 3), 1, 5)),
+                broker=broker, currency='GBP' if broker == 'kraken' else 'USD',
+                asset_type='crypto' if broker == 'kraken' else 'equity', side='buy',
                 baseline='unchanged recorded pre-execution eligibility',
-                simulator='daily-bar-paired-v1', initial_cash=10000.0,
+                simulator='daily-bar-paired-v2', initial_cash=10000.0,
                 risk_fraction=0.0025, max_notional_fraction=0.10,
                 max_positions=5, max_holding_days=10,
-                cost_bps_per_leg=10.0, slippage_bps_per_leg=10.0,
+                cost_bps_per_leg=80.0 if broker == 'kraken' else 10.0, slippage_bps_per_leg=10.0,
                 costs_status='conservative scenario, not reconciled broker costs',
                 evaluation_days=60, minimum_opportunities=60,
                 minimum_symbol_days=40, max_drawdown_fraction=0.05,
+                execution_tolerances=dict(entry_bps=50, exit_bps=50, holding_hours=24, cost_bps=25, minimum_pairs=20),
                 execution_validated=False, adoption_environment='paper')
 
 
@@ -153,7 +162,7 @@ def _event(conn, row, action, payload, key):
                  (str(uuid4()), row['id'], row['owner'], now_iso(), action, row['version'], dump(payload), key))
 
 
-def create_experiment(db, raw, *, owner='founder', now=None):
+def create_experiment(db, raw, *, owner='founder', now=None, queue=False):
     spec = validate_spec(raw)
     now = now or now_iso()
     stamp(now)
@@ -163,13 +172,13 @@ def create_experiment(db, raw, *, owner='founder', now=None):
         policy = control(conn, 'policy', DEFAULT_POLICY)
         if conn.execute('SELECT COUNT(*) FROM RULE_EXPERIMENTS').fetchone()[0] >= policy['max_experiments']:
             raise ValueError('Experiment storage/count budget reached')
-        if conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0] >= policy['max_active']:
+        if not queue and conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0] >= policy['max_active']:
             raise ValueError('Concurrent experiment limit reached')
         placeholders = ','.join('?' for _ in spec['evidence_ids'])
-        count = conn.execute(f"SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE broker='alpaca' "
-                             f"AND exit_price IS NOT NULL AND attribution_id IN ({placeholders})", spec['evidence_ids']).fetchone()[0]
+        count = conn.execute(f"SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE broker=? "
+                             f"AND exit_price IS NOT NULL AND attribution_id IN ({placeholders})", [spec['broker'], *spec['evidence_ids']]).fetchone()[0]
         if count != len(spec['evidence_ids']):
-            raise ValueError('Evidence must reference existing completed Alpaca outcomes')
+            raise ValueError('Evidence must reference existing completed outcomes for the selected broker')
         # Evidence snapshot is compact and immutable; no model-generated P&L.
         evidence = conn.execute(f'SELECT attribution_id,symbol,profit_loss,closed_at FROM PERFORMANCE_ATTRIBUTION '
                                 f'WHERE attribution_id IN ({placeholders})', spec['evidence_ids']).fetchall()
@@ -187,7 +196,7 @@ def create_experiment(db, raw, *, owner='founder', now=None):
         cursor = conn.execute('SELECT COALESCE(MAX(decision_id),0) AS latest FROM DECISION_JOURNAL').fetchone()[0]
         state = dict(baseline=book, candidate=book, cursor=cursor, observations=0, blocked=0)
         conn.execute('INSERT INTO RULE_EXPERIMENTS VALUES (?,?,?,?,?,?,?,?,?)',
-                     (eid, owner, now, version, 'shadow_running', 0, dump(spec), dump({}), dump(state)))
+                     (eid, owner, now, version, 'queued' if queue else 'shadow_running', 0, dump(spec), dump({}), dump(state)))
         row = _load(conn, eid, owner)
         _event(conn, row, 'created', {'simulation_only': True}, 'created:' + eid)
         return row
@@ -210,7 +219,11 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
         raise ValueError('Baseline eligibility must be explicit')
     if not str(op.get('symbol', '')).isalnum() or len(op['symbol']) > 16:
         raise ValueError('Unsupported equity symbol')
+    reasons = op.get('rejection_reasons')
+    if reasons is not None and (not isinstance(reasons, list) or any(not isinstance(r, str) for r in reasons)):
+        raise ValueError('Rejection evidence must be a list of recorded reason codes')
     op = {key: op[key] for key in ('entry', 'stop', 'target', 'time', 'eligible', 'symbol', 'source_id')}
+    op['rejection_reasons'] = reasons
     with transaction(db) as conn:
         row = _load(conn, eid, owner)
         if row['status'] != 'shadow_running' or stamp(op['time']) < stamp(row['created_at']):
@@ -225,13 +238,22 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
                              (day, day + 'Z')).fetchone()[0]
         if count >= policy['opportunities_per_day']:
             raise ValueError('Daily observation budget reached')
+        active_count = conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0]
+        own_count = conn.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? AND created_at>=? AND created_at<?',
+                                 (eid, day, day + 'Z')).fetchone()[0]
+        if own_count >= max(1, policy['opportunities_per_day'] // max(1, active_count)):
+            raise ValueError('Fair-share daily observation budget reached')
         # One symbol/day across decisions prevents repeated signals inflating sample size.
         same = conn.execute('SELECT id FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? AND symbol=? '
                             'AND created_at>=? AND created_at<?', (eid, op['symbol'], day, day + 'Z')).fetchone()
         if same:
             return {'id': same[0], 'duplicate': True}
-        op['arms'] = {arm: dict(status='awaiting_bar' if op['eligible'] and
-                               (arm == 'baseline' or passes(row['spec']['threshold'], op)) else 'skipped',
+        # Only an exact, allowlisted strategy rejection can be replaced in shadow.
+        # Missing reasons or ANY other failure (costs/risk/permissions/data) block it.
+        candidate_eligible = op['eligible'] or (row['spec']['rule_type'] == 'replace_target_r_gate'
+            and bool(reasons) and set(reasons) == {'reward_risk_below_minimum'})
+        op['arms'] = {arm: dict(status='awaiting_bar' if
+                               (op['eligible'] if arm == 'baseline' else candidate_eligible and passes(row['spec']['threshold'], op)) else 'skipped',
                                net=0, cost=0, quantity=0, reason='recorded eligibility / frozen filter')
                       for arm in ('baseline', 'candidate')}
         op['last_bar'] = None
@@ -278,9 +300,10 @@ def step(spec, books, op, bar):
                 outcome.update(status='skipped', reason='gap, occupied symbol or portfolio limit')
                 continue
             risk_cash = spec['initial_cash'] * spec['risk_fraction']
-            quantity = math.floor(min(risk_cash / (fill - op['stop'] + fill * fee + op['stop'] * (fee + slip)),
+            raw_quantity = min(risk_cash / (fill - op['stop'] + fill * fee + op['stop'] * (fee + slip)),
                                       spec['initial_cash'] * spec['max_notional_fraction'] / fill,
-                                      max(0, min(book['cash'], book['entry_cash_remaining'])) / (fill * (1 + fee))))
+                                      max(0, min(book['cash'], book['entry_cash_remaining'])) / (fill * (1 + fee)))
+            quantity = math.floor(raw_quantity * 1e8) / 1e8 if spec.get('broker') == 'kraken' else math.floor(raw_quantity)
             if quantity <= 0:
                 outcome.update(status='skipped', reason='insufficient virtual cash / risk budget')
                 continue
@@ -368,6 +391,9 @@ def evaluate(row, ops, *, now):
         elif mean is not None and mean < 0:
             verdict = 'rejected'
     return dict(finished=finished, verdict=verdict, observations=len(ops), completed=len(complete), usable=n,
+                currency=row['spec'].get('currency', 'USD'),
+                closed_trades={arm: sum(o['arms'][arm]['status'] == 'closed' for o in ops) for arm in ('baseline', 'candidate')},
+                skipped={arm: sum(o['arms'][arm]['status'] == 'skipped' for o in ops) for arm in ('baseline', 'candidate')},
                 uncertain=len(complete) - n, paired_mean_usd=mean, descriptive_lower_bound=lower,
                 day_clusters=len(groups),
                 baseline=row['state']['baseline'], candidate=row['state']['candidate'],
@@ -391,17 +417,21 @@ def list_experiments(db, *, owner='founder', before='', attention=False):
             conditions += ' AND created_at<?'
             params.append(before)
         if attention:
-            conditions += " AND status IN ('recommended','implementation_required','implementation_approved','ready_for_activation','library_approved')"
+            conditions += " AND status IN ('recommended','implementation_required','implementation_approved','ready_for_activation','library_approved','suspended')"
         rows = conn.execute(f'SELECT id,created_at,version,status,revision,spec_json,report_json FROM RULE_EXPERIMENTS WHERE {conditions} ORDER BY created_at DESC LIMIT 21', params).fetchall()
         items = []
         for r in rows[:20]:
             r = dict(r)
             spec = json.loads(r.pop('spec_json'))
             r['hypothesis'] = spec['hypothesis']
+            r.update(broker=spec['broker'], currency=spec.get('currency', 'USD'), problem=spec.get('problem'),
+                     expected_benefit=spec.get('expected_benefit'), priority=spec.get('priority', 3))
             r['report'] = json.loads(r.pop('report_json'))
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
+                    pipeline=[dict(r) for r in conn.execute('SELECT status,COUNT(*) AS count FROM RULE_EXPERIMENTS WHERE owner=? GROUP BY status', (owner,)).fetchall()],
                     policy=control(conn, 'policy', DEFAULT_POLICY), notification_type='strategy_experiment',
+                    evidence_coverage=control(conn, 'learning_evidence_coverage', {}),
                     last_review=control(conn, 'proposal_attempt', {}), worker=control(conn, 'last_tick', {}))
 
 
@@ -438,6 +468,8 @@ def decide(db, eid, *, version, revision, action, key, owner='founder', scope=No
         raise ValueError('Idempotency key required')
     scope = scope or {}
     with transaction(db) as conn:
+        if action == 'enable_paper' and uses_postgres():
+            conn.execute('SELECT pg_advisory_xact_lock(71911504)')
         row = _load(conn, eid, owner)
         previous = conn.execute('SELECT experiment_id,version,action,owner FROM EXPERIMENT_EVENTS WHERE idempotency_key=?', (key,)).fetchone()
         if previous:
@@ -463,6 +495,10 @@ def decide(db, eid, *, version, revision, action, key, owner='founder', scope=No
                 raise ValueError('Paper activation interlock disabled; developer must verify the paper execution path first')
             if row['status'] not in ('library_approved', 'ready_for_activation'):
                 raise ValueError('Accept tested strategy into library first')
+            if row['spec']['broker'] != 'alpaca' or row['spec']['rule_type'] != 'minimum_target_r':
+                raise ValueError('This rule is shadow-only; production behaviour requires separate development')
+            if row['state'].get('execution_validation', {}).get('status') != 'within_tolerance':
+                raise ValueError('Broker comparison has not passed the frozen execution tolerances')
             cap = number(scope.get('max_notional_usd'), 1, 1000)
             expiry = stamp(scope.get('expires_at'))
             if not stamp(now_iso()) < expiry <= stamp(now_iso()) + timedelta(days=30):
@@ -471,7 +507,8 @@ def decide(db, eid, *, version, revision, action, key, owner='founder', scope=No
             if active:
                 raise ValueError('Only one paper variant may be active')
             row['state']['activation'] = dict(environment='paper', broker='alpaca', max_notional_usd=cap,
-                                            expires_at=expiry.isoformat(), version=version, approved_by=owner)
+                                            expires_at=expiry.isoformat(), version=version, approved_by=owner,
+                                            activated_at=now_iso(), max_loss_usd=cap * .05)
             row['status'] = 'paper_active'
         elif action in transitions:
             allowed, target = transitions[action]
@@ -487,17 +524,20 @@ def decide(db, eid, *, version, revision, action, key, owner='founder', scope=No
 
 def paper_filter(db, proposal, *, broker, mode):
     """Extra rejection only. Never selects a broker, creates orders or weakens safeguards."""
-    if broker.lower() != 'alpaca' or mode.lower() != 'paper':
+    if broker.lower() != 'alpaca' or mode.lower() != 'paper' or proposal.side != 'buy':
         return {'allowed': True, 'version': None}
     with transaction(db) as conn:
         rows = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='paper_active' LIMIT 2").fetchall()
         if not rows:
             return {'allowed': True, 'version': None}
+        if len(rows) > 1:
+            return {'allowed': False, 'version': None, 'reason': 'Conflicting paper activations; review required'}
         row = _load(conn, rows[0][0])
         activation = row['state']['activation']
-        if stamp(activation['expires_at']) <= stamp(now_iso()):
+        if (stamp(activation['expires_at']) <= stamp(now_iso()) or activation.get('version') != row['version']
+                or row['spec']['baseline_fingerprint'] != baseline_fingerprint()):
             return {'allowed': False, 'version': row['version'], 'reason': 'Paper experiment approval expired; suspend or renew'}
         allowed = (proposal.side == 'buy' and passes(row['spec']['threshold'],
                    dict(entry=proposal.entry_price, stop=proposal.stop_loss, target=proposal.take_profit))
                    and proposal.entry_price * proposal.position_size <= activation['max_notional_usd'])
-        return {'allowed': allowed, 'version': row['version'], 'reason': 'Approved paper-only target/risk entry filter'}
+        return {'allowed': allowed, 'version': row['version'], 'experiment_id': row['id'], 'reason': 'Approved paper-only target/risk entry filter'}

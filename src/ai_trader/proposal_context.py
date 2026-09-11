@@ -104,6 +104,11 @@ def _serialize_historical_analogues(analogues: dict[str, Any]) -> str:
                     summary_bits.append("net result unavailable; do not infer after-fee profitability")
         if case.get("broker"):
             summary_bits.append(f"broker={case['broker']}")
+        exit_reason = case.get('latest_recorded_exit_reason') or (result_context.get('exit_reason') if isinstance(result_context, dict) else None)
+        if exit_reason:
+            summary_bits.append('recorded_exit=' + str(exit_reason)[:180])
+        if case.get('exit_evidence_source'):
+            summary_bits.append('exit_source=' + case['exit_evidence_source'])
         # rejection_review.py's records (2026-08-16) are the one decision_context
         # shape with a reliable "why" -- real executed-trade decision_context is a
         # large free-form dict with no consistent reason field, so this is

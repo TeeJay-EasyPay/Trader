@@ -227,7 +227,7 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
                 conn,
                 "SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION "
                 "WHERE exit_reason IS NULL OR TRIM(exit_reason) = '' "
-                "OR LOWER(exit_reason) LIKE '%not recorded%' OR LOWER(exit_reason) = 'unknown'",
+                "OR LOWER(exit_reason) LIKE ? OR LOWER(exit_reason) = 'unknown'", ('%not recorded%',),
             ),
         }
 

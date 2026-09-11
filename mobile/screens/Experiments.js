@@ -19,7 +19,7 @@ function Button({ label, onPress, disabled, primary }) {
     style={[s.button, primary && s.primary, disabled && { opacity: .5 }]}><Text style={[s.buttonText, primary && { color: '#FFFFFF' }]}>{label}</Text></TouchableOpacity>;
 }
 const human = text => String(text || '').replace(/_/g, ' ');
-const money = n => typeof n === 'number' ? '$' + n.toFixed(2) : 'Not available';
+const money = (n, currency = 'USD') => typeof n === 'number' ? (currency === 'GBP' ? '£' : '$') + n.toFixed(2) : 'Not available';
 function TestingJourney({ data }) {
   const time = experimentTimeline(data);
   return <View style={s.card}><Text style={s.title}>Testing journey</Text>
@@ -48,7 +48,9 @@ function ExperimentDetail({ request, id, onBack }) {
   async function approve() {
     setBusy(true); setError('');
     try {
-      const scope = confirm === 'enable_paper' ? { max_notional_usd: Number(capital), expires_at: new Date(Date.now() + 7 * 86400000).toISOString() } : {};
+      const scope = confirm === 'enable_paper' ? { max_notional_usd: Number(capital), expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }
+        : confirm === 'request_development' ? { requirements: 'Implement reviewed strategy version ' + data.version + ': ' + data.spec.hypothesis,
+          acceptance_tests: 'Preserve risk and fee checks; verify execution, exact-version decision attribution and rollback. No live activation.' } : {};
       const result = await request('/experiments/decision', { method: 'POST', body: JSON.stringify({ id, version: data.version,
         revision: data.revision, action: confirm, confirmed: true, scope,
         idempotency_key: id + ':' + data.revision + ':' + confirm }) });
@@ -57,29 +59,48 @@ function ExperimentDetail({ request, id, onBack }) {
     finally { setBusy(false); }
   }
   const actions = data?.status === 'recommended' ? [['approve_library', 'Approve for strategy library'], ['reject', 'Reject recommendation']]
-    : ['library_approved', 'ready_for_activation'].includes(data?.status) ? [['enable_paper', 'Review Alpaca paper activation'], ['reject', 'Reject']]
+    : ['library_approved', 'ready_for_activation'].includes(data?.status) ? [
+      ...(data?.spec?.broker === 'alpaca' && data?.spec?.rule_type === 'minimum_target_r' ? [['enable_paper', 'Review Alpaca paper activation']] : []),
+      ...(data?.status === 'library_approved' ? [['request_development', 'Request implementation review']] : []), ['reject', 'Reject']]
     : data?.status === 'implementation_required' ? [['approve_implementation', 'Approve implementation'], ['reject', 'Reject request']]
     : ['shadow_running', 'paper_active'].includes(data?.status) ? [['suspend', 'Suspend']] : [];
   return <View style={s.card}><Button label="Back" onPress={onBack} /><Text style={s.title}>Experiment report</Text>
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     <Button label="Refresh report" disabled={busy} onPress={load} />
-    {data && <><Text style={s.text}>{data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · Alpaca · SIMULATED</Text>
+    {data && <><Text style={s.text}>Hypothesis: {data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · {human(data.spec.broker)} · {data.spec.currency || 'USD'} · SIMULATED</Text>
+      <Text style={s.text}>Problem: {data.spec.problem || 'See hypothesis'}{'\n'}Intended benefit: {data.spec.expected_benefit || 'Not yet documented'}</Text>
+      <Text style={s.small}>Priority {data.spec.priority || 3} (1 is highest). {data.status === 'queued' ? 'Waiting for a resource slot. Testing has not started; dates are set when it starts.' : 'The worker shares a capped daily observation budget across experiments.'}</Text>
       <Text selectable style={s.small}>Version {data.version.slice(0, 12)} · {data.created_at}</Text>
-      <TestingJourney data={data} />
+      {data.status !== 'queued' && <TestingJourney data={data} />}
       <Text style={s.text}>Baseline: recorded eligibility. Candidate: require target / planned risk of at least {data.spec.threshold}. Targets are not expected returns.</Text>
       <Text style={s.small}>Both portfolios use the same estimated fills and costs. No broker orders are sent by simulations.</Text>
+      <Text style={s.small}>{data.spec.rule_type === 'replace_target_r_gate' ? 'Candidate may replace only a recorded target/risk rejection. Unknown reasons or any other failed safeguard still mean skip.' : 'This candidate only filters baseline-eligible entries.'}</Text>
       <Text style={s.text}>{data.report.observations ?? 'Not yet reported'} opportunities · {data.report.completed ?? 'Not yet reported'} resolved pairs (including skips) · {data.report.uncertain ?? 'Not yet reported'} uncertain.</Text>
-      <Text style={s.text}>Baseline realised: {money(data.report.baseline?.realised)}{ '\n' }Candidate realised: {money(data.report.candidate?.realised)}</Text>
-      <Text style={s.small}>Virtual equity including open positions: {money(data.report.baseline?.equity)} / {money(data.report.candidate?.equity)}</Text>
+      <Text style={s.text}>Closed simulated trades: baseline {data.report.closed_trades?.baseline ?? 'Not reported'} / candidate {data.report.closed_trades?.candidate ?? 'Not reported'}{'\n'}Skipped: {data.report.skipped?.baseline ?? 'Not reported'} / {data.report.skipped?.candidate ?? 'Not reported'}</Text>
+      <Text style={s.text}>Baseline realised: {money(data.report.baseline?.realised, data.spec.currency)}{ '\n' }Candidate realised: {money(data.report.candidate?.realised, data.spec.currency)}</Text>
+      <Text style={s.small}>Virtual equity including open positions: {money(data.report.baseline?.equity, data.spec.currency)} / {money(data.report.candidate?.equity, data.spec.currency)}</Text>
+      <View style={s.card}><Text style={s.title}>Simulation versus broker</Text>
+        <Text style={s.text}>{human(data.state?.execution_validation?.status || 'not yet compared')}</Text>
+        <Text style={s.small}>Matched outcomes: {data.state?.execution_validation?.compared ?? 0}; within tolerance: {data.state?.execution_validation?.within_tolerance ?? 0}; missing costs: {data.state?.execution_validation?.missing_costs ?? 'not checked'}.</Text>
+        <Text style={s.small}>Checks entry price, exit price, holding time and costs. Missing/ambiguous matches cannot validate the simulator. Alpaca paper agreement does not establish live execution quality.</Text>
+        {(data.state?.execution_validation?.examples || []).map(p => <Text key={p.source_id} style={s.small}>{p.source_id}: entry {p.differences.entry_bps.toFixed(1)} bps, exit {p.differences.exit_bps.toFixed(1)} bps, duration {p.differences.holding_hours.toFixed(1)} hours difference; cost {p.differences.cost_bps == null ? 'unknown' : p.differences.cost_bps.toFixed(1) + ' bps difference'}.</Text>)}
+      </View>
+      {data.state?.adoption_monitor && <View style={s.card}><Text style={s.title}>Use and monitoring</Text>
+        <Text style={s.text}>{human(data.state.adoption_monitor.status)} · {data.state.adoption_monitor.reason || 'Approved paper version checked'}</Text>
+        <Text style={s.small}>{data.state.adoption_monitor.decisions} attributed decisions; {data.state.adoption_monitor.completed} completed outcomes; {data.state.adoption_monitor.verified_cost_outcomes} with verified costs. Checked {data.state.adoption_monitor.checked_at}.</Text>
+      </View>}
       <Text style={s.small}>Costs: {data.spec.costs_status}. Evaluation after {data.report.evaluate_after || 'the frozen test period'}. {data.report.caveat}</Text>
       <Text style={s.small}>Source outcomes: {data.spec.evidence_ids.join(', ')}. Saving never activates trading. Live activation is disabled for this rollout.</Text>
       {actions.map(([action, label]) => <Button key={action} label={label} disabled={busy} onPress={() => setConfirm(action)} />)}
       {confirm && <View style={s.card}><Text style={s.text}>Confirm: {human(confirm)} for version {data.version.slice(0, 12)}?</Text>
         <Text style={s.small}>Library approval stores acceptance only. Implementation approval permits development, not live trading.</Text>
-        {confirm === 'enable_paper' && <><Text style={s.small}>Alpaca paper only · expires in 7 days. Maximum notional per order (USD):</Text>
+        {confirm === 'enable_paper' && <><Text style={s.small}>Alpaca paper only · expires in 7 days. Automatically suspend this variant if recorded after-cost losses reach 5% of the per-order cap, cost evidence is missing, or the approved baseline changes. Existing exits stay intact. Maximum notional per order (USD):</Text>
           <TextInput accessibilityLabel="Paper maximum order notional in dollars" keyboardType="numeric" value={capital} onChangeText={setCapital} style={s.input} /></>}
         <Button primary label="Confirm this exact action" disabled={busy} onPress={approve} /><Button label="Cancel" disabled={busy} onPress={() => setConfirm(null)} /></View>}
       <Text style={s.title}>History</Text>{(data.events || []).map((e, i) => <Text key={i} style={s.small}>{e.created_at} · {human(e.action)}</Text>)}
+      <Text style={s.title}>Recent paired opportunities</Text>
+      {(data.opportunities || []).map(o => <Text key={o.source_id} style={s.small}>{o.time} · {o.symbol}{'\n'}Baseline: {human(o.arms.baseline.status)} ({o.arms.baseline.reason}); candidate: {human(o.arms.candidate.status)} ({o.arms.candidate.reason}). {o.uncertain ? 'Uncertain: ' + o.quality : ''}</Text>)}
+      <Text style={s.small}>Latest 20 opportunities shown; headline totals cover the full experiment.</Text>
       <Text style={s.small}>Approvals and implementation progress share this same record in Learning, Executive Briefing and Notifications.</Text>
     </>}
   </View>;
@@ -102,11 +123,17 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
     {notifications && <Button label={attention ? 'View history and all experiments' : 'View needs attention'} onPress={() => setAttention(v => !v)} />}
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
+    {!!data?.pipeline?.length && <Text style={s.text}>Pipeline: {data.pipeline.map(p => human(p.status) + ' ' + p.count).join(' · ')}</Text>}
     {!!data?.last_review?.status && <Text style={s.small}>Latest proposal review: {human(data.last_review.status)} · {data.last_review.day}. {data.last_review.reason || ''}</Text>}
     {!!data?.worker?.at && <Text style={s.small}>Worker checked {data.worker.at}: {human(data.worker.status)}.</Text>}
+    {!!data?.evidence_coverage?.brokers && <View style={s.card}><Text style={s.title}>Learning evidence coverage</Text>
+      {data.evidence_coverage.brokers.map(b => <Text key={b.broker} style={s.small}>{human(b.broker)}: {b.outcomes} outcomes; {b.linked_decisions} linked decisions; {b.canonical_closures} canonical closures; {b.known_costs} with known costs; {b.meaningful_exit_labels} meaningful exit labels.</Text>)}
+      <Text style={s.small}>{data.evidence_coverage.caveat} Checked {data.evidence_coverage.checked_at}.</Text>
+    </View>}
     {data?.items?.map(row => <View key={row.id} style={s.card}>
       <Button label={human(row.status) + ' · Hypothesis: ' + row.hypothesis} onPress={() => setSelected(row.id)} />
-      <Text style={s.small}>Started: {experimentTimeline(row).start}{'\n'}Target evaluation: {experimentTimeline(row).target}{'\n'}{experimentTimeline(row).remaining}</Text>
+      <Text style={s.small}>{human(row.broker || 'alpaca')} · Priority {row.priority || 3}{'\n'}Problem: {row.problem || row.hypothesis}{'\n'}Intended benefit: {row.expected_benefit || 'See report'}</Text>
+      <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Target date will be set when a worker slot is available.' : 'Started: ' + experimentTimeline(row).start + '\nTarget evaluation: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
       <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>
     </View>)}
     {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : 'No experiment recorded yet. Reviews alone do not demonstrate improvement.'}</Text>}

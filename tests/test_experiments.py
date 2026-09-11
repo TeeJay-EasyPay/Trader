@@ -37,9 +37,13 @@ def db(tmp_path, monkeypatch):
         c.execute('CREATE TABLE DECISION_JOURNAL(decision_id INTEGER PRIMARY KEY,created_at TEXT,proposal_id TEXT,symbol TEXT,broker TEXT,execution_eligibility TEXT,payload_json TEXT)')
         c.execute('CREATE TABLE HISTORICAL_CANDLES(symbol TEXT,asset_type TEXT,timeframe TEXT,observed_at TEXT,open REAL,high REAL,low REAL,close REAL,source TEXT)')
         c.execute('CREATE TABLE LOGICAL_TRADES(proposal_id TEXT,broker TEXT,intended_entry_price REAL,original_stop REAL,intended_target REAL)')
+        for name, kind in [('net_pnl','REAL'), ('gross_pnl','REAL'), ('terminal','INTEGER'), ('entry_filled_quantity','REAL')]:
+            c.execute(f'ALTER TABLE LOGICAL_TRADES ADD COLUMN {name} {kind}')
+        for name, kind in [('quantity', 'REAL'), ('entry_price', 'REAL'), ('opened_at', 'TEXT'), ('primary_factors_json', 'TEXT')]:
+            c.execute(f'ALTER TABLE PERFORMANCE_ATTRIBUTION ADD COLUMN {name} {kind}')
         for i in range(1, 16):
-            c.execute('INSERT INTO LOGICAL_TRADES VALUES (?,?,?,?,?)', ('p'+str(i), 'alpaca', 100, 90, 120))
-            c.execute('INSERT INTO PERFORMANCE_ATTRIBUTION VALUES (?,?,?,?,?,?,?,?)',
+            c.execute('INSERT INTO LOGICAL_TRADES(proposal_id,broker,intended_entry_price,original_stop,intended_target) VALUES (?,?,?,?,?)', ('p'+str(i), 'alpaca', 100, 90, 120))
+            c.execute('INSERT INTO PERFORMANCE_ATTRIBUTION(attribution_id,broker,symbol,profit_loss,closed_at,exit_price,proposal_id,holding_period_seconds) VALUES (?,?,?,?,?,?,?,?)',
                       (i, 'alpaca', 'ABC', -1, '2026-08-01T00:00:00+00:00', 100, 'p' + str(i), 3600))
     return path
 
@@ -241,6 +245,9 @@ def test_paper_approval_limits_and_filter(db, monkeypatch):
     row = create(db)
     with e.transaction(db) as c:
         c.execute("UPDATE RULE_EXPERIMENTS SET status='library_approved' WHERE id=?", (row['id'],))
+        current = e._load(c, row['id'])
+        current['state']['execution_validation'] = {'status': 'within_tolerance'}
+        c.execute('UPDATE RULE_EXPERIMENTS SET state_json=? WHERE id=?', (e.dump(current['state']), row['id']))
     from datetime import timedelta
     expiry = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     result = e.decide(db, row['id'], version=row['version'], revision=0, action='enable_paper', key='paper-enable',
@@ -252,6 +259,8 @@ def test_paper_approval_limits_and_filter(db, monkeypatch):
     assert e.paper_filter(db, p, broker='alpaca', mode='paper')['allowed']
     p.position_size = 3
     assert not e.paper_filter(db, p, broker='alpaca', mode='paper')['allowed']
+    p.side = 'sell'
+    assert e.paper_filter(db, p, broker='alpaca', mode='paper')['allowed']
 
 
 def test_implementation_queue_requires_approval(db):

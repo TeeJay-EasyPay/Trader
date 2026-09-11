@@ -290,9 +290,11 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
         SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
                {field('order_id')} AS broker_order_id, {field('leaves_qty')} AS leaves_quantity,
                COALESCE(t.proposal_id, linked.proposal_id),
-               CASE WHEN t.proposal_id IS NOT NULL THEN t.logical_trade_id ELSE linked.logical_trade_id END
+               CASE WHEN t.proposal_id IS NOT NULL THEN t.logical_trade_id ELSE linked.logical_trade_id END,
+               h.external_id,{field('broker_fee')} AS broker_fee,{field('exchange_fee')} AS exchange_fee,
+               {field('cum_qty')} AS cumulative_quantity
         FROM BROKER_TRADE_HISTORY h
-        LEFT JOIN LOGICAL_TRADE_FILLS f ON f.broker_fill_id = h.external_id
+        LEFT JOIN LOGICAL_TRADE_FILLS f ON f.broker_fill_id = h.external_id AND f.broker='alpaca'
         LEFT JOIN LOGICAL_TRADES t ON t.logical_trade_id = f.logical_trade_id
         LEFT JOIN (
             SELECT ev.broker_order_id, MIN(original.proposal_id) AS proposal_id,
@@ -323,6 +325,8 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
             "leaves_quantity": row[6],
             "proposal_id": row[7],
             "logical_trade_id": row[8],
+            "fill_id": row[9], "broker_fee": _number(row[10]), "exchange_fee": _number(row[11]),
+            "cumulative_quantity": _number(row[12]),
         })
     return fills
 
@@ -334,17 +338,21 @@ def recorded_exit_evidence(conn: Any, order_ids: list[str]) -> dict[str, dict[st
     for start in range(0, len(unique), 100):
         batch = unique[start:start + 100]
         marks = ','.join('?' for _ in batch)
-        kind = "payload_json::jsonb->>'type'" if uses_postgres() else "json_extract(payload_json, '$.type')"
-        rows = conn.execute(f"""SELECT external_id,{kind} FROM BROKER_TRADE_HISTORY
+        def field(name):
+            return f"payload_json::jsonb->>'{name}'" if uses_postgres() else f"json_extract(payload_json, '$.{name}')"
+        kind = f"COALESCE({field('type')},{field('order_type')})"
+        rows = conn.execute(f"""SELECT external_id,{kind} AS order_kind,{field('order_class')} AS order_class,{field('side')} AS order_side FROM BROKER_TRADE_HISTORY
             WHERE broker='alpaca' AND external_id IN ({marks})""", tuple(batch)).fetchall()
         types: dict[str, set[str]] = {}
-        for order_id, order_type in (tuple(row[i] for i in range(2)) for row in rows):
+        for order_id, order_type, order_class, side in (tuple(row[i] for i in range(4)) for row in rows):
+            if order_type == 'limit' and order_class in ('bracket', 'oco') and side == 'sell':
+                order_type = 'bracket_take_profit'
             types.setdefault(order_id, set()).add(str(order_type or '').lower())
         for order_id, values in types.items():
             if len(values) != 1:
                 continue
             order_type = next(iter(values))
-            if order_type in {'stop', 'stop_limit', 'trailing_stop'}:
+            if order_type in {'stop', 'stop_limit', 'trailing_stop', 'bracket_take_profit'}:
                 result[order_id] = {'order_id': order_id, 'order_type': order_type,
                     'basis': 'closing_fill_order_id_matches_recorded_broker_order_type',
                     'reason': f'Broker {order_type.replace("_", "-")} order filled.'}
@@ -450,7 +458,10 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
     # decision links are missing. Keep this distinct from full canonical learning.
     from .alpaca_learning import capture_outcome_evidence, review_linked_outcomes
     try:
+        from .alpaca_canonical_learning import reconcile_completed
+        canonical = reconcile_completed(db_path, fills, orders, round_trips, exits)
         learning_evidence = capture_outcome_evidence(db_path)
+        learning_evidence['canonical'] = canonical
         learning_evidence['linked_reviews'] = review_linked_outcomes(db_path)
     except Exception as exc:
         learning_evidence = {'status': 'failed', 'error_type': type(exc).__name__}

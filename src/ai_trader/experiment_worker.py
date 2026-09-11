@@ -15,12 +15,17 @@ from . import experiments as exp
 from .database import connect, uses_postgres
 
 log = logging.getLogger(__name__)
-QUESTION = '''Propose at most one falsifiable Alpaca paper experiment from these completed
-outcomes. They are GROSS before unknown fees. Do not claim causation, profitability,
-or calibrated probabilities. Supported rule: minimum_target_r, a stricter entry
+QUESTION = '''Propose at most one falsifiable shadow experiment for the supplied broker from these completed
+outcomes. Alpaca profit_loss is GROSS before unknown fees; Kraken profit_loss is
+recorded NET after costs. Do not mix these bases. Do not claim causation, profitability,
+or calibrated probabilities. Supported rules: minimum_target_r, a stricter entry
 filter based on planned target distance / stop distance, NOT expected return.
+or replace_target_r_gate: replace ONLY the reward_risk_below_minimum rejection
+with a threshold between 1 and 4. Other risk, fee and data rejections remain blocks.
+Kraken is GBP-only shadow; Alpaca is USD shadow. No broker orders.
 Keep entry/exit generation and safeguards unchanged. Return ONLY JSON:
 {"rule_type":"minimum_target_r","threshold":2.5,"hypothesis":"...",
+"problem":"specific observed problem","expected_benefit":"testable benefit, not a promise",
 "evidence_ids":[existing attribution ids]} or {"no_change":"reason"}.
 No trades, tools, arbitrary code, live activation or settings changes. Propose a
 test only if the evidence supports investigating it; do not invent missing data.'''
@@ -45,15 +50,19 @@ def propose(db, settings, now, policy, answer=None):
         attempts = exp.control(conn, 'proposal_attempt', {})
         if attempts.get('day') == now[:10]:
             return 'daily_model_budget_reached'
-        if conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0]:
-            return 'experiment_running'
+        queued = conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') ORDER BY created_at DESC LIMIT 24").fetchall()
+        if sum(1 for r in queued) >= 4:
+            return 'pipeline_budget_reached'
+        counts = {b: sum(json.loads(r[0])['broker'] == b for r in queued) for b in ('alpaca', 'kraken')}
+        broker = min(counts, key=counts.get)
         rows = conn.execute("SELECT p.attribution_id,p.symbol,p.closed_at,p.profit_loss,p.holding_period_seconds,"
                             "t.intended_entry_price,t.original_stop,t.intended_target "
-                            "FROM PERFORMANCE_ATTRIBUTION p JOIN LOGICAL_TRADES t ON t.proposal_id=p.proposal_id AND t.broker='alpaca' "
-                            "WHERE p.broker='alpaca' AND p.exit_price IS NOT NULL "
-                            "ORDER BY p.attribution_id DESC LIMIT 30").fetchall()
+                            "FROM PERFORMANCE_ATTRIBUTION p JOIN LOGICAL_TRADES t ON t.proposal_id=p.proposal_id AND t.broker=p.broker "
+                            "WHERE p.broker=? AND p.exit_price IS NOT NULL "
+                            "ORDER BY p.attribution_id DESC LIMIT 30", (broker,)).fetchall()
         evidence = [dict(r) for r in rows]
-        watermark = exp.control(conn, 'proposal_watermark', 0)
+        watermark_key = 'proposal_watermark:' + broker
+        watermark = exp.control(conn, watermark_key, 0)
         if sum(r['attribution_id'] > watermark for r in evidence) < policy['min_new_outcomes']:
             return 'insufficient_new_linked_outcomes'
         if len(exp.dump(evidence)) > 10000:
@@ -73,7 +82,7 @@ def propose(db, settings, now, policy, answer=None):
             from .ai import OpenAIReadOnlyExplainer
             answer = OpenAIReadOnlyExplainer(settings.openai_api_key, settings.openai_model,
                                             timeout_seconds=20, max_output_tokens=1000).answer
-        context = {'outcomes': evidence, 'previous_experiments': prior}
+        context = {'broker': broker, 'outcomes': evidence, 'previous_experiments': prior}
         if len(exp.dump(context)) > 18000:
             raise ValueError('Combined evidence and library input budget reached')
         raw = answer(QUESTION + ' Use prior experiment results, including failures; do not repeat a rejected threshold without new supporting evidence.', context)
@@ -86,10 +95,11 @@ def propose(db, settings, now, policy, answer=None):
         else:
             if not set(candidate.get('evidence_ids', [])).issubset({r['attribution_id'] for r in evidence}):
                 raise ValueError('Model cited evidence it was not supplied')
-            row = exp.create_experiment(db, candidate, now=now)
+            candidate['broker'] = broker
+            row = exp.create_experiment(db, candidate, now=now, queue=True)
             result = {'status': 'created', 'experiment_id': row['id']}
         with exp.transaction(db) as conn:
-            exp.put_control(conn, 'proposal_watermark', max(r['attribution_id'] for r in evidence))
+            exp.put_control(conn, watermark_key, max(r['attribution_id'] for r in evidence))
     except Exception as exc:
         result = {'status': 'proposal_failed', 'error_type': type(exc).__name__, 'reason': 'No automatic retry; budget reserved.'}
     with exp.transaction(db) as conn:
@@ -97,22 +107,38 @@ def propose(db, settings, now, policy, answer=None):
     return result
 
 
-def _decisions(db, cursor, created_at):
+def _decisions(db, cursor, created_at, broker='alpaca'):
     # Project only the small proposal fields. Never transfer the complete dossier.
     def field(name):
         if uses_postgres():
             return f"payload_json::jsonb #>> '{{proposal,{name}}}'"
         return f"json_extract(payload_json, '$.proposal.{name}')"
-    fields = ','.join(field(n) + ' AS ' + n for n in ('entry_price', 'stop_loss', 'take_profit', 'side'))
+    fields = ','.join(field(n) + ' AS ' + n for n in ('entry_price', 'stop_loss', 'take_profit', 'side', 'quote_currency'))
+    from .experiment_assurance import json_field
+    fields += ',' + json_field('payload_json', ['reasons'], text=False) + ' AS reasons'
+    fields += ',' + json_field('payload_json', ['proposal', 'pre_experiment_eligibility']) + ' AS baseline_eligibility'
     with exp.transaction(db) as conn:
         return [dict(r) for r in conn.execute(f'SELECT decision_id,created_at,proposal_id,symbol,execution_eligibility,{fields} '
-                 "FROM DECISION_JOURNAL WHERE broker='alpaca' AND decision_id>? AND created_at>=? ORDER BY decision_id LIMIT 20",
-                 (cursor, created_at)).fetchall()]
+                 "FROM DECISION_JOURNAL WHERE broker=? AND decision_id>? AND created_at>=? ORDER BY decision_id LIMIT 20",
+                 (broker, cursor, created_at)).fetchall()]
 
 
-def _bars(db, symbols, since, now):
+def _bars(db, symbols, since, now, broker='alpaca'):
     if not symbols:
         return []
+    if broker == 'kraken':
+        # Do not mix USD research candles with GBP execution prices. Reuse only
+        # exact venue/pair and quality-checked data; missing data stays missing.
+        with exp.transaction(db) as conn:
+            rows = conn.execute('SELECT normalized_symbol,observation_time,open,high,low,close '
+                'FROM MARKET_DATA_OBSERVATIONS WHERE normalized_symbol IN (' + ','.join('?' for _ in symbols) + ') '
+                "AND provider='kraken' AND timeframe='1d' AND adjusted_status='unadjusted' AND source_quality_status='pass' "
+                'AND observation_time>? AND observation_time<? ORDER BY observation_time LIMIT 200',
+                (*symbols, since, now)).fetchall()
+        return [dict(symbol=r['normalized_symbol'], start=exp.stamp(r['observation_time']).isoformat(),
+            end=(exp.stamp(r['observation_time']) + timedelta(days=1)).isoformat(),
+            open=r['open'], high=r['high'], low=r['low'], close=r['close'],
+            quality='verified_unadjusted', source='kraken_exact_pair_daily') for r in rows]
     with exp.transaction(db) as conn:
         # Existing equity ingestion uses Alpaca raw IEX daily bars in this table.
         # MARKET_DATA_OBSERVATIONS currently contains crypto only in production.
@@ -141,6 +167,9 @@ def _bars(db, symbols, since, now):
 
 def tick(db, settings, *, now=None, answer=None):
     now = now or exp.now_iso()
+    from .experiment_assurance import monitor_adoptions
+    # Adoption safety monitoring is not disabled by a shadow-storage/model cap.
+    monitor_adoptions(db, now)
     with exp.transaction(db) as conn:
         policy = exp.control(conn, 'policy', exp.DEFAULT_POLICY)
         if not policy['enabled']:
@@ -154,9 +183,11 @@ def tick(db, settings, *, now=None, answer=None):
         return {'status': 'leased'}
     started = time.monotonic()
     try:
+        from .experiment_assurance import start_queued, validate_execution
         proposal = propose(db, settings, now, policy, answer=answer)
+        start_queued(db, now)
         with exp.transaction(db) as conn:
-            active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 1").fetchall()
+            active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' ORDER BY created_at LIMIT 2").fetchall()
         processed, invalid = 0, 0
         for r in active:
             row = exp.detail(db, r[0])
@@ -167,11 +198,20 @@ def tick(db, settings, *, now=None, answer=None):
                     current['report'] = {'verdict': 'insufficient_evidence', 'reason': 'Baseline deployment changed; freeze a new comparison.'}
                     exp._event(conn, current, 'baseline_changed', current['report'], 'baseline:' + row['id'])
                     exp._save(conn, current)
+                # Do not mix simulator versions in one test. Preserve the old
+                # report and restart the same hypothesis prospectively, not with
+                # backdated samples or another paid model call.
+                replacement = exp.create_experiment(db, row['spec'], now=now, queue=True)
+                with exp.transaction(db) as conn:
+                    new_row = exp._load(conn, replacement['id'])
+                    new_row['state']['supersedes'] = row['id']
+                    exp._event(conn, new_row, 'engineering_restart', {'previous_experiment': row['id']}, 'restart:' + row['id'])
+                    exp._save(conn, new_row)
                 continue
             cursor = row['state']['cursor']
             # Decision ingestion stops at frozen evaluation deadline, not indefinitely.
             deadline = exp.stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])
-            for d in _decisions(db, cursor, row['created_at']):
+            for d in _decisions(db, cursor, row['created_at'], row['spec']['broker']):
                 if time.monotonic() - started > 25:
                     break
                 if exp.stamp(d['created_at']) > deadline:
@@ -180,9 +220,21 @@ def tick(db, settings, *, now=None, answer=None):
                 try:
                     if d['side'] != 'buy':
                         raise ValueError('Only long equity proposals supported')
-                    exp.add_opportunity(db, row['id'], dict(source_id=d['proposal_id'], symbol=d['symbol'], time=d['created_at'],
-                        entry=d['entry_price'], stop=d['stop_loss'], target=d['take_profit'], eligible=d['execution_eligibility'] == 'eligible'))
-                    processed += 1
+                    symbol = d['symbol']
+                    if row['spec']['broker'] == 'kraken':
+                        if d.get('quote_currency') != 'GBP':
+                            raise ValueError('Explicit GBP price currency required for Kraken shadow')
+                        # New Kraken journal proposals use normalized base symbols.
+                        symbol = symbol.replace('/', '').upper()
+                        if symbol.endswith(('USD', 'EUR', 'USDT')):
+                            raise ValueError('Kraken experiments currently require GBP prices')
+                        if not symbol.endswith('GBP'):
+                            symbol += 'GBP'
+                    reasons = json.loads(d['reasons']) if isinstance(d['reasons'], str) else d['reasons']
+                    baseline = d.get('baseline_eligibility') or d['execution_eligibility']
+                    added = exp.add_opportunity(db, row['id'], dict(source_id=d['proposal_id'], symbol=symbol, time=d['created_at'],
+                        entry=d['entry_price'], stop=d['stop_loss'], target=d['take_profit'], eligible=baseline == 'eligible', rejection_reasons=reasons))
+                    processed += not added['duplicate']
                 except (ValueError, TypeError):
                     invalid += 1
                 cursor = d['decision_id']
@@ -201,18 +253,26 @@ def tick(db, settings, *, now=None, answer=None):
             ops = [json.loads(o[0]) for o in unresolved]
             pending = [o for o in ops if any(a['status'] in ('open','awaiting_bar') for a in o['arms'].values())]
             since = min((o.get('last_bar') or o['time'] for o in pending), default=now)
-            bars = _bars(db, sorted({o['symbol'] for o in pending}), since, now)
+            bars = _bars(db, sorted({o['symbol'] for o in pending}), since, now, row['spec']['broker'])
             missing = sorted({o['symbol'] for o in pending} - {b['symbol'] for b in bars})
             if missing:
                 from .experiment_market_data import missing_bars
-                bars += missing_bars(db, settings, missing, now)
+                bars += missing_bars(db, settings, missing, now, broker=row['spec']['broker'])
             exp.settle_bars(db, row['id'], bars, now=now)
+            with exp.transaction(db) as conn:
+                settled_ops = [json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? ORDER BY created_at LIMIT 1200', (row['id'],)).fetchall()]
+            validate_execution(db, row, settled_ops, now)
             with exp.transaction(db) as conn:
                 exp.put_control(conn, 'settled:' + row['id'], now[:10])
         status = {'status': 'completed', 'at': now, 'proposal': proposal, 'processed': processed,
                   'invalid': invalid, 'elapsed_seconds': round(time.monotonic() - started, 3), 'broker_orders': 0}
         with exp.transaction(db) as conn:
             exp.put_control(conn, 'last_tick', status)
+        try:
+            from .experiment_assurance import evidence_coverage
+            evidence_coverage(db, now)
+        except Exception as exc:
+            log.warning('Learning coverage unavailable: %s', type(exc).__name__)
         return status
     finally:
         with exp.transaction(db) as conn:

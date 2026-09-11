@@ -412,6 +412,10 @@ def pre_execution_decision_packet(
     seed_default_strategy_registry(db_path)
     proposal_payload = proposal.to_dict()
     proposal_payload["broker"] = broker.lower()
+    # Current execution contracts: Kraken _kraken_pair uses GBP; Alpaca equities
+    # use USD. Record this here, not by guessing from a research symbol later.
+    # USD Kraken enablement must extend this contract before changing execution.
+    proposal_payload['quote_currency'] = 'GBP' if broker.lower() == 'kraken' else 'USD'
     proposal_payload["notional"] = proposal.entry_price * proposal.position_size
     strategy = strategy_entitlement_decision(db_path, proposal=proposal, broker=broker, mode=mode)
     resolved_positions = positions or _positions_from_account(account, broker)
@@ -467,6 +471,7 @@ def pre_execution_decision_packet(
         approved = False
         reasons.append(f"risk_sentinel_blocked: {sentinel['reason']}")
     final_decision = "approved" if approved else "blocked"
+    proposal_payload['pre_experiment_eligibility'] = 'eligible' if approved else 'not_eligible'
     # An explicitly approved PAPER variant may only add a rejection. It cannot
     # change live orders, exits, sizing or the original safety verdict.
     import os
@@ -544,6 +549,7 @@ def pre_execution_decision_packet(
     )
     return {
         "approved": approved,
+        "experiment_entry_check": proposal_payload.get('experiment_entry_check'),
         "final_decision": final_decision,
         "execution_eligibility": execution_eligibility,
         "reasons": reasons,
@@ -1503,6 +1509,7 @@ def _learning_payload_from_canonical_trade(db_path: Path, trade: dict[str, Any])
     probability = intelligence.get("probability") if isinstance(intelligence.get("probability"), dict) else {}
     decision_context = {
         **proposal_context,
+        "approved_experiment": (stored_context.get('production_gate') or {}).get('experiment_entry_check'),
         "intended_entry_price": trade.get("intended_entry_price"),
         "entry_price": trade.get("intended_entry_price"),
         "original_stop": trade.get("original_stop"),

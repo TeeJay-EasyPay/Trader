@@ -247,7 +247,7 @@ class WritingTests(unittest.TestCase):
                     symbol TEXT, side TEXT, quantity REAL, price REAL, status TEXT,
                     opened_at TEXT, payload_json TEXT)""")
                 conn.execute("""CREATE TABLE LOGICAL_TRADE_FILLS (
-                    fill_id INTEGER PRIMARY KEY, broker_fill_id TEXT, logical_trade_id TEXT)""")
+                    fill_id INTEGER PRIMARY KEY, broker_fill_id TEXT, logical_trade_id TEXT, broker TEXT)""")
                 conn.execute("""CREATE TABLE LOGICAL_TRADES (
                     logical_trade_id TEXT, proposal_id TEXT, broker TEXT)""")
                 conn.execute('CREATE TABLE LOGICAL_TRADE_EVENTS (logical_trade_id TEXT, broker_order_id TEXT)')

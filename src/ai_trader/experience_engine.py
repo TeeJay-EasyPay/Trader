@@ -271,6 +271,29 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
     # Reporting-only outcomes lack the decision evidence required for precedent.
     cases = [dict(row) for row in rows
              if json.loads(row["result_context_json"] or "{}").get("record_kind") != "outcome_only"]
+    # A reporting review and its later canonical repair are not two independent
+    # trades. Prefer canonical evidence for the same broker/decision identity.
+    canonical_keys = {(c.get('broker'), c.get('proposal_id')) for c in cases
+        if c.get('proposal_id') and json.loads(c['result_context_json']).get('canonical_closure_verified')}
+    cases = [c for c in cases if not (json.loads(c['result_context_json']).get('record_kind') == 'reconciled_reporting_review'
+             and (c.get('broker'), c.get('proposal_id')) in canonical_keys)]
+    ids = {str(json.loads(c['result_context_json']).get('source_attribution_id')) for c in cases if c.get('broker') == 'alpaca'} - {'None'}
+    if ids:
+        # Append newly recovered order evidence without altering immutable experiences.
+        try:
+            with closing(connect(db_path)) as conn:
+                updates = conn.execute('SELECT attribution_id,exit_reason FROM PERFORMANCE_ATTRIBUTION WHERE broker=? AND attribution_id IN ('
+                    + ','.join('?' for _ in ids) + ')', ('alpaca', *sorted(ids))).fetchall()
+            by_id = {str(r[0]): r[1] for r in updates}
+            for case in cases:
+                source = str(json.loads(case['result_context_json']).get('source_attribution_id'))
+                if case.get('broker') == 'alpaca' and source in by_id:
+                    case['latest_recorded_exit_reason'] = by_id[source]
+                    case['exit_evidence_source'] = 'PERFORMANCE_ATTRIBUTION:' + source
+        except Exception:
+            # Explicitly retain the original evidence, never invent an update.
+            for case in cases:
+                case['exit_evidence_refresh_status'] = 'unavailable'
     comparable = len(cases)
     confidence = "low" if comparable < minimum_cases else "medium"
     result = {
