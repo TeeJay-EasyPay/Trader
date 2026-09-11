@@ -10,6 +10,20 @@ from ai_trader import experiment_worker as w
 from ai_trader.database import connect
 
 
+def test_scheduler_ignores_stale_other_instance(db, monkeypatch):
+    with e.transaction(db) as c:
+        c.execute('CREATE TABLE WORKER_HEARTBEATS(worker_id TEXT,current_job TEXT,last_heartbeat_at TEXT)')
+        c.execute("INSERT INTO WORKER_HEARTBEATS VALUES('background-worker-old','managed-exits','2026-09-11T01:00:00+00:00')")
+        c.execute("INSERT INTO WORKER_HEARTBEATS VALUES('background-worker-new',NULL,'2026-09-11T01:05:00+00:00')")
+    monkeypatch.setenv('RENDER_INSTANCE_ID', 'new')
+    monkeypatch.setattr('ai_trader.database.is_hosted_runtime', lambda: False)
+    assert not w.critical_work(db, '2026-09-11T01:05:10+00:00')
+    with e.transaction(db) as c:
+        c.execute("UPDATE WORKER_HEARTBEATS SET current_job='managed-exits' WHERE worker_id='background-worker-new'")
+    assert w.critical_work(db, '2026-09-11T01:05:10+00:00')
+    assert not w.critical_work(db, '2026-09-11T01:08:00+00:00')
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv('AI_TRADER_DATABASE_BACKEND', 'sqlite')

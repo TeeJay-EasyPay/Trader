@@ -219,6 +219,26 @@ def tick(db, settings, *, now=None, answer=None):
             exp.put_control(conn, 'lease', {})
 
 
+def critical_work(db, now=None):
+    """Check this instance, not abandoned rows from an earlier deployment.
+
+    Existing scheduled-job bookkeeping can relabel the same worker row, so its
+    mutable worker_type is not a reliable identity filter.
+    """
+    now = now or exp.now_iso()
+    instance = os.getenv('RENDER_INSTANCE_ID')
+    with exp.transaction(db) as conn:
+        if instance:
+            row = conn.execute('SELECT current_job,last_heartbeat_at FROM WORKER_HEARTBEATS WHERE worker_id=?',
+                               ('background-worker-' + instance,)).fetchone()
+        else:
+            row = conn.execute('SELECT current_job,last_heartbeat_at FROM WORKER_HEARTBEATS ORDER BY last_heartbeat_at DESC LIMIT 1').fetchone()
+    if not row or exp.stamp(now) - exp.stamp(row[1]) > timedelta(minutes=2):
+        return False
+    job = str(row[0] or '')
+    return job in ('starting', 'kraken-startup-reconciliation', 'managed-exits') or job.startswith('broker-poll')
+
+
 class ExperimentScheduler:
     def __init__(self, db, settings):
         self.db, self.settings = db, settings
@@ -242,10 +262,7 @@ class ExperimentScheduler:
             if time.monotonic() < next_due:
                 continue
             try:
-                with exp.transaction(self.db) as conn:
-                    heartbeat = conn.execute("SELECT current_job FROM WORKER_HEARTBEATS WHERE worker_type='background-worker' ORDER BY last_heartbeat_at DESC LIMIT 1").fetchone()
-                job = str(heartbeat[0] or '') if heartbeat else ''
-                if job in ('kraken-startup-reconciliation', 'managed-exits') or job.startswith('broker-poll'):
+                if critical_work(self.db):
                     continue
                 tick(self.db, self.settings)
                 next_due = time.monotonic() + 900
