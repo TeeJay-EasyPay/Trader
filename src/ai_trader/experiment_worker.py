@@ -202,6 +202,10 @@ def tick(db, settings, *, now=None, answer=None):
             pending = [o for o in ops if any(a['status'] in ('open','awaiting_bar') for a in o['arms'].values())]
             since = min((o.get('last_bar') or o['time'] for o in pending), default=now)
             bars = _bars(db, sorted({o['symbol'] for o in pending}), since, now)
+            missing = sorted({o['symbol'] for o in pending} - {b['symbol'] for b in bars})
+            if missing:
+                from .experiment_market_data import missing_bars
+                bars += missing_bars(db, settings, missing, now)
             exp.settle_bars(db, row['id'], bars, now=now)
             with exp.transaction(db) as conn:
                 exp.put_control(conn, 'settled:' + row['id'], now[:10])
@@ -231,12 +235,28 @@ class ExperimentScheduler:
         return self
 
     def run(self):
-        # No startup competition with reconciliation. No paid call from UI refresh.
-        while not self.stop.wait(900):
+        # First review after startup has cleared critical work, then 15-minute cadence.
+        # The cheap liveness check never performs research or broker operations.
+        next_due = 0.0
+        while not self.stop.wait(60):
+            if time.monotonic() < next_due:
+                continue
             try:
+                with exp.transaction(self.db) as conn:
+                    heartbeat = conn.execute("SELECT current_job FROM WORKER_HEARTBEATS WHERE worker_type='background-worker' ORDER BY last_heartbeat_at DESC LIMIT 1").fetchone()
+                job = str(heartbeat[0] or '') if heartbeat else ''
+                if job in ('kraken-startup-reconciliation', 'managed-exits') or job.startswith('broker-poll'):
+                    continue
                 tick(self.db, self.settings)
+                next_due = time.monotonic() + 900
             except Exception as exc:
                 log.warning('Shadow experiments failed safely: %s', type(exc).__name__)
+                next_due = time.monotonic() + 900
+                try:
+                    with exp.transaction(self.db) as conn:
+                        exp.put_control(conn, 'last_tick', {'status': 'failed', 'at': exp.now_iso(), 'error_type': type(exc).__name__})
+                except Exception:
+                    log.warning('Experiment health write also unavailable')
 
     def __exit__(self, *args):
         self.stop.set()

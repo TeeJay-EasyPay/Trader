@@ -263,3 +263,21 @@ def test_api_owner_input_cannot_override(db):
     assert code == 200 and payload['owner'] == 'founder'
     code, _ = experiment_api.post(db, '/experiments/decision', {'id': row['id'], 'confirmed': False})
     assert code == 409
+
+
+def test_missing_market_data_is_get_only_and_budgeted(db, monkeypatch):
+    from ai_trader import experiment_market_data as market
+    from io import BytesIO
+    calls = []
+    def fake(request, timeout):
+        calls.append(request)
+        assert request.method == 'GET'
+        assert request.full_url.startswith('https://data.alpaca.markets/v2/stocks/bars?')
+        assert timeout == 8
+        return BytesIO(json.dumps({'bars': {'ABC': [{'t': '2026-09-02T04:00:00Z', 'o': 100, 'h': 105, 'l': 95, 'c': 102}]}}).encode())
+    monkeypatch.setattr(market, 'urlopen', fake)
+    settings = SimpleNamespace(alpaca_api_key='test', alpaca_secret_key='test')
+    first = market.missing_bars(db, settings, ['ABC'], '2026-09-03T10:00:00+00:00')
+    assert len(first) == 1
+    assert market.missing_bars(db, settings, ['ABC'], '2026-09-03T11:00:00+00:00') == first
+    assert len(calls) == 1

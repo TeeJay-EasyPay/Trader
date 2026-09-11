@@ -18,8 +18,11 @@ The worker is a separate low-priority thread; database statements time out after
 two seconds, lock waits after half a second. Model calls time out after 20 seconds,
 are reserved durably before the call and are not automatically retried that day.
 Results are settled once daily after 09:00 UTC, using existing raw Alpaca IEX daily
-bars in HISTORICAL_CANDLES, with no new market-data API calls. Missing history can
-leave results incomplete. UI reads do not trigger model calls.
+bars in HISTORICAL_CANDLES. If symbols lack bars, one GET-only Alpaca data request
+per day may cover at most 20 symbols and 14 days, with an 8-second timeout and
+500 KB response ceiling. It cannot send orders; fetched bars are cached and used
+bar inputs are retained with each pair. Missing history can still leave results
+incomplete. UI reads do not trigger model calls.
 
 Both arms have $10,000 virtual starting equity, $25 planned risk per entry, a 10%
 notional cap, five positions, estimated 10 basis points fee and 10 basis points
