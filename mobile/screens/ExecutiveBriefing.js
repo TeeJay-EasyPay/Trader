@@ -507,13 +507,14 @@ function FounderActionCard({ action }) {
   );
 }
 
-function FounderActionsSection({ incidents, connectionReadiness, onRefresh, onCommand }) {
+function FounderActionsSection({ incidents, connectionReadiness, onRefresh, onCommand, experimentRequests }) {
   const actions = buildOperationalSupport({ incidents, connectionReadiness });
   const noActionReason = connectionReadiness?.trade_ready === true
     ? 'No operational support request is reported in the current status. AI Trader handles trade selection within its risk rules.'
     : 'Operational readiness is not fully confirmed. Refresh the status; if this persists, ask your developer to investigate. You do not need to select trades.';
   return (
-    <Section title="Support needed">
+    <Section title="What I need from you">
+      {experimentRequests}
       {actions.length ? (
         actions.map((action, index) => <FounderActionCard key={`${action.title}-${index}`} action={action} />)
       ) : (
@@ -565,6 +566,7 @@ function ExecutiveBriefing({
   onRefresh,
   onCommand,
   onOpenPortfolio,
+  experimentRequests,
 }) {
   const marketCentre = status?.founder_experience?.market_intelligence_centre || {};
   const confidence = cioAverageConfidence(recommendations);
@@ -616,7 +618,7 @@ function ExecutiveBriefing({
         portfolio={portfolio}
       />
       <DeclineReasonsCard declineReasons={declineReasons} />
-      <FounderActionsSection incidents={status?.operations_health?.incidents || []} connectionReadiness={connectionReadiness} onRefresh={onRefresh} onCommand={onCommand} />
+      <FounderActionsSection incidents={status?.operations_health?.incidents || []} connectionReadiness={connectionReadiness} onRefresh={onRefresh} onCommand={onCommand} experimentRequests={experimentRequests} />
       <ExecutiveMessagesCard status={status} />
     </View>
   );

@@ -3,6 +3,7 @@ const React = require('react');
 const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, Platform, BackHandler, useWindowDimensions } = require('react-native');
 const { LearningCloud } = require('../components/LearningCloud');
+const { ExperimentsCard } = require('./Experiments');
 const { exchangePalette, palette } = require('../lib/palette');
 const { learningRequest, shiftedDate, resultText, humanStatus, priceText, matchesLearningView } = require('../lib/learningScreen');
 const HEADINGS = { rejected: 'Tracked opportunities', decisions: 'Rejected decisions', trades: 'Completed trades',
@@ -90,7 +91,7 @@ function periodLabel(bounds) {
   const end = new Date(bounds.end + 'T12:00:00Z'); end.setUTCDate(end.getUTCDate() - 1);
   return bounds.kind === 'daily' ? bounds.start : bounds.start + ' – ' + end.toISOString().slice(0, 10);
 }
-function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, today }) {
+function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, today, request }) {
   const wide = useWindowDimensions().width >= 600;
   const [opportunityBroker, setOpportunityBroker] = useState('all');
   const [notes, setNotes] = useState(false);
@@ -159,6 +160,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       </BrokerCard>; })}
       <View style={s.footer}><Text style={[s.small, s.footerNote]}>AI-managed trades · Alpaca fees unreconciled.</Text><Action compact label="Review completed trades →" onPress={() => onOpen('trades')} /></View>
     </View>
+    {request && <ExperimentsCard request={request} />}
     <View style={s.card}><SectionHeading icon="⚗" title="Strategy research & testing" />
       <View style={{ flexDirection: 'row', marginVertical: 4 }}><View style={s.stageLine} />{['Research', 'Backtest', 'Shadow', 'Review'].map(stage => <View key={stage} style={{ flex: 1, alignItems: 'center', gap: 8 }}><View style={{ width: 19, height: 19, borderRadius: 10, borderWidth: 2, borderColor: '#ADB9D5', backgroundColor: '#FFFFFF' }} /><Text style={s.small}>{stage}</Text></View>)}</View>
       <BrokerCard><View style={wide ? s.footer : { gap: 4 }}><View style={{ flex: wide ? 1 : undefined }}><Text style={[s.body, { fontWeight: '700' }]}>{data.strategy_preview?.name || 'Awaiting a strategy record'}</Text>
@@ -171,7 +173,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
     <Action compact link label={notes ? 'Hide evidence notes −' : 'Evidence notes & limitations +'} onPress={() => setNotes(v => !v)} />
     {notes && <View style={s.card}><Text style={s.small}>Evidence updated {data.generated_at}. Cached for up to 10 minutes.</Text>
       <Text style={s.small}>{data.assessment.explanation}</Text>
-      <Text style={s.small}>Simulations assume entry and use stop-first daily candles with estimated costs. Prices are rounded; exact prices appear in tracked opportunities. External discovery and paired rule experiments are not connected yet.</Text>
+      <Text style={s.small}>Tracked-opportunity simulations assume entry and use stop-first daily candles with estimated costs. These are separate from the Alpaca paired Experiments card. Prices are rounded; exact prices appear in tracked opportunities.</Text>
       {data.caveats.map(note => <Text key={note} style={s.small}>• {note}</Text>)}</View>}
   </View>;
 }
@@ -212,7 +214,7 @@ function LearningScreen({ request, onNavigate }) {
   const open = (kind, selectedBroker = 'all') => { if (onNavigate) onNavigate(true); setPage(0); setBroker(selectedBroker); setDetail(kind); };
   if (busy || error || !matchesLearningView(data, detail)) return <View style={s.card}>{detail && <Action label="‹ Back to Learning" onPress={() => setDetail(null)} />}
     <Text style={s.heading}>Learning</Text>{!error ? <ActivityIndicator /> : <Action label="Retry" onPress={() => setRetry(n => n + 1)} />}<Text style={s.body}>{error || 'Loading compact evidence…'}</Text></View>;
-  if (!detail) return <LearningOverview data={data} period={period} anchor={anchor} today={today} onPeriod={setPeriod}
+  if (!detail) return <LearningOverview request={request} data={data} period={period} anchor={anchor} today={today} onPeriod={setPeriod}
     onMove={n => setAnchor(shiftedDate(data.period.start, period, n))} onOpen={open} />;
   return <View style={s.page}><Action label="‹ Back to Learning" onPress={() => setDetail(null)} />
     <Text style={s.title}>{HEADINGS[detail]}</Text><Text style={s.small}>{periodLabel(data.period)} · UTC. {data.note}</Text>

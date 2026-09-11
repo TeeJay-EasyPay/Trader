@@ -297,8 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - this must never stop the worker booting
             print(f"[strategy-promotions] failed: {exc}", flush=True)
         worker_id = default_worker_id("background-worker")
+        from .experiment_worker import ExperimentScheduler
         print(json.dumps({"status": "started", "worker_id": worker_id}, indent=2))
         with (
+            ExperimentScheduler(settings.db_path, settings),
             # 2026-08-19 Founder-directed fix: evidence-snapshot runs on its own thread/timer
             # here, independent of the main loop below -- see EvidenceSnapshotScheduler's
             # docstring for why the old in-loop scheduling left the mobile app reading stale

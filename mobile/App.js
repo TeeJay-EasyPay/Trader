@@ -18,6 +18,7 @@ import { PortfolioCommandCentre } from './screens/Portfolio';
 import { StandupScreen } from './screens/Standup';
 import { RunCycleScreen } from './screens/RunCycle';
 import { LearningScreen } from './screens/Learning';
+import { ExperimentsCard, ExperimentPrompt } from './screens/Experiments';
 import { useCycleRun, cycleProgressLabel } from './hooks/useCycleRun';
 import { useFounderEvidence } from './hooks/useFounderEvidence';
 import { useMarketData } from './hooks/useMarketData';
@@ -187,9 +188,15 @@ export default function App() {
             onCommand={command}
             onRefresh={screenRefresh.ExecutiveBriefing.refresh}
             onOpenPortfolio={() => setScreen('Portfolio')}
+            experimentRequests={<ExperimentPrompt request={apiRequest} onOpen={() => setScreen('ExperimentNotifications')} />}
           />
         </ErrorBoundary>
       );
+    }
+    if (screen === 'ExperimentNotifications') {
+      return <ErrorBoundary label="Experiment notifications" title="Notifications unavailable" message="Trading is unaffected.">
+        <ExperimentsCard request={apiRequest} notifications onBack={() => setScreen('ExecutiveBriefing')} />
+      </ErrorBoundary>;
     }
     if (screen === 'Learning') {
       return <ErrorBoundary label="Learning" title="Learning could not be displayed." message="Your other screens are unaffected.">
@@ -248,6 +255,7 @@ export default function App() {
     founderBrief.lastRefreshError,
     founderBrief.loading,
     latestReport,
+    lastRefreshedAt,
     marketData.themes,
     notifications,
     performanceAttribution,

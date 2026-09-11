@@ -466,6 +466,20 @@ def pre_execution_decision_packet(
         approved = False
         reasons.append(f"risk_sentinel_blocked: {sentinel['reason']}")
     final_decision = "approved" if approved else "blocked"
+    # An explicitly approved PAPER variant may only add a rejection. It cannot
+    # change live orders, exits, sizing or the original safety verdict.
+    import os
+    if broker.lower() == 'alpaca' and mode.lower() == 'paper' and os.getenv('EXPERIMENT_PAPER_ADOPTION_ENABLED') == 'true':
+        from .experiments import paper_filter
+        try:
+            experiment_check = paper_filter(db_path, proposal, broker=broker, mode=mode)
+        except Exception:
+            experiment_check = {'allowed': False, 'reason': 'Paper experiment policy unavailable'}
+        proposal_payload['experiment_entry_check'] = experiment_check
+        if not experiment_check['allowed']:
+            approved = False
+            final_decision = 'blocked'
+            reasons.append(experiment_check['reason'])
     execution_eligibility = "eligible" if approved else "not_eligible"
     approved_notional = portfolio.get("approved_notional")
     if approved and portfolio["decision"] == "approve_smaller":

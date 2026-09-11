@@ -100,7 +100,8 @@ test('overview renders missing sources safely and wires all seven evidence pages
     module, exports: module.exports, require: name => name === 'react-native'
       ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 840 }) }
       : name === 'react' ? { ...local(name), useState: value => [value, () => {}] }
-      : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' } : local(name),
+      : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' }
+      : name === './Experiments' ? { ExperimentsCard: 'ExperimentsCard' } : local(name),
   });
   const opened = [];
   const tree = module.exports.LearningOverview({ period: 'daily', anchor: '2026-09-09', today: '2026-09-09', onOpen: x => opened.push(x),

@@ -738,6 +738,9 @@ class LocalApiService:
         return self._research_service.rollup_crypto_rejections()
 
     def get(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict[str, Any]]:
+        if path in ('/experiments', '/experiments/detail', '/experiments/health', '/experiment-notifications'):
+            from ..experiment_api import get
+            return get(self.settings.db_path, path, query)
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":
@@ -966,6 +969,9 @@ class LocalApiService:
         return 404, {"error": "not_found", "path": path}
 
     def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        if path == '/experiments/decision':
+            from ..experiment_api import post
+            return post(self.settings.db_path, path, body)
         if path == "/run-analysis":
             return 200, self.run_analysis(body)
         if path == "/run-crypto-analysis":

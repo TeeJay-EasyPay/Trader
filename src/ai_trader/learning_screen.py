@@ -165,7 +165,7 @@ def _summary(db, bounds, now=None):
             'review_count': review_total, 'linked_reviews': review_counts[0]['linked'] if review_counts else None,
             'proposals': proposals, 'backtest_count': tests[0]['total'] if tests else None,
             'assessment': {'status': 'insufficient_evidence', 'validated': None,
-                'explanation': 'No prospective paired rule-version comparison is connected. Review counts and backtests do not prove improvement.'},
+                'explanation': 'See the separate Alpaca Experiments report for prospective paired comparisons. Review counts and backtests do not prove improvement.'},
             'next_step': 'Trace each proposed lesson to a named rule test against unchanged decisions before considering adoption.',
             'caveats': [
                 'Opening this report does not run research, settle simulations or change trading rules.',
