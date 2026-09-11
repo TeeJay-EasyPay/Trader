@@ -2,6 +2,7 @@
 const React = require('react');
 const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, TextInput } = require('react-native');
+const { experimentTimeline } = require('../lib/experimentTimeline');
 const s = StyleSheet.create({
   card: { backgroundColor: '#FFFFFF', padding: 14, borderWidth: 1, borderColor: '#DCE4E7', borderRadius: 12, gap: 10, marginVertical: 6 },
   title: { fontSize: 22, color: '#102A43', fontWeight: '700' },
@@ -19,6 +20,21 @@ function Button({ label, onPress, disabled, primary }) {
 }
 const human = text => String(text || '').replace(/_/g, ' ');
 const money = n => typeof n === 'number' ? '$' + n.toFixed(2) : 'Not available';
+function TestingJourney({ data }) {
+  const time = experimentTimeline(data);
+  return <View style={s.card}><Text style={s.title}>Testing journey</Text>
+    <Text style={s.text}>Now: {time.stage}</Text>
+    <Text style={s.text}>Started: {time.start}{'\n'}Planned observation period: {time.planned}{'\n'}{time.elapsedLabel}: {time.elapsed}</Text>
+    <Text style={s.text}>Target evaluation: {time.target}{'\n'}{time.remaining}</Text>
+    <Text style={s.small}>Dates and times use your device timezone. Calendar duration includes waiting, closed markets and pauses; it is not time spent placing trades.</Text>
+    <Text style={s.text}>1. Record the hypothesis and freeze the rules.{ '\n' }2. Assess new opportunities; record skips or simulate entries.{ '\n' }3. Follow simulated positions and collect outcomes.{ '\n' }4. Evaluate evidence, then request approval only if supported.</Text>
+    <Text style={s.small}>Each stage depends on opportunities and market data; there is no promised date for the first simulated trade. Opportunities and completed pairs can include skips, not completed trades.</Text>
+    {time.graceEnd && <Text style={s.small}>Unresolved outcomes can have up to 15 extra calendar days, through {time.graceEnd}. If still unresolved then, the next worker review ends the test with insufficient evidence.</Text>}
+    {data.spec?.minimum_opportunities && <Text style={s.small}>Minimum evidence: {data.spec.minimum_opportunities} usable paired opportunities across {data.spec.minimum_symbol_days} symbol-days, plus the frozen independence, cost and risk checks.</Text>}
+    <Text style={s.text}>Final result: {time.verdict}</Text>
+    <Text style={s.small}>The target date is an evaluation checkpoint, not a promise of improved trading. Minimum sample and quality checks must pass; any strategy use still follows its approval process.</Text>
+  </View>;
+}
 function ExperimentDetail({ request, id, onBack }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null), [capital, setCapital] = useState('100');
@@ -49,9 +65,10 @@ function ExperimentDetail({ request, id, onBack }) {
     <Button label="Refresh report" disabled={busy} onPress={load} />
     {data && <><Text style={s.text}>{data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · Alpaca · SIMULATED</Text>
       <Text selectable style={s.small}>Version {data.version.slice(0, 12)} · {data.created_at}</Text>
+      <TestingJourney data={data} />
       <Text style={s.text}>Baseline: recorded eligibility. Candidate: require target / planned risk of at least {data.spec.threshold}. Targets are not expected returns.</Text>
       <Text style={s.small}>Both portfolios use the same estimated fills and costs. No broker orders are sent by simulations.</Text>
-      <Text style={s.text}>{data.report.observations || 0} opportunities · {data.report.completed || 0} completed pairs · {data.report.uncertain || 0} uncertain.</Text>
+      <Text style={s.text}>{data.report.observations ?? 'Not yet reported'} opportunities · {data.report.completed ?? 'Not yet reported'} resolved pairs (including skips) · {data.report.uncertain ?? 'Not yet reported'} uncertain.</Text>
       <Text style={s.text}>Baseline realised: {money(data.report.baseline?.realised)}{ '\n' }Candidate realised: {money(data.report.candidate?.realised)}</Text>
       <Text style={s.small}>Virtual equity including open positions: {money(data.report.baseline?.equity)} / {money(data.report.candidate?.equity)}</Text>
       <Text style={s.small}>Costs: {data.spec.costs_status}. Evaluation after {data.report.evaluate_after || 'the frozen test period'}. {data.report.caveat}</Text>
@@ -87,7 +104,11 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
     {!!data?.last_review?.status && <Text style={s.small}>Latest proposal review: {human(data.last_review.status)} · {data.last_review.day}. {data.last_review.reason || ''}</Text>}
     {!!data?.worker?.at && <Text style={s.small}>Worker checked {data.worker.at}: {human(data.worker.status)}.</Text>}
-    {data?.items?.map(row => <Button key={row.id} label={human(row.status) + ' · ' + row.hypothesis} onPress={() => setSelected(row.id)} />)}
+    {data?.items?.map(row => <View key={row.id} style={s.card}>
+      <Button label={human(row.status) + ' · Hypothesis: ' + row.hypothesis} onPress={() => setSelected(row.id)} />
+      <Text style={s.small}>Started: {experimentTimeline(row).start}{'\n'}Target evaluation: {experimentTimeline(row).target}{'\n'}{experimentTimeline(row).remaining}</Text>
+      <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>
+    </View>)}
     {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : 'No experiment recorded yet. Reviews alone do not demonstrate improvement.'}</Text>}
     <Button label="Refresh" disabled={busy} onPress={() => load()} />
     {!!data?.next_cursor && <Button label="Load older records" disabled={busy} onPress={() => load(true)} />}
@@ -99,4 +120,4 @@ function ExperimentPrompt({ request, onOpen }) {
   return <View style={s.card}><Text style={s.text}>{count === null ? 'Strategy requests: check notification history.' : count ? count + ' strategy request(s) ready for review.' : 'No strategy approval is pending.'}</Text>
     <Button label="Notifications and strategy approvals" onPress={onOpen} /></View>;
 }
-module.exports = { ExperimentsCard, ExperimentPrompt, ExperimentDetail };
+module.exports = { ExperimentsCard, ExperimentPrompt, ExperimentDetail, TestingJourney };

@@ -39,3 +39,12 @@ test('all entry points use the shared experiment UI and exact-version decisions'
   assert.ok(!screen.includes('/database-maintenance'));
   assert.ok(!screen.includes('setInterval'));
 });
+
+test('journey explains time and evidence separately', () => {
+  const ui = load();
+  const rendered = JSON.stringify(ui.TestingJourney({ data: { status: 'shadow_running',
+    created_at: '2026-09-11T01:27:00Z', spec: { evaluation_days: 60, simulator: 'daily-bar-paired-v1' }, report: {} } }));
+  for (const phrase of ['Planned observation period', 'Target evaluation', 'device timezone', 'not a promise of improved trading', '15 extra calendar days']) {
+    assert.ok(rendered.includes(phrase), phrase);
+  }
+});
