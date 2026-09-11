@@ -41,7 +41,7 @@ from typing import Any
 
 from .shadow_outcomes import shadow_strategy_records, shadow_symbol_records
 from .expectancy import expectancy_summary
-from .strategy_performance import strategy_records, strategy_symbol_records
+from .strategy_performance import strategy_records, strategy_symbol_records, strategy_read_scope
 
 # One cycle's worth. Long enough that a research run over 19 coins reads the outcome tables
 # once instead of 19 times, short enough that a demotion or a newly settled trade shows up in
@@ -95,6 +95,7 @@ class StrategyEvidence:
         return f"- {self.strategy_id}: {here}; {everywhere}"
 
 
+@strategy_read_scope()
 def _sources(db_path: Path) -> dict[str, Any]:
     """The four outcome views, read once per cycle and cached."""
     now = time.monotonic()

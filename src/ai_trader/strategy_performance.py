@@ -37,7 +37,8 @@ point.
 from __future__ import annotations
 
 import json
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +54,29 @@ MINIMUM_SAMPLE = 5
 # The sample at which the figure is strong enough to influence strategy selection. Matches
 # the `minimum_sample_size` the strategy profiles already declare.
 CONFIDENT_SAMPLE = 30
+
+# Reuse only inside an explicitly bounded calculation, never across trading cycles.
+_read_scope: ContextVar[dict | None] = ContextVar("strategy_read_scope", default=None)
+
+
+@contextmanager
+def strategy_read_scope():
+    token = _read_scope.set({})
+    try:
+        yield
+    finally:
+        _read_scope.reset(token)
+
+
+def _read_rows(conn, db_path, sql, parameters=()):
+    scope = _read_scope.get()
+    key = (str(db_path), getattr(conn, "_schema_key", None), sql, tuple(parameters))
+    if scope is not None and key in scope:
+        return scope[key]
+    rows = conn.execute(sql, parameters).fetchall()
+    if scope is not None:
+        scope[key] = rows
+    return rows
 
 # Trades risking less than this contribute a win or a loss but no R, borrowed from
 # expectancy.DEFAULT_MINIMUM_RISK and for the reason that module already documents: dividing
@@ -141,13 +165,13 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
 
     try:
         with closing(connect(db_path)) as conn:
-            outcomes = conn.execute(
+            outcomes = _read_rows(conn, db_path,
                 """
                 SELECT proposal_id, profit_loss, entry_price, exit_price, quantity,
                        closed_at, created_at, symbol
                 FROM PERFORMANCE_ATTRIBUTION
                 """
-            ).fetchall()
+            )
             readiness = readiness_from_outcomes([
                 (row[7], row[1], row[3], row[5], row[6]) for row in outcomes
             ])
@@ -168,13 +192,13 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
             # time it was run. The IN-list is at most the number of closed trades.
             placeholders = ",".join("?" for _ in proposal_ids)
             projection = _strategy_context_projection(postgres=isinstance(conn, PostgresConnection))
-            audits = conn.execute(
+            audits = _read_rows(conn, db_path,
                 f"""
                 SELECT proposal_id, {projection} AS strategy_context FROM TRADE_AUDIT
                 WHERE event_type = 'agent_proposal' AND proposal_id IN ({placeholders})
                 """,
                 tuple(proposal_ids),
-            ).fetchall()
+            )
     except Exception:  # noqa: BLE001 - an unreadable record yields no lesson, not a crash
         return {}
 

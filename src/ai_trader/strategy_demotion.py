@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import connect
-from .strategy_performance import strategy_records, strategy_symbol_records
+from .strategy_performance import strategy_records, strategy_symbol_records, strategy_read_scope
 
 # 2026-09-05, second Founder challenge, and it changed what this module is for.
 #
@@ -146,6 +146,7 @@ class Demotion:
         )
 
 
+@strategy_read_scope()
 def review_strategies_for_demotion(db_path: Path, *, apply: bool = True) -> dict[str, Any]:
     """Withdraw micro_live from strategies their own results condemn.
 
