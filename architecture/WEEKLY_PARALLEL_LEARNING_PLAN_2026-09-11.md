@@ -1,0 +1,108 @@
+# Weekly parallel learning and meaningful summaries
+
+Status: plan only. Requested 11 September 2026; these refinements are not yet implemented.
+
+## Agreed outcome
+
+Continuously test useful hypotheses without confusing activity with improvement.
+Run at most ten active hypotheses across Alpaca and Kraken combined. Each has
+separate baseline and candidate virtual books. Ten is a ceiling, not a target.
+No new broker orders, live activation, altered protective exits or backup work.
+
+## 1. Parallel experiments and fair opportunity coverage
+
+- Replace the one-active-per-broker restriction with a global hard cap of ten.
+  Acquire slots transactionally so overlapping workers cannot exceed the cap.
+- Prioritise distinct, evidence-supported hypotheses; queue overflow and deduplicate
+  equivalent proposals. Explain the problem, intended benefit and applicable market.
+- Capture each suitable timestamped opportunity once and fan it out to all relevant
+  experiments, preserving independent portfolio balances and eligibility decisions.
+- Include supported rejected/skipped opportunities; never override unrelated risk,
+  permission, data or cost safeguards. Missing reasons stay unknown.
+- Avoid dividing twenty observations into ten nearly empty tests: separate the
+  shared unique-opportunity budget from bounded per-experiment simulation work.
+  Initially retain twenty unique opportunities/day and cap fan-out at ten per
+  opportunity (at most 200 paired evaluations/day), subject to worker/storage caps.
+- Reuse candles and compact decision inputs. Measure before raising any data budget.
+
+## 2. Seven-day review cycles
+
+- All hypotheses receive a first review seven days after actual start, then weekly
+  if continued. Queued hypotheses have no invented start date.
+- Persist each review: interval, cumulative and new observations, completed trades,
+  skips, unresolved positions, after-estimated-cost results, uncertainty and findings.
+- Outcomes: continue with reason and next review date; stop with reason; or recommend
+  further action when evidence gates pass. A weekly deadline does not imply success.
+- Continue without resetting evidence or forcing open trades to close. Freeze rule
+  versions; substantive rule/engine changes create a linked new experiment.
+- Use fixed weekly statistical checkpoints and a documented repeated-testing policy;
+  do not repeatedly check until a favourable result appears. Account for correlated
+  opportunities and multiple hypotheses. Existing safety/evidence gates are not
+  silently weakened to fit a one-week window.
+- Identify stalled or redundant experiments and release slots when stopped. Do not
+  extend indefinitely without a stated evidence need and a visible review decision.
+
+## 3. Bounded grouped AI review
+
+- Ordinary Render code performs simulation, accounting and evidence checks.
+- Batch only due/meaningfully changed experiment summaries into a compact review;
+  do not send full trade histories or make an AI call per shadow trade.
+- Keep the existing experiment-wide AI limit of one call/day initially, shared by
+  proposals and grouped reviews, with explicit token limits and persisted usage.
+  Due reviews take priority; defer proposal generation when the budget is used.
+- Validate returned identifiers, versions and permitted recommendations. AI cannot
+  change calculated results, bypass gates or activate trading. On timeout/budget
+  exhaustion retain the numerical report and show interpretation pending.
+- Measure worker time, request/token spend, unique inputs, fan-out, database growth
+  and egress. Bound concurrency, retries, result payloads and total storage.
+
+## 4. Experiments card and history
+
+- Main card shows running tests only. Separate buttons expose Queued, Previous tests
+  and requests needing attention; history is retained, not deleted.
+- Active tests show actual start, current cycle, next weekly review and evidence
+  progress. Ended tests show actual end and reason, not an upcoming target date.
+- Link predecessor/successor tests and explain engineering restarts versus rejected
+  hypotheses. Recover end timestamps from recorded events where available.
+- Show completed simulated trades separately from skips and pending observations.
+
+## 5. Make the Learning summary useful while preserving its appearance
+
+Verified current wiring: mobile/screens/Learning.js takes the newest POST_TRADE_REVIEWS
+lesson as the period headline. learning_screen.py supplies completed broker outcomes,
+reviews, legacy SHADOW_TRADES candidates, lesson proposals and backtest counts.
+It does not aggregate the paired RULE_EXPERIMENTS results. The Next test and Decision
+rows are hard-coded prose. Review date, trade close date and candidate creation date
+are different clocks; counts do not represent unique new lessons.
+
+- Preserve the visual design and daily/weekly/monthly navigation.
+- Separate **From executed trades** (Kraken live / Alpaca paper, with known mode and
+  cost caveats), **From experiments** (paired evidence and weekly findings), and
+  **What happens next** (named test, next review or approval request).
+- Show concise supported findings, not merely counts. Link every finding to its
+  trade/review or experiment/version/review evidence; distinguish proposed lessons
+  from tested findings and demonstrated improvement.
+- Replace generic Next test with an exact linked hypothesis and its status, or
+  explicitly say no linked experiment. Never infer linkage from similar wording.
+- Replace the generic Decision with actual period actions: continued/stopped tests,
+  pending approval, approved configuration, or no change. Approval is not activation.
+- Keep counts in supporting detail; distinguish newly closed trades from reviews
+  written today about older trades. Separate gross/known-net/estimated-net results.
+- Remove stale static claims elsewhere on Learning that contradict real experiment
+  data. Use bounded cached aggregates and paginated detail, with no AI call on open.
+
+## 6. Rollout and acceptance
+
+1. Implement versioned weekly-review records, scheduler and budgeted fan-out first.
+2. Add grouped review validation and source-linked summary projections.
+3. Update UI, history navigation and shared approval/notification links.
+4. Migrate current active tests to a documented seven-day review schedule without
+   rewriting prior observations. Preserve original dates and audit the schedule change.
+5. Test global concurrency, both brokers, shared-input isolation, budget exhaustion,
+   unknown evidence, due reviews, continuation, early stops, provenance and old UI data.
+6. Commit and deploy scoped changes, publish Android, verify API and worker versions,
+   then inspect production counts and dates without paid test calls or broker orders.
+
+Success is useful comparisons and evidence-backed findings per week within cost
+limits, not filling ten slots or promising profitability. Increasing the ceiling
+beyond ten requires a later decision informed by throughput and resource measurements.
