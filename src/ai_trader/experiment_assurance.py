@@ -153,6 +153,20 @@ def monitor_adoptions(db, now):
         e.put_control(conn, 'adoption_monitor_day', now[:10])
 
 
+def refresh_review_validation(db, now):
+    """Late broker evidence can resolve an ended test's validation gap."""
+    with e.transaction(db) as conn:
+        if e.control(conn, 'review_validation_day', '') == now[:10]:
+            return
+        rows = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status IN ('recommended','library_approved','ready_for_activation') ORDER BY created_at LIMIT 2").fetchall()
+        e.put_control(conn, 'review_validation_day', now[:10])
+    for record in rows:
+        with e.transaction(db) as conn:
+            row = e._load(conn, record[0])
+            ops = [json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? ORDER BY created_at LIMIT 1200', (row['id'],)).fetchall()]
+        validate_execution(db, row, ops, now)
+
+
 def start_queued(db, now):
     """Freeze a fresh prospective start only when a slot is available."""
     with e.transaction(db) as conn:

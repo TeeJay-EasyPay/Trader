@@ -183,7 +183,8 @@ def tick(db, settings, *, now=None, answer=None):
         return {'status': 'leased'}
     started = time.monotonic()
     try:
-        from .experiment_assurance import start_queued, validate_execution
+        from .experiment_assurance import start_queued, validate_execution, refresh_review_validation
+        refresh_review_validation(db, now)
         proposal = propose(db, settings, now, policy, answer=answer)
         start_queued(db, now)
         with exp.transaction(db) as conn:
@@ -195,7 +196,8 @@ def tick(db, settings, *, now=None, answer=None):
                 with exp.transaction(db) as conn:
                     current = exp._load(conn, row['id'])
                     current['status'] = 'insufficient_evidence'
-                    current['report'] = {'verdict': 'insufficient_evidence', 'reason': 'Baseline deployment changed; freeze a new comparison.'}
+                    current['report'] = {**current['report'], 'finished': True, 'ended_at': now,
+                        'verdict': 'insufficient_evidence', 'reason': 'Baseline deployment changed; freeze a new comparison.'}
                     exp._event(conn, current, 'baseline_changed', current['report'], 'baseline:' + row['id'])
                     exp._save(conn, current)
                 # Do not mix simulator versions in one test. Preserve the old

@@ -72,6 +72,8 @@ function ExperimentDetail({ request, id, onBack }) {
       <Text style={s.small}>Priority {data.spec.priority || 3} (1 is highest). {data.status === 'queued' ? 'Waiting for a resource slot. Testing has not started; dates are set when it starts.' : 'The worker shares a capped daily observation budget across experiments.'}</Text>
       <Text selectable style={s.small}>Version {data.version.slice(0, 12)} · {data.created_at}</Text>
       {data.status !== 'queued' && <TestingJourney data={data} />}
+      {!!data.report.reason && <Text style={s.text}>Evaluation note: {data.report.reason}</Text>}
+      {!!data.state?.supersedes && <Text style={s.small}>Fresh prospective comparison following an engine update. Previous experiment: {data.state.supersedes}. Its observations are not pooled into this version.</Text>}
       <Text style={s.text}>Baseline: recorded eligibility. Candidate: require target / planned risk of at least {data.spec.threshold}. Targets are not expected returns.</Text>
       <Text style={s.small}>Both portfolios use the same estimated fills and costs. No broker orders are sent by simulations.</Text>
       <Text style={s.small}>{data.spec.rule_type === 'replace_target_r_gate' ? 'Candidate may replace only a recorded target/risk rejection. Unknown reasons or any other failed safeguard still mean skip.' : 'This candidate only filters baseline-eligible entries.'}</Text>

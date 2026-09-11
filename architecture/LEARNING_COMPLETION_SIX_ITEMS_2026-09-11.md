@@ -78,4 +78,15 @@ order types explain 61 outcomes; reporting now has one unknown exit label. Seven
 uniquely linked complete Alpaca trades were restored to canonical closure and
 queued for learning. Older missing parent/exit links were not fabricated.
 
-Commit/deployment and mobile publication verification follows in the handoff.
+Initial release `fc1cdb82bb3bcff3ad3f3d2ce77901b528ee6cf4` verified on Render API
+and background worker. Its first worker pass completed in 12.4 seconds, with zero
+broker orders and today's model budget respected. Seven repaired canonical Alpaca
+workflows then completed learning, with zero failures. Android runtime 1.0.3 was
+published to hosted-preview and preview from the clean checkout.
+
+Release read-back caught a restart-summary preservation issue (raw observations
+were intact). Follow-up retains measurements when ending a changed-engine test,
+shows the reason and predecessor in the UI, and rechecks late broker evidence for
+ended recommendations daily. The original summary is regenerated explicitly from
+its retained observations, not from invented results. No on-device visual check
+was possible; component tests and the production Android export were verified.
