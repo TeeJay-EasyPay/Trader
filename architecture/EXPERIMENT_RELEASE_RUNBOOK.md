@@ -108,7 +108,7 @@ Private experiment tables were migrated with RLS enabled.
 Android runtime 1.0.3 updates were published from commit 04379110:
 
 - hosted-preview: 69c6bc6d-d6ce-412f-99b6-9c232c09ced0
-- preview: 8e574480-f6d3-4715-971d-d369258fcf81
+- preview: 8e574480-f6d3-4715-971e-d369258fcf81
 
 No connected Android device was available for an on-device visual acceptance test.
 Backend-only subsequent changes do not require another mobile bundle.
