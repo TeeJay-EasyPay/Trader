@@ -117,11 +117,33 @@ are different clocks; counts do not represent unique new lessons.
 - Remove stale static claims elsewhere on Learning that contradict real experiment
   data. Use bounded cached aggregates and paginated detail, with no AI call on open.
 
-## 6. Rollout and acceptance
+## 6. Shared mobile navigation
+
+- Replace the five top-level navigation buttons with a hamburger menu at the top
+  right of the shared application header, available on every screen. Preserve the
+  current screen's title so location remains clear when the menu is closed.
+- Put the existing connection/freshness badge directly beneath the hamburger icon.
+  Preserve stale, offline and loading states and refresh/evidence timestamps.
+  Label it as application/backend status; a healthy connection must not imply
+  that live-money trading is enabled or that every broker is healthy.
+- Menu entries retain Executive Briefing, Portfolio, Standup, Run a Cycle and
+  Learning, plus existing enabled destinations such as Notifications. Preserve
+  existing screen behaviour and navigation links; do not alter Standup conversation
+  semantics or enable paused/unreleased workflows just to populate the menu.
+- Treat Run a Cycle according to its existing behaviour: opening navigation must
+  never itself execute a trading/research cycle or other side effect.
+- Highlight the current destination, close after selection, and support outside
+  tap, Android Back, screen-reader labels, focus handling and adequate touch targets.
+  Respect device safe areas, small screens, long stale-status labels and scrolling.
+- Verify all entry points, experiment/report deep links and returning from detail
+  screens. Preserve the Learning summary's existing visual design.
+
+## 7. Rollout and acceptance
 
 1. Implement versioned weekly-review records, scheduler and budgeted fan-out first.
 2. Add grouped review validation and source-linked summary projections.
-3. Update UI, history navigation and shared approval/notification links.
+3. Update experiment and learning-summary UI, shared hamburger navigation, history
+   navigation and approval/notification links.
 4. Migrate current active tests to a documented seven-day review schedule without
    rewriting prior observations. Preserve original dates and audit the schedule change.
 5. Test global concurrency, both brokers, shared-input isolation, budget exhaustion,
