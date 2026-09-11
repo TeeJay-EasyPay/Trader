@@ -91,3 +91,30 @@ publish the matching runtime/channel, then check the deployed API and worker SHA
 Do not report profitability improvement until prospective results exist. The first
 production review may legitimately conclude no justified experiment; do not seed a
 fabricated successful strategy or fake test trades just to populate the UI.
+
+## Release verification — 11 September 2026
+
+Backend implementation: 5b7ff9d5, 04379110, a9c0632d and ba42e06f.
+The final simulator repair reserves cash and position slots at the start of each
+day: an intraday exit cannot finance an earlier opening purchase. Missing intervening
+daily bars are marked uncertain, rather than presented as continuous observation.
+
+Combined Python regression suite: 172 tests and 19 subtests passed. The final
+simulator-specific suite: 26 tests passed, including the two timing regressions.
+Mobile tests: 14 passed; Android Hermes export succeeded from a clean checkout.
+Authenticated experiment endpoints returned HTTP 200; unauthenticated access 401.
+Private experiment tables were migrated with RLS enabled.
+
+Android runtime 1.0.3 updates were published from commit 04379110:
+
+- hosted-preview: 69c6bc6d-d6ce-412f-99b6-9c232c09ced0
+- preview: 8e574480-f6d3-4715-971d-d369258fcf81
+
+No connected Android device was available for an on-device visual acceptance test.
+Backend-only subsequent changes do not require another mobile bundle.
+
+Initial production source audit found 30 linked Alpaca outcomes, 25 with entry,
+stop and target levels, and sparse equity candle coverage. Those are input-quality
+limitations, not evidence of improved profitability. No synthetic production
+experiments or broker orders were created for acceptance testing. The simulator's
+first full prospective comparison necessarily requires future market observations.

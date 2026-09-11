@@ -1,7 +1,7 @@
 # Evidence-to-Rule Experiment Loop — implementation plan
 
 Date: 11 September 2026
-Status: Plan first; implementation requested next. This document does not enable experiments or trading.
+Status: Implemented and committed for the initial Alpaca shadow-only release; production verification is recorded in EXPERIMENT_RELEASE_RUNBOOK.md. Live activation remains disabled. This document itself does not enable trading.
 
 ## Outcome and boundaries
 
