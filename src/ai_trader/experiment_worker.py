@@ -44,6 +44,12 @@ def _lease(db, now):
 
 def propose(db, settings, now, policy, answer=None):
     """At most one billed attempt/day, reserved BEFORE call; timeout is not retried."""
+    from .experiment_batch import propose_batch
+    return propose_batch(db, settings, now, policy, answer)
+
+
+def _legacy_single_proposal(db, settings, now, policy, answer=None):
+    """Retained temporarily for migration comparison; not used by the worker."""
     if not policy.get('model_enabled'):
         return 'model_disabled'
     with exp.transaction(db) as conn:
@@ -177,7 +183,7 @@ def tick(db, settings, *, now=None, answer=None):
             return {'status': 'disabled'}
         # Global cap includes records and indexes conservatively via payload budget.
         size = conn.execute('SELECT COALESCE(SUM(length(payload_json)),0) AS bytes FROM EXPERIMENT_OPPORTUNITIES').fetchone()[0]
-        for table in ('EXPERIMENT_EVENTS','LEARNING_FINDINGS'):
+        for table in ('EXPERIMENT_EVENTS','LEARNING_FINDINGS','EXPERIMENT_CONTROL'):
             size += conn.execute(f'SELECT COALESCE(SUM(length(payload_json)),0) AS bytes FROM {table}').fetchone()[0]
         size += conn.execute('SELECT COALESCE(SUM(length(spec_json)+length(state_json)+length(report_json)),0) AS bytes FROM RULE_EXPERIMENTS').fetchone()[0]
         if size * 3 >= policy['storage_bytes']:
@@ -196,6 +202,8 @@ def tick(db, settings, *, now=None, answer=None):
             checkpoint_due = any(json.loads(r['spec_json']).get('weekly_reviews') and
                 exp.stamp(json.loads(r['state_json']).get('next_review_at') or (exp.stamp(r['created_at'])+timedelta(days=7)).isoformat()) <= exp.stamp(now)
                 for r in running)
+        # Reviews first, then justified new hypotheses. Reference arms consume
+        # only unused daily allowance; they must not starve the whole pipeline.
         proposal = 'grouped_review_priority' if review_due or checkpoint_due else propose(db, settings, now, policy, answer=answer)
         start_queued(db, now)
         with exp.transaction(db) as conn:
@@ -253,6 +261,12 @@ def tick(db, settings, *, now=None, answer=None):
                             symbol += 'GBP'
                     reasons = json.loads(d['reasons']) if isinstance(d['reasons'], str) else d['reasons']
                     baseline = d.get('baseline_eligibility') or d['execution_eligibility']
+                    if row['spec']['rule_type']=='reference_set_filter':
+                        from .reference_sets import pair
+                        assessed=pair(db,row['id'],dict(source_id=d['proposal_id'],symbol=symbol,time=d['created_at'],
+                            entry=d['entry_price'],stop=d['stop_loss'],target=d['take_profit'],eligible=baseline=='eligible',rejection_reasons=reasons),settings,now=now)
+                        if not assessed:
+                            break # preserve cursor for a budgeted retry, never fabricate a skipped result
                     added = exp.add_opportunity(db, row['id'], dict(source_id=d['proposal_id'], symbol=symbol, time=d['created_at'],
                         entry=d['entry_price'], stop=d['stop_loss'], target=d['take_profit'], eligible=baseline == 'eligible', rejection_reasons=reasons))
                     processed += not added['duplicate']

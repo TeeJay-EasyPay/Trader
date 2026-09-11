@@ -5,6 +5,10 @@ applies_to: [stock]
 sectors: []
 ---
 
+Editorial qualification (2026-09-11): this is internal educational guidance,
+not a validated timing model. Claims about typical price speed are not universal.
+Neither a tighter stop nor smaller size guarantees a bounded short loss through a gap.
+
 Shorting is not simply "the opposite of going long" — its risk profile is
 structurally asymmetric and it depends on mechanics that a long position
 never has to deal with.

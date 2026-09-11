@@ -5,16 +5,10 @@ applies_to: [stock, crypto]
 sectors: []
 ---
 
-A stop-loss is not a comfort setting — it is the price at which the original
-thesis is proven wrong. Confusing "where I'd feel bad" with "where I'm wrong"
-is the single most common stop-placement error. A stop placed too close to
-entry (to limit the dollar loss on a position that was sized too large) gets
-hit by ordinary noise regardless of whether the thesis was correct, producing
-a string of losses that says nothing about whether the underlying idea was
-good. A stop placed at the actual invalidation level — a support/resistance
-break, a trend-line failure, a level where the setup's logic no longer holds
-— gets hit only when the thesis is genuinely wrong, which is the only time it
-should be hit.
+A stop-loss is a risk control and may express a predefined invalidation level.
+Its execution does not prove a thesis was wrong: noise, gaps and temporary moves
+can trigger it. A stop trigger is not a guaranteed maximum loss or execution price.
+Selecting its distance requires testing; neither wider nor tighter is universally better.
 
 **The correct ordering**: find the invalidation level first, then size the
 position so that the loss at that level equals the intended risk fraction of
@@ -26,7 +20,7 @@ one and disconnects the stop from the thing it is supposed to measure.
 **R-multiple thinking.** "R" is the initial risk per unit (entry price minus
 stop price for a long). Expressing targets and outcomes in R rather than in
 absolute currency makes trades comparable regardless of size: a trade risking
-$50 to make $150 and a trade risking $500 to make $1,500 are both "2R"
+$50 to make $150 and a trade risking $500 to make $1,500 are both "3R"
 opportunities, and a system's edge is best evaluated by its distribution of R
 outcomes (win rate combined with average winning R vs. average losing R), not
 by the currency amounts of any single trade. A strategy can be profitable
@@ -54,8 +48,8 @@ distance — it should be set relative to the instrument's normal volatility
 (e.g. a multiple of its average true range), not a fixed percentage applied
 uniformly across very different assets.
 
-**Never move a stop further away once it is set**, except as part of a
-pre-planned, rules-based trailing mechanism. Moving a stop away from price
+**Do not widen a stop to accommodate a loss.** A conventional trailing stop
+tightens with favorable movement; it does not authorize widening risk. Moving a stop away from price
 after entry, in response to the position moving against the original thesis,
 converts a defined, bounded risk into an undefined one — this is one of the
 most reliable ways an otherwise disciplined process produces an outsized

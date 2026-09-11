@@ -5,14 +5,14 @@ applies_to: [stock, crypto]
 sectors: []
 ---
 
-Position size is the single lever that determines whether a wrong trade is a
+Position size is one important control affecting whether a wrong trade is a
 non-event or an account-threatening loss. A correct thesis with the wrong
 size still loses money; an average thesis with disciplined size survives
 being wrong repeatedly. Sizing discipline is not about maximizing the size of
 winners — it is about making sure no single loss can force a decision under
 duress.
 
-**Fixed-fractional risk beats fixed-dollar risk.** A fixed-dollar approach
+**Fixed-fractional risk adapts to changing equity.** This is not proof it always outperforms fixed-dollar risk. A fixed-dollar approach
 ("I always risk $200 per trade") ignores account growth and drawdown state:
 the same $200 is a trivial fraction of a healthy account and a dangerous
 fraction of an account that has already taken losses. Fixed-fractional
@@ -47,12 +47,10 @@ into an arbitrary one.
   as part of the original risk budget. Unplanned averaging down is usually
   an attempt to avoid admitting the original thesis was wrong, and it
   increases size exactly when the thesis is failing.
-- *Ignoring correlated exposure across concurrent positions.* Five separate
-  positions each sized at 1% risk is not 5% total risk if the positions are
-  correlated (e.g. five momentum longs in the same sector, or several crypto
-  assets that move together in a risk-off event) — a single adverse move can
-  hit several stops simultaneously. Position sizing has to account for the
-  portfolio, not just the individual trade.
+- *Ignoring correlated exposure across concurrent positions.* Five positions
+  with 1% planned risk sum to 5% planned risk. Correlation changes the likelihood
+  of simultaneous losses; gaps and costs can make actual loss exceed that sum.
+  Position sizing must account for portfolio exposure, not just each trade.
 - *Re-sizing after the fact to justify a trade already taken.* Sizing
   decisions made retroactively to make a trade "feel" proportionate are a
   sign the original process was skipped.

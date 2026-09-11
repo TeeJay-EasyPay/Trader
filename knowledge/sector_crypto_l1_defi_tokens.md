@@ -5,6 +5,10 @@ applies_to: [crypto]
 sectors: [crypto_l1, crypto_defi]
 ---
 
+Editorial qualification (2026-09-11): the relationships below require asset-specific
+evidence. Adoption metrics are not reliable price forecasts by themselves; developer
+activity is not necessarily an on-chain observable. These are internal research notes.
+
 Layer-1 blockchain tokens and DeFi protocol tokens trade on drivers that
 have no real equity-market equivalent, and applying equity-style fundamental
 analysis unmodified will miss what actually matters for this asset class.

@@ -123,10 +123,10 @@ def number(value, low, high):
 
 
 def validate_spec(raw):
-    if raw.get('rule_type') not in ('minimum_target_r', 'replace_target_r_gate'):
+    if raw.get('rule_type') not in ('minimum_target_r', 'replace_target_r_gate', 'reference_set_filter', 'minimum_target_move_bps'):
         raise ValueError('Development required: unsupported rule type')
     ids = raw.get('evidence_ids', [])
-    if not isinstance(ids, list) or not 1 <= len(ids) <= 30:
+    if not isinstance(ids, list) or not (0 if raw.get('source_intake_id') else 1) <= len(ids) <= 30:
         raise ValueError('One to thirty source outcomes required')
     hypothesis = str(raw.get('hypothesis', '')).strip()
     if not 15 <= len(hypothesis) <= 1000:
@@ -135,7 +135,9 @@ def validate_spec(raw):
     broker = raw.get('broker', 'alpaca')
     if broker not in ('alpaca', 'kraken'):
         raise ValueError('Unsupported shadow broker')
-    return dict(rule_type=raw['rule_type'], threshold=number(raw['threshold'], 1, 4),
+    return dict(rule_type=raw['rule_type'], threshold=number(raw.get('threshold',1), 1, 5000 if raw['rule_type']=='minimum_target_move_bps' else 4),
+                reference_sets=raw.get('reference_sets') if raw['rule_type']=='reference_set_filter' else None,
+                source_intake_id=raw.get('source_intake_id'),
                 hypothesis=hypothesis, evidence_ids=sorted(set(int(x) for x in ids)),
                 problem=str(raw.get('problem') or hypothesis)[:1000],
                 expected_benefit=str(raw.get('expected_benefit') or 'Test net improvement at comparable risk; benefit not established.')[:1000],
@@ -182,16 +184,34 @@ def create_experiment(db, raw, *, owner='founder', now=None, queue=False):
             raise ValueError('Experiment storage/count budget reached')
         if not queue and conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0] >= min(10, policy['max_active']):
             raise ValueError('Concurrent experiment limit reached')
+        if not queue:
+            active_specs = conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchall()
+            if sum(json.loads(r[0])['broker'] == spec['broker'] for r in active_specs) >= 5:
+                raise ValueError('Broker experiment limit reached (5)')
         for existing in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running')").fetchall():
             prior = json.loads(existing[0])
             if all(prior.get(k) == spec.get(k) for k in ('broker','rule_type','threshold')):
                 raise ValueError('Equivalent hypothesis already queued or running')
-        placeholders = ','.join('?' for _ in spec['evidence_ids'])
+        placeholders = ','.join('?' for _ in spec['evidence_ids']) or 'NULL'
+        if spec.get('source_intake_id'):
+            source = control(conn, 'source_intake:' + str(spec['source_intake_id']))
+            if not source or source['status'] not in ('eligible_for_testing','linked_experiment') or not source['reuse_checked']:
+                raise ValueError('Validated external source required')
+            if source['broker'] != spec['broker'] or any(source['rules'].get(k)!=spec[k] for k in ('rule_type','threshold')):
+                raise ValueError('Imported rule differs from reviewed source')
+            spec['external_source'] = {k:source[k] for k in ('id','url','title','author','source_hash','license_basis','external_backtest','limitations')}
         count = conn.execute(f"SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE broker=? "
                              f"AND exit_price IS NOT NULL AND attribution_id IN ({placeholders})", [spec['broker'], *spec['evidence_ids']]).fetchone()[0]
         if count != len(spec['evidence_ids']):
             raise ValueError('Evidence must reference existing completed outcomes for the selected broker')
         # Evidence snapshot is compact and immutable; no model-generated P&L.
+        if spec['rule_type']=='reference_set_filter':
+            from .reference_sets import snapshot
+            if not spec.get('reference_sets'):
+                kind='crypto' if spec['broker']=='kraken' else 'stock'
+                spec['reference_sets']={arm:snapshot(kind,candidate=arm=='candidate',topics=['costs','experiment_design']) for arm in ('baseline','candidate')}
+            if len(dump(spec['reference_sets']))>14000:
+                raise ValueError('Reference snapshot budget exceeded')
         evidence = conn.execute(f'SELECT attribution_id,symbol,profit_loss,closed_at FROM PERFORMANCE_ATTRIBUTION '
                                 f'WHERE attribution_id IN ({placeholders})', spec['evidence_ids']).fetchall()
         if any(stamp(r['closed_at']) > stamp(now) for r in evidence):
@@ -240,6 +260,12 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
         row = _load(conn, eid, owner)
         if row['status'] != 'shadow_running' or stamp(op['time']) < stamp(row['created_at']):
             raise ValueError('Only prospective opportunities in running experiments')
+        if row['spec']['rule_type']=='reference_set_filter':
+            assessment=control(conn,'reference_pair:'+digest([eid,op['source_id']]))
+            if not assessment or assessment.get('status')!='completed':
+                raise ValueError('Reference pair not assessed within budget')
+            op['signal_time']=op['time']
+            op['time']=max(stamp(op['time']),stamp(assessment['at'])).isoformat()
         oid = digest([eid, op['source_id']])
         existing = conn.execute('SELECT payload_json FROM EXPERIMENT_OPPORTUNITIES WHERE id=?', (oid,)).fetchone()
         if existing:
@@ -274,11 +300,21 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
         # Missing reasons or ANY other failure (costs/risk/permissions/data) block it.
         candidate_eligible = op['eligible'] or (row['spec']['rule_type'] == 'replace_target_r_gate'
             and bool(reasons) and set(reasons) == {'reward_risk_below_minimum'})
+        candidate_pass = ((op['target']/op['entry']-1)*10000 >= row['spec']['threshold']
+                          if row['spec']['rule_type']=='minimum_target_move_bps' else passes(row['spec']['threshold'],op))
         op['arms'] = {arm: dict(status='awaiting_bar' if
-                               (op['eligible'] if arm == 'baseline' else candidate_eligible and passes(row['spec']['threshold'], op)) else 'skipped',
+                               (op['eligible'] if arm == 'baseline' else candidate_eligible and candidate_pass) else 'skipped',
                                net=0, cost=0, quantity=0, reason='recorded eligibility / frozen filter')
                       for arm in ('baseline', 'candidate')}
         op['last_bar'] = None
+        if row['spec']['rule_type']=='reference_set_filter':
+            assessment=control(conn,'reference_pair:'+digest([eid,op['source_id']]))
+            if not assessment or assessment.get('status')!='completed':
+                raise ValueError('Reference pair not assessed within budget')
+            op['reference_assessment']=assessment
+            for arm in ('baseline','candidate'):
+                op['arms'][arm]['status']='awaiting_bar' if op['eligible'] and assessment['arms'][arm]['allow'] else 'skipped'
+                op['arms'][arm]['reason']='Frozen reference-set assessment; original safeguards retained'
         op['uncertain'] = False
         conn.execute('INSERT INTO EXPERIMENT_OPPORTUNITIES VALUES (?,?,?,?,?,?)',
                      (oid, eid, op['time'], op['symbol'], str(op['source_id']), dump(op)))
@@ -422,6 +458,7 @@ def evaluate(row, ops, *, now):
                 skipped={arm: sum(o['arms'][arm]['status'] == 'skipped' for o in ops) for arm in ('baseline', 'candidate')},
                 uncertain=len(complete) - n, paired_mean_usd=mean, descriptive_lower_bound=lower,
                 day_clusters=len(groups),
+                reference_decision_differences=sum(o.get('reference_assessment',{}).get('arms',{}).get('baseline',{}).get('allow') != o.get('reference_assessment',{}).get('arms',{}).get('candidate',{}).get('allow') for o in ops if o.get('reference_assessment')),
                 baseline=row['state']['baseline'], candidate=row['state']['candidate'],
                 evaluate_after=ends.isoformat(), costs=row['spec']['costs_status'],
                 caveat='Dependent signals and estimated daily-bar fills limit inference. Recommendation is for paper review only; no proven live edge.')
@@ -468,6 +505,9 @@ def list_experiments(db, *, owner='founder', before='', attention=False, view=''
                     r['report']['ended_at'] = ended[0]
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
+                    reference_blockers=[json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_CONTROL WHERE id LIKE ? LIMIT 10',('reference_budget:%',)).fetchall()],
+                    broker_capacity={b: {'active':sum(json.loads(r[0])['broker']==b for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' AND owner=?",(owner,)).fetchall()),'limit':5} for b in ('alpaca','kraken')},
+                    proposal_eligibility=control(conn, 'proposal_eligibility', {}),
                     pipeline=[dict(r) for r in conn.execute('SELECT status,COUNT(*) AS count FROM RULE_EXPERIMENTS WHERE owner=? GROUP BY status', (owner,)).fetchall()],
                     policy=control(conn, 'policy', DEFAULT_POLICY), notification_type='strategy_experiment',
                     evidence_coverage=control(conn, 'learning_evidence_coverage', {}),

@@ -38,6 +38,7 @@ function TestingJourney({ data }) {
 function ExperimentDetail({ request, id, onBack }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null), [capital, setCapital] = useState('100');
+  const [notice,setNotice]=useState('');
   async function load() {
     setBusy(true); setError('');
     try { setData(await request('/experiments/detail?id=' + encodeURIComponent(id))); }
@@ -48,6 +49,12 @@ function ExperimentDetail({ request, id, onBack }) {
   async function approve() {
     setBusy(true); setError('');
     try {
+      if(confirm==='queue_reference_comparison') {
+        await request('/experiments/decision',{method:'POST',body:JSON.stringify({action:confirm,confirmed:true,
+          spec:{broker:data.spec.broker,evidence_ids:data.spec.evidence_ids,
+            hypothesis:'Test whether revised cost and experiment guidance changes decisions and net shadow results, with unchanged safety controls.'}})});
+        setConfirm(null);setNotice('Reference comparison saved in Queued. It shares the existing daily AI allowance.');return;
+      }
       const scope = confirm === 'enable_paper' ? { max_notional_usd: Number(capital), expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }
         : confirm === 'request_development' ? { requirements: 'Implement reviewed strategy version ' + data.version + ': ' + data.spec.hypothesis,
           acceptance_tests: 'Preserve risk and fee checks; verify execution, exact-version decision attribution and rollback. No live activation.' } : {};
@@ -63,9 +70,11 @@ function ExperimentDetail({ request, id, onBack }) {
       ...(data?.spec?.broker === 'alpaca' && data?.spec?.rule_type === 'minimum_target_r' ? [['enable_paper', 'Review Alpaca paper activation']] : []),
       ...(data?.status === 'library_approved' ? [['request_development', 'Request implementation review']] : []), ['reject', 'Reject']]
     : data?.status === 'implementation_required' ? [['approve_implementation', 'Approve implementation'], ['reject', 'Reject request']]
-    : ['shadow_running', 'paper_active'].includes(data?.status) ? [['suspend', 'Suspend']] : [];
+    : ['shadow_running', 'paper_active'].includes(data?.status) ? [['suspend', 'Suspend'],
+      ...(data?.spec?.rule_type!=='reference_set_filter' && data?.spec?.evidence_ids?.length ? [['queue_reference_comparison','Review a shadow comparison of reference sets']] : [])] : [];
   return <View style={s.card}><Button label="Back" onPress={onBack} /><Text style={s.title}>Experiment report</Text>
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
+    {!!notice && <Text style={s.text}>{notice}</Text>}
     <Button label="Refresh report" disabled={busy} onPress={load} />
     {data && <><Text style={s.text}>Hypothesis: {data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · {human(data.spec.broker)} · {data.spec.currency || 'USD'} · SIMULATED</Text>
       <Text style={s.text}>Problem: {data.spec.problem || 'See hypothesis'}{'\n'}Intended benefit: {data.spec.expected_benefit || 'Not yet documented'}</Text>
@@ -74,10 +83,16 @@ function ExperimentDetail({ request, id, onBack }) {
       {data.status !== 'queued' && <TestingJourney data={data} />}
       {!!data.report.reason && <Text style={s.text}>Evaluation note: {data.report.reason}</Text>}
       {!!data.state?.supersedes && <Text style={s.small}>Fresh prospective comparison following an engine update. Previous experiment: {data.state.supersedes}. Its observations are not pooled into this version.</Text>}
-      <Text style={s.text}>Baseline: recorded eligibility. Candidate: require target / planned risk of at least {data.spec.threshold}. Targets are not expected returns.</Text>
+      <Text style={s.text}>{data.spec.rule_type === 'reference_set_filter'
+        ? 'Both arms retain safety eligibility, then independently assess the same frozen facts with different reference sets. The daily AI allowance is shared; assessments may span days. Simulations start after both finish.'
+        : data.spec.rule_type === 'minimum_target_move_bps'
+          ? 'Baseline: recorded eligibility. Candidate: require planned target distance of at least '+data.spec.threshold+' basis points. Target distance is not expected return.'
+          : 'Baseline: recorded eligibility. Candidate: require target / planned risk of at least '+data.spec.threshold+'. Targets are not expected returns.'}</Text>
       <Text style={s.small}>Both portfolios use the same estimated fills and costs. No broker orders are sent by simulations.</Text>
+      {data.spec.reference_sets && Object.entries(data.spec.reference_sets).map(([arm,refs])=><View key={arm}><Text style={s.small}>{human(arm)} reference version: {refs.version.slice(0,12)}</Text>{refs.passages.map(p=><Text key={p.document} style={s.small}>{p.title} · review due {p.metadata?.review_due || 'unknown'} · supplied, not proven effective</Text>)}</View>)}
       <Text style={s.small}>{data.spec.rule_type === 'replace_target_r_gate' ? 'Candidate may replace only a recorded target/risk rejection. Unknown reasons or any other failed safeguard still mean skip.' : 'This candidate only filters baseline-eligible entries.'}</Text>
       <Text style={s.text}>{data.report.observations ?? 'Not yet reported'} opportunities · {data.report.completed ?? 'Not yet reported'} resolved pairs (including skips) · {data.report.uncertain ?? 'Not yet reported'} uncertain.</Text>
+      {data.spec.rule_type==='reference_set_filter' && <Text style={s.small}>Reference decision disagreements: {data.report.reference_decision_differences ?? 'not yet assessed'}. Agreement or disagreement alone does not establish better trading.</Text>}
       <Text style={s.text}>Closed simulated trades: baseline {data.report.closed_trades?.baseline ?? 'Not reported'} / candidate {data.report.closed_trades?.candidate ?? 'Not reported'}{'\n'}Skipped: {data.report.skipped?.baseline ?? 'Not reported'} / {data.report.skipped?.candidate ?? 'Not reported'}</Text>
       <Text style={s.text}>Baseline realised: {money(data.report.baseline?.realised, data.spec.currency)}{ '\n' }Candidate realised: {money(data.report.candidate?.realised, data.spec.currency)}</Text>
       <Text style={s.small}>Virtual equity including open positions: {money(data.report.baseline?.equity, data.spec.currency)} / {money(data.report.candidate?.equity, data.spec.currency)}</Text>
@@ -118,6 +133,13 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null), [attention, setAttention] = useState(notifications);
   const [section, setSection] = useState('running');
+  const [sourceConfirm,setSourceConfirm]=useState(null);
+  async function approveSource(item) {
+    setBusy(true);setError('');
+    try {await request('/experiments/decision',{method:'POST',body:JSON.stringify({action:'approve_source_implementation',
+      source_id:item.id,version:item.id,confirmed:true})});setSourceConfirm(null);await load();}
+    catch(e){setError(e.message || 'Approval failed');} finally {setBusy(false);}
+  }
   async function load(more = false) {
     setBusy(true); setError('');
     try {
@@ -136,6 +158,17 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
     {!!data?.pipeline?.length && <Text style={s.text}>Pipeline: {data.pipeline.map(p => human(p.status) + ' ' + p.count).join(' · ')}</Text>}
+    {!!data?.broker_capacity && <Text style={s.text}>{Object.entries(data.broker_capacity).map(([broker,c]) => `${human(broker)}: ${c.active}/${c.limit} active`).join(' · ')}</Text>}
+    {!!data?.proposal_eligibility?.brokers && <Text style={s.small}>{Object.entries(data.proposal_eligibility.brokers).map(([broker,c]) => `${human(broker)}: ${human(c.reason)} (${c.new_outcomes} new linked outcomes)`).join('\n')}</Text>}
+    {!!data?.proposal_eligibility?.reason && <Text style={s.small}>Generation: {human(data.proposal_eligibility.reason)}</Text>}
+    {!!data?.last_review?.next_eligible_at && <Text style={s.small}>Next proposal budget available: {data.last_review.next_eligible_at}. Evidence and capacity checks still apply.</Text>}
+    {!!data?.last_review?.accepted && <Text style={s.small}>Last batch: {data.last_review.accepted.length} accepted · {data.last_review.rejected?.length || 0} rejected.</Text>}
+    {data?.reference_blockers?.map((b,i) => <Text key={'ref'+i} style={s.small}>Reference comparison: {b.reason}</Text>)}
+    {!!data?.source_intake?.length && <View style={s.card}><Text style={s.title}>Imported strategy ideas</Text>{data.source_intake.map(item => <View key={item.id}><Text style={s.text}>{item.title} · {human(item.status)}</Text><Text style={s.small}>{item.purpose}{'\n'}Source: {item.url}{'\n'}{item.limitations}{'\n'}{item.linked_experiment ? 'Experiment: '+item.linked_experiment : 'Not running. Source review or implementation may be needed.'}</Text>
+      {item.status==='development_required' && <Button label="Review implementation approval" onPress={()=>setSourceConfirm(item.id)} />}
+      {sourceConfirm===item.id && <View><Text style={s.small}>Approve development of this exact imported version? This does not run code or activate trading.</Text><Button label="Confirm implementation approval" disabled={busy} onPress={()=>approveSource(item)} /><Button label="Cancel" onPress={()=>setSourceConfirm(null)} /></View>}
+      {item.implementation_request && <Text style={s.small}>Approved {item.implementation_request.approved_at}. Awaiting implementation; live use not authorised.</Text>}
+    </View>)}</View>}
     {!!data?.last_review?.status && <Text style={s.small}>Latest proposal review: {human(data.last_review.status)} · {data.last_review.day}. {data.last_review.reason || ''}</Text>}
     {!!data?.worker?.at && <Text style={s.small}>Worker checked {data.worker.at}: {human(data.worker.status)}.</Text>}
     {!!data?.evidence_coverage?.brokers && <View style={s.card}><Text style={s.title}>Learning evidence coverage</Text>
@@ -148,14 +181,14 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Review date is set when a slot opens.' : row.status !== 'shadow_running' ? 'Ended: ' + experimentTimeline(row).end + '\n' + (row.report?.reason || human(row.status)) : 'Started: ' + experimentTimeline(row).start + '\nNext weekly review: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
       <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>
     </View>)}
-    {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : section === 'running' ? 'No experiment recorded yet in Running. Check Queued or Previous tests. Reviews alone do not demonstrate improvement.' : 'No records in this section.'}</Text>}
+    {data && !data.items.length && !data.source_intake?.some(x=>x.status==='development_required') && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : section === 'running' ? 'No experiment recorded yet in Running. Check Queued or Previous tests. Reviews alone do not demonstrate improvement.' : 'No records in this section.'}</Text>}
     <Button label="Refresh" disabled={busy} onPress={() => load()} />
     {!!data?.next_cursor && <Button label="Load older records" disabled={busy} onPress={() => load(true)} />}
   </View>;
 }
 function ExperimentPrompt({ request, onOpen }) {
   const [count, setCount] = useState(null);
-  useEffect(() => { let active = true; request('/experiment-notifications?attention=true').then(d => { if (active) setCount(d.items.length); }).catch(() => { if (active) setCount(null); }); return () => { active = false; }; }, [request]);
+  useEffect(() => { let active = true; request('/experiment-notifications?attention=true').then(d => { if (active) setCount(d.items.length+(d.source_intake || []).filter(x=>x.status==='development_required').length); }).catch(() => { if (active) setCount(null); }); return () => { active = false; }; }, [request]);
   return <View style={s.card}><Text style={s.text}>{count === null ? 'Strategy requests: check notification history.' : count ? count + ' strategy request(s) ready for review.' : 'No strategy approval is pending.'}</Text>
     <Button label="Notifications and strategy approvals" onPress={onOpen} /></View>;
 }

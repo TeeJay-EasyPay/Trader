@@ -103,6 +103,7 @@ test('overview renders missing sources safely and wires all seven evidence pages
       ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 840 }) }
       : name === 'react' ? { ...local(name), useState: value => [value, () => {}] }
       : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' }
+      : name === '../components/StrategyImports' ? { StrategyImports: 'StrategyImports' }
       : name === './Experiments' ? { ExperimentsCard: 'ExperimentsCard' } : local(name),
   });
   const opened = [];

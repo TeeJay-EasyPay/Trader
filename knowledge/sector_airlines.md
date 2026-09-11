@@ -5,6 +5,10 @@ applies_to: [stock]
 sectors: [airlines]
 ---
 
+Editorial qualification (2026-09-11): check the individual airline's filings and
+current disclosures. The statements below are qualitative research prompts, not
+verified facts about every airline or a tested trading strategy.
+
 Airlines trade on a distinct set of drivers that a generic equity framework
 tends to underweight, because the business is unusually exposed to a few
 large, largely uncontrollable input costs and to demand that is highly

@@ -11,8 +11,8 @@ portfolio level, even when every individual position was sized correctly on
 its own terms.
 
 **Correlation risk.** Risk does not add up the way position count suggests.
-Five positions each risking 1% of the account is not "5% total risk" if the
-five positions are correlated — several momentum longs in the same sector,
+Five positions each with 1% planned risk sum to 5% planned risk, even if
+correlated. Correlation affects the likelihood of joint losses — several momentum longs in the same sector,
 several crypto assets that move together in a broad risk-off event, or
 several trades all implicitly betting on the same macro outcome (e.g. rates
 falling). In a correlated adverse move, several stops can be hit

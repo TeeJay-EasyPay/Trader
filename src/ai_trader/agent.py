@@ -1085,7 +1085,9 @@ def propose_crypto_trades(
                 # knowledge-base context Phase C gives the Alpaca LLM proposal call, folded
                 # into this crypto proposal's reasoning text for transparency and audit.
                 try:
-                    context = build_proposal_context(db_path, symbol=symbol, asset_type="crypto")
+                    context = build_proposal_context(db_path, symbol=symbol, asset_type="crypto",
+                        strategy_id=str(intelligence.strategy.get('strategy_id') or '') or None,
+                        regime_id=str(intelligence.regime.get('primary_regime') or '') or None)
                     # 2026-08-15 incident: reference_material (the actual curated knowledge-base
                     # excerpts) was fetched here and then silently dropped -- never included below,
                     # so it never even reached this proposal's own reasoning text, let alone

@@ -4,6 +4,7 @@ const { useEffect, useState } = React;
 const { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, Platform, BackHandler, useWindowDimensions } = require('react-native');
 const { LearningCloud } = require('../components/LearningCloud');
 const { ExperimentsCard, ExperimentDetail } = require('./Experiments');
+const { StrategyImports } = require('../components/StrategyImports');
 const { exchangePalette, palette } = require('../lib/palette');
 const { learningRequest, shiftedDate, resultText, humanStatus, priceText, matchesLearningView } = require('../lib/learningScreen');
 const HEADINGS = { rejected: 'Tracked opportunities', decisions: 'Rejected decisions', trades: 'Completed trades',
@@ -194,6 +195,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       </BrokerCard>
       <View style={[s.row, { flexWrap: 'nowrap' }]}><Action compact grow selected label="Saved strategies" onPress={() => onOpen('strategies')} /><Action compact grow label="Past backtests" onPress={() => onOpen('tests')} /></View>
       <Text style={s.small}>{data.backtest_count == null ? 'Historical backtest count unavailable.' : `${data.backtest_count} historical backtest records. These are separate from current experiments.`}</Text>
+      {request && <StrategyImports request={request} />}
     </View>
     <Action compact link label={notes ? 'Hide evidence notes −' : 'Evidence notes & limitations +'} onPress={() => setNotes(v => !v)} />
     {notes && <View style={s.card}><Text style={s.small}>Evidence updated {data.generated_at}. Cached for up to 10 minutes.</Text>

@@ -5,6 +5,10 @@ applies_to: [stock, crypto]
 sectors: []
 ---
 
+Editorial qualification (2026-09-11): the regime descriptions below are
+hypotheses and qualitative heuristics, not calibrated probabilities or established
+evidence for any particular asset. Validate horizon-specific claims independently.
+
 Momentum and mean-reversion are opposite bets about the same observation — a
 price has moved a meaningful distance from a recent reference point — and
 confusing which regime currently applies is one of the most common ways a

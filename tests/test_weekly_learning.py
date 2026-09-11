@@ -12,16 +12,16 @@ def variants(db, count):
     return [e.create_experiment(db,{**raw,'threshold':1.1+i*.1},queue=True,now='2026-09-01T00:00:00+00:00') for i in range(count)]
 
 
-def test_ten_global_slots_same_broker_and_shared_inputs(db):
+def test_five_slots_per_broker_and_shared_inputs(db):
     rows=variants(db,11)
     a.start_queued(db,'2026-09-01T01:00:00+00:00')
     active=[x for x in rows if e.detail(db,x['id'])['status']=='shadow_running']
-    assert len(active)==10
+    assert len(active)==5
     for row in active:
         for n in range(20):
             e.add_opportunity(db,row['id'],op(source='p'+str(n),symbol='A'+str(n)))
     with e.transaction(db) as c:
-        assert c.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES').fetchone()[0]==200
+        assert c.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES').fetchone()[0]==100
     with pytest.raises(ValueError,match='Daily'):
         e.add_opportunity(db,active[0]['id'],op(source='overflow',symbol='Z'))
     assert e.detail(db,rows[-1]['id'])['status']=='queued'

@@ -29,7 +29,7 @@ from .database import connect
 from .decision_inputs import is_wired
 from .experience_engine import find_historical_analogues
 from .learning_findings import relevant as relevant_learning_findings
-from .knowledge_base import record_knowledge_gap, relevant_excerpts
+from .knowledge_base import record_knowledge_gap, relevant_excerpts, select_passage
 from .strategy_scoreboard import (
     serialize_strategy_evidence,
     strategy_evidence_for,
@@ -158,7 +158,11 @@ def reference_provenance(excerpts: list[dict[str, Any]]) -> list[dict[str, Any]]
         'document_hash_scope': 'retrieved_document_body',
         'document_sha256': hashlib.sha256(str(entry.get('excerpt') or '').encode()).hexdigest(),
         'passage_sha256': hashlib.sha256(_serialize_knowledge([entry]).encode()).hexdigest(),
-        'passage': 'first_1200_characters'} for entry in excerpts]
+        'supplied_text': _serialize_knowledge([entry]),
+        'status': 'supplied_not_verified_applied',
+        'passage': 'topic_ranked_sections' if 'selected_passage' in entry else 'first_1200_characters',
+        'selection_topics': entry.get('selection_topics', []),
+        'source_metadata': entry.get('metadata', {})} for entry in excerpts]
 
 
 def _serialize_knowledge(excerpts: list[dict[str, Any]], *, source_wired: bool = True) -> str:
@@ -176,7 +180,7 @@ def _serialize_knowledge(excerpts: list[dict[str, Any]], *, source_wired: bool =
         return "No matching curated reference material for this asset type/sector."
     blocks = []
     for entry in excerpts:
-        excerpt_text = str(entry.get("excerpt") or "")
+        excerpt_text = str(entry.get("selected_passage", entry.get("excerpt")) or "")
         if len(excerpt_text) > 1200:
             excerpt_text = excerpt_text[:1200] + "..."
         blocks.append(f"### {entry.get('title')}\n{excerpt_text}")
@@ -321,6 +325,7 @@ def build_proposal_context(
     # draw an analogy that does not hold. Relevance beats volume.
     topics = _knowledge_topics(strategy_id=strategy_id, regime_id=regime_id)
     excerpts = relevant_excerpts(asset_type=asset_type, sector=sector, topics=topics, limit=3)
+    excerpts = [select_passage(entry, topics) for entry in excerpts]
     if not excerpts:
         record_knowledge_gap(db_path, asset_type=asset_type, sector=sector, topics_searched=topics)
 

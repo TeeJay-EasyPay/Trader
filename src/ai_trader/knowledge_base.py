@@ -105,9 +105,20 @@ def load_knowledge_index(path: Path = KNOWLEDGE_DIR) -> list[dict[str, Any]]:
                 "sectors": [str(item).lower() for item in sectors],
                 "excerpt": body,
                 "file_path": str(file_path),
+                "metadata": frontmatter,
             }
         )
     return entries
+
+
+def select_passage(entry: dict[str, Any], topics: list[str] | None = None) -> dict[str, Any]:
+    """Select sections locally; preserve the full-body hash input and strict cap."""
+    import re
+    sections = re.split(r'(?m)(?=^## )', str(entry.get('excerpt') or ''))
+    terms = {t.replace('_', ' ').lower() for t in (topics or [])}
+    ranked = sorted(enumerate(sections), key=lambda p: (-sum(t in p[1].lower() for t in terms), p[0]))
+    return {**entry, 'selected_passage': '\n'.join(text for _, text in ranked)[:1200],
+            'selection_topics': list(topics or [])}
 
 
 def relevant_excerpts(
