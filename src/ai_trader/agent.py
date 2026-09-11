@@ -152,7 +152,8 @@ class AITradingAgent:
                     proposal = self.analyzer.propose(symbol, market, news, account, context=context)
                     if proposal is not None:
                         proposal = replace(proposal, intelligence={**(proposal.intelligence or {}),
-                            'reference_provenance': (context or {}).get('reference_provenance', [])})
+                            'reference_provenance': (context or {}).get('reference_provenance', []),
+                            'learning_findings_supplied': (context or {}).get('learning_findings', [])})
                     if proposal is None:
                         self._no_trade_probe(symbol, market, news)
                     elif proposal.asset_type != "crypto":
@@ -189,7 +190,8 @@ class AITradingAgent:
                     proposal,
                     ai_guardrails_passed=validation.passed,
                     ai_guardrail_failures=validation.failures,
-                    intelligence={**intelligence.to_dict(), 'reference_provenance': (proposal.intelligence or {}).get('reference_provenance', [])},
+                    intelligence={**intelligence.to_dict(), 'reference_provenance': (proposal.intelligence or {}).get('reference_provenance', []),
+                                  'learning_findings_supplied': (proposal.intelligence or {}).get('learning_findings_supplied', [])},
                     strategy_id=str(intelligence.strategy.get("strategy_id") or ""),
                 )
                 self.audit.record_trade_event("agent_proposal", proposal, validation=validation, intelligence=intelligence.to_dict())
@@ -1092,10 +1094,12 @@ def propose_crypto_trades(
                     context_note = (
                         f"\n\nAdditional context: {context['historical_analogues']} "
                         f"{context['backtest_evidence']} {context['external_intelligence']}\n\n"
-                        f"Reference material: {context['reference_material']}"
+                        f"Reference material: {context['reference_material']} "
+                        f"Recorded learning findings (not authority to change rules): {context.get('learning_findings', [])}"
                     ).strip()
                     proposal = replace(proposal, plain_english_reasoning=(proposal.plain_english_reasoning or "") + context_note,
-                        intelligence={**(proposal.intelligence or {}), 'reference_provenance': context.get('reference_provenance', [])})
+                        intelligence={**(proposal.intelligence or {}), 'reference_provenance': context.get('reference_provenance', []),
+                                      'learning_findings_supplied': context.get('learning_findings', [])})
                 except Exception:  # noqa: BLE001 - enrichment is additive; its failure must never block a proposal
                     context = None
                 # Phase 5 of the CIO-level forecasting build (2026-08-20, Founder-directed):

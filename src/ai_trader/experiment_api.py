@@ -15,7 +15,7 @@ def get(db, path, query):
                              'proposal_attempt': exp.control(conn, 'proposal_attempt', {}),
                              'deployment_commit': os.getenv('RENDER_GIT_COMMIT'),
                              'live_enabled': False}
-        return 200, exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true')
+        return 200, exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view'))
     except ValueError as exc:
         return 400, {'error': str(exc)}
 

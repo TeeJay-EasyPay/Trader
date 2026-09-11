@@ -44,7 +44,7 @@ test('journey explains time and evidence separately', () => {
   const ui = load();
   const rendered = JSON.stringify(ui.TestingJourney({ data: { status: 'shadow_running',
     created_at: '2026-09-11T01:27:00Z', spec: { evaluation_days: 60, simulator: 'daily-bar-paired-v1' }, report: {} } }));
-  for (const phrase of ['Planned observation period', 'Target evaluation', 'device timezone', 'not a promise of improved trading', '15 extra calendar days']) {
+  for (const phrase of ['Planned observation period', 'Next weekly review', 'device timezone', 'not a promise of improved trading', '15 extra calendar days']) {
     assert.ok(rendered.includes(phrase), phrase);
   }
 });

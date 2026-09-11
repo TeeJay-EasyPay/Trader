@@ -28,6 +28,7 @@ from typing import Any
 from .database import connect
 from .decision_inputs import is_wired
 from .experience_engine import find_historical_analogues
+from .learning_findings import relevant as relevant_learning_findings
 from .knowledge_base import record_knowledge_gap, relevant_excerpts
 from .strategy_scoreboard import (
     serialize_strategy_evidence,
@@ -325,6 +326,8 @@ def build_proposal_context(
 
     return {
         "historical_analogues": _serialize_historical_analogues(analogues),
+        "learning_findings": relevant_learning_findings(
+            db_path, symbol, 'kraken' if asset_type == 'crypto' else 'alpaca'),
         "reference_provenance": reference_provenance(excerpts),
         # Whether the SOURCE holds anything at all, not just whether it held something
         # for this symbol -- see the comment in each serializer.

@@ -25,7 +25,7 @@ function TestingJourney({ data }) {
   return <View style={s.card}><Text style={s.title}>Testing journey</Text>
     <Text style={s.text}>Now: {time.stage}</Text>
     <Text style={s.text}>Started: {time.start}{'\n'}Planned observation period: {time.planned}{'\n'}{time.elapsedLabel}: {time.elapsed}</Text>
-    <Text style={s.text}>Target evaluation: {time.target}{'\n'}{time.remaining}</Text>
+    <Text style={s.text}>{time.ended ? 'Ended: ' + time.end : 'Next weekly review: ' + time.target}{'\n'}{time.remaining}</Text>
     <Text style={s.small}>Dates and times use your device timezone. Calendar duration includes waiting, closed markets and pauses; it is not time spent placing trades.</Text>
     <Text style={s.text}>1. Record the hypothesis and freeze the rules.{ '\n' }2. Assess new opportunities; record skips or simulate entries.{ '\n' }3. Follow simulated positions and collect outcomes.{ '\n' }4. Evaluate evidence, then request approval only if supported.</Text>
     <Text style={s.small}>Each stage depends on opportunities and market data; there is no promised date for the first simulated trade. Opportunities and completed pairs can include skips, not completed trades.</Text>
@@ -100,6 +100,13 @@ function ExperimentDetail({ request, id, onBack }) {
           <TextInput accessibilityLabel="Paper maximum order notional in dollars" keyboardType="numeric" value={capital} onChangeText={setCapital} style={s.input} /></>}
         <Button primary label="Confirm this exact action" disabled={busy} onPress={approve} /><Button label="Cancel" disabled={busy} onPress={() => setConfirm(null)} /></View>}
       <Text style={s.title}>History</Text>{(data.events || []).map((e, i) => <Text key={i} style={s.small}>{e.created_at} · {human(e.action)}</Text>)}
+      <Text style={s.title}>Weekly findings</Text>
+      {(data.events || []).filter(e => e.action === 'weekly_review').map((event,i) => {
+        let review; try { review = JSON.parse(event.payload_json); } catch (_) { return null; }
+        return <View key={i} style={s.card}><Text style={s.text}>Week {review.cycle}: {review.what_was_learnt}</Text>
+          <Text style={s.small}>{event.interpretation?.status === 'completed' ? "Trader's interpretation: "+event.interpretation.summary : 'AI interpretation '+(event.interpretation?.status || 'pending')+'; numerical findings remain available.'}</Text>
+          <Text style={s.small}>{review.future_use}{'\n'}{review.next_review_at ? 'Next review: '+review.next_review_at : 'Review ended the test.'}</Text></View>;
+      })}
       <Text style={s.title}>Recent paired opportunities</Text>
       {(data.opportunities || []).map(o => <Text key={o.source_id} style={s.small}>{o.time} · {o.symbol}{'\n'}Baseline: {human(o.arms.baseline.status)} ({o.arms.baseline.reason}); candidate: {human(o.arms.candidate.status)} ({o.arms.candidate.reason}). {o.uncertain ? 'Uncertain: ' + o.quality : ''}</Text>)}
       <Text style={s.small}>Latest 20 opportunities shown; headline totals cover the full experiment.</Text>
@@ -110,19 +117,22 @@ function ExperimentDetail({ request, id, onBack }) {
 function ExperimentsCard({ request, notifications = false, onBack }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null), [attention, setAttention] = useState(notifications);
+  const [section, setSection] = useState('running');
   async function load(more = false) {
     setBusy(true); setError('');
     try {
-      const result = await request('/experiments?attention=' + attention + (more && data?.next_cursor ? '&before=' + encodeURIComponent(data.next_cursor) : ''));
+      const result = await request('/experiments?attention=' + attention + (notifications ? '' : '&view='+section) + (more && data?.next_cursor ? '&before=' + encodeURIComponent(data.next_cursor) : ''));
       setData(old => more ? { ...result, items: [...(old?.items || []), ...result.items] } : result);
     } catch (e) { setError(e.message || 'Experiments unavailable'); } finally { setBusy(false); }
   }
-  useEffect(() => { setData(null); load(); }, [attention, request]);
+  useEffect(() => { setData(null); load(); }, [attention, section, request]);
   if (selected) return <ExperimentDetail request={request} id={selected} onBack={() => { setSelected(null); load(); }} />;
   return <View style={s.card}>{onBack && <Button label="Back to Executive Briefing" onPress={onBack} />}
     <Text style={s.title}>{notifications ? 'Notifications' : 'Experiments'}</Text>
     <Text style={s.small}>{notifications ? 'Strategy requests and approval history' : 'Evidence → proposed rule → paired simulation → review'}</Text>
     {notifications && <Button label={attention ? 'View history and all experiments' : 'View needs attention'} onPress={() => setAttention(v => !v)} />}
+    {!notifications && <View style={{ gap:6 }}>{[['running','Running'],['queued','Queued'],['history','Previous tests'],['attention','Needs attention']].map(([key,label]) =>
+      <Button key={key} label={label} primary={section === key} onPress={() => { setSection(key); setAttention(key === 'attention'); }} />)}</View>}
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
     {!!data?.pipeline?.length && <Text style={s.text}>Pipeline: {data.pipeline.map(p => human(p.status) + ' ' + p.count).join(' · ')}</Text>}
@@ -132,13 +142,13 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       {data.evidence_coverage.brokers.map(b => <Text key={b.broker} style={s.small}>{human(b.broker)}: {b.outcomes} outcomes; {b.linked_decisions} linked decisions; {b.canonical_closures} canonical closures; {b.known_costs} with known costs; {b.meaningful_exit_labels} meaningful exit labels.</Text>)}
       <Text style={s.small}>{data.evidence_coverage.caveat} Checked {data.evidence_coverage.checked_at}.</Text>
     </View>}
-    {data?.items?.map(row => <View key={row.id} style={s.card}>
+    {data?.items?.filter(row => notifications || section === 'attention' || (section === 'running' ? row.status === 'shadow_running' : section === 'queued' ? row.status === 'queued' : !['queued','shadow_running'].includes(row.status))).map(row => <View key={row.id} style={s.card}>
       <Button label={human(row.status) + ' · Hypothesis: ' + row.hypothesis} onPress={() => setSelected(row.id)} />
       <Text style={s.small}>{human(row.broker || 'alpaca')} · Priority {row.priority || 3}{'\n'}Problem: {row.problem || row.hypothesis}{'\n'}Intended benefit: {row.expected_benefit || 'See report'}</Text>
-      <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Target date will be set when a worker slot is available.' : 'Started: ' + experimentTimeline(row).start + '\nTarget evaluation: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
+      <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Review date is set when a slot opens.' : row.status !== 'shadow_running' ? 'Ended: ' + experimentTimeline(row).end + '\n' + (row.report?.reason || human(row.status)) : 'Started: ' + experimentTimeline(row).start + '\nNext weekly review: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
       <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>
     </View>)}
-    {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : 'No experiment recorded yet. Reviews alone do not demonstrate improvement.'}</Text>}
+    {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : section === 'running' ? 'No experiment recorded yet in Running. Check Queued or Previous tests. Reviews alone do not demonstrate improvement.' : 'No records in this section.'}</Text>}
     <Button label="Refresh" disabled={busy} onPress={() => load()} />
     {!!data?.next_cursor && <Button label="Load older records" disabled={busy} onPress={() => load(true)} />}
   </View>;

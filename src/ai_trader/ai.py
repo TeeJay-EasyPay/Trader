@@ -473,6 +473,7 @@ class OpenAIReadOnlyExplainer:
             request.data = json.dumps(payload).encode('utf-8')
         with urlopen(request, timeout=self.timeout_seconds) as response:
             raw = json.loads(response.read().decode("utf-8"))
+        self.last_usage = {key: (raw.get('usage') or {}).get(key) for key in ('input_tokens','output_tokens','total_tokens')}
         text = _extract_response_text(raw).strip()
         if raw.get('status') == 'incomplete':
             return (text + '\n\n' if text else '') + 'This response stopped before completion at its generation limit. It has not been retried automatically.'

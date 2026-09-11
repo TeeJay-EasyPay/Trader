@@ -158,8 +158,14 @@ def _summary(db, bounds, now=None):
     if unavailable:
         narrative = 'Report incomplete: some evidence could not be loaded. ' + narrative
     narrative += 'Recorded lessons are hypotheses, not proof of improved returns.'
+    from .learning_findings import period
+    try:
+        learning = period(db, bounds['start'], bounds['end'])
+    except Exception:
+        unavailable.append('learning findings')
+        learning = {'findings':[], 'next_tests':[], 'truncated':False}
     return {'generated_at': (now or datetime.now(timezone.utc)).isoformat(), 'period': bounds,
-            'unavailable': unavailable, 'summary': narrative, 'outcomes': outcomes,
+            'unavailable': unavailable, 'summary': narrative, 'outcomes': outcomes, 'learning':learning,
             'shadows': shadows, 'rejections': rejections, 'reviews': reviews,
             'opportunity_previews': previews, 'strategy_preview': strategy_preview[0] if strategy_preview else None,
             'review_count': review_total, 'linked_reviews': review_counts[0]['linked'] if review_counts else None,

@@ -174,14 +174,11 @@ def start_queued(db, now):
             conn.execute('SELECT pg_advisory_xact_lock(71911502)')
         policy = e.control(conn, 'policy', e.DEFAULT_POLICY)
         active = conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchall()
-        brokers = {json.loads(r[0])['broker'] for r in active}
-        slots = policy['max_active'] - len(active)
+        slots = min(10, policy['max_active']) - len(active)
         rows = [e._load(conn, r[0]) for r in conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='queued' ORDER BY created_at LIMIT 24").fetchall()]
         for row in sorted(rows, key=lambda r: (r['spec'].get('priority', 3), r['created_at'])):
             if slots <= 0:
                 break
-            if row['spec']['broker'] in brokers:
-                continue
             queued_at = row['created_at']
             row['spec'].update(frozen_at=now, baseline_fingerprint=e.baseline_fingerprint(),
                                baseline_deployment=os.getenv('RENDER_GIT_COMMIT', 'unverified'))
@@ -195,5 +192,4 @@ def start_queued(db, now):
                          (now, row['version'], e.dump(row['spec']), row['id']))
             e._event(conn, row, 'shadow_started', {'queued_at': queued_at}, 'started:' + row['id'])
             e._save(conn, row)
-            brokers.add(row['spec']['broker'])
             slots -= 1

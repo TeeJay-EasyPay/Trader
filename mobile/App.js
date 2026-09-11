@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { styles } from './styles';
 import { StatusPill } from './components/shared';
+import { AppNavigation } from './components/AppNavigation';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ExecutiveBriefing } from './screens/ExecutiveBriefing';
 import { PortfolioCommandCentre } from './screens/Portfolio';
@@ -274,10 +275,7 @@ export default function App() {
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor="#0b1220" translucent={false} />
       <View style={styles.header}>
-        <View style={styles.headerTopRow}>
-          <Text style={styles.title}>AI Trader</Text>
-          <StatusPill label={dataSourceBadge.label} tone={dataSourceBadge.tone} />
-        </View>
+        <AppNavigation screen={screen} onNavigate={setScreen} badge={dataSourceBadge} />
         <Text style={styles.subtitle}>
           {lastRefreshedAt ? `Last refreshed ${formatDateTime(lastRefreshedAt)}` : `Backend: ${shortApiBase()}`}
         </Text>
@@ -350,26 +348,6 @@ export default function App() {
             </TouchableOpacity>
           </View>
         )}
-      </View>
-      {/* Founder-approved shared 3+2 navigation. Briefing remains the first/default
-          screen; changing screens must not rearrange the navigation controls. */}
-      <View style={styles.tabs}>
-        {SCREENS.map((item, index) => (
-          <Pressable
-            key={item}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: screen === item }}
-            style={({ pressed }) => [styles.tab, { minHeight: 40, borderRadius: 6, flexBasis: index < 3 ? '30%' : '45%' }, screen === item && styles.activeTab, pressed && styles.controlPressed]}
-            onPress={() => setScreen(item)}
-          >
-            {({ pressed }) => <Text
-              numberOfLines={2}
-              style={[styles.tabText, (pressed || screen === item) && styles.activeTabText]}
-            >
-              {SCREEN_LABELS[item] || item}
-            </Text>}
-          </Pressable>
-        ))}
       </View>
       {/* AT-ED-011.5 requirement 13/14: the full-screen indicator is reserved for the initial
           app bootstrap (no founder-evidence data has ever loaded yet). A normal background or

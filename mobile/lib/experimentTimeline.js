@@ -20,11 +20,12 @@ function experimentTimeline(data, now = Date.now()) {
   const spec = data.spec || {}, report = data.report || {}, state = data.state || {};
   const start = timestamp(data.created_at);
   const days = Number(spec.evaluation_days);
-  const target = timestamp(report.evaluate_after) ??
+  const target = timestamp(state.next_review_at) ?? timestamp(report.evaluate_after) ??
     (start !== null && Number.isFinite(days) && days > 0 ? start + days * DAY : null);
   const ended = data.status !== 'shadow_running';
   const reviewed = (data.events || []).find(event => event.action === 'evaluation_finished');
-  const end = timestamp(reviewed?.created_at);
+  const stopped = (data.events || []).find(event => ['baseline_changed','evaluation_finished'].includes(event.action));
+  const end = timestamp(report.ended_at) ?? timestamp(reviewed?.created_at) ?? timestamp(stopped?.created_at);
   const observations = report.observations ?? null;
   const open = Object.keys(state.baseline?.positions || report.baseline?.positions || {}).length +
     Object.keys(state.candidate?.positions || report.candidate?.positions || {}).length;
@@ -38,10 +39,10 @@ function experimentTimeline(data, now = Date.now()) {
     data.status === 'insufficient_evidence' ? 'Test ended — insufficient evidence' :
     data.status === 'rejected' ? 'Test rejected' : 'Review / approval stage';
   return {
-    stage, start: dateLabel(data.created_at),
+    stage, start: dateLabel(data.created_at), ended, end: end === null ? 'End time not recorded' : dateLabel(new Date(end).toISOString()),
     target: target === null ? 'Open the report for the planned date' : dateLabel(new Date(target).toISOString()),
     planned: start !== null && target !== null ? duration(target - start) : 'Not recorded',
-    elapsed: start === null ? 'Not recorded' : duration((end ?? now) - start),
+    elapsed: start === null || (ended && end === null) ? 'Not recorded' : duration((end ?? now) - start),
     elapsedLabel: end === null ? 'Calendar time since start' : 'Time from start to recorded review',
     remaining: target === null ? 'Not recorded' : ended ? 'Test is no longer running' : now >= target ?
       'Target date reached; this does not mean enough evidence exists' : duration(target - now) + ' until target review',

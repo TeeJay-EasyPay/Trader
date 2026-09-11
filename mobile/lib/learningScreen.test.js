@@ -11,14 +11,16 @@ test('Learning and Executive Briefing reuse the same proportional artwork', () =
   assert.ok(!source.includes('borderRadius: 60'));
 });
 
-test('all screens share the same three-plus-two navigation layout', () => {
+test('all screens share the hamburger header without the old tab row', () => {
   const source = fs.readFileSync(require.resolve('../App'), 'utf8');
-  assert.ok(source.includes('SCREENS.map((item, index)'));
-  assert.ok(source.includes("flexBasis: index < 3 ? '30%' : '45%'"));
+  assert.ok(source.includes('<AppNavigation screen={screen} onNavigate={setScreen} badge={dataSourceBadge}'));
+  assert.ok(!source.includes('SCREENS.map((item, index)'));
   assert.ok(!source.includes("screen !== 'Learning' && <Pressable"));
   assert.ok(!source.includes("screen === 'Learning' ? SCREENS"));
-  assert.ok(source.includes('selected: screen === item'));
-  assert.ok(source.includes('onPress={() => setScreen(item)}'));
+  const navigation=fs.readFileSync(require.resolve('../components/AppNavigation'),'utf8');
+  assert.ok(navigation.includes('onRequestClose={close}'));
+  assert.ok(navigation.includes('selected:screen===key'));
+  assert.ok(navigation.includes("require('../assets/icon.png')"));
 });
 test('summary/detail navigation cannot render stale data using the wrong shape', () => {
   const { matchesLearningView } = require('./learningScreen');

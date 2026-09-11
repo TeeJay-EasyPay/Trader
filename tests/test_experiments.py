@@ -79,6 +79,8 @@ def test_rejects_foreign_evidence_and_unsupported_code(db):
 
 
 def test_concurrency_limit(db):
+    with e.transaction(db) as c:
+        e.put_control(c, 'policy', {**e.DEFAULT_POLICY, 'max_active':1})
     create(db)
     with pytest.raises(ValueError, match='Concurrent'):
         create(db)

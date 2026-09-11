@@ -154,6 +154,10 @@ def register_execution_intent(
     # intelligence packet that predates this enrichment.
     economics = (proposal.intelligence or {}).get('decision_economics')
     references = (proposal.intelligence or {}).get('reference_provenance')
+    findings = (proposal.intelligence or {}).get('learning_findings_supplied')
+    if findings is not None:
+        decision_context = {**decision_context, 'intelligence': {
+            **(decision_context.get('intelligence') or {}), 'learning_findings_supplied': findings}}
     if references is not None:
         decision_context = {**decision_context, 'intelligence': {
             **(decision_context.get('intelligence') or {}), 'reference_provenance': references}}

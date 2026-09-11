@@ -13,6 +13,8 @@ NOW = datetime(2026, 9, 9, 20, tzinfo=timezone.utc)
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / 'learning.sqlite'
+    from ai_trader.experiments import migrate
+    migrate(path)
     with closing(connect(path)) as conn, conn:
         conn.executescript("""
         CREATE TABLE KRAKEN_RECONCILED_RESULTS (symbol TEXT, exit_time TEXT, net_pnl REAL, status TEXT);

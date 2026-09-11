@@ -23,7 +23,9 @@ def test_replacement_can_shadow_a_rejected_strategy_but_not_safety(db):
 
 def test_queue_freezes_start_and_cursor_when_slot_opens(db):
     first = create(db)
-    queued = e.create_experiment(db, first['spec'], queue=True, now='2026-09-02T00:00:00+00:00')
+    with e.transaction(db) as c:
+        e.put_control(c, 'policy', {**e.DEFAULT_POLICY, 'max_active':1})
+    queued = e.create_experiment(db, {**first['spec'],'threshold':3}, queue=True, now='2026-09-02T00:00:00+00:00')
     a.start_queued(db, '2026-09-03T00:00:00+00:00')
     assert e.detail(db, queued['id'])['status'] == 'queued'
     e.decide(db, first['id'], version=first['version'], revision=0, action='suspend', key='suspend-first')

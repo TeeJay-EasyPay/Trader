@@ -39,9 +39,16 @@ CREATE INDEX IF NOT EXISTS experiment_events_parent ON EXPERIMENT_EVENTS(experim
 CREATE TABLE IF NOT EXISTS EXPERIMENT_CONTROL (
  id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS LEARNING_FINDINGS (
+ id TEXT PRIMARY KEY, recorded_at TEXT NOT NULL, broker TEXT NOT NULL, symbol TEXT,
+ source_type TEXT NOT NULL, source_id TEXT NOT NULL, version TEXT NOT NULL,
+ payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS learning_findings_period ON LEARNING_FINDINGS(recorded_at);
+CREATE INDEX IF NOT EXISTS learning_findings_symbol ON LEARNING_FINDINGS(broker,symbol,recorded_at);
 """
 
-DEFAULT_POLICY = dict(enabled=False, max_active=1, opportunities_per_day=20,
+DEFAULT_POLICY = dict(enabled=False, max_active=10, opportunities_per_day=20,
                      storage_bytes=20_000_000, max_experiments=24,
                      daily_model_calls=1, interval_seconds=900,
                      min_new_outcomes=10, model_enabled=False)
@@ -92,7 +99,7 @@ def migrate(db):
                      ('policy', dump(DEFAULT_POLICY)))
         if uses_postgres():
             # Private server-side tables: never expose approval writes through PostgREST.
-            for table in ('RULE_EXPERIMENTS', 'EXPERIMENT_OPPORTUNITIES', 'EXPERIMENT_EVENTS', 'EXPERIMENT_CONTROL'):
+            for table in ('RULE_EXPERIMENTS', 'EXPERIMENT_OPPORTUNITIES', 'EXPERIMENT_EVENTS', 'EXPERIMENT_CONTROL', 'LEARNING_FINDINGS'):
                 conn.execute(f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY')
 
 
@@ -141,7 +148,7 @@ def validate_spec(raw):
                 max_positions=5, max_holding_days=10,
                 cost_bps_per_leg=80.0 if broker == 'kraken' else 10.0, slippage_bps_per_leg=10.0,
                 costs_status='conservative scenario, not reconciled broker costs',
-                evaluation_days=60, minimum_opportunities=60,
+                evaluation_days=7, weekly_reviews=True, maximum_cycles=12, minimum_opportunities=60,
                 minimum_symbol_days=40, max_drawdown_fraction=0.05,
                 execution_tolerances=dict(entry_bps=50, exit_bps=50, holding_hours=24, cost_bps=25, minimum_pairs=20),
                 execution_validated=False, adoption_environment='paper')
@@ -170,10 +177,15 @@ def create_experiment(db, raw, *, owner='founder', now=None, queue=False):
         if uses_postgres():
             conn.execute('SELECT pg_advisory_xact_lock(71911502)')
         policy = control(conn, 'policy', DEFAULT_POLICY)
-        if conn.execute('SELECT COUNT(*) FROM RULE_EXPERIMENTS').fetchone()[0] >= policy['max_experiments']:
+        if (conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status NOT IN ('rejected','insufficient_evidence','suspended')").fetchone()[0] >= policy['max_experiments']
+                or conn.execute('SELECT COUNT(*) FROM RULE_EXPERIMENTS').fetchone()[0] >= 1000):
             raise ValueError('Experiment storage/count budget reached')
-        if not queue and conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0] >= policy['max_active']:
+        if not queue and conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0] >= min(10, policy['max_active']):
             raise ValueError('Concurrent experiment limit reached')
+        for existing in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running')").fetchall():
+            prior = json.loads(existing[0])
+            if all(prior.get(k) == spec.get(k) for k in ('broker','rule_type','threshold')):
+                raise ValueError('Equivalent hypothesis already queued or running')
         placeholders = ','.join('?' for _ in spec['evidence_ids'])
         count = conn.execute(f"SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION WHERE broker=? "
                              f"AND exit_price IS NOT NULL AND attribution_id IN ({placeholders})", [spec['broker'], *spec['evidence_ids']]).fetchone()[0]
@@ -234,15 +246,25 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
             return {'id': oid, 'duplicate': True}
         policy = control(conn, 'policy', DEFAULT_POLICY)
         day = op['time'][:10]
-        count = conn.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES WHERE created_at>=? AND created_at<?',
+        if uses_postgres():
+            conn.execute('SELECT pg_advisory_xact_lock(71911503)')
+        count = conn.execute('SELECT COUNT(DISTINCT source_id) FROM EXPERIMENT_OPPORTUNITIES WHERE created_at>=? AND created_at<?',
                              (day, day + 'Z')).fetchone()[0]
-        if count >= policy['opportunities_per_day']:
+        shared = conn.execute('SELECT id FROM EXPERIMENT_OPPORTUNITIES WHERE source_id=? AND created_at>=? AND created_at<? LIMIT 1',
+                              (str(op['source_id']), day, day + 'Z')).fetchone()
+        if not shared and count >= min(20, policy['opportunities_per_day']):
             raise ValueError('Daily observation budget reached')
-        active_count = conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0]
-        own_count = conn.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? AND created_at>=? AND created_at<?',
-                                 (eid, day, day + 'Z')).fetchone()[0]
-        if own_count >= max(1, policy['opportunities_per_day'] // max(1, active_count)):
-            raise ValueError('Fair-share daily observation budget reached')
+        brokers = {json.loads(r[0])['broker'] for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchall()}
+        if not shared and len(brokers) > 1:
+            own = conn.execute('SELECT COUNT(DISTINCT o.source_id) FROM EXPERIMENT_OPPORTUNITIES o JOIN RULE_EXPERIMENTS r ON r.id=o.experiment_id WHERE o.created_at>=? AND o.created_at<? AND ' +
+                ("r.spec_json::jsonb->>'broker'=?" if uses_postgres() else "json_extract(r.spec_json,'$.broker')=?"),
+                (day, day+'Z',row['spec']['broker'])).fetchone()[0]
+            if own >= max(1,min(20,policy['opportunities_per_day'])//len(brokers)):
+                raise ValueError('Broker daily unique-opportunity share reached')
+        fanout = conn.execute('SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES WHERE source_id=? AND created_at>=? AND created_at<?',
+                             (str(op['source_id']), day, day + 'Z')).fetchone()[0]
+        if fanout >= 10:
+            raise ValueError('Opportunity fan-out limit reached')
         # One symbol/day across decisions prevents repeated signals inflating sample size.
         same = conn.execute('SELECT id FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? AND symbol=? '
                             'AND created_at>=? AND created_at<?', (eid, op['symbol'], day, day + 'Z')).fetchone()
@@ -360,6 +382,9 @@ def settle_bars(db, eid, bars, *, owner='founder', now=None):
             if record['id'] in changed:
                 conn.execute('UPDATE EXPERIMENT_OPPORTUNITIES SET payload_json=? WHERE id=?', (dump(op), record['id']))
         row['report'] = evaluate(row, [op for _, op in decoded], now=now)
+        if row['spec'].get('weekly_reviews'):
+            from .experiment_reviews import weekly_review
+            weekly_review(conn, row, now)
         if row['report']['finished']:
             row['status'] = row['report']['verdict']
             _event(conn, row, 'evaluation_finished', {'verdict': row['status']}, 'evaluated:' + eid)
@@ -379,8 +404,9 @@ def evaluate(row, ops, *, now):
     for o in usable:
         days.setdefault(o['time'][:10], []).append(o['arms']['candidate']['net'] - o['arms']['baseline']['net'])
     groups = [statistics.mean(values) for values in days.values()]
-    lower = statistics.mean(groups) - 3 * statistics.stdev(groups) / math.sqrt(len(groups)) if len(groups) > 1 else None
-    ends = stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])
+    lower = statistics.mean(groups) - (4.5 if row['spec'].get('weekly_reviews') else 3) * statistics.stdev(groups) / math.sqrt(len(groups)) if len(groups) > 1 else None
+    ends = stamp(row['state'].get('next_review_at') or
+                 (stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])).isoformat())
     finished = now >= ends and (len(complete) == len(ops) or now >= ends + timedelta(days=15))
     verdict = 'insufficient_evidence'
     if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len(groups) >= 30 and len({(o['symbol'], o['time'][:10]) for o in usable}) >= row['spec']['minimum_symbol_days']:
@@ -390,7 +416,7 @@ def evaluate(row, ops, *, now):
             verdict = 'recommended'
         elif mean is not None and mean < 0:
             verdict = 'rejected'
-    return dict(finished=finished, verdict=verdict, observations=len(ops), completed=len(complete), usable=n,
+    return dict(finished=finished and not row['spec'].get('weekly_reviews'), verdict=verdict, observations=len(ops), completed=len(complete), usable=n,
                 currency=row['spec'].get('currency', 'USD'),
                 closed_trades={arm: sum(o['arms'][arm]['status'] == 'closed' for o in ops) for arm in ('baseline', 'candidate')},
                 skipped={arm: sum(o['arms'][arm]['status'] == 'skipped' for o in ops) for arm in ('baseline', 'candidate')},
@@ -409,7 +435,9 @@ def _save(conn, row):
     row['revision'] += 1
 
 
-def list_experiments(db, *, owner='founder', before='', attention=False):
+def list_experiments(db, *, owner='founder', before='', attention=False, view=''):
+    if view not in ('','running','queued','history','attention'):
+        raise ValueError('Unknown experiment view')
     with transaction(db) as conn:
         conditions = 'owner=?'
         params = [owner]
@@ -418,15 +446,26 @@ def list_experiments(db, *, owner='founder', before='', attention=False):
             params.append(before)
         if attention:
             conditions += " AND status IN ('recommended','implementation_required','implementation_approved','ready_for_activation','library_approved','suspended')"
+        elif view == 'running':
+            conditions += " AND status='shadow_running'"
+        elif view == 'queued':
+            conditions += " AND status='queued'"
+        elif view == 'history':
+            conditions += " AND status NOT IN ('queued','shadow_running')"
         rows = conn.execute(f'SELECT id,created_at,version,status,revision,spec_json,report_json FROM RULE_EXPERIMENTS WHERE {conditions} ORDER BY created_at DESC LIMIT 21', params).fetchall()
         items = []
         for r in rows[:20]:
             r = dict(r)
             spec = json.loads(r.pop('spec_json'))
             r['hypothesis'] = spec['hypothesis']
+            r['spec'] = {k:spec.get(k) for k in ('evaluation_days','weekly_reviews')}
             r.update(broker=spec['broker'], currency=spec.get('currency', 'USD'), problem=spec.get('problem'),
                      expected_benefit=spec.get('expected_benefit'), priority=spec.get('priority', 3))
             r['report'] = json.loads(r.pop('report_json'))
+            if r['status'] not in ('queued','shadow_running') and not r['report'].get('ended_at'):
+                ended = conn.execute("SELECT created_at FROM EXPERIMENT_EVENTS WHERE experiment_id=? AND action IN ('baseline_changed','evaluation_finished') ORDER BY created_at DESC LIMIT 1", (r['id'],)).fetchone()
+                if ended:
+                    r['report']['ended_at'] = ended[0]
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
                     pipeline=[dict(r) for r in conn.execute('SELECT status,COUNT(*) AS count FROM RULE_EXPERIMENTS WHERE owner=? GROUP BY status', (owner,)).fetchall()],
@@ -438,7 +477,10 @@ def list_experiments(db, *, owner='founder', before='', attention=False):
 def detail(db, eid, owner='founder'):
     with transaction(db) as conn:
         row = _load(conn, eid, owner)
-        row['events'] = [dict(r) for r in conn.execute('SELECT created_at,action,payload_json FROM EXPERIMENT_EVENTS WHERE experiment_id=? AND owner=? ORDER BY created_at DESC LIMIT 30', (eid, owner)).fetchall()]
+        row['events'] = [dict(r) for r in conn.execute('SELECT id,created_at,action,payload_json FROM EXPERIMENT_EVENTS WHERE experiment_id=? AND owner=? ORDER BY created_at DESC LIMIT 30', (eid, owner)).fetchall()]
+        for event in row['events']:
+            if event['action']=='weekly_review':
+                event['interpretation']=control(conn,'interpreted:'+event['id'],{'status':'pending'})
         row['opportunities'] = [json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? ORDER BY created_at DESC LIMIT 20', (eid,)).fetchall()]
         return row
 

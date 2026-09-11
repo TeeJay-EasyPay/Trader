@@ -1,6 +1,6 @@
 # Weekly parallel learning and meaningful summaries
 
-Status: plan only. Requested 11 September 2026; these refinements are not yet implemented.
+Status: implemented in the weekly-learning release; release verification below.
 
 ## Agreed outcome
 
@@ -120,9 +120,10 @@ are different clocks; counts do not represent unique new lessons.
 ## 6. Shared mobile navigation
 
 - Replace the five top-level navigation buttons with a hamburger menu at the top
-  right of the shared application header, available on every screen. Preserve the
+  left of the shared application header, available on every screen. Preserve the
   current screen's title so location remains clear when the menu is closed.
-- Put the existing connection/freshness badge directly beneath the hamburger icon.
+- Put the existing connection/freshness badge in the centre and the app icon at
+  the right, following the final agreed layout.
   Preserve stale, offline and loading states and refresh/evidence timestamps.
   Label it as application/backend status; a healthy connection must not imply
   that live-money trading is enabled or that every broker is healthy.
@@ -154,3 +155,32 @@ are different clocks; counts do not represent unique new lessons.
 Success is useful comparisons and evidence-backed findings per week within cost
 limits, not filling ten slots or promising profitability. Increasing the ceiling
 beyond ten requires a later decision informed by throughput and resource measurements.
+
+## Implementation notes and verification
+
+- Ten hard-capped active slots, equivalent-rule deduplication, bounded queue and
+  independent books. Twenty unique daily opportunities fan out to at most ten
+  hypotheses; when both brokers have active tests, each reserves half that intake.
+- Seven-day reviews persist findings and next dates. Continue keeps observations
+  and open positions. Two uninformative/stalled cycles stop a test; maximum twelve
+  cycles prevents indefinite extensions. The maximum is not the first review date.
+- Numerical gates retain sample, independent-day, cost and risk requirements.
+  Weekly screening uses a conservative 4.5 descriptive bound for repeated looks
+  across multiple tests, not a claim of calibrated significance or live profitability.
+- Grouped AI interpretation shares one daily call with proposals, with 1,500 output
+  tokens and 16 KB input cap. Due reviews take priority; invalid/missing responses
+  never overwrite numerical findings and are not automatically retried.
+- Findings are incrementally captured in batches of 50 (200/day maximum), deduplicated
+  for period display, and linked to exact source IDs. At most two relevant findings
+  enter subsequent proposals; supplied IDs/versions are recorded in canonical context.
+  This proves supply, not successful application or profitable learning.
+- API reads are bounded/cached and do not generate paid narratives. Running, Queued,
+  Previous tests and Needs attention use server-side filters. Stopped tests display
+  their recorded end rather than a future deadline.
+- The shared header uses the existing app icon, menu left and status centre. The
+  current screen, refresh metadata, Android Back and modal accessibility are retained.
+- The audited rollout tool pauses only shadow scheduling, verifies that the pure
+  simulator transition function is unchanged, migrates schedules without deleting
+  observations, and restores the prior enabled state with ten slots.
+- Existing pending backup files are excluded through a clean release checkout.
+  No live strategy activation, order changes or backup cleanup is part of this release.

@@ -51,7 +51,7 @@ def propose(db, settings, now, policy, answer=None):
         if attempts.get('day') == now[:10]:
             return 'daily_model_budget_reached'
         queued = conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') ORDER BY created_at DESC LIMIT 24").fetchall()
-        if sum(1 for r in queued) >= 4:
+        if sum(1 for r in queued) >= 20:
             return 'pipeline_budget_reached'
         counts = {b: sum(json.loads(r[0])['broker'] == b for r in queued) for b in ('alpaca', 'kraken')}
         broker = min(counts, key=counts.get)
@@ -103,7 +103,8 @@ def propose(db, settings, now, policy, answer=None):
     except Exception as exc:
         result = {'status': 'proposal_failed', 'error_type': type(exc).__name__, 'reason': 'No automatic retry; budget reserved.'}
     with exp.transaction(db) as conn:
-        exp.put_control(conn, 'proposal_attempt', {'day': now[:10], **result})
+        exp.put_control(conn, 'proposal_attempt', {'day': now[:10], **result,
+            'usage':getattr(getattr(answer,'__self__',None),'last_usage',None)})
     return result
 
 
@@ -176,6 +177,9 @@ def tick(db, settings, *, now=None, answer=None):
             return {'status': 'disabled'}
         # Global cap includes records and indexes conservatively via payload budget.
         size = conn.execute('SELECT COALESCE(SUM(length(payload_json)),0) AS bytes FROM EXPERIMENT_OPPORTUNITIES').fetchone()[0]
+        for table in ('EXPERIMENT_EVENTS','LEARNING_FINDINGS'):
+            size += conn.execute(f'SELECT COALESCE(SUM(length(payload_json)),0) AS bytes FROM {table}').fetchone()[0]
+        size += conn.execute('SELECT COALESCE(SUM(length(spec_json)+length(state_json)+length(report_json)),0) AS bytes FROM RULE_EXPERIMENTS').fetchone()[0]
         if size * 3 >= policy['storage_bytes']:
             exp.put_control(conn, 'last_tick', {'status': 'storage_budget_reached', 'at': now})
             return {'status': 'storage_budget_reached'}
@@ -185,13 +189,26 @@ def tick(db, settings, *, now=None, answer=None):
     try:
         from .experiment_assurance import start_queued, validate_execution, refresh_review_validation
         refresh_review_validation(db, now)
-        proposal = propose(db, settings, now, policy, answer=answer)
+        from .experiment_reviews import grouped_review
+        review_due = grouped_review(db, settings, now, policy, answer=answer)
+        with exp.transaction(db) as conn:
+            running = conn.execute("SELECT created_at,spec_json,state_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 10").fetchall()
+            checkpoint_due = any(json.loads(r['spec_json']).get('weekly_reviews') and
+                exp.stamp(json.loads(r['state_json']).get('next_review_at') or (exp.stamp(r['created_at'])+timedelta(days=7)).isoformat()) <= exp.stamp(now)
+                for r in running)
+        proposal = 'grouped_review_priority' if review_due or checkpoint_due else propose(db, settings, now, policy, answer=answer)
         start_queued(db, now)
         with exp.transaction(db) as conn:
-            active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' ORDER BY created_at LIMIT 2").fetchall()
+            active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' ORDER BY created_at LIMIT 10").fetchall()
         processed, invalid = 0, 0
-        for r in active:
-            row = exp.detail(db, r[0])
+        decision_cache, bar_cache = {}, {}
+        active_rows = [exp.detail(db, r[0]) for r in active]
+        for broker in ('alpaca','kraken'):
+            own = [r for r in active_rows if r['spec']['broker'] == broker]
+            if own:
+                decision_cache[broker] = _decisions(db, min(r['state']['cursor'] for r in own),
+                    min(r['created_at'] for r in own), broker)
+        for row in active_rows:
             if row['spec']['baseline_fingerprint'] != exp.baseline_fingerprint():
                 with exp.transaction(db) as conn:
                     current = exp._load(conn, row['id'])
@@ -212,9 +229,11 @@ def tick(db, settings, *, now=None, answer=None):
                 continue
             cursor = row['state']['cursor']
             # Decision ingestion stops at frozen evaluation deadline, not indefinitely.
-            deadline = exp.stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])
-            for d in _decisions(db, cursor, row['created_at'], row['spec']['broker']):
-                if time.monotonic() - started > 25:
+            deadline = exp.stamp(row['created_at']) + timedelta(days=84 if row['spec'].get('weekly_reviews') else row['spec']['evaluation_days'])
+            for d in decision_cache[row['spec']['broker']]:
+                if d['decision_id'] <= cursor or exp.stamp(d['created_at']) < exp.stamp(row['created_at']):
+                    continue
+                if time.monotonic() - started > 45:
                     break
                 if exp.stamp(d['created_at']) > deadline:
                     cursor = d['decision_id']
@@ -255,7 +274,11 @@ def tick(db, settings, *, now=None, answer=None):
             ops = [json.loads(o[0]) for o in unresolved]
             pending = [o for o in ops if any(a['status'] in ('open','awaiting_bar') for a in o['arms'].values())]
             since = min((o.get('last_bar') or o['time'] for o in pending), default=now)
-            bars = _bars(db, sorted({o['symbol'] for o in pending}), since, now, row['spec']['broker'])
+            symbols = sorted({o['symbol'] for o in pending})
+            bar_key = (row['spec']['broker'], tuple(symbols), since, now[:10])
+            if bar_key not in bar_cache:
+                bar_cache[bar_key] = _bars(db, symbols, since, now, row['spec']['broker'])
+            bars = list(bar_cache[bar_key])
             missing = sorted({o['symbol'] for o in pending} - {b['symbol'] for b in bars})
             if missing:
                 from .experiment_market_data import missing_bars
@@ -266,11 +289,15 @@ def tick(db, settings, *, now=None, answer=None):
             validate_execution(db, row, settled_ops, now)
             with exp.transaction(db) as conn:
                 exp.put_control(conn, 'settled:' + row['id'], now[:10])
+        if checkpoint_due:
+            grouped_review(db, settings, now, policy, answer=answer)
         status = {'status': 'completed', 'at': now, 'proposal': proposal, 'processed': processed,
                   'invalid': invalid, 'elapsed_seconds': round(time.monotonic() - started, 3), 'broker_orders': 0}
         with exp.transaction(db) as conn:
             exp.put_control(conn, 'last_tick', status)
         try:
+            from .learning_findings import capture
+            capture(db, now)
             from .experiment_assurance import evidence_coverage
             evidence_coverage(db, now)
         except Exception as exc:
