@@ -1,5 +1,8 @@
 import hashlib
 import json
+import runpy
+import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -72,3 +75,17 @@ def test_cursor_contract_fetch_and_iteration():
     assert wrapped.lastrowid == 8
     cursor.fetchmany.side_effect = [[row], []]
     assert len(list(wrapped)) == 1
+
+
+@pytest.mark.parametrize('options', [
+    ['--batch-size', '51'], ['--batches', '101'], ['--pause-seconds', '0'],
+    ['--verify-mode', 'links', '--pause-seconds', '0.5'],
+])
+def test_unsafe_migration_cadence_rejected_before_connect(monkeypatch, options):
+    import psycopg
+    connect = Mock()
+    monkeypatch.setattr(psycopg, 'connect', connect)
+    monkeypatch.setattr(sys, 'argv', ['rollout', 'migrate', *options])
+    with pytest.raises(SystemExit):
+        runpy.run_path(str(Path(__file__).parents[1] / 'tools/decision_storage_rollout.py'), run_name='__main__')
+    connect.assert_not_called()

@@ -7,6 +7,7 @@ Existing paused backup/retention jobs are not touched.
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 import psycopg
@@ -21,14 +22,18 @@ def main():
     p.add_argument('--table', choices=TABLES, default='decision_journal')
     p.add_argument('--after', type=int, default=0)
     p.add_argument('--batches', type=int, default=1)
+    p.add_argument('--batch-size', type=int, default=25)
+    p.add_argument('--pause-seconds', type=float, default=5)
+    p.add_argument('--verify-mode', choices=['full', 'links'], default='full')
     args = p.parse_args()
-    if not 1 <= args.batches <= 100:
-        p.error('batches must be 1..100 (200 rows per transaction)')
+    minimum_pause = 0.5 if args.action == 'verify' and args.verify_mode == 'links' else 3
+    if not 1 <= args.batches <= 100 or not 1 <= args.batch_size <= 50 or not minimum_pause <= args.pause_seconds <= 30:
+        p.error(f'Use 1..100 serial batches, 1..50 rows, and {minimum_pause}..30 seconds between batches')
     load_dotenv()
     table, pk = args.table, TABLES[args.table]
     with psycopg.connect(os.environ['AUDIT_DATABASE_URL'], connect_timeout=15) as c:
-        # Explicit per-transaction mode: transaction poolers may inherit a
-        # server session's default left by a previous diagnostic connection.
+        # Explicit transaction mode, with a separate default-read-only check
+        # below: never override a provider's protective read-only setting.
         c.read_only = args.action in ('status', 'verify')
         c.execute("SET LOCAL statement_timeout='20s'")
         c.execute("SET LOCAL lock_timeout='2s'")
@@ -45,14 +50,21 @@ def main():
             c.commit()
             cursor, total = args.after, 0
             for _ in range(args.batches):
+                if _:
+                    time.sleep(args.pause_seconds)
+                started = time.monotonic()
                 with c.transaction():
-                    c.execute("SET LOCAL statement_timeout='20s'")
-                    c.execute("SET LOCAL lock_timeout='2s'")
+                    c.execute("SET LOCAL statement_timeout='5s'")
+                    c.execute("SET LOCAL lock_timeout='500ms'")
+                    if c.execute("SHOW default_transaction_read_only").fetchone()[0] != 'off':
+                        raise RuntimeError('Provider/database default is read-only; stopping')
+                    if not c.execute('SELECT pg_try_advisory_xact_lock(71911902)').fetchone()[0]:
+                        raise RuntimeError('Another storage batch is running; stopping')
                     # All large JSON stays in Postgres. Only counts/cursor leave it.
                     function = 'compact_decision_payload' if args.action == 'migrate' else 'expand_decision_payload'
                     rows = c.execute(f'''WITH selected AS MATERIALIZED (
                         SELECT {pk} AS id,payload_json FROM {table}
-                        WHERE {pk}>%s ORDER BY {pk} LIMIT 200 FOR UPDATE
+                        WHERE {pk}>%s ORDER BY {pk} LIMIT {args.batch_size} FOR UPDATE
                     ), converted AS MATERIALIZED (
                         SELECT id,payload_json,{function}(payload_json) AS compact FROM selected
                     ), recorded AS (
@@ -78,27 +90,48 @@ def main():
                 total += changed
                 if last is not None:
                     cursor = last
-                if selected < 200:
+                print(json.dumps(dict(progress=cursor, changed=changed, elapsed_seconds=round(time.monotonic()-started,3))), flush=True)
+                if selected < args.batch_size or time.monotonic()-started > 2:
                     break
             print(json.dumps(dict(table=table, action=args.action, after=cursor, changed=total, last_batch_selected=selected)))
         elif args.action == 'verify':
+            # Conversion already compares full reconstructed values inside its
+            # committing transaction. Links mode verifies the compact checksum
+            # and both blob references without repeatedly expanding large text.
+            # Blob contents are protected by their SHA-256 CHECK constraint.
+            invalid = """payload_json IS NULL OR
+                encode(sha256(convert_to(expand_decision_payload(payload_json)::jsonb::text,'UTF8')),'hex')
+                    <> original_hash"""
+            if args.verify_mode == 'links':
+                invalid = """payload_json IS NULL OR
+                    encode(sha256(convert_to(payload_json::jsonb::text,'UTF8')),'hex') <> compact_hash OR
+                    EXISTS (SELECT 1 FROM (VALUES
+                        (payload_json::jsonb #>> '{intelligence,__decision_evidence_sha256_v1}'),
+                        (payload_json::jsonb #>> '{proposal,intelligence,__decision_evidence_sha256_v1}')
+                    ) refs(hash) WHERE hash IS NOT NULL AND NOT EXISTS
+                        (SELECT 1 FROM decision_evidence_blobs b WHERE b.evidence_hash=refs.hash))"""
             cursor, checked = args.after, 0
             c.commit()
             for _ in range(args.batches):
+                if _:
+                    time.sleep(args.pause_seconds)
+                started = time.monotonic()
                 with c.transaction():
-                    c.execute("SET LOCAL statement_timeout='20s'")
+                    c.execute("SET LOCAL statement_timeout='5s'")
+                    if not c.execute('SELECT pg_try_advisory_xact_lock(71911902)').fetchone()[0]:
+                        raise RuntimeError('Another storage batch is running; stopping')
                     result = c.execute(f'''WITH selected AS MATERIALIZED (
-                        SELECT m.source_id,m.original_hash,t.payload_json
+                        SELECT m.source_id,m.original_hash,m.compact_hash,t.payload_json
                         FROM decision_storage_migrations m LEFT JOIN {table} t ON t.{pk}=m.source_id
-                        WHERE m.source_table=%s AND m.source_id>%s ORDER BY m.source_id LIMIT 200
-                    ) SELECT max(source_id),count(*),count(*) FILTER (WHERE payload_json IS NULL OR
-                        encode(sha256(convert_to(expand_decision_payload(payload_json)::jsonb::text,'UTF8')),'hex')
-                          <> original_hash) FROM selected''', (table,cursor)).fetchone()
+                        WHERE m.source_table=%s AND m.source_id>%s ORDER BY m.source_id LIMIT {args.batch_size}
+                    ) SELECT max(source_id),count(*),count(*) FILTER (WHERE {invalid})
+                        FROM selected''', (table,cursor)).fetchone()
                     if result[2]:
                         raise RuntimeError('Verification failed: missing row or changed evidence')
                 checked += result[1]
                 cursor = result[0] or cursor
-                if result[1]<200:
+                print(json.dumps(dict(progress=cursor, verified=result[1])), flush=True)
+                if result[1]<args.batch_size or time.monotonic()-started > 2:
                     break
             print(json.dumps(dict(table=table, checked=checked, mismatches=0, after=cursor, last_batch_selected=result[1])))
         else:

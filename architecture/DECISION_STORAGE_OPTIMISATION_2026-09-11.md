@@ -31,7 +31,7 @@ must not be removed merely because one referencing decision is archived.
 1. `tools/decision_storage_rollout.py prepare`: additive tables/functions, policy off.
 2. Deploy compatible adapter to API and worker, verify both commit IDs.
 3. Enable policy. New writes become compact; all existing rows remain readable.
-4. Migrate bounded 200-row transactions. Large JSON never leaves PostgreSQL.
+4. Migrate serial 25–50-row transactions, at least three seconds apart. Large JSON never leaves PostgreSQL.
    Each updated row must reconstruct identically; migration records retain the
    original logical hash and sizes. A mismatch rolls back the whole batch.
 5. Verify reconstructed hashes against the manifests for all migrated rows.
@@ -52,7 +52,7 @@ were compacted and reconstructed successfully, with all test writes rolled back.
 Unit coverage includes unchanged SQL, batch lookup, missing/corrupt evidence,
 mixed inline records and cursor index/name access. Release measurements follow.
 
-## Rollout status: incomplete, database unavailable
+## Initial interrupted rollout (historical)
 
 - Runtime commit `9bacc6dc37bc0a5477ffe831f6f22c6e0915cf02` was confirmed on
   both API and background worker. Compaction policy was enabled only afterwards.
@@ -84,3 +84,54 @@ reader must remain deployed; rolling it back before restoring inline JSON is uns
 Provider context, not a diagnosis: https://status.supabase.com/ reported an
 'Unresponsive Projects' incident resolved on 11 September at 19:06 UTC. This does
 not establish that our later project outage is the same incident.
+
+## Completed staggered rollout — 11 September, 20:16 UTC
+
+The user supplied a resource-exhaustion warning (Nano compute) and explicitly
+approved staggered continuation. The database recovered; its restart timestamp
+was 19:33:39 UTC and remained unchanged at the final check.
+
+The remaining writes ran serially in 25–50-row batches with 3–5-second pauses.
+Typical batch elapsed time was 0.55–0.95 seconds. A five-second statement limit,
+500ms lock limit, single-batch advisory lock, provider read-only guard and stop
+after a batch taking over two seconds are now enforced. No parallel migration,
+manual vacuum, table rewrite, broker setting change or backup operation ran.
+
+All 41,825 migrated historical records passed the final compact-checksum and
+reference-existence verification, in serial 50-row batches. Those checks avoid
+expanding the full intelligence repeatedly. Full logical reconstruction equality
+was checked inside every conversion transaction; blob contents have a SHA-256
+database CHECK constraint. The previous full audit-table reconstruction check also
+passed all 7,227 rows. The runtime reader checks hashes whenever evidence is read.
+
+| Migrated table | Records verified | Original JSON bytes | Compact JSON bytes |
+|---|---:|---:|---:|
+| execution_decisions | 17,106 | 449,845,642 | 31,930,273 |
+| trade_audit | 7,227 | 353,905,933 | 12,280,367 |
+| decision_journal | 17,492 | 461,919,898 | 34,963,508 |
+
+The shared evidence table contains 7,294 objects / 179,828,514 logical JSON bytes.
+Including ALL these blobs, retained JSON for the migrated set fell from
+1,265,671,473 to 259,002,662 bytes: approximately **79.5% less**. This conservatively
+includes blobs used by new normal writes, not just migrated historical rows.
+It is a logical-payload comparison, excluding indexes, other columns and unchanged
+small records; it is NOT a claim of a 1GB reduction in allocated disk or egress.
+
+Allocated database size at 20:15 UTC was 1,407,544,467 bytes. The rewrite allocated
+new heap/blob space while old pages remain allocated. Automatic vacuum was observed
+on execution_decisions (19:56 UTC) and decision_journal (20:01 UTC). Physical file
+repacking remains deliberately deferred; do not run VACUUM FULL on the busy Nano
+instance just to make the dashboard number fall. Assess retained free space and
+capacity separately before considering an approved maintenance window.
+
+Verification: 110 regression tests + two subtests passed. Production GETs for
+decision-journal, recommendations (limit 1) and experiments/health returned 200.
+The live application reader expanded intelligence successfully from the latest
+record in each of the three tables. Both API and worker remain on runtime
+`9bacc6dc37bc0a5477ffe831f6f22c6e0915cf02`; worker heartbeat was fresh at 20:16 UTC.
+Compaction policy remains enabled for future writes. IDs, outcomes and learning
+links were not deleted or renumbered.
+
+The follow-up commit contains only migration tools, tests and this report. Its
+`[skip render]` marker avoids restarting unchanged runtime services; see
+[Render deploy documentation](https://render.com/docs/deploys#skipping-an-auto-deploy).
