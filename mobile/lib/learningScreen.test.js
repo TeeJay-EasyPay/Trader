@@ -113,7 +113,7 @@ test('overview renders missing sources safely and wires all seven evidence pages
   function walk(n) { if (!n) return []; if (Array.isArray(n)) return n.flatMap(walk); if (typeof n !== 'object') return [];
     return [n, ...walk(n.props?.children)]; }
   for (const n of walk(tree)) if (['Read trade reviews →', 'View proposed lessons →', 'View tracked opportunities →',
-    'View rejected decisions →', 'Review completed trades →', 'Strategy ideas', 'Test results'].includes(n.props?.label)) n.props.onPress();
+    'View rejected decisions →', 'Review completed trades →', 'Saved strategies', 'Past backtests'].includes(n.props?.label)) n.props.onPress();
   assert.deepEqual(opened.sort(), ['decisions', 'proposals', 'rejected', 'reviews', 'strategies', 'tests', 'trades']);
   assert.ok(JSON.stringify(tree).includes('Rejection counts unavailable'));
   assert.ok(JSON.stringify(tree).includes('Completed-trade evidence could not be loaded.'));

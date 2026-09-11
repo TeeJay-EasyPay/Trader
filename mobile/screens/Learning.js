@@ -186,14 +186,14 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       <View style={s.footer}><Text style={[s.small, s.footerNote]}>AI-managed trades · Alpaca fees unreconciled.</Text><Action compact label="Review completed trades →" onPress={() => onOpen('trades')} /></View>
     </View>
     {request && <ExperimentsCard request={request} />}
-    <View style={s.card}><SectionHeading icon="⚗" title="Strategy research & testing" />
-      <View style={{ flexDirection: 'row', marginVertical: 4 }}><View style={s.stageLine} />{['Research', 'Backtest', 'Shadow', 'Review'].map(stage => <View key={stage} style={{ flex: 1, alignItems: 'center', gap: 8 }}><View style={{ width: 19, height: 19, borderRadius: 10, borderWidth: 2, borderColor: '#ADB9D5', backgroundColor: '#FFFFFF' }} /><Text style={s.small}>{stage}</Text></View>)}</View>
+    <View style={s.card}><SectionHeading icon="⚗" title="Strategy library" />
+      <Text style={s.small}>Saved strategy ideas and historical backtests. Active shadow tests and weekly reviews appear in Experiments above. A saved idea is not approval to trade.</Text>
       <BrokerCard><View style={wide ? s.footer : { gap: 4 }}><View style={{ flex: wide ? 1 : undefined }}><Text style={[s.body, { fontWeight: '700' }]}>{data.strategy_preview?.name || 'Awaiting a strategy record'}</Text>
         <Text numberOfLines={2} style={s.small}>{data.strategy_preview?.purpose || 'Recorded strategy ideas will appear here.'}</Text></View>
         <Text style={s.badge}>{data.strategy_preview ? humanStatus(data.strategy_preview.production_status) : 'No candidate selected'}</Text></View>
       </BrokerCard>
-      <View style={[s.row, { flexWrap: 'nowrap' }]}><Action compact grow selected label="Strategy ideas" onPress={() => onOpen('strategies')} /><Action compact grow label="Test results" onPress={() => onOpen('tests')} /></View>
-      <Text style={s.small}>Research stages, not verified progress · {data.backtest_count ?? 'Unknown'} backtest records.</Text>
+      <View style={[s.row, { flexWrap: 'nowrap' }]}><Action compact grow selected label="Saved strategies" onPress={() => onOpen('strategies')} /><Action compact grow label="Past backtests" onPress={() => onOpen('tests')} /></View>
+      <Text style={s.small}>{data.backtest_count == null ? 'Historical backtest count unavailable.' : `${data.backtest_count} historical backtest records. These are separate from current experiments.`}</Text>
     </View>
     <Action compact link label={notes ? 'Hide evidence notes −' : 'Evidence notes & limitations +'} onPress={() => setNotes(v => !v)} />
     {notes && <View style={s.card}><Text style={s.small}>Evidence updated {data.generated_at}. Cached for up to 10 minutes.</Text>
