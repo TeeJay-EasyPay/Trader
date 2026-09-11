@@ -20,7 +20,8 @@
 'use strict';
 
 const React = require('react');
-const { Text, View } = require('react-native');
+const { Alert, Text, View } = require('react-native');
+const { confirmStopTrading } = require('../lib/confirmStopTrading');
 const { styles } = require('../styles');
 const { GreetingIllustration } = require('../components/GreetingIllustration');
 const { Section, CollapsibleSection, StatusPill, Button } = require('../components/shared');
@@ -524,9 +525,7 @@ function FounderActionsSection({ incidents, connectionReadiness, onRefresh, onCo
           controls move here -- the rest was developer diagnostics. Emergency Stop in
           particular must never be more than one screen away. */}
       <View style={styles.buttonGrid}>
-        <Button label="Refresh" tone="neutral" onPress={onRefresh} />
-        {onCommand ? <Button label="Run Analysis" onPress={() => onCommand('/run-analysis', { limit: 10 })} /> : null}
-        {onCommand ? <Button label="Emergency Stop All" tone="danger" onPress={() => onCommand('/stop-trading')} /> : null}
+        {onCommand ? <Button label="Emergency Stop All" tone="danger" onPress={() => confirmStopTrading(Alert, onCommand)} /> : null}
       </View>
     </Section>
   );
