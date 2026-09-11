@@ -256,6 +256,9 @@ def step(spec, books, op, bar):
     if abs(o / op.get('last_close', op['entry']) - 1) > .20:
         op['uncertain'] = True
         op['quality'] = 'large gap / possible corporate action requires review'
+    if start - stamp(op.get('last_bar') or op['time']) > timedelta(days=4):
+        op['uncertain'] = True
+        op['quality'] = 'Missing intervening bars / delayed initial observation'
     op['last_bar'], op['last_close'] = bar['start'], c
     if not any(a['status'] in ('open', 'awaiting_bar') for a in op['arms'].values()):
         return False
@@ -263,20 +266,29 @@ def step(spec, books, op, bar):
     fee, slip = spec['cost_bps_per_leg'] / 10000, spec['slippage_bps_per_leg'] / 10000
     for arm, outcome in op['arms'].items():
         book = books[arm]
+        # Reserve from START-of-day cash and capacity. A later intraday exit
+        # must not fund an earlier same-day open in another simulated trade.
+        if book.get('budget_day') != bar['start'][:10]:
+            book.update(budget_day=bar['start'][:10], entry_cash_remaining=book['cash'],
+                        entry_slots_remaining=spec['max_positions'] - len(book['positions']),
+                        occupied_at_open=list(book['positions']))
         if outcome['status'] == 'awaiting_bar':
             fill = o * (1 + slip)
-            if fill <= op['stop'] or fill >= op['target'] or len(book['positions']) >= spec['max_positions'] or op['symbol'] in book['positions']:
+            if fill <= op['stop'] or fill >= op['target'] or book['entry_slots_remaining'] <= 0 or op['symbol'] in book['occupied_at_open']:
                 outcome.update(status='skipped', reason='gap, occupied symbol or portfolio limit')
                 continue
             risk_cash = spec['initial_cash'] * spec['risk_fraction']
             quantity = math.floor(min(risk_cash / (fill - op['stop'] + fill * fee + op['stop'] * (fee + slip)),
                                       spec['initial_cash'] * spec['max_notional_fraction'] / fill,
-                                      max(0, book['cash']) / (fill * (1 + fee))))
+                                      max(0, min(book['cash'], book['entry_cash_remaining'])) / (fill * (1 + fee))))
             if quantity <= 0:
                 outcome.update(status='skipped', reason='insufficient virtual cash / risk budget')
                 continue
             cost = quantity * fill * fee
             book['cash'] -= quantity * fill + cost
+            book['entry_cash_remaining'] -= quantity * fill + cost
+            book['entry_slots_remaining'] -= 1
+            book['occupied_at_open'].append(op['symbol'])
             outcome.update(status='open', entry=fill, entered_at=bar['start'], quantity=quantity, cost=cost)
             book['positions'][op['symbol']] = dict(quantity=quantity, mark=c)
         if outcome['status'] != 'open':

@@ -281,3 +281,23 @@ def test_missing_market_data_is_get_only_and_budgeted(db, monkeypatch):
     assert len(first) == 1
     assert market.missing_bars(db, settings, ['ABC'], '2026-09-03T11:00:00+00:00') == first
     assert len(calls) == 1
+
+
+def test_intraday_exit_cannot_free_a_slot_for_earlier_open(db):
+    row = create(db)
+    row['spec']['max_positions'] = 1
+    o1 = op(); o1.update(arms={a: {'status': 'awaiting_bar', 'net': 0, 'cost': 0} for a in ('baseline','candidate')}, last_bar=None, uncertain=False)
+    e.step(row['spec'], row['state'], o1, bar(2))
+    stop_bar = bar(3); stop_bar['low'] = 89
+    e.step(row['spec'], row['state'], o1, stop_bar)
+    assert not row['state']['baseline']['positions']
+    o2 = op('p2', '2026-09-02T12:00:00+00:00', 'XYZ')
+    o2.update(arms={a: {'status': 'awaiting_bar', 'net': 0, 'cost': 0} for a in ('baseline','candidate')}, last_bar=None, uncertain=False)
+    e.step(row['spec'], row['state'], o2, bar(3))
+    assert o2['arms']['baseline']['status'] == 'skipped'
+
+
+def test_delayed_entry_is_uncertain(db):
+    row = create(db); e.add_opportunity(db, row['id'], op())
+    e.settle_bars(db, row['id'], [bar(10)], now='2026-09-12T00:00:00+00:00')
+    assert e.detail(db, row['id'])['opportunities'][0]['uncertain']
