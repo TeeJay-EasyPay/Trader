@@ -88,6 +88,32 @@ are different clocks; counts do not represent unique new lessons.
   pending approval, approved configuration, or no change. Approval is not activation.
 - Keep counts in supporting detail; distinguish newly closed trades from reviews
   written today about older trades. Separate gross/known-net/estimated-net results.
+- Lead with **What was learnt**, replacing the generic Decision row. Write in
+  plain human language about outcomes, combining lessons from executed trades and
+  hypothesis evaluations completed in the selected period. Label their sources.
+  Interim experiment observations must not masquerade as completed findings.
+- Daily answers "What did I learn today?"; weekly and monthly synthesise all
+  relevant recorded findings in the selected week/month, not just the latest
+  review or a concatenation of daily messages. Preserve date navigation for last
+  week/month and label in-progress periods. Deduplicate recurring lessons and
+  explain conflicting evidence, superseded conclusions and uncertainty.
+- Keep **Evidence** and an exact linked **Next test** as supporting rows. Include
+  **How this affects future decisions** in the narrative: distinguish a proposed
+  test, approved-but-inactive rule, currently applied rule, and no justified change.
+  Never claim "I will apply this" merely because a review suggested it. If no
+  supported new lesson exists, say so plainly rather than manufacturing insight.
+- Persist versioned learning findings with source trade/review/experiment IDs,
+  evidence period, recorded time, confidence/limitations, proposed action, approval
+  and activation state, and supersession links. Record late historical discoveries
+  as learned now about earlier trades rather than silently rewriting prior claims.
+- Feed relevant findings back into subsequent decision context within a bounded
+  retrieval budget, and log which finding/rule versions were supplied and enforced.
+  A saved lesson or retrieved passage alone is not proof of application; inspect
+  later decision traces. Unsupported behaviour still needs code and live activation
+  still requires its existing authorisation gates.
+- Generate/cache period narratives from persisted evidence and review outputs;
+  opening or changing periods must not trigger extra AI calls. Any AI synthesis
+  shares the bounded grouped-review budget and must cite only supplied finding IDs.
 - Remove stale static claims elsewhere on Learning that contradict real experiment
   data. Use bounded cached aggregates and paginated detail, with no AI call on open.
 
