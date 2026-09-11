@@ -51,3 +51,36 @@ idempotence and exact reconstruction. Ten actual recent records from EACH table
 were compacted and reconstructed successfully, with all test writes rolled back.
 Unit coverage includes unchanged SQL, batch lookup, missing/corrupt evidence,
 mixed inline records and cursor index/name access. Release measurements follow.
+
+## Rollout status: incomplete, database unavailable
+
+- Runtime commit `9bacc6dc37bc0a5477ffe831f6f22c6e0915cf02` was confirmed on
+  both API and background worker. Compaction policy was enabled only afterwards.
+- 106 focused tests and two subtests passed in the clean release worktree.
+  Two older foundation crypto fixtures fail identically on the unchanged base
+  revision (fee hurdle); no trading rules were changed to make those pass.
+- All 7,227 trade_audit rows converted and all 7,227 reconstructed hashes verified,
+  with zero mismatches. No decision/audit rows or IDs were deleted.
+- Last successful intermediate manifest check showed 12,811 execution_decisions
+  compacted through ID 24205, and 9,788 decision_journal rows through ID 21219.
+  Later batches may have committed; inspect manifests before resuming. IDs earlier
+  than those cursors without a manifest were already small/unmodified.
+- The deployed decision-journal endpoint returned HTTP 200. The recommendations
+  endpoint first timed out, then reported database connection failure.
+- Supabase then closed active connections and refused new connections with
+  'database system is not accepting connections / Hot standby mode is disabled'.
+  Migration processes stopped. No restart, vacuum, deletion or plan upgrade was
+  attempted. The cause has not been established; migration load is not ruled out.
+- Requested the user's project dashboard status. The available browser requires
+  sign-in; database credentials cannot access the project control plane.
+- No final storage-saving figure is claimed. Remaining decision migration and
+  verification, app health verification and storage reuse assessment are pending.
+
+Resume only after checking project health/capacity. First inspect the policy and
+manifests, verify committed batches, and use serial small batches with adequate
+headroom. Do not start with parallel migration commands. The additive compatibility
+reader must remain deployed; rolling it back before restoring inline JSON is unsafe.
+
+Provider context, not a diagnosis: https://status.supabase.com/ reported an
+'Unresponsive Projects' incident resolved on 11 September at 19:06 UTC. This does
+not establish that our later project outage is the same incident.

@@ -27,9 +27,11 @@ def main():
     load_dotenv()
     table, pk = args.table, TABLES[args.table]
     with psycopg.connect(os.environ['AUDIT_DATABASE_URL'], connect_timeout=15) as c:
-        c.execute("SET statement_timeout='20s'")
-        c.execute("SET lock_timeout='2s'")
-        c.commit()
+        # Explicit per-transaction mode: transaction poolers may inherit a
+        # server session's default left by a previous diagnostic connection.
+        c.read_only = args.action in ('status', 'verify')
+        c.execute("SET LOCAL statement_timeout='20s'")
+        c.execute("SET LOCAL lock_timeout='2s'")
         if args.action == 'prepare':
             c.execute(Path(__file__).with_name('sql').joinpath('decision_storage.sql').read_text(encoding='utf-8'))
             print('Additive schema prepared; existing enablement preserved.')
@@ -44,6 +46,8 @@ def main():
             cursor, total = args.after, 0
             for _ in range(args.batches):
                 with c.transaction():
+                    c.execute("SET LOCAL statement_timeout='20s'")
+                    c.execute("SET LOCAL lock_timeout='2s'")
                     # All large JSON stays in Postgres. Only counts/cursor leave it.
                     function = 'compact_decision_payload' if args.action == 'migrate' else 'expand_decision_payload'
                     rows = c.execute(f'''WITH selected AS MATERIALIZED (
@@ -78,20 +82,29 @@ def main():
                     break
             print(json.dumps(dict(table=table, action=args.action, after=cursor, changed=total, last_batch_selected=selected)))
         elif args.action == 'verify':
-            # Full reconstruction and hash check against migration manifest, in SQL.
-            result = c.execute(f'''SELECT count(*),count(*) FILTER (WHERE
-                encode(sha256(convert_to(expand_decision_payload(t.payload_json)::jsonb::text,'UTF8')),'hex')
-                    <> m.original_hash)
-                FROM decision_storage_migrations m JOIN {table} t ON t.{pk}=m.source_id
-                WHERE m.source_table=%s''', (table,)).fetchone()
-            print(json.dumps(dict(table=table, checked=result[0], mismatches=result[1])))
-            if result[1]:
-                raise RuntimeError('Verification failed')
+            cursor, checked = args.after, 0
+            c.commit()
+            for _ in range(args.batches):
+                with c.transaction():
+                    c.execute("SET LOCAL statement_timeout='20s'")
+                    result = c.execute(f'''WITH selected AS MATERIALIZED (
+                        SELECT m.source_id,m.original_hash,t.payload_json
+                        FROM decision_storage_migrations m LEFT JOIN {table} t ON t.{pk}=m.source_id
+                        WHERE m.source_table=%s AND m.source_id>%s ORDER BY m.source_id LIMIT 200
+                    ) SELECT max(source_id),count(*),count(*) FILTER (WHERE payload_json IS NULL OR
+                        encode(sha256(convert_to(expand_decision_payload(payload_json)::jsonb::text,'UTF8')),'hex')
+                          <> original_hash) FROM selected''', (table,cursor)).fetchone()
+                    if result[2]:
+                        raise RuntimeError('Verification failed: missing row or changed evidence')
+                checked += result[1]
+                cursor = result[0] or cursor
+                if result[1]<200:
+                    break
+            print(json.dumps(dict(table=table, checked=checked, mismatches=0, after=cursor, last_batch_selected=result[1])))
         else:
             print('policy', c.execute('SELECT enabled FROM decision_storage_policy WHERE id=1').fetchone())
             for name, key in TABLES.items():
-                print(name, c.execute(f'''SELECT count(*),count(*) FILTER(WHERE strpos(payload_json,
-                    '__decision_evidence_sha256_v1')>0),pg_total_relation_size(%s) FROM {name}''', (name,)).fetchone())
+                print(name, c.execute(f'''SELECT count(*),pg_total_relation_size(%s) FROM {name}''', (name,)).fetchone())
             print('blobs', c.execute("SELECT count(*),coalesce(sum(octet_length(payload_json)),0),pg_total_relation_size('decision_evidence_blobs') FROM decision_evidence_blobs").fetchone())
 
 

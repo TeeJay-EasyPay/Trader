@@ -47,7 +47,9 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION expand_decision_payload(original TEXT) RETURNS TEXT
-LANGUAGE plpgsql STABLE AS $$
+-- VOLATILE is required during migration: see blobs inserted earlier in this
+-- same command, rather than a STABLE function's pre-command MVCC snapshot.
+LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
     doc JSONB; part JSONB; path TEXT[]; body TEXT; digest TEXT;
 BEGIN
