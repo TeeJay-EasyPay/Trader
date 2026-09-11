@@ -349,6 +349,21 @@ def generate_market_forecast(
         }
     if analyzer is None:
         return {"status": "not_available", "symbol": symbol, "reason": "No forecast analyzer is configured (OPENAI_API_KEY is required)."}
+    # Reuse only identical evidence under the same model, for at most 24 hours.
+    # Never refresh the timestamp/expiry of an old forecast or reuse an expired one.
+    previous = latest_forecast(db_path, symbol=symbol, scope=scope)
+    if previous and previous.get('asset_type') == asset_type and previous.get('generated_by') == getattr(analyzer, 'model', 'unknown'):
+        try:
+            current = datetime.now(timezone.utc)
+            created = _parse_dt(previous['created_at'])
+            expires = _parse_dt(previous['expires_at'])
+            same = json.loads(previous['evidence_json']).get('evidence') == evidence
+            if same and created and expires and timedelta(0) <= current - created < timedelta(hours=24) and current < expires:
+                return {'status': 'reused_unchanged', 'symbol': symbol, 'forecast_id': previous['forecast_id'],
+                        'created_at': previous['created_at'], 'expires_at': previous['expires_at'],
+                        'reason': 'Identical evidence and model; retained original forecast, no model call.'}
+        except (ValueError, TypeError, KeyError):
+            pass
     try:
         forecast = analyzer.forecast(scope=scope, symbol=symbol, asset_type=asset_type, evidence=evidence)
     except Exception as exc:  # noqa: BLE001 - one symbol's model/network failure must never abort a batch

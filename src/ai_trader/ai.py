@@ -10,6 +10,26 @@ from urllib.request import Request, urlopen
 from .models import AccountContext, GuardrailConfig, TradeProposal
 
 
+def _symbol_market(symbol: str, market: dict[str, Any]) -> dict[str, Any]:
+    """Keep shared metadata, but don't resend every other stock's bars/history."""
+    result = dict(market)
+    for key in ('bars', 'history'):
+        values = market.get(key)
+        if isinstance(values, dict):
+            result[key] = {name: value for name, value in values.items() if name.upper() == symbol.upper()}
+    return result
+
+
+def _usage(category: str, model: str, response: dict[str, Any]) -> None:
+    """Small diagnostic only: never log prompts, keys or trading evidence."""
+    usage = response.get('usage') or {}
+    print('openai_usage ' + json.dumps({
+        'category': category, 'model': model, 'input_tokens': usage.get('input_tokens'),
+        'cached_tokens': (usage.get('input_tokens_details') or {}).get('cached_tokens'),
+        'output_tokens': usage.get('output_tokens'),
+    }), flush=True)
+
+
 class OpenAIProposalAnalyzer:
     def __init__(self, api_key: str, model: str, guardrails: GuardrailConfig | None = None):
         self.api_key = api_key
@@ -50,7 +70,7 @@ class OpenAIProposalAnalyzer:
                 "ignores an opposing forecast."
             ),
             "symbol": symbol,
-            "market": market,
+            "market": _symbol_market(symbol, market),
             "news": news,
             "account_equity": account.equity,
         }
@@ -73,6 +93,7 @@ class OpenAIProposalAnalyzer:
         with urlopen(request, timeout=30) as response:
             raw = json.loads(response.read().decode("utf-8"))
         text = _extract_response_text(raw)
+        _usage('equity_proposal', self.model, raw)
         return _proposal_from_response_text(text)
 
 
@@ -148,6 +169,7 @@ class MarketForecastAnalyzer:
         )
         with urlopen(request, timeout=45) as response:
             raw = json.loads(response.read().decode("utf-8"))
+        _usage('market_forecast', self.model, raw)
         return _forecast_from_response_text(_extract_response_text(raw))
 
 
@@ -247,6 +269,7 @@ class CryptoTradeReviewer:
         )
         with urlopen(request, timeout=25) as response:
             raw = json.loads(response.read().decode("utf-8"))
+        _usage('crypto_review', self.model, raw)
         return _review_from_response_text(_extract_response_text(raw))
 
 

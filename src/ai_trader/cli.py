@@ -1189,7 +1189,8 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # two minutes too late to be used. A permanent one-cycle lag, not a one-off, and my own
     # regression from making this job do the scoring.
     due.append(("crypto-candle-refresh", _time_bucket(now, 3600)))
-    due.append(("crypto-research", _time_bucket(now, research_seconds)))
+    # Cost control: research less often, without slowing market data or protection.
+    due.append(("crypto-research", _time_bucket(now, max(7200, research_seconds))))
     # Phase 3 of the CIO-level forecasting build (2026-08-20): real CIO-style market
     # forecasts. Every 6 hours, not hourly -- each symbol costs a real OpenAI call, and a
     # multi-day directional view does not meaningfully change within an hour. Covers both
@@ -1259,7 +1260,7 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     if 8 * 60 <= minutes < 9 * 60 + 30:
         due.append(("premarket-equity", f"{day}T08:00:00-04:00"))
     elif 9 * 60 + 30 <= minutes < 16 * 60:
-        due.append(("market-open-equity", _time_bucket(now, research_seconds)))
+        due.append(("market-open-equity", _time_bucket(now, max(7200, research_seconds))))
     elif 16 * 60 <= minutes < 17 * 60:
         due.append(("market-close-equity", f"{day}T16:00:00-04:00"))
     if minutes >= 17 * 60:
