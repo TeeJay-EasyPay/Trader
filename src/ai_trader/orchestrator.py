@@ -321,6 +321,7 @@ class InvestmentOrchestrator:
                 account=context.account,
                 guardrails=context.guardrails,
                 now=context.now,
+                prior_failures=list(failures),
                 market_data_quality=(
                     (intelligence.get("market_data") or {}).get("quality")
                     or "Unknown - no current market-data quality record was attached."

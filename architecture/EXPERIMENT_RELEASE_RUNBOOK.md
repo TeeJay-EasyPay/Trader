@@ -34,7 +34,8 @@ opportunities. A relevant simulator/guardrail/entry-check code change ends the
 experiment as insufficient evidence; UI/docs-only deployments do not. Source and bar
 inputs are saved compactly alongside each pair for replay.
 
-Evaluation is frozen for 60 days, with at least 60 usable pairs and 40 symbol-days,
+Evaluation is frozen for 60 days, with at least 60 usable pairs, 40 symbol-days and
+30 day clusters (same-day signals are grouped when calculating uncertainty),
 positive candidate net results, a conservative descriptive lower bound above zero,
 limited winner concentration and no higher drawdown than baseline. These checks
 are screening criteria, not a statistical guarantee. Ambiguous candles are excluded;

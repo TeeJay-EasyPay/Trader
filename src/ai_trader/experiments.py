@@ -338,12 +338,17 @@ def evaluate(row, ops, *, now):
     diff = [o['arms']['candidate']['net'] - o['arms']['baseline']['net'] for o in usable]
     n = len(diff)
     mean = statistics.mean(diff) if diff else None
-    # Deliberately conservative descriptive interval, not proof of independence.
-    lower = mean - 3 * statistics.stdev(diff) / math.sqrt(n) if n > 1 else None
+    # Same-day signals are correlated: aggregate them before estimating uncertainty.
+    # Serial dependence can still remain; this is a paper-screening bound, not proof.
+    days = {}
+    for o in usable:
+        days.setdefault(o['time'][:10], []).append(o['arms']['candidate']['net'] - o['arms']['baseline']['net'])
+    groups = [statistics.mean(values) for values in days.values()]
+    lower = statistics.mean(groups) - 3 * statistics.stdev(groups) / math.sqrt(len(groups)) if len(groups) > 1 else None
     ends = stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])
     finished = now >= ends and (len(complete) == len(ops) or now >= ends + timedelta(days=15))
     verdict = 'insufficient_evidence'
-    if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len({(o['symbol'], o['time'][:10]) for o in usable}) >= row['spec']['minimum_symbol_days']:
+    if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len(groups) >= 30 and len({(o['symbol'], o['time'][:10]) for o in usable}) >= row['spec']['minimum_symbol_days']:
         positive = [o['arms']['candidate']['net'] for o in usable if o['arms']['candidate']['net'] > 0]
         concentration = max(positive) / sum(positive) if positive else 1
         if lower is not None and lower > 0 and concentration < .25 and row['state']['candidate']['realised'] > 0 and row['state']['candidate']['max_drawdown'] <= min(row['spec']['max_drawdown_fraction'], row['state']['baseline']['max_drawdown']):
@@ -352,6 +357,7 @@ def evaluate(row, ops, *, now):
             verdict = 'rejected'
     return dict(finished=finished, verdict=verdict, observations=len(ops), completed=len(complete), usable=n,
                 uncertain=len(complete) - n, paired_mean_usd=mean, descriptive_lower_bound=lower,
+                day_clusters=len(groups),
                 baseline=row['state']['baseline'], candidate=row['state']['candidate'],
                 evaluate_after=ends.isoformat(), costs=row['spec']['costs_status'],
                 caveat='Dependent signals and estimated daily-bar fills limit inference. Recommendation is for paper review only; no proven live edge.')
@@ -383,7 +389,8 @@ def list_experiments(db, *, owner='founder', before='', attention=False):
             r['report'] = json.loads(r.pop('report_json'))
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
-                    policy=control(conn, 'policy', DEFAULT_POLICY), notification_type='strategy_experiment')
+                    policy=control(conn, 'policy', DEFAULT_POLICY), notification_type='strategy_experiment',
+                    last_review=control(conn, 'proposal_attempt', {}), worker=control(conn, 'last_tick', {}))
 
 
 def detail(db, eid, owner='founder'):

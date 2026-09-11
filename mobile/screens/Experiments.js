@@ -85,6 +85,8 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
     {notifications && <Button label={attention ? 'View history and all experiments' : 'View needs attention'} onPress={() => setAttention(v => !v)} />}
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
+    {!!data?.last_review?.status && <Text style={s.small}>Latest proposal review: {human(data.last_review.status)} · {data.last_review.day}. {data.last_review.reason || ''}</Text>}
+    {!!data?.worker?.at && <Text style={s.small}>Worker checked {data.worker.at}: {human(data.worker.status)}.</Text>}
     {data?.items?.map(row => <Button key={row.id} label={human(row.status) + ' · ' + row.hypothesis} onPress={() => setSelected(row.id)} />)}
     {data && !data.items.length && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : 'No experiment recorded yet. Reviews alone do not demonstrate improvement.'}</Text>}
     <Button label="Refresh" disabled={busy} onPress={() => load()} />

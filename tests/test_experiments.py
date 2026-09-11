@@ -22,7 +22,9 @@ def db(tmp_path, monkeypatch):
         c.execute('CREATE TABLE PERFORMANCE_ATTRIBUTION(attribution_id INTEGER PRIMARY KEY,broker TEXT,symbol TEXT,profit_loss REAL,closed_at TEXT,exit_price REAL,proposal_id TEXT,holding_period_seconds REAL)')
         c.execute('CREATE TABLE DECISION_JOURNAL(decision_id INTEGER PRIMARY KEY,created_at TEXT,proposal_id TEXT,symbol TEXT,broker TEXT,execution_eligibility TEXT,payload_json TEXT)')
         c.execute('CREATE TABLE HISTORICAL_CANDLES(symbol TEXT,asset_type TEXT,timeframe TEXT,observed_at TEXT,open REAL,high REAL,low REAL,close REAL,source TEXT)')
+        c.execute('CREATE TABLE LOGICAL_TRADES(proposal_id TEXT,broker TEXT,intended_entry_price REAL,original_stop REAL,intended_target REAL)')
         for i in range(1, 16):
+            c.execute('INSERT INTO LOGICAL_TRADES VALUES (?,?,?,?,?)', ('p'+str(i), 'alpaca', 100, 90, 120))
             c.execute('INSERT INTO PERFORMANCE_ATTRIBUTION VALUES (?,?,?,?,?,?,?,?)',
                       (i, 'alpaca', 'ABC', -1, '2026-08-01T00:00:00+00:00', 100, 'p' + str(i), 3600))
     return path

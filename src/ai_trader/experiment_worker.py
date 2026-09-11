@@ -47,9 +47,11 @@ def propose(db, settings, now, policy, answer=None):
             return 'daily_model_budget_reached'
         if conn.execute("SELECT COUNT(*) FROM RULE_EXPERIMENTS WHERE status='shadow_running'").fetchone()[0]:
             return 'experiment_running'
-        rows = conn.execute("SELECT attribution_id,symbol,closed_at,profit_loss,holding_period_seconds "
-                            "FROM PERFORMANCE_ATTRIBUTION WHERE broker='alpaca' AND exit_price IS NOT NULL "
-                            "AND proposal_id IS NOT NULL ORDER BY attribution_id DESC LIMIT 30").fetchall()
+        rows = conn.execute("SELECT p.attribution_id,p.symbol,p.closed_at,p.profit_loss,p.holding_period_seconds,"
+                            "t.intended_entry_price,t.original_stop,t.intended_target "
+                            "FROM PERFORMANCE_ATTRIBUTION p JOIN LOGICAL_TRADES t ON t.proposal_id=p.proposal_id AND t.broker='alpaca' "
+                            "WHERE p.broker='alpaca' AND p.exit_price IS NOT NULL "
+                            "ORDER BY p.attribution_id DESC LIMIT 30").fetchall()
         evidence = [dict(r) for r in rows]
         watermark = exp.control(conn, 'proposal_watermark', 0)
         if sum(r['attribution_id'] > watermark for r in evidence) < policy['min_new_outcomes']:

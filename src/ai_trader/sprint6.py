@@ -406,6 +406,7 @@ def pre_execution_decision_packet(
     market_data_quality: str | None = None,
     guardrails: GuardrailConfig | None = None,
     now: datetime | None = None,
+    prior_failures: list[str] | None = None,
 ) -> dict[str, Any]:
     _ensure_sprint6_schema(db_path)
     seed_default_strategy_registry(db_path)
@@ -451,8 +452,8 @@ def pre_execution_decision_packet(
         account=account,
         market_data_quality=market_data_quality,
     )
-    reasons: list[str] = []
-    approved = True
+    reasons: list[str] = list(prior_failures or [])
+    approved = not reasons
     if portfolio["decision"] not in {"approve", "approve_smaller"}:
         approved = False
         reasons.append(f"portfolio_manager_{portfolio['decision']}: {portfolio['reason']}")
