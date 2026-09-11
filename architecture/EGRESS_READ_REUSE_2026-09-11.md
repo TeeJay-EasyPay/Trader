@@ -31,6 +31,11 @@ for reuse. Failed reads are not cached. Existing scoreboard cache duration is un
 - Read-only production comparison returned identical results for four strategies
   and 37 strategy/symbol groups: four SELECTs without reuse, two with reuse.
   Five-second query timeouts; no broker or model calls, no production writes.
+- Clean committed release checkout: the same 87 tests passed, plus 37 learning-loop
+  and trading-intelligence tests (124 total).
+- Runtime commit `e4d7d2bd` pushed and verified on both Render services. API health
+  reports that commit; background-worker heartbeat at 22:28:06 UTC reports the same
+  commit. Deployment did not change experiment/live activation policy.
 
 ## What the saving means
 
