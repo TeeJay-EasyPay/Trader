@@ -14,6 +14,12 @@ def propose_batch(db, settings, now, policy, answer=None):
         attempt = e.control(conn, 'proposal_attempt', {})
         budget_used = attempt.get('day') == now[:10]
         specs = [json.loads(r[0]) for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') LIMIT 24").fetchall()]
+        history=[]
+        for r in conn.execute('SELECT status,spec_json,report_json FROM RULE_EXPERIMENTS ORDER BY created_at DESC LIMIT 24').fetchall():
+            spec,report=json.loads(r[1]),json.loads(r[2])
+            history.append(dict(broker=spec['broker'],rule_type=spec['rule_type'],threshold=spec['threshold'],
+                hypothesis=spec['hypothesis'][:250],evidence_ids=spec['evidence_ids'],status=r[0],
+                usable=report.get('usable'),mean_difference=report.get('paired_mean_usd'),verdict=report.get('verdict')))
         evidence, eligibility = {}, {}
         for broker in ('alpaca', 'kraken'):
             slots = max(0, 5 - sum(s['broker'] == broker for s in specs))
@@ -22,7 +28,11 @@ def propose_batch(db, settings, now, policy, answer=None):
                 'JOIN LOGICAL_TRADES t ON t.proposal_id=p.proposal_id AND t.broker=p.broker '
                 'WHERE p.broker=? AND p.exit_price IS NOT NULL ORDER BY p.attribution_id DESC LIMIT 30', (broker,)).fetchall()
             records = [dict(r) for r in rows]
-            watermark = e.control(conn, 'proposal_watermark:' + broker, 0)
+            watermark = e.control(conn, 'proposal_watermark:' + broker)
+            if watermark is None:
+                # Early releases recorded source IDs but no watermark. Do not
+                # count those already-used outcomes as new after this upgrade.
+                watermark=max((i for h in history if h['broker']==broker for i in h['evidence_ids']),default=0)
             new = len({r['attribution_id'] for r in records if r['attribution_id'] > watermark})
             reason = 'eligible' if slots and new >= policy['min_new_outcomes'] else 'slots_full' if not slots else 'insufficient_new_linked_outcomes'
             eligibility[broker] = dict(slots=slots, new_outcomes=new, reason=reason)
@@ -34,6 +44,7 @@ def propose_batch(db, settings, now, policy, answer=None):
         if not evidence:
             return 'no_eligible_broker'
         context = dict(brokers=evidence, capacity=eligibility,
+            previous_experiments=history,
             existing=[{k:s.get(k) for k in ('broker','rule_type','threshold','hypothesis')} for s in specs])
         from .reference_sets import snapshot
         try:
@@ -62,6 +73,7 @@ def propose_batch(db, settings, now, policy, answer=None):
             'Propose a batch of distinct falsifiable shadow experiments for the supplied brokers')
         question += '\nBatch response overrides the single-object format: return {"proposals":[objects including broker],"no_change":"optional explanation"}. Respect capacity per broker. Do not fill slots with near-duplicate thresholds. Include risks and evaluation criteria in each hypothesis explanation. Reference no outcome outside that broker supplied evidence.'
         question += '\nAlso supported: minimum_target_move_bps, threshold 1..5000, filters planned percentage target distance in basis points rather than target/risk ratio. This is NOT expected return. Do not propose reference_set_filter automatically: separate paired inference budget is required.'
+        question += '\nUse prior results including failures; do not recycle rejected hypotheses without identifying new supporting evidence.'
         raw = answer(question, context).strip()
         if len(raw) > 20000:
             raise ValueError('output_budget')
