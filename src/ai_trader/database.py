@@ -115,9 +115,16 @@ class MemoryCursor:
 
 
 class PostgresCursor:
-    def __init__(self, cursor, *, lastrowid: int | None = None):
+    def __init__(self, cursor, *, lastrowid: int | None = None, raw_connection=None):
         self._cursor = cursor
         self.lastrowid = lastrowid
+        self._raw_connection = raw_connection
+
+    def _hydrate(self, rows):
+        if self._raw_connection is not None and rows:
+            from .decision_storage import hydrate_rows
+            rows = hydrate_rows(rows, self._raw_connection)
+        return [_hybrid(row) for row in rows]
 
     @property
     def rowcount(self) -> int:
@@ -125,14 +132,17 @@ class PostgresCursor:
 
     def fetchone(self):
         row = self._cursor.fetchone()
-        return _hybrid(row)
+        return self._hydrate([row])[0] if row is not None else None
 
     def fetchall(self):
-        return [_hybrid(row) for row in self._cursor.fetchall()]
+        return self._hydrate(self._cursor.fetchall())
 
     def __iter__(self):
-        for row in self._cursor:
-            yield _hybrid(row)
+        while True:
+            rows = self._cursor.fetchmany(100)
+            if not rows:
+                break
+            yield from self._hydrate(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +265,8 @@ class PostgresConnection:
         pragma = _pragma_table(sql)
         if pragma:
             return self._table_info(pragma)
-        statement = _postgres_sql(sql)
+        from .decision_storage import prepare_insert
+        statement = _postgres_sql(prepare_insert(sql))
         try:
             returning_column = self._returning_column(statement)
             if returning_column is not None:
@@ -263,21 +274,22 @@ class PostgresConnection:
                     f'{statement.rstrip().rstrip(";")} RETURNING "{returning_column}"',
                     params or (),
                 )
-                return PostgresCursor(cursor, lastrowid=_returned_id(cursor))
+                return PostgresCursor(cursor, lastrowid=_returned_id(cursor), raw_connection=self._conn)
             cursor = self._conn.execute(statement, params or ())
             lastrowid = self._last_insert_id(statement)
-            return PostgresCursor(cursor, lastrowid=lastrowid)
+            return PostgresCursor(cursor, lastrowid=lastrowid, raw_connection=self._conn)
         except self._psycopg.IntegrityError as exc:
             raise sqlite3.IntegrityError(str(exc)) from exc
         except (self._psycopg.errors.UndefinedTable, self._psycopg.errors.UndefinedColumn) as exc:
             raise sqlite3.OperationalError(str(exc)) from exc
 
     def executemany(self, sql: str, params_seq: Iterable[Iterable[Any]]):
-        statement = _postgres_sql(sql)
+        from .decision_storage import prepare_insert
+        statement = _postgres_sql(prepare_insert(sql))
         try:
             cursor = self._conn.cursor()
             cursor.executemany(statement, params_seq)
-            return PostgresCursor(cursor)
+            return PostgresCursor(cursor, raw_connection=self._conn)
         except self._psycopg.IntegrityError as exc:
             raise sqlite3.IntegrityError(str(exc)) from exc
         except (self._psycopg.errors.UndefinedTable, self._psycopg.errors.UndefinedColumn) as exc:
@@ -306,7 +318,7 @@ class PostgresConnection:
         self._conn.close()
 
     def cursor(self):
-        return PostgresCursor(self._conn.cursor())
+        return PostgresCursor(self._conn.cursor(), raw_connection=self._conn)
 
     def __enter__(self):
         return self
