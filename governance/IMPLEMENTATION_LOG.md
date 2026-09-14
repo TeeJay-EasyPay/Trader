@@ -1,5 +1,16 @@
 # Implementation Log
 
+## 2026-09-14 — Remove duplicate Trader conversation start (local)
+
+Trader mode no longer renders the generic `Start conversation` control beneath its
+dedicated realtime `Start voice conversation` control. The generic control remains in
+ChatGPT/Claude Standup modes. Trader's recorded microphone/text composer remains available
+as an explicitly labelled slower fallback; if that fallback starts an exchange, its End
+control remains visible. This removes the misleading path where `Start conversation`
+started the turn-based workflow without opening the realtime microphone. No voice transport,
+provider, trading, database or budget behaviour changed. Device verification and publication
+remain outstanding.
+
 ## 2026-09-14 — Deeper Supabase egress reduction (deployed)
 
 Implemented three compatible reductions after measuring the deployed 24-hour Founder

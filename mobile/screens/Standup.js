@@ -443,9 +443,9 @@ function StandupScreen({ request }) {
     <View>
       <Section title="Standup">
         <Text style={styles.bodyText}>
-          Say "Hey ChatGPT" or "Hey Claude" to choose who answers.
-          This conversation does not place trades.
-          Spoken replies are read aloud. Leaving the screen does not cancel an answer already running.
+          {mode === 'trader'
+            ? 'Use Start voice conversation for live voice with Trader. The microphone below is the slower recorded-message fallback. This conversation does not place trades.'
+            : 'Say "Hey ChatGPT" or "Hey Claude" to choose who answers. This conversation does not place trades. Spoken replies are read aloud. Leaving the screen does not cancel an answer already running.'}
         </Text>
 
         <View style={styles.standupModeRow}>
@@ -478,15 +478,24 @@ function StandupScreen({ request }) {
           </CollapsibleSection>
         ) : null}
 
-        {running ? (
-          <TouchableOpacity style={styles.standupEnd} onPress={end}>
-            <Text style={styles.standupEndText}>End conversation</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity style={styles.standupStart} disabled={liveVoice} onPress={start}>
-            <Text style={styles.standupStartText}>Start conversation</Text>
-          </TouchableOpacity>
-        )}
+        {/* Trader has its own explicit realtime control above. Showing this second Start
+            button in Trader mode launched the slower Standup path without opening the
+            microphone, so it looked like live voice had silently failed. Keep the legacy
+            control for ChatGPT/Claude modes; if the recorded-message fallback implicitly
+            starts a Trader exchange, expose only its End control here. */}
+        {mode !== 'trader' ? (running ? (
+            <TouchableOpacity style={styles.standupEnd} onPress={end}>
+              <Text style={styles.standupEndText}>End conversation</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.standupStart} disabled={liveVoice} onPress={start}>
+              <Text style={styles.standupStartText}>Start conversation</Text>
+            </TouchableOpacity>
+          )) : running ? (
+            <TouchableOpacity style={styles.standupEnd} onPress={end}>
+              <Text style={styles.standupEndText}>End recorded conversation</Text>
+            </TouchableOpacity>
+          ) : null}
 
         <Text style={styles.smallText}>{statusLine}</Text>
         {running ? <Button label="Let me speak" tone="neutral" onPress={() => {

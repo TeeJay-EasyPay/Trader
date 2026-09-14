@@ -63,6 +63,15 @@ class VoiceCaptureModuleTests(unittest.TestCase):
 
 
 class ScreenWiringTests(unittest.TestCase):
+    def test_trader_mode_does_not_render_the_legacy_start_button(self):
+        """Trader already has Start voice conversation. The generic Start conversation
+        button launched the turn-based path without opening a microphone, so two adjacent
+        controls appeared to promise the same thing while doing different things."""
+        source = SCREEN.read_text(encoding="utf-8")
+        self.assertIn("mode !== 'trader' ? (running ? (", source)
+        self.assertIn("End recorded conversation", source)
+        self.assertIn("slower recorded-message fallback", source)
+
     def test_the_screen_has_a_microphone(self):
         source = SCREEN.read_text(encoding="utf-8")
         self.assertIn("useVoiceCapture", source)
