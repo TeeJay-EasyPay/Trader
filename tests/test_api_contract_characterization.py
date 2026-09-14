@@ -49,6 +49,7 @@ became mobile-consumed in the 2026-08-06 egress remediation, but only while that
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
