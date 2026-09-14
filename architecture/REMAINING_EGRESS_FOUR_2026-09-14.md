@@ -34,4 +34,11 @@ Two conditional queries per sample took roughly 0.09–0.27 seconds including ro
 
 This finding corrects a limitation of ranking purely by returned-row counts or planner average widths: few wide recommendation/broker rows can matter more than thousands of narrow metadata rows. No claim is made that all of the earlier ~400 MB/day is now accounted for or eliminated. Compare complete post-release daily Supabase pooler totals and query deltas before claiming a daily saving.
 
-Release verification: pending deployment.
+Release verification: API and latest worker heartbeat both report runtime
+`dc8317206cb7c828873f174ac5ba6e3d74b25458`, checked at approximately 01:14 UTC.
+Additional API/capital-display/projection set: 31 tests and 19 subtests passed
+(includes the four projection tests above; do not double-count).
+Original main checkout fast-forwarded without changing the four paused local
+maintenance files or their untracked supporting files. No mobile publication needed.
+Normal post-release daily usage measurement remains outstanding; no savings
+percentage for total billed egress is claimed.
