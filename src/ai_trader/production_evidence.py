@@ -1727,11 +1727,10 @@ def _query_batch(
     bounded_limit = max(1, min(limit, 500))
     if uses_postgres():
         results: list[list[dict[str, Any]]] = []
+        from .projection_transfer import read
         with postgres_connection() as conn:
-            with conn.cursor() as cur:
-                for sql, values in queries:
-                    cur.execute(sql.format(x="%s", n=bounded_limit), values)
-                    results.append([dict(row) for row in cur.fetchall()])
+            for sql, values in queries:
+                results.append(read(conn, sql.format(x="%s", n=bounded_limit), values))
         return results
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row

@@ -285,8 +285,7 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
             return f"h.payload_json::jsonb ->> '{name}'"
         return f"json_extract(CASE WHEN json_valid(h.payload_json) THEN h.payload_json ELSE '{{}}' END, '$.{name}')"
 
-    rows = conn.execute(
-        f"""
+    statement = f"""
         SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
                {field('order_id')} AS broker_order_id, {field('leaves_qty')} AS leaves_quantity,
                COALESCE(t.proposal_id, linked.proposal_id),
@@ -308,7 +307,15 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
         WHERE LOWER(h.broker) = 'alpaca' AND h.status IN ('fill', 'partial_fill')
         ORDER BY h.opened_at
         """
-    ).fetchall()
+    from .database import PostgresConnection, HybridRow
+    if isinstance(conn, PostgresConnection):
+        from .projection_transfer import read
+        # Alias every expression to preserve sqlite-compatible positional access.
+        columns = ('symbol','side','quantity','price','opened_at','broker_order_id','leaves_quantity',
+                   'proposal_id','logical_trade_id','external_id','broker_fee','exchange_fee','cumulative_quantity')
+        rows = [HybridRow(r) for r in read(conn._conn, statement, columns=columns)]
+    else:
+        rows = conn.execute(statement).fetchall()
 
     fills: list[dict[str, Any]] = []
     for row in rows:

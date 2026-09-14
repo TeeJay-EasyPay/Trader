@@ -980,7 +980,10 @@ class BrokerService:
                 logger.warning("Live Kraken pricing failed while valuing the AI capital ledger: %s", exc)
         if not price_map:
             return ledger
-        return kraken_capital_ledger_summary(self.settings.db_path, current_prices=price_map)
+        # Keep the detailed result list already fetched; pricing needs only totals
+        # and fresh open positions, not another historical-results transfer.
+        ledger.update(kraken_capital_ledger_summary(self.settings.db_path, current_prices=price_map, include_results=False))
+        return ledger
 
     def _broker_managed_trade_capacity(self, broker: str) -> dict[str, Any]:
         key = broker.lower()

@@ -335,27 +335,19 @@ class PostgresConnection:
         cached = _TABLE_INFO_CACHE.get(cache_key)
         if cached is not None:
             return MemoryCursor(dict(row) for row in cached)
-        rows = self._conn.execute(
+        from .projection_transfer import read
+        rows = read(self._conn,
             """
-            SELECT column_name, data_type, is_nullable, column_default
+            SELECT column_name, data_type, is_nullable, column_default,
+                   EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+                           JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey)
+                           WHERE i.indrelid=to_regclass(%s) AND i.indisprimary AND a.attname=column_name) AS is_primary
             FROM information_schema.columns
             WHERE table_schema = current_schema() AND lower(table_name) = lower(%s)
             ORDER BY ordinal_position
             """,
-            (table,),
-        ).fetchall()
-        primary = {
-            row["column_name"]
-            for row in self._conn.execute(
-                """
-                SELECT a.attname AS column_name
-                FROM pg_index i
-                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-                WHERE i.indrelid = to_regclass(%s) AND i.indisprimary
-                """,
-                (table.lower(),),
-            ).fetchall()
-        }
+            (table.lower(), table),
+        )
         described = [
             {
                 "cid": index,
@@ -363,7 +355,7 @@ class PostgresConnection:
                 "type": row["data_type"],
                 "notnull": 0 if row["is_nullable"] == "YES" else 1,
                 "dflt_value": row["column_default"],
-                "pk": 1 if row["column_name"] in primary else 0,
+                "pk": 1 if row["is_primary"] else 0,
             }
             for index, row in enumerate(rows)
         ]

@@ -996,6 +996,7 @@ def kraken_capital_ledger_summary(
     db_path: Path,
     *,
     current_prices: dict[str, float] | None = None,
+    include_results: bool = True,
 ) -> dict[str, Any]:
     _ensure_schema(db_path)
     normalized_prices = {
@@ -1017,12 +1018,15 @@ def kraken_capital_ledger_summary(
               AND logical_trade_id IN (SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP)
             """
         ).fetchone()
-        results = conn.execute(
-            """
-            SELECT * FROM KRAKEN_RECONCILED_RESULTS
-            ORDER BY updated_at DESC
-            """
-        ).fetchall()
+        results = []
+        if include_results:
+            from .database import PostgresConnection
+            statement = 'SELECT * FROM public.KRAKEN_RECONCILED_RESULTS ORDER BY updated_at DESC'
+            if isinstance(conn, PostgresConnection):
+                from .projection_transfer import read
+                results = read(conn._conn, statement)
+            else:
+                results = conn.execute(statement.replace('public.', '')).fetchall()
         open_trades = conn.execute(
             """
             SELECT logical_trade_id, symbol, side, average_entry_price,
@@ -1083,13 +1087,13 @@ def kraken_capital_ledger_summary(
         "marked_open_positions": marked_positions,
         "unpriced_open_symbols": sorted(set(unpriced_symbols)),
         "personal_holdings_included": False,
-        "reconciled_results": [dict(row) for row in results],
+        **({"reconciled_results": [dict(row) for row in results]} if include_results else {}),
     }
 
 
 def verify_kraken_reconciliation(db_path: Path) -> dict[str, Any]:
     _ensure_schema(db_path)
-    ledger = kraken_capital_ledger_summary(db_path)
+    ledger = kraken_capital_ledger_summary(db_path, include_results=False)
     with closing(connect(db_path)) as conn:
         unresolved = int(
             conn.execute(
