@@ -41,4 +41,13 @@ Trader mode shows tracked daily calls/input/output tokens, existing conversation
 - 105 chat/learning/forecast/cost/voice-budget tests passed; 19 cache/usage/reconciliation tests passed. Further release checks and deployment IDs recorded below when verified.
 - Earlier local maintenance work has not been silently rolled into this release. The protected-record safeguard is the only integrated retention-related change and prevents deletion on lookup failure; it does not schedule or execute retention.
 
-Release status: verification/build in progress; not yet a deployment completion claim.
+## Publication and final checks
+
+- Runtime release: f0dc169375578e2242c949ad3a4d20d190b174db (includes 12fed936 and a4ade42e). Hosted API and latest worker heartbeat both verified on this revision at 00:45 UTC on 14 September.
+- Android APK 1.0.4/version 5 built successfully: https://expo.dev/artifacts/eas/NY7liw0PitZnKeov0OCmx69Cb0D9pawuMvfNICUNcPY.apk . Build ID a61a651f-a9cf-4f3e-9d9d-c61138fbcd15. Built from checkpoint plus then-current uncommitted UI edits; the final reviewed JavaScript is published as hosted-preview runtime 1.0.4 update group ba1ff1b7-2445-4b4a-b6cf-18f617326af6. Install APK, allow update download and reopen if needed for final research queue UI.
+- Deployed voice end-to-end smoke test completed with actual backend grounding, synthetic text and audio reply, no microphone or broker orders. Returned 6,019 input / 46 output tokens; backend accounted $0.245552 conservatively including transcription headroom and released the session. This is not a billed-dollar figure. It is visible in the production voice allowance.
+- API `/model-usage` and `/trader-voice/budget` returned valid authenticated responses. Credit balance remains explicitly unavailable, not zero.
+- Three additional production candle samples (KAS, JUP, JTO) matched 120 rows each; old JSON 16,831 / 16,631 / 16,601 bytes respectively. Daily savings remain unmeasured.
+- Additional assurance/voice-action/API tests: 96 passed plus one import-order failure in a test; fixed explicit unittest.mock import and reran all 21 API tests successfully, including 19 subtests. Retention/experiment set: 45 passed. Final usage-context/batch set: 11 passed. These selections overlap; counts are not a unique-test total.
+- Main laptop checkout fast-forwarded with prior changes preserved. One API route conflict was resolved by retaining both the released voice/usage routes and the uncommitted maintenance route. Four local maintenance files remain modified; their untracked supporting files remain. Recoverable autostash 9534f882 retained as an additional safety copy. No paused cleanup was run.
+- Phone microphone/audio routing still requires the owner's installation/device check; the successful native build and hosted transport check are not a claim that a physical phone was tested here.
