@@ -1,6 +1,6 @@
 # Implementation Log
 
-## 2026-09-14 — Deeper Supabase egress reduction (local, awaiting deployment)
+## 2026-09-14 — Deeper Supabase egress reduction (deployed)
 
 Implemented three compatible reductions after measuring the deployed 24-hour Founder
 response at approximately 520 KB. Founder evidence snapshots now have a compressed
@@ -32,8 +32,24 @@ complete backend run finished with 1,969 passed, one skipped and eight failures 
 the egress-touched paths (six existing crypto fee-hurdle expectations and two Standup
 layout expectations). The 53-file mobile run finished with 127 passed and six failures,
 all from the separately modified Standup JSX path; the two egress mobile suites remain
-fully passing. No production deploy, database deletion, retention change, or broker
-action was performed in this change.
+fully passing. No database deletion, retention change, or broker action was performed.
+
+Production release: commit `e9364769` was pushed to `master`; both the Render API and
+background worker subsequently reported the full revision
+`e936476969ebee5b7bd2a29f04d219c8112f7126`. The authenticated API health check returned
+OK and the live worker heartbeat was healthy. Supabase confirmed that the new
+`PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED` projection table had been created. The first
+normal production snapshot cycle completed without error and populated all four periods:
+1h 226,094 -> 32,770 bytes (85.5%), 24h 309,068 -> 37,610 bytes (87.8%), 7d
+398,027 -> 44,315 bytes (88.9%), and 30d 399,566 -> 44,415 bytes (88.9%). These
+are the actual stored row sizes for that cycle, not a synthetic fixture. Android
+runtime 1.0.4 compatibility updates were published from a clean release checkout (so
+unrelated local mobile edits were excluded): preview group
+`7c8e7a2f-c2cc-44c5-9891-eff255216b82` and hosted-preview group
+`4fb00c41-8701-4a31-81a3-040a5be77dfc`. The installed app must download and reopen to
+apply the update. Provider-level egress reduction still requires a complete post-release
+day of Supabase usage data; the measured percentages above are not represented as billed
+savings.
 
 ## 2026-09-10 — Reuse Executive artwork in Learning summary
 
