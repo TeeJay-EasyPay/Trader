@@ -1,6 +1,6 @@
 # Implementation Log
 
-## 2026-09-14 — Remove duplicate Trader conversation start (local)
+## 2026-09-14 — Remove duplicate Trader conversation start (published)
 
 Trader mode no longer renders the generic `Start conversation` control beneath its
 dedicated realtime `Start voice conversation` control. The generic control remains in
@@ -9,7 +9,17 @@ as an explicitly labelled slower fallback; if that fallback starts an exchange, 
 control remains visible. This removes the misleading path where `Start conversation`
 started the turn-based workflow without opening the realtime microphone. No voice transport,
 provider, trading, database or budget behaviour changed. Device verification and publication
-remain outstanding.
+were outstanding at the local checkpoint.
+
+Release correction: the immediately preceding egress compatibility OTA had been exported
+from a clean checkout without selecting the EAS `production` environment. That bundle did
+not receive `EXPO_PUBLIC_AI_TRADER_API_TOKEN`, so the phone correctly fell back to cached
+data while the healthy backend rejected unauthenticated refreshes. Republished Android
+runtime 1.0.4 with the production environment loaded and without exposing the token:
+hosted-preview group `4bc2f09c-ed50-4a30-bfd1-68ae3190abb3`, preview group
+`536ad038-35a1-4e08-b8a5-e21345cbaaf7`. Both corrected updates contain commit `7d1be424`
+and the duplicate-control fix. A full close/reopen is required to download and launch the
+replacement bundle; physical-device confirmation remains outstanding.
 
 ## 2026-09-14 — Deeper Supabase egress reduction (deployed)
 
