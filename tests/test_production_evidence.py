@@ -1,6 +1,8 @@
 import sys
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -119,6 +121,32 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertLess(len(production_evidence._json(payload["recommendations"])), 10_000)
             self.assertNotIn("intelligence", payload["recommendations"][0])
 
+            with closing(sqlite3.connect(db_path)) as conn:
+                full_size = conn.execute(
+                    "SELECT length(payload_json) FROM PRODUCTION_RECOMMENDATION_EVIDENCE"
+                ).fetchone()[0]
+                summary_size = conn.execute(
+                    "SELECT length(summary_json) FROM PRODUCTION_RECOMMENDATION_SUMMARIES"
+                ).fetchone()[0]
+            self.assertGreater(full_size, 250_000)
+            self.assertLess(summary_size, 10_000)
+
+    def test_recommendation_summary_falls_back_for_legacy_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            record_recommendation_evidence(
+                db_path,
+                {"proposal_id": "legacy", "symbol": "MSFT", "plain_english_reasoning": "Legacy evidence."},
+                broker="alpaca",
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("DELETE FROM PRODUCTION_RECOMMENDATION_SUMMARIES")
+
+            recommendation = founder_evidence_payload(db_path)["recommendations"][0]
+
+            self.assertEqual(recommendation["symbol"], "MSFT")
+            self.assertEqual(recommendation["plain_english_reasoning"], "Legacy evidence.")
+
     def test_retention_prunes_replaceable_evidence_but_preserves_trade_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
@@ -144,6 +172,9 @@ class ProductionEvidenceTests(unittest.TestCase):
             recommendations = production_evidence._query(
                 db_path, "SELECT recommendation_id FROM PRODUCTION_RECOMMENDATION_EVIDENCE", limit=10
             )
+            recommendation_summaries = production_evidence._query(
+                db_path, "SELECT recommendation_id FROM PRODUCTION_RECOMMENDATION_SUMMARIES", limit=10
+            )
             snapshots = production_evidence._query(
                 db_path, "SELECT snapshot_id FROM PRODUCTION_BROKER_SNAPSHOTS", limit=10
             )
@@ -153,6 +184,7 @@ class ProductionEvidenceTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(recommendations, [])
+            self.assertEqual(recommendation_summaries, [])
             self.assertEqual(snapshots, [])
             self.assertEqual(len(trades), 1)
             self.assertEqual(prune_production_evidence(db_path, now=now)["status"], "skipped_recent")
@@ -223,6 +255,63 @@ class ProductionEvidenceTests(unittest.TestCase):
 
             self.assertEqual(result["summary"]["research"]["runs"], 4)
             self.assertEqual(result["snapshot"]["served_from"], "worker_projection")
+
+    def test_founder_snapshot_cache_coalesces_reads_and_returns_isolated_payloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            production_evidence.clear_founder_snapshot_cache()
+            stored = {
+                "generated_at": "2026-09-14T12:00:00+00:00",
+                "status": {"state": "OPERATING NORMALLY"},
+            }
+            with (
+                patch.dict("os.environ", {"AI_TRADER_FOUNDER_SNAPSHOT_CACHE_SECONDS": "60"}),
+                patch(
+                    "ai_trader.production_evidence.load_founder_evidence_snapshot",
+                    return_value=stored,
+                ) as load,
+            ):
+                first = founder_evidence_payload(db_path, period="24h")
+                first["status"]["state"] = "CALLER MUTATION"
+                second = founder_evidence_payload(db_path, period="24h")
+
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(second["status"]["state"], "OPERATING NORMALLY")
+            production_evidence.clear_founder_snapshot_cache()
+
+    def test_founder_snapshot_reads_compressed_projection_and_falls_back_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            payload = {
+                "generated_at": "2026-09-14T09:00:00+00:00",
+                "period": "24h",
+                "status": {"state": "OPERATING NORMALLY"},
+                "jobs": [{"detail": "repeated evidence " * 200} for _ in range(100)],
+            }
+            persist_founder_evidence_snapshot(db_path, payload, period="24h")
+            with closing(sqlite3.connect(db_path)) as conn:
+                text_size = conn.execute(
+                    "SELECT length(payload_json) FROM PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS"
+                ).fetchone()[0]
+                compressed_size = conn.execute(
+                    "SELECT length(payload_zlib) FROM PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED"
+                ).fetchone()[0]
+                conn.execute(
+                    "UPDATE PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS SET payload_json='not-json'"
+                )
+            self.assertLess(compressed_size, text_size * 0.25)
+            self.assertEqual(founder_evidence_payload(db_path, period="24h")["jobs"], payload["jobs"])
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    "UPDATE PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED SET payload_zlib=?",
+                    (b"not-zlib",),
+                )
+                conn.execute(
+                    "UPDATE PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS SET payload_json=?",
+                    (production_evidence._json(payload),),
+                )
+            self.assertEqual(founder_evidence_payload(db_path, period="24h")["jobs"], payload["jobs"])
 
     def test_stale_founder_snapshot_is_labelled_without_hiding_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -680,6 +769,8 @@ class ProductionEvidenceTests(unittest.TestCase):
             self.assertEqual(managed["symbol"], "BTC")
             self.assertEqual(managed["status"], "open")
             self.assertEqual(managed["payload"]["proposal_id"], "prop-btc-1")
+            self.assertNotIn("payload_json", managed)
+            self.assertEqual(set(managed["payload"]), {"proposal_id", "entry_reason"})
             # ETH has no managed-exit row -- it must not appear in managed_exits, even though
             # it is in the broker's raw position list.
             managed_symbols = {row["symbol"] for row in kraken["managed_exits"]}

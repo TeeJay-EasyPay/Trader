@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,27 @@ def uses_postgres() -> bool:
     actually enforce the fail-closed rule for real database access.
     """
     return requested_backend() == "postgres" and bool(database_url())
+
+
+def postgres_application_name() -> str:
+    """Return a short, non-secret caller label visible in PostgreSQL statistics.
+
+    Supabase query totals are otherwise unable to distinguish the API, the persistent
+    worker and one-off jobs. Render supplies the service name automatically; child jobs
+    set the explicit override when they are launched. Keep the value inside PostgreSQL's
+    63-byte identifier convention and strip punctuation that makes grouping awkward.
+    """
+
+    explicit = os.getenv("AI_TRADER_DB_APPLICATION_NAME", "").strip()
+    render_service = os.getenv("RENDER_SERVICE_NAME", "").strip()
+    configured_role = os.getenv("AI_TRADER_PROCESS_ROLE", "").strip()
+    command = next(
+        (arg for arg in sys.argv[1:] if arg in {"serve-api", "run-worker", "run-job"}),
+        "",
+    )
+    candidate = explicit or render_service or command or configured_role or "ai-trader-local"
+    normalized = re.sub(r"[^A-Za-z0-9_.:-]+", "-", candidate).strip("-")
+    return (normalized or "ai-trader-local")[:63]
 
 
 def connect(db_path: str | Path | None = None, **sqlite_options: Any):
@@ -231,6 +253,7 @@ class PostgresConnection:
             row_factory=dict_row,
             connect_timeout=connect_timeout,
             options=f"-c statement_timeout={statement_timeout}",
+            application_name=postgres_application_name(),
         )
         self._row_factory = None
         # Identity for the schema cache: two databases in one process must never share it.

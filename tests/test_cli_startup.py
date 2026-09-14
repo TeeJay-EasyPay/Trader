@@ -87,3 +87,29 @@ def test_api_binds_socket_before_service_initialization(monkeypatch, tmp_path) -
     api.run_server("0.0.0.0", 9876, api_token="test-token")
 
     assert sequence == ["socket_bound", "service_initialized", "serving"]
+
+
+def test_worker_claimed_job_skips_redundant_eager_schema_initialization(monkeypatch, tmp_path) -> None:
+    initialized: list[bool] = []
+    settings = SimpleNamespace(
+        db_path=Path(tmp_path) / "audit.sqlite3",
+        production_startup_errors=lambda: [],
+    )
+
+    class FakeService:
+        def __init__(self, loaded_settings, *, initialize_runtime=True) -> None:
+            initialized.append(initialize_runtime)
+            self.settings = loaded_settings
+
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(api, "LocalApiService", FakeService)
+    monkeypatch.setattr(cli, "_run_named_job", lambda *_args, **_kwargs: {"status": "skipped"})
+    monkeypatch.setattr(cli, "complete_scheduled_job", lambda *_args, **_kwargs: {"status": "completed_no_action"})
+    monkeypatch.setattr(cli, "record_worker_heartbeat", lambda *_args, **_kwargs: None)
+
+    result = cli.main([
+        "run-job", "evidence-snapshot", "--claimed-job-run-id", "42", "--worker-id", "worker-1"
+    ])
+
+    assert result == 0
+    assert initialized == [False]

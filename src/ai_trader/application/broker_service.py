@@ -520,6 +520,7 @@ class BrokerService:
                     auto_enabled,
                     kraken_price_hints=price_hints,
                     allow_live_kraken_pricing=False,
+                    include_kraken_ledger_details=False,
                 )
             except Exception:
                 logger.exception("Failed to compute %s trading permissions for broker snapshot.", broker_name)
@@ -793,6 +794,7 @@ class BrokerService:
         *,
         kraken_price_hints: dict[str, float] | None = None,
         allow_live_kraken_pricing: bool = True,
+        include_kraken_ledger_details: bool = True,
     ) -> dict[str, Any]:
         key = broker.lower()
         if key == "kraken":
@@ -807,6 +809,7 @@ class BrokerService:
             ledger = self._kraken_ai_capital_ledger(
                 price_hints=kraken_price_hints,
                 allow_live_pricing=allow_live_kraken_pricing,
+                include_results=include_kraken_ledger_details,
             )
             hold_active = bool(reconciliation.get("hold_new_entries"))
             can_submit_real_orders = bool(
@@ -945,6 +948,7 @@ class BrokerService:
         *,
         price_hints: dict[str, float] | None = None,
         allow_live_pricing: bool = True,
+        include_results: bool = True,
     ) -> dict[str, Any]:
         """Value AI-managed Kraken positions, preferring prices already fetched this cycle.
 
@@ -959,7 +963,7 @@ class BrokerService:
         unrealized_pnl_status/unpriced_open_symbols -- no separate "unavailable" placeholder is
         needed here.
         """
-        ledger = kraken_capital_ledger_summary(self.settings.db_path)
+        ledger = kraken_capital_ledger_summary(self.settings.db_path, include_results=include_results)
         symbols = list(ledger.get("unpriced_open_symbols") or [])
         price_map: dict[str, float] = {
             str(symbol).upper(): float(price)
@@ -980,10 +984,18 @@ class BrokerService:
                 logger.warning("Live Kraken pricing failed while valuing the AI capital ledger: %s", exc)
         if not price_map:
             return ledger
-        # Keep the detailed result list already fetched; pricing needs only totals
-        # and fresh open positions, not another historical-results transfer.
-        ledger.update(kraken_capital_ledger_summary(self.settings.db_path, current_prices=price_map, include_results=False))
-        return ledger
+        # Pricing needs only totals and fresh open positions, not another historical-results
+        # transfer. Preserve the detailed result list from the first read only for callers
+        # that explicitly requested it; all freshly priced scalar fields come from the second
+        # authoritative calculation.
+        priced = kraken_capital_ledger_summary(
+            self.settings.db_path,
+            current_prices=price_map,
+            include_results=False,
+        )
+        if include_results and "reconciled_results" in ledger:
+            priced["reconciled_results"] = ledger["reconciled_results"]
+        return priced
 
     def _broker_managed_trade_capacity(self, broker: str) -> dict[str, Any]:
         key = broker.lower()

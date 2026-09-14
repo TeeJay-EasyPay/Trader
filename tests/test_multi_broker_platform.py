@@ -1469,7 +1469,7 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
             }
 
             with (
-                patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", return_value={"unpriced_open_symbols": ["BTC"]}),
+                patch("ai_trader.application.broker_service.kraken_capital_ledger_summary", return_value={"unpriced_open_symbols": ["BTC"]}) as ledger_summary,
                 patch("ai_trader.application.broker_service.record_broker_snapshot") as snapshot,
             ):
                 result = service.capture_production_broker_snapshots()
@@ -1482,6 +1482,7 @@ class KrakenCapitalLedgerPricingTests(unittest.TestCase):
             self.assertIn("auto_trading_enabled", panels["kraken"])
             self.assertIn("block_reason", panels["kraken"])
             self.assertIsNotNone(panels["kraken"]["trading_permissions"])
+            self.assertIs(ledger_summary.call_args.kwargs.get("include_results"), False)
 
 
 class AtEd010BrokerPanelsPerformanceTests(unittest.TestCase):

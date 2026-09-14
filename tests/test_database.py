@@ -14,6 +14,9 @@ _ENV_KEYS = (
     "RENDER",
     "RENDER_SERVICE_ID",
     "RENDER_INSTANCE_ID",
+    "RENDER_SERVICE_NAME",
+    "AI_TRADER_PROCESS_ROLE",
+    "AI_TRADER_DB_APPLICATION_NAME",
 )
 
 
@@ -113,6 +116,21 @@ class BackendSelectionTests(unittest.TestCase):
                 os.environ["DATABASE_URL"] = "postgresql://example.invalid/db"
                 self.assertEqual(database.requested_backend(), "postgres")
                 self.assertEqual(database.selected_backend(), "postgres")
+
+    def test_postgres_application_name_prefers_explicit_job_label(self):
+        import os
+
+        os.environ["RENDER_SERVICE_NAME"] = "ai-trader-worker"
+        os.environ["AI_TRADER_DB_APPLICATION_NAME"] = "ai-trader-job:crypto-candle-refresh"
+
+        self.assertEqual(database.postgres_application_name(), "ai-trader-job:crypto-candle-refresh")
+
+    def test_postgres_application_name_uses_render_service_and_sanitizes_it(self):
+        import os
+
+        os.environ["RENDER_SERVICE_NAME"] = "AI Trader / API"
+
+        self.assertEqual(database.postgres_application_name(), "AI-Trader-API")
 
 
 class PostgresCompatibilityExceptionTranslationTests(unittest.TestCase):

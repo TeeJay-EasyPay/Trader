@@ -32,6 +32,10 @@ services:
         value: render
       - key: AI_TRADER_DISABLE_API_BACKGROUND_WORKERS
         value: "true"
+      # Coalesce bursts from Founder and auxiliary status endpoints into one bounded
+      # Supabase snapshot read. Kept well below the ten-minute projection cadence.
+      - key: AI_TRADER_FOUNDER_SNAPSHOT_CACHE_SECONDS
+        value: "60"
       - key: AI_TRADER_REQUIRE_POSTGRES_IN_HOSTED
         value: "true"
       - key: AI_TRADER_DATABASE_BACKEND

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect, database_url, requested_backend, uses_postgres
+from .database import connect, database_url, postgres_application_name, requested_backend, uses_postgres
 from .models import utc_now_iso
 from .multi_broker import record_notification
 from .operational import latest_research_run, safe_float
@@ -1293,6 +1293,7 @@ def _postgres_connection():
         row_factory=dict_row,
         connect_timeout=connect_timeout,
         options=f"-c statement_timeout={statement_timeout}",
+        application_name=postgres_application_name(),
     )
 
 

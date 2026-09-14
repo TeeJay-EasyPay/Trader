@@ -226,10 +226,15 @@ function statusFromFounderEvidence(evidence) {
       // backend snapshot payload - undefined means the governance snapshot has not
       // captured this broker yet, and must never be shown as "Disabled" (AT-ED-003
       // Section 3). auto_trading_status/block_reason carry the plain-language reason.
-      auto_trading_enabled: raw.auto_trading_enabled === undefined ? null : Boolean(raw.auto_trading_enabled),
-      auto_trading_status: raw.auto_trading_status || (raw.auto_trading_enabled === undefined ? 'Unknown' : (raw.auto_trading_enabled ? 'Enabled' : 'Disabled')),
-      block_reason: raw.block_reason ?? null,
-      trading_permissions: raw.trading_permissions,
+      auto_trading_enabled: (row.auto_trading_enabled ?? raw.auto_trading_enabled) === undefined
+        ? null
+        : Boolean(row.auto_trading_enabled ?? raw.auto_trading_enabled),
+      auto_trading_status: row.auto_trading_status || raw.auto_trading_status
+        || ((row.auto_trading_enabled ?? raw.auto_trading_enabled) === undefined
+          ? 'Unknown'
+          : ((row.auto_trading_enabled ?? raw.auto_trading_enabled) ? 'Enabled' : 'Disabled')),
+      block_reason: row.block_reason ?? raw.block_reason ?? null,
+      trading_permissions: row.trading_permissions || raw.trading_permissions,
       // SCHEDULED_JOB_RUNS is ordered completed_at/scheduled_for DESC by the query that
       // populates evidence.jobs, so the first match is genuinely the latest.
       latest_successful_poll: (evidence?.jobs || []).find(

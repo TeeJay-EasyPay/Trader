@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sqlite3
 import threading
+import time
+import zlib
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +63,14 @@ CREATE TABLE IF NOT EXISTS PRODUCTION_RECOMMENDATION_EVIDENCE (
 );
 CREATE INDEX IF NOT EXISTS idx_production_recommendations_time
 ON PRODUCTION_RECOMMENDATION_EVIDENCE(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS PRODUCTION_RECOMMENDATION_SUMMARIES (
+    recommendation_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    summary_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_production_recommendation_summaries_time
+ON PRODUCTION_RECOMMENDATION_SUMMARIES(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS PRODUCTION_BROKER_SNAPSHOTS (
     snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,22 +143,35 @@ CREATE TABLE IF NOT EXISTS PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS (
     payload_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED (
+    period TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    payload_zlib BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS PRODUCTION_EVIDENCE_MAINTENANCE (
     task_name TEXT PRIMARY KEY,
     last_run_at TEXT NOT NULL
 );
 """
 
-POSTGRES_SCHEMA = SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY").replace(" REAL", " DOUBLE PRECISION")
+POSTGRES_SCHEMA = (
+    SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    .replace(" REAL", " DOUBLE PRECISION")
+    .replace(" BLOB", " BYTEA")
+)
 
 _SCHEMA_LOCK = threading.Lock()
 _INITIALIZED_SCHEMA_KEYS: set[str] = set()
+_FOUNDER_SNAPSHOT_CACHE_LOCK = threading.Lock()
+_FOUNDER_SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 FOUNDER_SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
 PRODUCTION_EVIDENCE_RETENTION_INTERVAL = timedelta(hours=24)
 PRODUCTION_EVIDENCE_RETENTION_DAYS = {
     "PRODUCTION_BROKER_SNAPSHOTS": ("captured_at", 30),
     "PRODUCTION_RESEARCH_EVIDENCE": ("completed_at", 90),
     "PRODUCTION_RECOMMENDATION_EVIDENCE": ("created_at", 90),
+    "PRODUCTION_RECOMMENDATION_SUMMARIES": ("created_at", 90),
     "PRODUCTION_LEARNING_EVIDENCE": ("completed_at", 365),
     # 2026-08-23, Founder-directed: "make sure that with all these feeds and the news coming
     # in the database doesnt suddenly expand too much and egress is not increased."
@@ -390,6 +414,37 @@ def record_recommendation_evidence(db_path: Path, proposal: dict[str, Any], *, b
             no_action_reason=excluded.no_action_reason, payload_json=excluded.payload_json
         """,
         values,
+    )
+    # Keep the frequently-read Founder projection narrow at write time. Historical rows
+    # without a summary continue to fall back to their immutable dossier below; no bulk
+    # read/backfill is required during deployment.
+    summary_source = {
+        "recommendation_id": recommendation_id,
+        "created_at": created_at,
+        "expires_at": expires_at,
+        "broker": broker.lower(),
+        "symbol": str(proposal.get("symbol") or "").upper(),
+        "asset_type": str(proposal.get("asset_type") or "stock").lower(),
+        "side": str(proposal.get("side") or "buy").lower(),
+        "status": "actionable" if proposal.get("ai_guardrails_passed") else "review_required",
+        "confidence": _number(proposal.get("confidence_score") or proposal.get("confidence")),
+        "entry_price": _number(proposal.get("entry_price")),
+        "stop_loss": _number(proposal.get("stop_loss")),
+        "take_profit": _number(proposal.get("take_profit")),
+        "position_size": _number(proposal.get("position_size")),
+        "strongest_argument_for": strongest_for,
+        "strongest_argument_against": strongest_against,
+        "no_action_reason": "; ".join(proposal.get("ai_guardrail_failures") or []) or None,
+        "payload_json": _json(proposal),
+    }
+    summary = _recommendation_summary_payload(summary_source)
+    _upsert(
+        db_path,
+        """INSERT INTO PRODUCTION_RECOMMENDATION_SUMMARIES
+        (recommendation_id, created_at, summary_json) VALUES ({p})
+        ON CONFLICT(recommendation_id) DO UPDATE SET
+            created_at=excluded.created_at, summary_json=excluded.summary_json""",
+        (recommendation_id, created_at, _json(summary)),
     )
 
 
@@ -662,7 +717,7 @@ def founder_evidence_payload(
     demand. The worker owns that work and persists one row per supported period.
     """
     if prefer_snapshot:
-        snapshot = load_founder_evidence_snapshot(db_path, period=period)
+        snapshot = _cached_founder_evidence_snapshot(db_path, period=period)
         if snapshot is not None:
             return snapshot
         if uses_postgres():
@@ -798,11 +853,18 @@ def _load_founder_evidence_rows(
             # their full 30 KB intelligence packet and thrown away. LIMIT 12 leaves a margin
             # over the app's own cap and cuts the volume by ~88%.
             #
-            # NOT switched to explicit columns: payload_json genuinely feeds ten summary fields,
-            # including plain_english_reasoning and reason_for_recommendation, which are shown to
-            # the Founder. Checked against production before deciding -- dropping the column
-            # would have silently emptied them.
-            ("SELECT * FROM PRODUCTION_RECOMMENDATION_EVIDENCE ORDER BY created_at DESC LIMIT 12", ()),
+            # 2026-09-14: new writes also persist a narrow summary_json projection containing
+            # the Founder fields. The LEFT JOIN preserves full payload_json as a legacy fallback,
+            # so deployment needs neither a wide historical backfill nor a mixed-version outage.
+            ("""SELECT e.recommendation_id, e.created_at, e.expires_at, e.broker, e.symbol,
+                       e.asset_type, e.side, e.status, e.confidence, e.entry_price, e.stop_loss,
+                       e.take_profit, e.position_size, e.strongest_argument_for,
+                       e.strongest_argument_against, e.no_action_reason,
+                       CASE WHEN s.summary_json IS NOT NULL THEN s.summary_json ELSE e.payload_json END AS payload_json
+                FROM PRODUCTION_RECOMMENDATION_EVIDENCE e
+                LEFT JOIN PRODUCTION_RECOMMENDATION_SUMMARIES s
+                  ON s.recommendation_id = e.recommendation_id
+                ORDER BY e.created_at DESC LIMIT 12""", ()),
             # 2026-08-10 Supabase egress finding: this result feeds straight into
             # _latest_per(snapshots_all, "broker") a few lines below the call site, which keeps
             # only the single newest row per broker (2 brokers today) and discards the rest --
@@ -971,6 +1033,7 @@ def _assemble_founder_evidence_payload(
         # JSON strings beside them doubled each broker row on every snapshot/read.
         broker_row.pop("positions_json", None)
         broker_row.pop("payload_json", None)
+        broker_row["payload"] = _compact_broker_payload_for_founder(broker_row.get("payload"))
         broker_payload.append(broker_row)
     if db_path is not None:
         # Open, AI-tracked positions (MANAGED_TRADE_EXITS) are a distinct, explicitly-owned
@@ -981,7 +1044,7 @@ def _assemble_founder_evidence_payload(
         for broker_row in broker_payload:
             try:
                 broker_row["managed_exits"] = [
-                    _decode_row(exit_row, {"payload_json"})
+                    _compact_managed_exit_for_founder(_decode_row(exit_row, {"payload_json"}))
                     for exit_row in open_managed_exits(db_path, broker_row.get("broker"))
                 ]
             except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
@@ -1067,7 +1130,8 @@ def _assemble_founder_evidence_payload(
 def persist_founder_evidence_snapshot(db_path: Path, payload: dict[str, Any], *, period: str) -> None:
     _ensure_local_production_evidence_schema(db_path)
     generated_at = str(payload.get("generated_at") or utc_now_iso())
-    values = (period, generated_at, _json(payload))
+    serialized = _json(payload)
+    values = (period, generated_at, serialized)
     _upsert(
         db_path,
         """INSERT INTO PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS (period, generated_at, payload_json)
@@ -1075,28 +1139,63 @@ def persist_founder_evidence_snapshot(db_path: Path, payload: dict[str, Any], *,
             generated_at=excluded.generated_at, payload_json=excluded.payload_json""",
         values,
     )
+    # Supabase bills bytes leaving Postgres. The API contract is unchanged, but reading
+    # a compressed precomputed blob avoids transferring the same highly-compressible JSON
+    # over the Supabase-to-Render connection on every phone refresh. The text row remains
+    # as a rollback/fallback during mixed-version deployments.
+    _upsert(
+        db_path,
+        """INSERT INTO PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED
+        (period, generated_at, payload_zlib) VALUES ({p})
+        ON CONFLICT(period) DO UPDATE SET
+            generated_at=excluded.generated_at, payload_zlib=excluded.payload_zlib""",
+        (period, generated_at, zlib.compress(serialized.encode("utf-8"), level=9)),
+    )
+    # The worker and API are separate in production, but local/single-process operation and
+    # tests can both write and serve snapshots. Never let their process cache mask a fresh row.
+    clear_founder_snapshot_cache(db_path, period=period)
 
 
 def load_founder_evidence_snapshot(db_path: Path, *, period: str) -> dict[str, Any] | None:
+    payload_text: str | None = None
     try:
         rows = _query(
             db_path,
-            """SELECT generated_at, payload_json
-            FROM PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS WHERE period = {x} LIMIT 1""",
+            """SELECT generated_at, payload_zlib
+            FROM PRODUCTION_FOUNDER_EVIDENCE_COMPRESSED WHERE period = {x} LIMIT 1""",
             (period,),
             limit=1,
         )
+        if rows:
+            compressed = rows[0].get("payload_zlib")
+            if isinstance(compressed, memoryview):
+                compressed = compressed.tobytes()
+            if isinstance(compressed, (bytes, bytearray)):
+                payload_text = zlib.decompress(compressed).decode("utf-8")
     except Exception:
+        rows = []
+    if payload_text is None:
+        try:
+            rows = _query(
+                db_path,
+                """SELECT generated_at, payload_json
+                FROM PRODUCTION_FOUNDER_EVIDENCE_SNAPSHOTS WHERE period = {x} LIMIT 1""",
+                (period,),
+                limit=1,
+            )
+            if rows:
+                payload_text = str(rows[0].get("payload_json") or "{}")
+        except Exception:
+            rows = []
+    if not rows or payload_text is None:
         # A newly deployed API can briefly precede the worker migration. Hosted
         # callers receive an explicit warm-up payload until the first worker
         # snapshot has been written.
         return None
-    if not rows:
-        return None
     row = rows[0]
     try:
-        payload = json.loads(str(row.get("payload_json") or "{}"))
-    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = json.loads(payload_text)
+    except (TypeError, ValueError, json.JSONDecodeError, zlib.error, UnicodeDecodeError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -1118,6 +1217,56 @@ def load_founder_evidence_snapshot(db_path: Path, *, period: str) -> dict[str, A
             "but current worker and broker activity require attention."
         )
     return payload
+
+
+def _founder_snapshot_cache_seconds() -> int:
+    try:
+        configured = int(os.getenv("AI_TRADER_FOUNDER_SNAPSHOT_CACHE_SECONDS", "60"))
+    except (TypeError, ValueError):
+        configured = 60
+    # A cache longer than the worker's normal ten-minute production interval can hide a
+    # genuinely newer operational snapshot. Zero remains a supported emergency off-switch.
+    return max(0, min(configured, 600))
+
+
+def _founder_snapshot_cache_key(db_path: Path, period: str) -> str:
+    database = "postgres" if uses_postgres() else f"sqlite:{Path(db_path).resolve()}"
+    return f"{database}:{period}"
+
+
+def clear_founder_snapshot_cache(db_path: Path | None = None, *, period: str | None = None) -> None:
+    """Invalidate cached API projections after a local write or in tests."""
+
+    with _FOUNDER_SNAPSHOT_CACHE_LOCK:
+        if db_path is None:
+            _FOUNDER_SNAPSHOT_CACHE.clear()
+            return
+        database_prefix = "postgres:" if uses_postgres() else f"sqlite:{Path(db_path).resolve()}:"
+        for key in list(_FOUNDER_SNAPSHOT_CACHE):
+            if key.startswith(database_prefix) and (period is None or key == f"{database_prefix}{period}"):
+                _FOUNDER_SNAPSHOT_CACHE.pop(key, None)
+
+
+def _cached_founder_evidence_snapshot(db_path: Path, *, period: str) -> dict[str, Any] | None:
+    """Coalesce bursty API reads without changing the persisted snapshot contract."""
+
+    ttl = _founder_snapshot_cache_seconds()
+    if ttl <= 0:
+        return load_founder_evidence_snapshot(db_path, period=period)
+    key = _founder_snapshot_cache_key(db_path, period)
+    now = time.monotonic()
+    with _FOUNDER_SNAPSHOT_CACHE_LOCK:
+        cached = _FOUNDER_SNAPSHOT_CACHE.get(key)
+        if cached is not None and cached[0] > now:
+            return copy.deepcopy(cached[1])
+        # Keep the lock while loading so simultaneous phone/auxiliary requests produce one
+        # Supabase query, not a cache stampede. This path reads one bounded compressed row.
+        snapshot = load_founder_evidence_snapshot(db_path, period=period)
+        if snapshot is not None:
+            _FOUNDER_SNAPSHOT_CACHE[key] = (now + ttl, copy.deepcopy(snapshot))
+        else:
+            _FOUNDER_SNAPSHOT_CACHE.pop(key, None)
+        return snapshot
 
 
 def refresh_founder_evidence_snapshots(
@@ -1786,6 +1935,36 @@ def _decode_row(row: dict[str, Any], keys: set[str]) -> dict[str, Any]:
 
 
 _BROKER_PAYLOAD_LIFT_KEYS = ("auto_trading_enabled", "auto_trading_status", "trading_permissions", "block_reason")
+_BROKER_FOUNDER_PAYLOAD_KEYS = (
+    "auto_trading_enabled",
+    "auto_trading_status",
+    "balance_summary",
+    "block_reason",
+    "trading_permissions",
+)
+_MANAGED_EXIT_PAYLOAD_KEYS = (
+    "proposal_id",
+    "recommendation_id",
+    "strategy_id",
+    "entry_reason",
+    "exit_reason",
+)
+
+
+def _compact_broker_payload_for_founder(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {key: payload[key] for key in _BROKER_FOUNDER_PAYLOAD_KEYS if payload.get(key) is not None}
+
+
+def _compact_managed_exit_for_founder(row: dict[str, Any]) -> dict[str, Any]:
+    # Scalar columns already carry the position and exit state. Preserve only the few
+    # dossier links used for drill-down instead of duplicating the entire mutable JSON
+    # document beside payload_json on every Founder snapshot.
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    row["payload"] = {key: payload[key] for key in _MANAGED_EXIT_PAYLOAD_KEYS if payload.get(key) is not None}
+    row.pop("payload_json", None)
+    return row
 
 
 def _lift_broker_payload_fields(row: dict[str, Any]) -> dict[str, Any]:

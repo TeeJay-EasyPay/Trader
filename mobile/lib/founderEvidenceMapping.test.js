@@ -150,6 +150,24 @@ test('statusFromFounderEvidence: maps a minimal evidence payload without throwin
   assert.strictEqual(result.brokers[0].label, 'Alpaca');
 });
 
+test('statusFromFounderEvidence: compact broker rows use lifted governance fields without a raw payload', () => {
+  const permissions = { can_submit_real_orders: true, ai_capital_ledger: { available_cash_gbp: 42 } };
+  const result = statusFromFounderEvidence({
+    brokers: [{
+      broker: 'kraken',
+      connection_status: 'connected',
+      auto_trading_enabled: true,
+      auto_trading_status: 'Enabled',
+      block_reason: null,
+      trading_permissions: permissions,
+    }],
+    trades: [], recommendations: [], learning: [], research: [], jobs: [],
+  });
+  assert.strictEqual(result.brokers[0].auto_trading_enabled, true);
+  assert.strictEqual(result.brokers[0].auto_trading_status, 'Enabled');
+  assert.strictEqual(result.brokers[0].trading_permissions, permissions);
+});
+
 test('statusFromFounderEvidence: a non-postgres database_status never renders the raw backend word to the Founder', () => {
   const result = statusFromFounderEvidence({
     status: { state: 'OPERATING WITH WARNINGS', plain_english: 'degraded', database_status: 'sqlite' },

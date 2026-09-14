@@ -1,5 +1,40 @@
 # Implementation Log
 
+## 2026-09-14 — Deeper Supabase egress reduction (local, awaiting deployment)
+
+Implemented three compatible reductions after measuring the deployed 24-hour Founder
+response at approximately 520 KB. Founder evidence snapshots now have a compressed
+database projection that is read first, while the existing JSON text projection remains
+as a mixed-version and corrupt-data fallback. New recommendation evidence also writes a
+compact Founder summary, avoiding recurring reads of full intelligence dossiers without
+requiring a historical backfill. Recurring Kraken snapshots no longer embed reconciled-
+result history in the capital ledger, and Founder broker/managed-exit payloads retain
+only fields consumed by the mobile application.
+
+The endpoint contract and trading/risk behaviour are unchanged. The mobile mapper reads
+both old and compact broker shapes. On the captured production-shaped payload, broker
+compaction reduced JSON from 520,426 to approximately 383,490 bytes (26.3%); zlib reduced
+the database snapshot representation to approximately 50,222 bytes (90.3% versus the
+raw row). These are transfer estimates, not provider billing results. Production egress
+must be checked after deployment over at least one complete, deployment-free day.
+
+Query-frequency follow-up: worker-claimed scheduled-job subprocesses now skip the broad
+eager schema initialization already completed by their persistent parent. Manual
+standalone jobs keep full initialization. PostgreSQL connections expose Render service
+names, and scheduled children use `ai-trader-job:<job>` so catalogue/timezone traffic can
+be attributed rather than guessed. Identical Founder snapshot reads are coalesced for 60
+seconds inside the API process, with immediate same-process invalidation after writes.
+Existing candle cursor/boundary filtering was verified and retained rather than duplicated.
+
+Focused verification: 187 Python query-frequency, schema, candle, worker, projection and
+broker tests and 34 mobile projection/cache tests pass. The
+complete backend run finished with 1,969 passed, one skipped and eight failures outside
+the egress-touched paths (six existing crypto fee-hurdle expectations and two Standup
+layout expectations). The 53-file mobile run finished with 127 passed and six failures,
+all from the separately modified Standup JSX path; the two egress mobile suites remain
+fully passing. No production deploy, database deletion, retention change, or broker
+action was performed in this change.
+
 ## 2026-09-10 — Reuse Executive artwork in Learning summary
 
 Replaced the simplified native sun/cloud drawing with the exact bundled greeting

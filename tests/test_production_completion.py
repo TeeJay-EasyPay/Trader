@@ -736,6 +736,10 @@ class ProductionCompletionTests(unittest.TestCase):
         _, kwargs = popen.call_args
         self.assertNotIn("stdout", kwargs)
         self.assertNotIn("stderr", kwargs)
+        self.assertEqual(
+            kwargs["env"]["AI_TRADER_DB_APPLICATION_NAME"],
+            "ai-trader-job:crypto-research",
+        )
         command = popen.call_args[0][0]
         self.assertIn("-u", command)  # unbuffered, so output survives a later kill on timeout
 

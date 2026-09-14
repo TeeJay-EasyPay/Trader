@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -232,8 +233,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve-api":
         from .api import run_server
-
-        import os
 
         host = args.host or os.getenv("AI_TRADER_API_HOST", "127.0.0.1")
         port = args.port or int(os.getenv("PORT", os.getenv("AI_TRADER_API_PORT", "8765")))
@@ -536,7 +535,12 @@ def main(argv: list[str] | None = None) -> int:
         from .api import LocalApiService
 
         _raise_if_invalid_hosted_runtime(settings)
-        service = LocalApiService(settings)
+        # Worker-owned child processes run against the schema the parent worker already
+        # initialized at deployment startup. Eagerly initializing every subsystem again for
+        # every claimed job caused each short-lived process to re-query information_schema
+        # hundreds of times. Manual run-job invocations retain full initialization so they
+        # remain safe as standalone maintenance commands.
+        service = LocalApiService(settings, initialize_runtime=args.claimed_job_run_id is None)
         worker_id = args.worker_id or default_worker_id("scheduled-job")
         if args.claimed_job_run_id is not None:
             claim = {
@@ -922,7 +926,12 @@ def _run_claimed_job_process(
     ]
     print(f"[worker] job={job_name} run_id={job_run_id} status=started timeout={int(timeout_seconds)}s", flush=True)
     start = time.monotonic()
-    process = subprocess.Popen(command)
+    child_environment = os.environ.copy()
+    # PostgreSQL/Supabase statistics can now identify the exact scheduled job responsible
+    # for a query family instead of grouping every worker connection under one anonymous
+    # client. This contains no credentials and is inherited only by this child process.
+    child_environment["AI_TRADER_DB_APPLICATION_NAME"] = f"ai-trader-job:{job_name}"[:63]
+    process = subprocess.Popen(command, env=child_environment)
     try:
         returncode = process.wait(timeout=max(1, int(timeout_seconds)))
     except subprocess.TimeoutExpired:
