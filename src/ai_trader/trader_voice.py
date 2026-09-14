@@ -114,7 +114,9 @@ def start(service, body):
                    'output': {'voice':'marin'}},
             tools=[{'type':'function','name':'research_request','description':'Queue a justified research idea; never starts a broker trade.',
                     'parameters': {'type':'object','properties':{'idea':{'type':'string'},'broker':{'type':'string','enum':['alpaca','kraken']}},
-                                   'required':['idea'],'additionalProperties':False}}])
+                                   'required':['idea'],'additionalProperties':False}},
+                   {'type':'function','name':'usage_status','description':'Read current tracked token usage and conservative voice allowance; prepaid balance is unavailable.',
+                    'parameters':{'type':'object','properties':{},'additionalProperties':False}}])
         boundary = uuid4().hex
         parts = []
         for name, value in [('sdp',sdp),('session',json.dumps(session))]:
@@ -222,6 +224,11 @@ def _watch(s):
                                 result=research.enqueue(s['db'],args.get('idea'),source='trader_ai',broker=args.get('broker'))
                             except (ValueError,TypeError,AttributeError) as exc:
                                 result={'error':str(exc)[:180]}
+                        elif item.get('name') == 'usage_status':
+                            from .model_usage import summary
+                            result = summary(s['db'])
+                            account = budget(s['db'])
+                            result['voice_allowance'] = {k:account[k] for k in ('month','spent_usd','allowance_usd','remaining_micro')}
                         _send(s,{'type':'conversation.item.create','item':{'type':'function_call_output',
                             'call_id':item['call_id'],'output':json.dumps(result)}})
                         needs_reply=True
