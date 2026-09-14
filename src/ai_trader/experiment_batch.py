@@ -3,6 +3,7 @@ import json
 from datetime import timedelta
 from . import experiments as e
 from .database import uses_postgres
+from . import research_requests as research
 
 
 def propose_batch(db, settings, now, policy, answer=None):
@@ -43,7 +44,8 @@ def propose_batch(db, settings, now, policy, answer=None):
             return 'daily_model_budget_reached'
         if not evidence:
             return 'no_eligible_broker'
-        context = dict(brokers=evidence, capacity=eligibility,
+        requests = research.snapshot(conn)
+        context = dict(brokers=evidence, capacity=eligibility, research_requests=requests,
             previous_experiments=history,
             existing=[{k:s.get(k) for k in ('broker','rule_type','threshold','hypothesis')} for s in specs])
         from .reference_sets import snapshot
@@ -68,12 +70,13 @@ def propose_batch(db, settings, now, policy, answer=None):
         if answer is None:
             from .ai import OpenAIReadOnlyExplainer
             answer = OpenAIReadOnlyExplainer(settings.openai_api_key, settings.openai_model,
-                timeout_seconds=20, max_output_tokens=2500).answer
-        question = QUESTION.replace('Propose at most one falsifiable shadow experiment for the supplied broker',
+                timeout_seconds=20, max_output_tokens=2500, usage_category='experiment_proposals').answer
+        question = research.OBJECTIVE + '\n' + QUESTION.replace('Propose at most one falsifiable shadow experiment for the supplied broker',
             'Propose a batch of distinct falsifiable shadow experiments for the supplied brokers')
         question += '\nBatch response overrides the single-object format: return {"proposals":[objects including broker],"no_change":"optional explanation"}. Respect capacity per broker. Do not fill slots with near-duplicate thresholds. Include risks and evaluation criteria in each hypothesis explanation. Reference no outcome outside that broker supplied evidence.'
         question += '\nAlso supported: minimum_target_move_bps, threshold 1..5000, filters planned percentage target distance in basis points rather than target/risk ratio. This is NOT expected return. Do not propose reference_set_filter automatically: separate paired inference budget is required.'
         question += '\nUse prior results including failures; do not recycle rejected hypotheses without identifying new supporting evidence.'
+        question += '\nWhen a proposal addresses a queued research request, include source_request_ids containing only its actual request IDs. Do not attach unrelated requests. For requests needing unsupported rules/data, return no_change explaining the limitation instead of substituting a different test.'
         raw = answer(question, context).strip()
         if len(raw) > 20000:
             raise ValueError('output_budget')
@@ -100,7 +103,13 @@ def propose_batch(db, settings, now, policy, answer=None):
                 if any(s['broker'] == broker and s['rule_type'] == validated['rule_type'] and
                        abs(s['threshold'] - validated['threshold']) < (25 if validated['rule_type']=='minimum_target_move_bps' else .25) for s in accepted_specs):
                     raise ValueError('near_duplicate')
+                requested = candidate.get('source_request_ids', [])
+                if not isinstance(requested,list) or not set(requested).issubset({r['id'] for r in requests}):
+                    raise ValueError('unsupported_research_request')
                 row = e.create_experiment(db, candidate, now=now, queue=True)
+                with e.transaction(db) as conn:
+                    research.provenance(conn, row['id'], [r for r in requests if r['id'] in requested], now)
+                result.setdefault('request_links', {})[row['id']] = requested
                 result['accepted'].append(row['id'])
                 accepted_specs.append(validated)
             except (ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -115,4 +124,5 @@ def propose_batch(db, settings, now, policy, answer=None):
     result['usage'] = getattr(getattr(answer, '__self__', None), 'last_usage', None)
     with e.transaction(db) as conn:
         e.put_control(conn, 'proposal_attempt', dict(day=now[:10], **result))
+        research.finish(conn, requests, result, now)
     return result

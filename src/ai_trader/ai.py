@@ -28,6 +28,12 @@ def _usage(category: str, model: str, response: dict[str, Any]) -> None:
         'cached_tokens': (usage.get('input_tokens_details') or {}).get('cached_tokens'),
         'output_tokens': usage.get('output_tokens'),
     }), flush=True)
+    try:
+        from .model_usage import record
+        record(category,model,usage)
+    except Exception as exc:
+        # A metrics outage must not turn an AI veto into an unreviewed trade.
+        print('openai_usage_record_failed '+type(exc).__name__,flush=True)
 
 
 class OpenAIProposalAnalyzer:
@@ -78,7 +84,7 @@ class OpenAIProposalAnalyzer:
             prompt.update(context)
         payload = {
             "model": self.model,
-            "input": json.dumps(prompt),
+            "input": json.dumps(prompt, separators=(',', ':')),
             "text": {"format": {"type": "json_object"}},
         }
         request = Request(
@@ -155,7 +161,7 @@ class MarketForecastAnalyzer:
         }
         payload = {
             "model": self.model,
-            "input": json.dumps(prompt, default=str),
+            "input": json.dumps(prompt, default=str, separators=(',', ':')),
             "text": {"format": {"type": "json_object"}},
         }
         request = Request(
@@ -255,7 +261,7 @@ class CryptoTradeReviewer:
             prompt.update(context)
         payload = {
             "model": self.model,
-            "input": json.dumps(prompt, default=str),
+            "input": json.dumps(prompt, default=str, separators=(',', ':')),
             "text": {"format": {"type": "json_object"}},
         }
         request = Request(
@@ -332,7 +338,7 @@ class BenchmarkResearchAnalyzer:
         }
         payload = {
             "model": self.model,
-            "input": json.dumps(prompt, default=str),
+            "input": json.dumps(prompt, default=str, separators=(',', ':')),
             # The web_search_preview tool and structured JSON mode (text.format) are
             # mutually exclusive on this API -- live-confirmed 2026-08-21 ("Web Search
             # cannot be used with JSON mode", HTTP 400). Every other analyzer in this file
@@ -364,6 +370,7 @@ class BenchmarkResearchAnalyzer:
             # since this is the one where a bare status code was actually insufficient.
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"{exc}: {detail}") from exc
+        _usage('benchmark_research', self.model, raw)
         return _benchmark_research_from_response_text(_extract_response_text(raw))
 
 
@@ -375,11 +382,12 @@ class OpenAIReadOnlyExplainer:
     DEFAULT_TIMEOUT_SECONDS = 35.0
 
     def __init__(self, api_key: str, model: str, timeout_seconds: float | None = None,
-                 max_output_tokens: int | None = None):
+                 max_output_tokens: int | None = None, usage_category: str = 'explanation'):
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
         self.max_output_tokens = max_output_tokens
+        self.usage_category = usage_category
 
     def answer(self, question: str, context: dict[str, Any], history: list[dict[str, Any]] | None = None) -> str:
         prompt = {
@@ -457,7 +465,7 @@ class OpenAIReadOnlyExplainer:
             )
         payload = {
             "model": self.model,
-            "input": json.dumps(prompt, default=str),
+            "input": json.dumps(prompt, default=str, separators=(',', ':')),
         }
         request = Request(
             "https://api.openai.com/v1/responses",
@@ -474,6 +482,7 @@ class OpenAIReadOnlyExplainer:
         with urlopen(request, timeout=self.timeout_seconds) as response:
             raw = json.loads(response.read().decode("utf-8"))
         self.last_usage = {key: (raw.get('usage') or {}).get(key) for key in ('input_tokens','output_tokens','total_tokens')}
+        _usage(self.usage_category, self.model, raw)
         text = _extract_response_text(raw).strip()
         if raw.get('status') == 'incomplete':
             return (text + '\n\n' if text else '') + 'This response stopped before completion at its generation limit. It has not been retried automatically.'

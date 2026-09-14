@@ -5,7 +5,7 @@ description = "Personal AI-powered Alpaca paper trading assistant"
 requires-python = ">=3.11"
 # anthropic: the Claude participant in the Founder's standup (2026-09-07). Pinned to >=1.4
 # because the 1.x SDK is a breaking change from 0.x, and this code is written against 1.x.
-dependencies = ["tzdata>=2026.2", "psycopg[binary]>=3.2", "anthropic>=1.4"]
+dependencies = ["tzdata>=2026.2", "psycopg[binary]>=3.2", "anthropic>=1.4", "websocket-client>=1.8,<2"]
 
 [project.scripts]
 ai-trader = "ai_trader.cli:main"

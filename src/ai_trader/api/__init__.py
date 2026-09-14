@@ -741,6 +741,9 @@ class LocalApiService:
         if path in ('/experiments', '/experiments/detail', '/experiments/health', '/experiment-notifications'):
             from ..experiment_api import get
             return get(self.settings.db_path, path, query)
+        if path == '/trader-voice/budget':
+            from ..trader_voice import budget
+            return 200, budget(self.settings.db_path)
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":
@@ -972,6 +975,13 @@ class LocalApiService:
         if path == '/experiments/decision':
             from ..experiment_api import post
             return post(self.settings.db_path, path, body)
+        if path in ('/trader-voice/start','/trader-voice/end'):
+            from ..trader_voice import start, end
+            try:
+                return 200, (start(self,body) if path.endswith('/start') else end(self.settings.db_path,body.get('session_id')))
+            except Exception as exc:
+                return 409, {'error': 'Voice unavailable', 'message': str(exc) if isinstance(exc,ValueError) else
+                             'The voice connection failed; no automatic retry was made. Text remains available.'}
         if path == "/run-analysis":
             return 200, self.run_analysis(body)
         if path == "/run-crypto-analysis":
@@ -1538,7 +1548,13 @@ class LocalApiService:
         explainer = OpenAIReadOnlyExplainer(self.settings.openai_api_key, self.settings.openai_reasoning_model,
             timeout_seconds=180, max_output_tokens=6000)
         try:
-            answer = explainer.answer(question, {"input_inventory": inventory}, history)
+            from ..research_requests import chat_context, CHAT_FORMAT, interpret_reply, CHAT_RESEARCH_ENABLED
+            if CHAT_RESEARCH_ENABLED.get():
+                research = chat_context(self.settings.db_path)
+                answer = explainer.answer(question + CHAT_FORMAT, {"input_inventory": inventory, "research": research}, history)
+                answer = interpret_reply(self.settings.db_path, answer)
+            else:
+                answer = explainer.answer(question, {"input_inventory": inventory}, history)
         except TimeoutError:
             return {'status': 'failed', 'text': 'Trader reached its 3-minute response timeout. No answer was received and no automatic retry was made.'}
         except Exception as exc:  # noqa: BLE001 - one silent participant must not end the standup
@@ -1678,8 +1694,10 @@ class LocalApiService:
             # script -- has no reporter, and the participants are routinely substituted in tests
             # by stand-ins that take exactly the two arguments the job needs.
             watching = {"report": report} if report else {}
-            turn = (self._trader_turn(history, prompt, **watching) if who == STANDUP_TRADER
-                    else self._claude_turn(history, prompt, **watching))
+            from ..research_requests import chat_scope
+            with chat_scope(mode == STANDUP_TRADER):
+                turn = (self._trader_turn(history, prompt, **watching) if who == STANDUP_TRADER
+                        else self._claude_turn(history, prompt, **watching))
             text = str(turn.get("text") or "").strip()
             if not text:
                 return False

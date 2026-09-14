@@ -77,6 +77,7 @@ function ExperimentDetail({ request, id, onBack }) {
     {!!notice && <Text style={s.text}>{notice}</Text>}
     <Button label="Refresh report" disabled={busy} onPress={load} />
     {data && <><Text style={s.text}>Hypothesis: {data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · {human(data.spec.broker)} · {data.spec.currency || 'USD'} · SIMULATED</Text>
+      <Text style={s.small}>Proposed by: {data.origin?.proposed_by || 'Not recorded in this version'} · Trigger: {human(data.origin?.trigger || 'unknown')}</Text>
       <Text style={s.text}>Problem: {data.spec.problem || 'See hypothesis'}{'\n'}Intended benefit: {data.spec.expected_benefit || 'Not yet documented'}</Text>
       <Text style={s.small}>Priority {data.spec.priority || 3} (1 is highest). {data.status === 'queued' ? 'Waiting for a resource slot. Testing has not started; dates are set when it starts.' : 'The worker shares a capped daily observation budget across experiments.'}</Text>
       <Text selectable style={s.small}>Version {data.version.slice(0, 12)} · {data.created_at}</Text>

@@ -1005,16 +1005,18 @@ def kraken_capital_ledger_summary(
     }
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT entry_type, amount_gbp, fee_gbp FROM KRAKEN_AI_CAPITAL_LEDGER ORDER BY ledger_id"
-        ).fetchall()
+        totals = conn.execute(
+            "SELECT COALESCE(SUM(amount_gbp),0) AS cash, "
+            "COALESCE(SUM(CASE WHEN entry_type='founder_allocation' THEN amount_gbp ELSE 0 END),0) AS allocation "
+            "FROM KRAKEN_AI_CAPITAL_LEDGER"
+        ).fetchone()
         trades = conn.execute(
             """
-            SELECT gross_pnl, net_pnl, remaining_quantity, terminal
-            FROM LOGICAL_TRADES WHERE broker = 'kraken'
+            SELECT COALESCE(SUM(gross_pnl),0) AS gross, COALESCE(SUM(net_pnl),0) AS net
+            FROM LOGICAL_TRADES WHERE broker = 'kraken' AND terminal <> 0
               AND logical_trade_id IN (SELECT DISTINCT logical_trade_id FROM KRAKEN_AI_ORDER_OWNERSHIP)
             """
-        ).fetchall()
+        ).fetchone()
         results = conn.execute(
             """
             SELECT * FROM KRAKEN_RECONCILED_RESULTS
@@ -1034,10 +1036,10 @@ def kraken_capital_ledger_summary(
             ORDER BY updated_at DESC
             """
         ).fetchall()
-    allocation = sum(float(row["amount_gbp"]) for row in rows if row["entry_type"] == "founder_allocation")
-    cash = sum(float(row["amount_gbp"]) for row in rows)
-    realized_gross = sum(float(row["gross_pnl"] or 0) for row in trades if row["terminal"])
-    realized_net = sum(float(row["net_pnl"] or 0) for row in trades if row["terminal"])
+    allocation = float(totals['allocation'])
+    cash = float(totals['cash'])
+    realized_gross = float(trades['gross'])
+    realized_net = float(trades['net'])
     deployed = max(0.0, allocation + realized_net - cash)
     unrealized = 0.0
     marked_positions: list[dict[str, Any]] = []

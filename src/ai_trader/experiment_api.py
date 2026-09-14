@@ -7,7 +7,8 @@ def get(db, path, query):
     first = lambda key: (query.get(key) or [''])[0]
     try:
         if path == '/experiments/detail':
-            return 200, exp.detail(db, first('id'))
+            from .research_requests import annotate
+            return 200, annotate(db, exp.detail(db, first('id')))
         if path == '/experiments/health':
             with exp.transaction(db) as conn:
                 return 200, {'policy': exp.control(conn, 'policy', exp.DEFAULT_POLICY),

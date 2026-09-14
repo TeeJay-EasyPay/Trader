@@ -290,6 +290,10 @@ def load_recent_observations(db_path: Path, normalized_symbol: str, *, timeframe
 
 
 def _recent_observations_query(conn: Any, normalized_symbol: str, *, timeframe: str, limit: int) -> list[dict[str, Any]]:
+    from .database import PostgresConnection
+    if isinstance(conn, PostgresConnection):
+        from .candle_read_cache import read
+        return read(conn, normalized_symbol, timeframe, max(1, int(limit)))
     rows = conn.execute(
         """
         SELECT observation_time, open, high, low, close, volume FROM (

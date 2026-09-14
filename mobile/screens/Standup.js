@@ -27,6 +27,7 @@ const { normalizeChatText } = require('../lib/chat');
 const { formatPence } = require('../lib/cost');
 const { useVoiceCapture } = require('../lib/useVoiceCapture');
 const { useSpeaker } = require('../lib/useSpeaker');
+const { TraderVoice } = require('../components/TraderVoice');
 const {
   progressLine, pollOutcome, POLL_MS, POLL_TIMEOUT_MS,
 } = require('../lib/standupTurn');
@@ -88,6 +89,7 @@ function bubbleFor(speaker) {
 
 function StandupScreen({ request }) {
   const [mode, setMode] = useState('both');
+  const [liveVoice, setLiveVoice] = useState(false);
   const [running, setRunning] = useState(false);
   const [turns, setTurns] = useState([]);
   const [showOlder, setShowOlder] = useState(false);
@@ -461,6 +463,7 @@ function StandupScreen({ request }) {
           ))}
         </View>
         <Text style={styles.smallText}>{(MODES.find((m) => m.key === mode) || {}).hint}</Text>
+        {mode === 'trader' && <TraderVoice request={request} disabled={busy || running} onActive={setLiveVoice} />}
         {mode === 'both' ? (
           <CollapsibleSection title={`Conversation settings · ${exchangeBudget} follow-ups`}>
             <View style={styles.standupModeRow}>
@@ -480,7 +483,7 @@ function StandupScreen({ request }) {
             <Text style={styles.standupEndText}>End conversation</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={styles.standupStart} onPress={start}>
+          <TouchableOpacity style={styles.standupStart} disabled={liveVoice} onPress={start}>
             <Text style={styles.standupStartText}>Start conversation</Text>
           </TouchableOpacity>
         )}
