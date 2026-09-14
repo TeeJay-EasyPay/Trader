@@ -171,6 +171,15 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       {item.implementation_request && <Text style={s.small}>Approved {item.implementation_request.approved_at}. Awaiting implementation; live use not authorised.</Text>}
     </View>)}</View>}
     {!!data?.last_review?.status && <Text style={s.small}>Latest proposal review: {human(data.last_review.status)} · {data.last_review.day}. {data.last_review.reason || ''}</Text>}
+    {!notifications && section === 'queued' && !!data?.research_requests?.length && <View style={s.card}>
+      <Text style={s.title}>Research requests</Text>
+      <Text style={s.small}>Ideas awaiting or reviewed by the shared daily batch. A request is not a running experiment.</Text>
+      {data.research_requests.map(item => <View key={item.id}>
+        <Text style={s.text}>{item.idea}</Text>
+        <Text style={s.small}>{human(item.source)} · {human(item.status)} · {item.id}{'\n'}{item.message}</Text>
+        {item.experiment_ids?.map(id => <Button key={id} label="View registered experiment" onPress={() => setSelected(id)} />)}
+      </View>)}
+    </View>}
     {!!data?.worker?.at && <Text style={s.small}>Worker checked {data.worker.at}: {human(data.worker.status)}.</Text>}
     {!!data?.evidence_coverage?.brokers && <View style={s.card}><Text style={s.title}>Learning evidence coverage</Text>
       {data.evidence_coverage.brokers.map(b => <Text key={b.broker} style={s.small}>{human(b.broker)}: {b.outcomes} outcomes; {b.linked_decisions} linked decisions; {b.canonical_closures} canonical closures; {b.known_costs} with known costs; {b.meaningful_exit_labels} meaningful exit labels.</Text>)}

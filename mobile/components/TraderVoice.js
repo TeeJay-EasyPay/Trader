@@ -1,10 +1,10 @@
 'use strict';
 const React = require('react');
 const { useEffect, useRef, useState } = React;
-const { View, Text, TouchableOpacity, AppState, Platform, NativeModules } = require('react-native');
+const { View, Text, TouchableOpacity, AppState, Platform, NativeModules, Linking } = require('react-native');
 const { styles } = require('../styles');
 
-function TraderVoice({ request, disabled, onActive }) {
+function TraderVoice({ request, disabled, onActive, refreshKey }) {
   const active = useRef(null);
   const generation = useRef(0);
   const mounted = useRef(true);
@@ -13,6 +13,23 @@ function TraderVoice({ request, disabled, onActive }) {
   const [muted, setMuted] = useState(false);
   const [transcript, setTranscript] = useState([]);
   const [usage, setUsage] = useState(null);
+  const [modelUsage, setModelUsage] = useState(null);
+  async function refreshUsage() {
+    try {
+      const result = await request('/model-usage');
+      if (mounted.current) setModelUsage(result);
+    } catch (_) { if (mounted.current) setModelUsage(null); }
+    try {
+      const result = await request('/trader-voice/budget');
+      if (mounted.current) setUsage(result);
+    } catch (_) { if (mounted.current) setUsage(null); }
+  }
+  useEffect(() => { refreshUsage(); }, [refreshKey, live]);
+  useEffect(() => {
+    if (!live) return undefined;
+    const timer = setInterval(refreshUsage, 15000);
+    return () => clearInterval(timer);
+  }, [live]);
   function show(value) { if (mounted.current) setStatus(value); }
   async function stop(reason = 'Conversation ended') {
     generation.current += 1;
@@ -33,7 +50,6 @@ function TraderVoice({ request, disabled, onActive }) {
   }
   useEffect(() => {
     mounted.current = true;
-    request('/trader-voice/budget').then(x => { if (mounted.current) setUsage(x); }).catch(() => {});
     const sub = AppState.addEventListener('change', state => { if (state !== 'active') stop('Voice stopped while app is in background'); });
     return () => { mounted.current = false; stop(); onActive(false); sub.remove(); };
   }, []);
@@ -90,7 +106,7 @@ function TraderVoice({ request, disabled, onActive }) {
       setUsage(result.budget);
       await s.peer.setRemoteDescription({ type:'answer', sdp:result.sdp });
       s.timer = setTimeout(() => stop('Five-minute voice check-in ended; continue in text or start another.'), result.max_seconds*1000);
-    } catch (error) { await stop(error.message || 'Could not connect. Text remains available.'); }
+    } catch (error) { if (ticket === generation.current) await stop(error.message || 'Could not connect. Text remains available.'); }
   }
   function toggleMute() {
     const value = !muted;
@@ -102,6 +118,10 @@ function TraderVoice({ request, disabled, onActive }) {
     <Text accessibilityLiveRegion="polite" style={styles.smallText}>{status}</Text>
     <Text style={styles.smallText}>Ask: What do you need? Why these results? What will you test next?</Text>
     <Text style={styles.smallText}>Voice allowance: $10/month. {usage ? '$'+usage.spent_usd.toFixed(2)+' conservatively accounted.' : 'Checked before connecting.'} Text chat has its own model costs.</Text>
+    <Text style={styles.smallText}>OpenAI prepaid balance: not available in this app. The voice allowance is not your credit balance.</Text>
+    {modelUsage ? <Text style={styles.smallText}>Tracked today (UTC): {modelUsage.calls} model calls · {modelUsage.input_tokens} input / {modelUsage.output_tokens} output tokens. {modelUsage.scope} {modelUsage.unknown_usage ? modelUsage.unknown_usage+' calls have missing usage.' : ''}</Text> : <Text style={styles.smallText}>Model usage unavailable — not assumed to be zero.</Text>}
+    <TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://platform.openai.com/settings/organization/billing/overview').catch(() => show('Open the OpenAI billing dashboard in your browser.'))}><Text style={styles.smallText}>View actual credit balance in OpenAI billing ↗</Text></TouchableOpacity>
+    <TouchableOpacity accessibilityRole="button" onPress={refreshUsage}><Text style={styles.smallText}>Refresh usage</Text></TouchableOpacity>
     <TouchableOpacity accessibilityRole="button" disabled={disabled && !live} style={styles.standupStart} onPress={live ? () => stop() : start}>
       <Text style={styles.standupStartText}>{live ? 'End voice conversation' : 'Start voice conversation'}</Text>
     </TouchableOpacity>

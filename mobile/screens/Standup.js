@@ -463,7 +463,7 @@ function StandupScreen({ request }) {
           ))}
         </View>
         <Text style={styles.smallText}>{(MODES.find((m) => m.key === mode) || {}).hint}</Text>
-        {mode === 'trader' && <TraderVoice request={request} disabled={busy || running} onActive={setLiveVoice} />}
+        {mode === 'trader' && <TraderVoice request={request} refreshKey={spentTotal} disabled={busy || running || voice.isRecording || voice.isBusy} onActive={setLiveVoice} />}
         {mode === 'both' ? (
           <CollapsibleSection title={`Conversation settings · ${exchangeBudget} follow-ups`}>
             <View style={styles.standupModeRow}>
@@ -545,7 +545,7 @@ function StandupScreen({ request }) {
                   if (voice.isRecording) voice.stop();
                   else { if (!running) start(); speaker.stop(); handsFreeRef.current = true; voice.start(); }
                 }}
-                disabled={(busy && !voice.isRecording) || voice.isBusy}
+                disabled={liveVoice || (busy && !voice.isRecording) || voice.isBusy}
                 accessibilityRole="button"
                 accessibilityLabel={micButtonAccessibilityLabel(voice.voiceState)}
               >
@@ -573,7 +573,7 @@ function StandupScreen({ request }) {
               <TouchableOpacity
                 style={[styles.standupSend, (busy || !draft.trim()) && styles.standupSendBusy]}
                 onPress={() => { if (!running) start(); send(draft); }}
-                disabled={busy || !draft.trim()}
+                disabled={liveVoice || busy || !draft.trim()}
               >
                 {busy ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.standupSendText}>Send</Text>}
               </TouchableOpacity>
@@ -583,7 +583,7 @@ function StandupScreen({ request }) {
                 button -- he pressed it, nothing happened, and he had no way to tell which. */}
             {!draft.trim() && !voice.isRecording && !busy ? (
               <Text style={styles.smallText}>
-                Tap the microphone and just talk - it sends when you stop. Or type instead.
+                Tap the microphone and speak - it sends when you stop. Or type instead.
               </Text>
             ) : null}
           </View>

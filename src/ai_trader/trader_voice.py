@@ -155,6 +155,8 @@ def _send(s, event):
 
 
 def _respond(s):
+    if s['stop'].is_set():
+        return
     if s['awaiting']:
         s['pending_reply'] = True
         return
@@ -171,7 +173,14 @@ def _watch(s):
     import websocket
     from .conversations import record_turn
     try:
-        while not s['stop'].is_set():
+        closing_deadline = None
+        while True:
+            # Client and sideband receive completion independently. Drain briefly
+            # before charging uncertain usage so an immediate End does not lose it.
+            if s['stop'].is_set():
+                closing_deadline = closing_deadline or time.monotonic() + 2
+                if time.monotonic() >= closing_deadline:
+                    break
             if time.monotonic()-s['started'] > SESSION_SECONDS or time.monotonic()-s['activity'] > 60:
                 s['reason'] = 'Session time or idle limit reached; you can start another conversation within the allowance.'
                 break

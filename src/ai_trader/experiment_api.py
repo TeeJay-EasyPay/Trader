@@ -17,7 +17,9 @@ def get(db, path, query):
                              'deployment_commit': os.getenv('RENDER_GIT_COMMIT'),
                              'live_enabled': False}
         from .strategy_intake import list_sources
-        return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db)}
+        with exp.transaction(db) as conn:
+            requests = exp.control(conn, 'research_requests', [])[-40:]
+        return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db), 'research_requests': requests}
     except ValueError as exc:
         return 400, {'error': str(exc)}
 

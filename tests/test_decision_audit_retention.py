@@ -57,6 +57,15 @@ class DecisionAuditRetentionTests(unittest.TestCase):
         with closing(connect(self.db_path)) as conn:
             return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0]
 
+    def test_protection_lookup_failure_blocks_all_deletes(self):
+        self._seed_all_tables(timestamp=self.old)
+        before = self._count('DECISION_JOURNAL')
+        with patch('ai_trader.production_evidence._notable_proposal_ids', side_effect=RuntimeError('unavailable')):
+            result = prune_decision_and_audit_history(self.db_path, now=self.now, force=True)
+        self.assertEqual(result['status'], 'blocked_protection_lookup')
+        self.assertEqual(result['deleted_row_counts'], {})
+        self.assertEqual(self._count('DECISION_JOURNAL'), before)
+
     def _seed_row(self, table: str, columns: dict) -> None:
         cols = ", ".join(columns)
         placeholders = ", ".join("?" for _ in columns)

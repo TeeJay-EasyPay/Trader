@@ -92,6 +92,8 @@ def annotate(db, row):
 
 
 def chat_context(db):
+    from .model_usage import summary
+    usage = summary(db)
     with e.transaction(db) as c:
         rows = c.execute('SELECT id,status,spec_json,report_json FROM RULE_EXPERIMENTS ORDER BY created_at DESC LIMIT 10').fetchall()
         summaries = []
@@ -100,7 +102,7 @@ def chat_context(db):
             summaries.append(dict(id=r[0], status=r[1], hypothesis=spec['hypothesis'], broker=spec['broker'],
                                   observations=report.get('observations'), closed_trades=report.get('closed_trades'),
                                   verdict=report.get('verdict'), reason=report.get('reason')))
-        return dict(objective=OBJECTIVE, experiments=summaries, requests=e.control(c, 'research_requests', [])[-20:],
+        return dict(objective=OBJECTIVE, model_usage=usage, experiments=summaries, requests=e.control(c, 'research_requests', [])[-20:],
                     daily_batch=e.control(c, 'proposal_attempt', {}),
                     capabilities='May submit research requests, not broker orders or live changes. Pending is not running.')
 

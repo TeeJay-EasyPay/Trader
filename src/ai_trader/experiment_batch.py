@@ -106,6 +106,8 @@ def propose_batch(db, settings, now, policy, answer=None):
                 requested = candidate.get('source_request_ids', [])
                 if not isinstance(requested,list) or not set(requested).issubset({r['id'] for r in requests}):
                     raise ValueError('unsupported_research_request')
+                if any(r['id'] in requested and r['broker'] not in (None, broker) for r in requests):
+                    raise ValueError('research_request_broker_mismatch')
                 row = e.create_experiment(db, candidate, now=now, queue=True)
                 with e.transaction(db) as conn:
                     research.provenance(conn, row['id'], [r for r in requests if r['id'] in requested], now)

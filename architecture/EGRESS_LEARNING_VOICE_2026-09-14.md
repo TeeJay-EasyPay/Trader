@@ -1,5 +1,9 @@
 # Egress, proactive learning and conversational Trader
 
+This is the historical draft checkpoint. Credits have since been added and the
+provider test passed. See FOUR_POINT_RELEASE_2026-09-14.md for the current release
+scope, reconciliation and verification; do not treat the blocker below as current.
+
 ## Draft implementation checkpoint — not deployed
 
 Worktree: `C:/Users/t_jeh/AppData/Local/Temp/trader-voice-release-20260914`.

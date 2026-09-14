@@ -744,6 +744,9 @@ class LocalApiService:
         if path == '/trader-voice/budget':
             from ..trader_voice import budget
             return 200, budget(self.settings.db_path)
+        if path == '/model-usage':
+            from ..model_usage import summary
+            return 200, summary(self.settings.db_path)
         if path == "/healthz":
             return 200, {"status": "ok", "generated_at": utc_now_iso()}
         if path == "/status":

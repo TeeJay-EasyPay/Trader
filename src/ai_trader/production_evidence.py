@@ -1297,8 +1297,12 @@ def prune_decision_and_audit_history(
                 return {"status": "skipped_recent", "last_run_at": last_run_at.isoformat()}
         try:
             notable_ids = _notable_proposal_ids(conn, threshold=notable_r_multiple_threshold)
-        except Exception:  # noqa: BLE001 - a read failure here must not block every table's retention
-            notable_ids = []
+        except Exception:  # noqa: BLE001 - unknown protected records must prevent every delete
+            return {
+                "status": "blocked_protection_lookup",
+                "message": "Protected outcome lookup failed; no history was removed.",
+                "deleted_row_counts": {},
+            }
         notable_placeholders = ",".join("?" for _ in notable_ids)
 
         # TRADE_LIFECYCLE is the source of the notable set itself -- protect its own
