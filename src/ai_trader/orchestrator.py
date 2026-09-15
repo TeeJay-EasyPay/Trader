@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .broker_adapters import BrokerAdapter, _float_env, _kraken_pair
+from .alpaca_costs import estimate_alpaca_round_trip_cost
 from .canonical_trades import link_broker_order, register_execution_intent
 from .foundation import (
     min_stop_loss_pct_for,
@@ -254,6 +255,33 @@ class InvestmentOrchestrator:
             gate_evidence["reward_risk_below_minimum"] = {
                 "actual": round(float(reward_risk), 3), "limit": round(float(policy.min_reward_risk), 3),
             }
+        # Alpaca equities are commission-free, but paper results still contain small US
+        # regulatory ledger charges. Apply the published estimate to the prospective reward
+        # only; retrospective reporting replaces it with FEE activities and never stacks both.
+        if selected and selected.name == "alpaca" and allocation.get("result") == "approved":
+            quantity = float(allocation.get("approved_quantity") or 0)
+            expected_exit = float(p.take_profit or p.entry_price)
+            estimated_cost = estimate_alpaca_round_trip_cost(
+                sell_notional=quantity * expected_exit,
+                quantity=quantity,
+            )
+            gross_reward = max(0.0, abs(expected_exit - p.entry_price) * quantity)
+            gross_risk = max(0.0, abs(p.entry_price - p.stop_loss) * quantity)
+            net_reward = max(0.0, gross_reward - float(estimated_cost["estimated_round_trip_fee_usd"]))
+            net_reward_risk = net_reward / gross_risk if gross_risk > 0 else None
+            gate_evidence["alpaca_fee_adjusted_economics"] = {
+                **estimated_cost,
+                "gross_reward_usd": round(gross_reward, 4),
+                "net_reward_usd": round(net_reward, 4),
+                "gross_reward_risk": round(float(reward_risk), 4) if reward_risk is not None else None,
+                "net_reward_risk": round(net_reward_risk, 4) if net_reward_risk is not None else None,
+            }
+            if (
+                policy.min_reward_risk > 0
+                and net_reward_risk is not None
+                and net_reward_risk < policy.min_reward_risk
+            ):
+                failures.append("net_reward_risk_below_minimum_after_alpaca_fees")
         if context.account.equity <= policy.emergency_shutdown_balance:
             failures.append("emergency_shutdown_balance_breached")
         # 2026-09-01, P1: the duplicate position-cap check that used to live here is GONE.

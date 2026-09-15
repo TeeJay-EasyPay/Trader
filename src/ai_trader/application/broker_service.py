@@ -28,6 +28,8 @@ from ..multi_broker import (
 )
 from ..order_lock_reconciliation import reconcile_order_intent_locks
 from ..alpaca_reconciliation import reconcile_alpaca
+from ..alpaca_costs import record_alpaca_fee_activities
+from ..alpaca_protection import resolve_alpaca_protection_incident, verify_alpaca_protection
 from ..kraken_reconciliation import kraken_capital_ledger_summary, reconciliation_control, replay_kraken_evidence
 from ..operational import display_value, safe_float, record_portfolio_snapshot
 from ..orchestrator import InvestmentOrchestrator
@@ -303,6 +305,14 @@ class BrokerService:
                     payload={"broker": broker_name},
                 )
                 continue
+            fee_result: dict[str, Any] | None = None
+            if broker_name == "alpaca":
+                fee_reader = getattr(adapter, "get_fee_history", None)
+                if callable(fee_reader):
+                    try:
+                        fee_result = record_alpaca_fee_activities(self.settings.db_path, list(fee_reader()))
+                    except Exception as exc:  # fee evidence must not stop order reconciliation
+                        logger.warning("Alpaca fee-ledger reconciliation failed: %s", exc)
             events = _recent_unique_broker_events(list(orders), list(history), limit=100)
             if broker_name == "alpaca":
                 # Nested bracket orders must not consume the entire event budget and
@@ -379,6 +389,29 @@ class BrokerService:
                     )
                 elif alpaca_outcomes.get("status") == "failed":
                     print(f"[alpaca-reconciliation] failed: {alpaca_outcomes.get('error')}", flush=True)
+                try:
+                    protection = verify_alpaca_protection(self.settings.db_path, list(orders))
+                    for change in protection.get("changes") or []:
+                        trade_id = str(change.get("logical_trade_id") or "")
+                        status = str(change.get("status") or "unknown")
+                        if status in {"unprotected", "undersized", "stop_price_mismatch"}:
+                            upsert_incident(
+                                self.settings.db_path,
+                                incident_key=f"alpaca-protection:{trade_id}",
+                                severity="critical",
+                                component="broker-protection",
+                                affected_entity="alpaca",
+                                explanation=f"AI-managed Alpaca position is {status.replace('_', ' ')}.",
+                                recommended_action="Inspect and restore the broker-side protective stop immediately.",
+                                payload=change,
+                            )
+                        elif status == "protected":
+                            resolve_alpaca_protection_incident(self.settings.db_path, trade_id)
+                except Exception as exc:  # evidence failure must never stop the broker poll
+                    logger.warning("Alpaca protection verification failed: %s", exc)
+                    protection = {"status": "failed", "reason": str(exc)}
+            else:
+                protection = None
             # Publish P&L after reconciliation, not one poll before its result exists.
             backfill_realized_pnl(self.settings.db_path, broker=broker_name)
             terminal_statuses = {"filled", "closed", "cancelled", "canceled", "rejected"}
@@ -415,6 +448,8 @@ class BrokerService:
                 "new_records": len(new_rows),
                 "evidence_rows_written": evidence_written,
                 "reconciliation": reconciliation,
+                "fee_reconciliation": fee_result,
+                "continuous_protection": protection,
             }
             print(
                 f"[broker-poll:{broker_name}] orders={len(orders)} history={len(history)} "

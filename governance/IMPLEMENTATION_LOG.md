@@ -5899,3 +5899,46 @@ code was changed speculatively to address it.
   snapshots used six consolidated requests (the old shape would have used 30), and two
   equity theme checks returned two rows rather than the former 30. None of the five old
   policy SELECT shapes or the all-symbol metadata SELECT appeared in the window.
+
+## 2026-09-15 — Alpaca fee-aware economics and continuous stop evidence
+
+The Founder approved the two remaining paper-trading evidence controls and directed that
+they be implemented and deployed without pausing for intermediate approval.
+
+### Fee-aware Alpaca paper performance
+
+- The existing Alpaca poll now also reads the bounded `FEE` activity ledger and stores a
+  compact, idempotent account-fee record. The 44 visible historical records can therefore be
+  backfilled without attributing an account-level fee to an individual trade by guesswork.
+- Day, week and month Alpaca evidence now reports gross completed-trade P&L, recorded paper
+  account fees, and net period P&L in USD. If no fee ledger has yet been observed, net P&L
+  remains unknown rather than silently treating missing fee evidence as zero.
+- The final Alpaca execution gate now records fee-adjusted reward/risk using the current
+  published schedule: zero retail commission, SEC sell fee at $0.00002060 per dollar, TAF at
+  $0.000195 per share capped at $9.79, and the current $0 equity CAT rate. SEC and TAF are
+  rounded up to cents. Spread and slippage remain separate execution evidence.
+- Estimated fees influence only the prospective trade decision; actual Alpaca `FEE` ledger
+  amounts replace them in retrospective period reporting, preventing double-counting.
+
+### Continuous Alpaca broker protection evidence
+
+- Every existing Alpaca broker poll now compares AI-managed open canonical exposure with the
+  protective orders already returned by that poll. No second order/position polling loop was
+  introduced.
+- Bracket children are correlated through Alpaca parent identity; standalone native trailing
+  stops are correlated through the managed-exit ledger. Quantity, active status and fixed-stop
+  price tolerance are checked. An unprovable relationship is `unknown`, never `protected`.
+- A compact current state and immutable transition event are written only when the evidence
+  digest changes. Missing, undersized or mismatched protection raises one deduplicated critical
+  incident; a protected transition resolves that incident. The observer never places, cancels
+  or replaces an order.
+
+### Verification
+
+- New focused tests cover fee idempotency, actual period fees, published-rate estimates,
+  unchanged-state zero writes, cancelled stops, undersized protection and active replacement.
+- Fee/protection, completed-evidence, broker-poll, orchestrator and trade-shape regression
+  suites: 91 passed.
+- Full repository suite: 1,976 passed, 1 skipped, with eight pre-existing failures confined to
+  stale crypto fee-hurdle fixtures and Standup markup expectations in unrelated dirty mobile
+  work. The 90-test pre-change focused set and the new feature tests are clean.

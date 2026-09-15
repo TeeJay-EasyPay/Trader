@@ -70,6 +70,13 @@ class AlpacaBrokerAdapter:
             # original single-argument interface.
             return self.client.get_activities("FILL")
 
+    def get_fee_history(self) -> list[dict[str, Any]]:
+        """Account-level paper fee ledger; intentionally separate from fills."""
+        try:
+            return self.client.get_activities("FEE", page_size=100, direction="desc")
+        except TypeError:
+            return self.client.get_activities("FEE")
+
     def get_supported_markets(self) -> list[str]:
         return ["NYSE", "NASDAQ", "AMEX", "ARCA", "OTC"]
 

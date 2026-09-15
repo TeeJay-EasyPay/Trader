@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import sqlite3
 
 from .database import connect, row_values, uses_postgres
+from .alpaca_costs import alpaca_fee_periods
 
 
 def _epoch(column):
@@ -47,8 +48,14 @@ def completed_trade_evidence(db, *, now_epoch=None):
               FROM PERFORMANCE_ATTRIBUTION pa WHERE pa.broker='alpaca'
               AND pa.exit_price IS NOT NULL"""
         item = {'currency': currency,
-                'pnl_basis': 'net_after_recorded_fees' if broker == 'kraken' else 'before_unreconciled_fees',
+                'pnl_basis': 'net_after_recorded_fees' if broker == 'kraken' else 'gross_trades_with_account_fees_reconciled_separately',
                 'periods': {}}
+        fee_periods = {}
+        if broker == 'alpaca':
+            try:
+                fee_periods = alpaca_fee_periods(db, now_epoch=now)
+            except Exception:
+                fee_periods = {}
         try:
             # One aggregate read for all windows, not three separate remote
             # connections. LEFT JOIN retains an honest empty bucket for each period.
@@ -84,7 +91,17 @@ def completed_trade_evidence(db, *, now_epoch=None):
                     for field, coverage in (('gross_pnl', 'gross_known'), ('recorded_fees', 'fees_known'), ('recorded_pnl', 'pnl_known')):
                         if not total or bucket[coverage] != total:
                             bucket[field] = None
-                    bucket['net_pnl'] = bucket['recorded_pnl'] if broker == 'kraken' else None
+                    if broker == 'kraken':
+                        bucket['net_pnl'] = bucket['recorded_pnl']
+                    else:
+                        fee = fee_periods.get(name)
+                        bucket['recorded_account_fees'] = fee.get('recorded_account_fees') if fee else None
+                        bucket['account_fee_source'] = fee.get('source') if fee else None
+                        bucket['net_pnl'] = (
+                            round(float(bucket['gross_pnl']) - float(bucket['recorded_account_fees']), 6)
+                            if bucket['gross_pnl'] is not None and bucket['recorded_account_fees'] is not None
+                            else None
+                        )
                     bucket['available'] = True
                     item['periods'][name] = bucket
         except Exception:
@@ -143,8 +160,8 @@ def completed_trade_evidence(db, *, now_epoch=None):
                 }
         result['brokers'][broker] = item
     result['limitations'] = [
-        'Alpaca results are before unreconciled fees; never add USD to GBP.',
-        'A planned stop or verified stop-fill exit does not prove the broker stop remained active continuously.',
+        'Alpaca account FEE ledger charges are deducted at period level and are not guessed onto individual trades; never add USD to GBP.',
+        'Continuous protection is evidenced only for AI-managed positions whose broker order identity can be correlated.',
         'Proposal linkage gaps must not be repaired by guessing. Counts describe source records, not verified unique round trips.',
     ]
     return result

@@ -1,7 +1,7 @@
 # Alpaca Fees and Continuous Protection Implementation Plan
 
 Date: 2026-09-15
-Status: Fee/protection work approved for implementation; daily review scheduled
+Status: Fee/protection work implemented and released; daily review scheduled
 
 ## Objective
 
