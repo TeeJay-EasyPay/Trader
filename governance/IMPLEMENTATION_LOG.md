@@ -5778,3 +5778,61 @@ Implemented the Go-Live Readiness Review's findings. Full detail in `STATUS.md`;
   with the trading AI, until the shadow record has produced a week of evidence.
 - Deployed and live on both Render services: 4507d4ee, 6ccb24f9, aa7862ab, 890cb39e,
   b21a0ff3. Mobile published over the air to both `preview` and `hosted-preview`.
+
+## 2026-09-15 — Founder-requested performance review and evidence correction
+
+The Founder asked Trader to rate its own performance and identify what it still needs, then
+authorised planning, implementation and deployment of warranted changes. AI Trader was
+started on the Android review emulator and the production Trader was asked one bounded,
+read-only question. Its answer was treated as a lead, not as authority to change live trading.
+
+### Trader's assessment, checked against production
+
+- Kraken: 45 recorded closures, GBP 12.01 loss after recorded fees; the recent fee drag is
+  material, but gross performance was also slightly negative. No threshold or risk control
+  was loosened.
+- Alpaca: 68 recorded closures and USD 1,464.82 lifetime recorded P&L before unreconciled
+  fees, but USD 399.97 lost across 61 closures in the latest 30-day window. This is not yet a
+  verified net, risk-adjusted edge.
+- Trader ranked trustworthy accounting/protection evidence, forward net-of-cost validation,
+  execution economics, and decision-level data coverage ahead of adding more signals.
+- The reported “zero recorded Alpaca stops” was false. The period query hard-coded Alpaca's
+  stop value to NULL because `PERFORMANCE_ATTRIBUTION` has no stop column. Production retains
+  50 proposal-linked original stops for the 61 recent closures; all 61 closing fills have a
+  recorded broker order type and 42 are verified stop-order fills. This does not prove that
+  protection remained continuously active between entry and exit.
+
+### Implemented
+
+- Alpaca completed-trade evidence now resolves a planned stop only through the retained
+  proposal identity in `LOGICAL_TRADES`; unmatched history stays unknown.
+- Added a separate 30-day protection block: outcomes, verified closing-order types, verified
+  stop fills, and outcomes linked to a planned stop. Its wording prevents exit-type evidence
+  from being misrepresented as continuous broker protection.
+- The self-assessment now receives nine days of completed-bar symbol coverage, per-broker
+  snapshot freshness/activity, and grouped shadow outcomes with known estimated net R and
+  cost-model coverage. These are database-side aggregates; raw rows are not sent across the
+  Supabase pooler.
+- The prompt explicitly distinguishes a planned stop, a verified stop-fill exit, and proof
+  of continuous protection.
+
+### Newly visible evidence and deferred decisions
+
+- Completed daily-bar coverage declined from 95 symbols on 7 September to 80 on 14 September.
+  This is visible for diagnosis; it is not yet evidence that a particular trade used bad data.
+- Kraken shadow evidence now shows 1,630 measured outcomes: 1,246 stop hits averaging about
+  -1.748 estimated net R, 245 target hits averaging about +1.251, and 139 expiries averaging
+  about -0.384. The poor record supports keeping safeguards, not loosening them.
+- Alpaca's legacy shadow table has 818 unsettleable and 87 pending records, with no measured
+  outcome. The shared resolver only has Kraken daily bars and its default fee model is also
+  Kraken-specific; applying that model to Alpaca would create false evidence. No historical
+  results or costs were invented. Alpaca's governed forward experiment path remains the safe
+  route for prospective validation.
+- No broker permission, live strategy, allocation, stop distance, confidence threshold, or
+  order-submission behaviour changed in this release.
+
+### Verification
+
+- Focused evidence, assessment and egress regression suite: 27 passed.
+- Read-only production validation: 61 Alpaca month outcomes; 50 linked planned stops; 61/61
+  closing-order types verified; 42 stop fills.

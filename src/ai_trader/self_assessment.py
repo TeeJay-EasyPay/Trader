@@ -126,7 +126,8 @@ QUESTION = (
     "merely be nice to have.\n\n"
     "Do not pad. If an input is adequate, say so briefly and move on. If you cannot tell from "
     "the inventory, say so plainly rather than guessing: 'I cannot see X' is a useful finding, "
-    "an invented reassurance is not."
+    "an invented reassurance is not. Distinguish a planned stop, a verified stop-fill exit, "
+    "and proof that broker protection stayed active continuously; they are not the same claim."
 )
 
 
@@ -181,6 +182,7 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
     from .completed_trade_evidence import completed_trade_evidence
     from .learning_monitor import learning_health_snapshot
     feeds: list[dict[str, Any]] = []
+    decision_data_coverage: dict[str, Any] = {}
     with closing(connect(db_path)) as conn:
         for table, column, purpose, decision_input in _FEEDS:
             total = _scalar(conn, "SELECT COUNT(*) FROM " + table)
@@ -231,6 +233,77 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
             ),
         }
 
+        # Compact database-side aggregates over evidence that already exists. Earlier
+        # assessments saw only table totals and therefore could not judge bar coverage,
+        # broker-specific freshness, or the shadow record's actual results. Returning only
+        # grouped rows avoids pulling raw evidence across the Supabase pooler.
+        try:
+            rows = conn.execute(
+                """SELECT SUBSTR(observation_time, 1, 10) AS observation_day,
+                          COUNT(DISTINCT normalized_symbol) AS symbols,
+                          COUNT(*) AS rows
+                   FROM MARKET_DATA_OBSERVATIONS
+                   WHERE observation_time >= ?
+                   GROUP BY SUBSTR(observation_time, 1, 10)
+                   ORDER BY observation_day DESC LIMIT 9""",
+                (_hours_ago_iso(24 * 9),),
+            ).fetchall()
+            decision_data_coverage["completed_daily_bars"] = [
+                {"date": row_values(row)[0], "symbols": row_values(row)[1], "rows": row_values(row)[2]}
+                for row in rows
+            ]
+        except Exception:  # noqa: BLE001 - unavailable evidence stays visibly unknown
+            conn.rollback()
+            decision_data_coverage["completed_daily_bars"] = {
+                "available": False, "reason": "Daily-bar symbol coverage unavailable; not zero coverage."
+            }
+
+        try:
+            rows = conn.execute(
+                """SELECT broker, MAX(captured_at) AS newest_at,
+                          SUM(CASE WHEN captured_at >= ? THEN 1 ELSE 0 END) AS rows_last_24h
+                   FROM PRODUCTION_BROKER_SNAPSHOTS GROUP BY broker ORDER BY broker""",
+                (_hours_ago_iso(24),),
+            ).fetchall()
+            decision_data_coverage["broker_snapshot_freshness"] = [
+                {"broker": row_values(row)[0], "newest_at": row_values(row)[1],
+                 "rows_last_24h": row_values(row)[2] or 0}
+                for row in rows
+            ]
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            decision_data_coverage["broker_snapshot_freshness"] = {
+                "available": False, "reason": "Per-broker snapshot freshness unavailable; not zero activity."
+            }
+
+        try:
+            rows = conn.execute(
+                """SELECT intended_broker, outcome_status, COUNT(*) AS outcomes,
+                          COUNT(estimated_net_r) AS net_r_known,
+                          AVG(estimated_net_r) AS average_estimated_net_r,
+                          SUM(CASE WHEN simulated_costs_json IS NOT NULL
+                                    AND simulated_costs_json <> '' THEN 1 ELSE 0 END) AS cost_rows
+                   FROM SHADOW_TRADES
+                   GROUP BY intended_broker, outcome_status
+                   ORDER BY intended_broker, outcome_status"""
+            ).fetchall()
+            decision_data_coverage["shadow_outcomes"] = [
+                {"broker": row_values(row)[0], "status": row_values(row)[1],
+                 "outcomes": row_values(row)[2], "net_r_known": row_values(row)[3],
+                 "average_estimated_net_r": row_values(row)[4],
+                 "simulated_cost_rows": row_values(row)[5] or 0}
+                for row in rows
+            ]
+            decision_data_coverage["shadow_outcome_note"] = (
+                "Estimated net R uses stored simulator assumptions; it is prospective evidence, "
+                "not a broker fill or proof that the live strategy improved."
+            )
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            decision_data_coverage["shadow_outcomes"] = {
+                "available": False, "reason": "Shadow outcome aggregates unavailable; not zero outcomes."
+            }
+
     # Stated outright rather than left for the model to spot, because it is the exact defect it
     # raised on 2026-09-06 and the exact thing that would make it distrust every other number.
     duplicates = record.get("duplicate_outcome_groups")
@@ -248,6 +321,7 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
         "realised_record": record,
         "realised_record_by_broker": _record_by_broker(db_path),
         "completed_trade_periods": completed_trade_evidence(db_path),
+        "decision_data_coverage": decision_data_coverage,
         "learning_handoff_coverage": learning_coverage,
         "how_a_decision_is_priced": _PRICING_NOTE,
     }

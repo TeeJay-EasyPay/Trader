@@ -7,7 +7,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import sqlite3
 
-from .database import connect, uses_postgres
+from .database import connect, row_values, uses_postgres
 
 
 def _epoch(column):
@@ -32,12 +32,20 @@ def completed_trade_evidence(db, *, now_epoch=None):
               proposal_id, original_stop AS stop
               FROM KRAKEN_RECONCILED_RESULTS WHERE status='closed'"""
         else:
-            source = f"""SELECT {_epoch('closed_at')} AS closed_epoch,
-              profit_loss AS pnl, profit_loss AS gross, CAST(NULL AS DOUBLE PRECISION) AS fees,
-              COALESCE(holding_period_seconds, {_epoch('closed_at')}-{_epoch('opened_at')}) AS holding,
-              proposal_id, CAST(NULL AS DOUBLE PRECISION) AS stop
-              FROM PERFORMANCE_ATTRIBUTION WHERE broker='alpaca'
-              AND exit_price IS NOT NULL"""
+            # Alpaca's attribution table has no stop column. The previous census therefore
+            # hard-coded NULL here and told Trader there were zero recorded stops, even when
+            # the proposal-linked canonical trade retained the original stop. Use only the
+            # retained identity; old outcomes with no canonical record remain unknown.
+            source = f"""SELECT {_epoch('pa.closed_at')} AS closed_epoch,
+              pa.profit_loss AS pnl, pa.profit_loss AS gross,
+              CAST(NULL AS DOUBLE PRECISION) AS fees,
+              COALESCE(pa.holding_period_seconds,
+                {_epoch('pa.closed_at')}-{_epoch('pa.opened_at')}) AS holding,
+              pa.proposal_id,
+              (SELECT MAX(lt.original_stop) FROM LOGICAL_TRADES lt
+               WHERE lt.broker='alpaca' AND lt.proposal_id=pa.proposal_id) AS stop
+              FROM PERFORMANCE_ATTRIBUTION pa WHERE pa.broker='alpaca'
+              AND pa.exit_price IS NOT NULL"""
         item = {'currency': currency,
                 'pnl_basis': 'net_after_recorded_fees' if broker == 'kraken' else 'before_unreconciled_fees',
                 'periods': {}}
@@ -93,12 +101,50 @@ def completed_trade_evidence(db, *, now_epoch=None):
                     ORDER BY records DESC LIMIT 12""", (broker, now-30*86400, now)).fetchall()
                 item['recorded_exit_reasons_30d'] = [dict(row) for row in rows]
                 item['exit_reason_basis'] = 'Attribution labels, not independently verified execution triggers; top 12 groups.'
+
+                if broker == 'alpaca':
+                    # Reconciliation retains the closing fill's order id and recorded order
+                    # type. This verifies the exit type, not uninterrupted protection from
+                    # entry until exit.
+                    order_type = (
+                        "primary_factors_json::jsonb #>> '{exit_evidence,order_type}'"
+                        if uses_postgres()
+                        else "json_extract(primary_factors_json, '$.exit_evidence.order_type')"
+                    )
+                    protection = conn.execute(f"""SELECT COUNT(*) AS outcomes,
+                        SUM(CASE WHEN {order_type} IS NOT NULL THEN 1 ELSE 0 END) AS verified_exit_order_types,
+                        SUM(CASE WHEN {order_type} IN ('stop','stop_limit','trailing_stop')
+                            THEN 1 ELSE 0 END) AS verified_stop_fills,
+                        SUM(CASE WHEN EXISTS (
+                            SELECT 1 FROM LOGICAL_TRADES lt
+                            WHERE lt.broker='alpaca' AND lt.proposal_id=pa.proposal_id
+                              AND lt.original_stop IS NOT NULL
+                        ) THEN 1 ELSE 0 END) AS outcomes_linked_to_planned_stop
+                        FROM PERFORMANCE_ATTRIBUTION pa
+                        WHERE pa.broker='alpaca' AND {_epoch('pa.closed_at')}>=?
+                          AND {_epoch('pa.closed_at')}<=?""",
+                        (now-30*86400, now)).fetchone()
+                    values = row_values(protection) if protection else (0, 0, 0, 0)
+                    item['protection_evidence_30d'] = {
+                        'outcomes': values[0] or 0,
+                        'verified_exit_order_types': values[1] or 0,
+                        'verified_stop_fills': values[2] or 0,
+                        'outcomes_linked_to_planned_stop': values[3] or 0,
+                        'basis': ('Closing fill matched to a recorded broker order type; planned stop '
+                                  'linked through proposal identity. This does not prove continuous '
+                                  'broker protection between entry and exit.'),
+                    }
         except Exception:
             item['recorded_exit_reasons_30d'] = None
+            if broker == 'alpaca':
+                item['protection_evidence_30d'] = {
+                    'available': False,
+                    'reason': 'Alpaca protection evidence unavailable; not zero protection.',
+                }
         result['brokers'][broker] = item
     result['limitations'] = [
         'Alpaca results are before unreconciled fees; never add USD to GBP.',
-        'Recorded holding times and stops do not prove a five-percent policy was applied or a broker stop was active.',
+        'A planned stop or verified stop-fill exit does not prove the broker stop remained active continuously.',
         'Proposal linkage gaps must not be repaired by guessing. Counts describe source records, not verified unique round trips.',
     ]
     return result

@@ -11,13 +11,17 @@ def test_shared_periods_keep_currencies_and_missing_costs_separate(tmp_path):
         CREATE TABLE KRAKEN_RECONCILED_RESULTS(status,exit_time,net_pnl,gross_pnl,
           exchange_fee,broker_fee,holding_seconds,proposal_id,original_stop,entry_time);
         CREATE TABLE PERFORMANCE_ATTRIBUTION(broker,closed_at,profit_loss,
-          holding_period_seconds,proposal_id,exit_price,exit_reason,opened_at);
+          holding_period_seconds,proposal_id,exit_price,exit_reason,opened_at,primary_factors_json);
+        CREATE TABLE LOGICAL_TRADES(broker,proposal_id,original_stop);
         INSERT INTO KRAKEN_RECONCILED_RESULTS VALUES
           ('closed','2026-09-10T10:00:00+00:00',-2,3,5,0,7200,'p1',95,NULL),
           ('closed','2026-09-05T10:00:00+00:00',-4,NULL,NULL,0,NULL,NULL,NULL,NULL),
           ('closed','bad-date',999,999,0,0,1,'bad',10,NULL);
         INSERT INTO PERFORMANCE_ATTRIBUTION VALUES
-          ('alpaca','2026-09-10T10:00:00+00:00',20,3600,NULL,12,'target',NULL);
+          ('alpaca','2026-09-10T10:00:00+00:00',20,3600,'ap1',12,
+           'Broker stop order filled.',NULL,
+           '{"exit_evidence":{"order_type":"stop"}}');
+        INSERT INTO LOGICAL_TRADES VALUES ('alpaca','ap1',10);
         ''')
     with patch('ai_trader.completed_trade_evidence.uses_postgres', return_value=False), \
          patch('ai_trader.completed_trade_evidence.connect', side_effect=lambda _: sqlite3.connect(db)) as connections:
@@ -34,7 +38,10 @@ def test_shared_periods_keep_currencies_and_missing_costs_separate(tmp_path):
     alpaca = result['brokers']['alpaca']
     assert alpaca['periods']['day']['gross_pnl'] == 20
     assert alpaca['periods']['day']['net_pnl'] is None
-    assert alpaca['recorded_exit_reasons_30d'][0]['reason'] == 'target'
+    assert alpaca['periods']['day']['recorded_stop_count'] == 1
+    assert alpaca['recorded_exit_reasons_30d'][0]['reason'] == 'Broker stop order filled.'
+    assert alpaca['protection_evidence_30d']['verified_stop_fills'] == 1
+    assert alpaca['protection_evidence_30d']['outcomes_linked_to_planned_stop'] == 1
 
 
 def test_empty_windows_preserve_zero_counts_and_unknown_amounts(tmp_path):

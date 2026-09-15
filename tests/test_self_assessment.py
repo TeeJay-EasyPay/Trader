@@ -264,6 +264,44 @@ class CensusHonestyTests(unittest.TestCase):
         self.assertIn("LIVE Kraken Ticker", _PRICING_NOTE)
         self.assertIn("CRYPTO_MARKET_DATA", _PRICING_NOTE)
 
+    def test_decision_coverage_exposes_bars_brokers_and_shadow_results(self):
+        """Table totals cannot answer the questions Trader actually needs to judge inputs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            with closing(connect(db_path)) as conn, conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE MARKET_DATA_OBSERVATIONS (
+                        normalized_symbol TEXT, observation_time TEXT
+                    );
+                    CREATE TABLE PRODUCTION_BROKER_SNAPSHOTS (
+                        broker TEXT, captured_at TEXT
+                    );
+                    CREATE TABLE SHADOW_TRADES (
+                        intended_broker TEXT, outcome_status TEXT,
+                        estimated_net_r REAL, simulated_costs_json TEXT
+                    );
+                    INSERT INTO MARKET_DATA_OBSERVATIONS VALUES
+                        ('AAPL', datetime('now','-1 day')), ('MSFT', datetime('now','-1 day')),
+                        ('AAPL', datetime('now','-2 day'));
+                    INSERT INTO PRODUCTION_BROKER_SNAPSHOTS VALUES
+                        ('alpaca', datetime('now','-1 hour')),
+                        ('kraken', datetime('now','-2 hour'));
+                    INSERT INTO SHADOW_TRADES VALUES
+                        ('kraken','stop_hit',-1.2,'{"fees_bps":80}'),
+                        ('kraken','target_hit',1.5,'{"fees_bps":80}');
+                    """
+                )
+            coverage = input_inventory(db_path)["decision_data_coverage"]
+            self.assertEqual(coverage["completed_daily_bars"][0]["symbols"], 2)
+            self.assertEqual(
+                {row["broker"] for row in coverage["broker_snapshot_freshness"]},
+                {"alpaca", "kraken"},
+            )
+            shadow = {row["status"]: row for row in coverage["shadow_outcomes"]}
+            self.assertEqual(shadow["stop_hit"]["average_estimated_net_r"], -1.2)
+            self.assertEqual(shadow["target_hit"]["simulated_cost_rows"], 1)
+
     def test_the_realised_record_is_split_by_broker_with_its_currency(self):
         """It refused to state a combined P&L across a GBP account and a USD one, correctly.
         The broker column existed all along; the census was summing over it."""
