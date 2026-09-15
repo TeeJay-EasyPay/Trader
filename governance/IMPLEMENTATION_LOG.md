@@ -5940,8 +5940,20 @@ they be implemented and deployed without pausing for intermediate approval.
 
 - New focused tests cover fee idempotency, actual period fees, published-rate estimates,
   unchanged-state zero writes, cancelled stops, undersized protection and active replacement.
-- Fee/protection, completed-evidence, broker-poll, orchestrator and trade-shape regression
-  suites: 91 passed.
+- Fee/protection, completed-evidence, Alpaca-client, broker-poll, orchestrator and trade-shape
+  regression suites: 97 passed.
 - Full repository suite: 1,976 passed, 1 skipped, with eight pre-existing failures confined to
   stale crypto fee-hurdle fixtures and Standup markup expectations in unrelated dirty mobile
   work. The 90-test pre-change focused set and the new feature tests are clean.
+- Final release `50ccab16` was pushed to `master`; both the Render API and replacement worker
+  reported the exact revision with no startup error.
+- Production fee reconciliation contains 44 unique Alpaca paper `FEE` activities totalling
+  USD 3.67, from 2 July through 11 September 2026.
+- A bounded post-deployment broker check found seven current Alpaca positions and an active,
+  quantity-covering broker stop for all seven: seven protected, zero gaps and zero unknown.
+  One retained direct broker-order identity; six legacy positions required the explicitly
+  labelled broker-position symbol/quantity correlation because their older canonical rows do
+  not retain the original stop identity. This proves current protection and starts continuous
+  transition evidence from this release; it does not invent historical continuity.
+- Repeating the same evidence check twice produced zero changed rows both times, verifying the
+  no-write path for an unchanged healthy poll.
