@@ -1,7 +1,7 @@
 # Alpaca Fees and Continuous Protection Implementation Plan
 
 Date: 2026-09-15
-Status: Approved for implementation; not yet implemented
+Status: Fee/protection work approved for implementation; daily review scheduled
 
 ## Objective
 
@@ -110,6 +110,30 @@ broker response:
 - Historical strategy reports can distinguish continuously verified protection, a known gap and
   unknown coverage. Performance is never called risk-controlled for an unverified interval.
 
+## Workstream 3 — Daily Trader performance review
+
+- Run one daily review at 09:00 Europe/London in this Codex task.
+- Start or open the local application only when needed, then ask Trader one bounded read-only
+  question covering recent performance, activity or inactivity, and what it needs to improve.
+- Independently verify Trader's claims against accessible production API, Supabase, worker,
+  broker, experiment, cost, protection and error evidence. Trader's self-assessment is a lead,
+  not proof.
+- Report performance separately by broker and distinguish facts, estimates, paper evidence and
+  unknowns. Include genuine faults, stale data, experiment progress and specific recommended
+  actions.
+- Do not place trades, alter production settings, loosen safeguards or implement a suggested
+  change automatically. Material changes remain separate Founder-authorised work.
+- Publish a concise report every day, including an explicit no-material-change result when the
+  system is healthy.
+
+### Acceptance criteria
+
+- The heartbeat is active and attached to the continuing AI Trader task.
+- It runs once daily rather than polling throughout the day.
+- Each report separates Trader's opinion from independently verified evidence.
+- A failed or unavailable source is named explicitly and never converted into a positive health
+  claim.
+
 ## Sequence and release controls
 
 1. Implement fee schema, ingestion, summaries and backfill with read-only broker access.
@@ -121,7 +145,9 @@ broker response:
 5. Deploy to paper services, verify exact Render revisions and run one bounded Alpaca poll.
 6. Reconcile fee totals to USD 3.67, verify no duplicate rows, and verify healthy protection
    checks create no extra broker request.
-7. Update the implementation log with measured results. Any live-trading decision remains a
+7. Run the daily Trader performance heartbeat independently of the implementation release; use
+   its findings to identify follow-up work without authorising changes.
+8. Update the implementation log with measured results. Any live-trading decision remains a
    separate Founder approval.
 
 ## Egress budget
@@ -130,5 +156,7 @@ broker response:
   a cursor/stream is established; database reads and writes must remain batched.
 - No raw recurring payload snapshots.
 - Unchanged protection state writes zero rows.
+- The daily review is one bounded run and should reuse compact production evidence; it must not
+  create a high-frequency monitor or repeatedly refresh Founder snapshots.
 - The release report must measure requests, returned rows and bytes over a clean window and
   compare them with the current baseline before claiming negligible egress.
