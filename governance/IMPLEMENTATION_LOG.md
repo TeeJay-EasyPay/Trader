@@ -5895,3 +5895,7 @@ code was changed speculatively to address it.
 - All seven active experiment records were migrated in place and the scheduler was resumed.
   The pre-migration 30 opportunity rows remained attached to the same experiment IDs
   (12 + 6 + 6 + 6); all seven specs now report `review_interval_days = 3`.
+- A clean 2m 32s post-deployment window confirmed the runtime query change: six policy
+  snapshots used six consolidated requests (the old shape would have used 30), and two
+  equity theme checks returned two rows rather than the former 30. None of the five old
+  policy SELECT shapes or the all-symbol metadata SELECT appeared in the window.
