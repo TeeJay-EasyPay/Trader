@@ -9,8 +9,8 @@ from . import experiments as e
 
 def weekly_review(conn, row, now):
     report, state = row['report'], row['state']
-    due = e.stamp(state.get('next_review_at') or
-                  (e.stamp(row['created_at']) + timedelta(days=7)).isoformat())
+    interval = e.review_interval_days(row['spec'])
+    due = e.review_due_at(row)
     if now < due:
         report['evaluate_after'] = due.isoformat()
         return
@@ -24,15 +24,15 @@ def weekly_review(conn, row, now):
         report['baseline']['positions'] or report['candidate']['positions']) else 0
     maximum = min(12, row['spec'].get('maximum_cycles', 12))
     action, reason = 'continue', 'More completed comparisons across independent days are needed.'
-    # At most twelve predeclared weekly looks, with a more conservative 4.5 bound
+    # At most twelve predeclared periodic looks, with a more conservative 4.5 bound
     # for up to ten tests. This is a screening heuristic, not calibrated live proof.
     if report['verdict'] == 'recommended':
         action, reason = 'recommend', 'Frozen sample, cost and risk gates passed for paper review; this is not proof of live profitability.'
-    elif cycle >= maximum or now >= e.stamp(row['created_at']) + timedelta(days=7*maximum):
+    elif cycle >= maximum or now >= e.stamp(row['created_at']) + timedelta(days=interval*maximum):
         action = 'recommend' if report['verdict'] == 'recommended' else 'stop'
         reason = 'Final predeclared checkpoint reached; evidence gates ' + ('passed for paper review, not live proof.' if action == 'recommend' else 'do not support adoption.')
     elif stalled >= 2 or uninformative >= 2:
-        action, reason = 'stop', 'Two weekly cycles produced no useful trading evidence or no progress; release this experiment slot.'
+        action, reason = 'stop', 'Two review cycles produced no useful trading evidence or no progress; release this experiment slot.'
     elif report['candidate']['max_drawdown'] > row['spec']['max_drawdown_fraction']:
         action, reason = 'stop', 'The simulated candidate exceeded its frozen drawdown limit.'
     elif closed == 0:
@@ -53,7 +53,7 @@ def weekly_review(conn, row, now):
         'interpretation_status': 'pending',
     }
     if action == 'continue':
-        state['next_review_at'] = (now + timedelta(days=7)).isoformat()
+        state['next_review_at'] = (now + timedelta(days=interval)).isoformat()
         finding['next_review_at'] = state['next_review_at']
         report.update(finished=False, verdict='pending', evaluate_after=state['next_review_at'])
     else:

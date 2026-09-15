@@ -18,6 +18,8 @@ from pathlib import Path
 
 from .database import connect, uses_postgres
 
+REVIEW_INTERVAL_DAYS = 3
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS RULE_EXPERIMENTS (
  id TEXT PRIMARY KEY, owner TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -122,6 +124,21 @@ def number(value, low, high):
     return v
 
 
+def review_interval_days(spec):
+    """Bounded periodic checkpoint cadence; evidence gates remain independent."""
+    return int(number(spec.get('review_interval_days', REVIEW_INTERVAL_DAYS), 1, 14))
+
+
+def review_due_at(row):
+    """Earliest declared/stored checkpoint, so existing seven-day tests accelerate safely."""
+    state = row.get('state', {})
+    last = state.get('last_weekly_review', {})
+    anchor = stamp(last.get('reviewed_at') or row['created_at'])
+    desired = anchor + timedelta(days=review_interval_days(row['spec']))
+    stored = stamp(state['next_review_at']) if state.get('next_review_at') else desired
+    return min(stored, desired)
+
+
 def validate_spec(raw):
     if raw.get('rule_type') not in ('minimum_target_r', 'replace_target_r_gate', 'reference_set_filter', 'minimum_target_move_bps'):
         raise ValueError('Development required: unsupported rule type')
@@ -150,7 +167,8 @@ def validate_spec(raw):
                 max_positions=5, max_holding_days=10,
                 cost_bps_per_leg=80.0 if broker == 'kraken' else 10.0, slippage_bps_per_leg=10.0,
                 costs_status='conservative scenario, not reconciled broker costs',
-                evaluation_days=7, weekly_reviews=True, maximum_cycles=12, minimum_opportunities=60,
+                evaluation_days=REVIEW_INTERVAL_DAYS, review_interval_days=REVIEW_INTERVAL_DAYS,
+                weekly_reviews=True, maximum_cycles=12, minimum_opportunities=60,
                 minimum_symbol_days=40, max_drawdown_fraction=0.05,
                 execution_tolerances=dict(entry_bps=50, exit_bps=50, holding_hours=24, cost_bps=25, minimum_pairs=20),
                 execution_validated=False, adoption_environment='paper')
@@ -441,8 +459,9 @@ def evaluate(row, ops, *, now):
         days.setdefault(o['time'][:10], []).append(o['arms']['candidate']['net'] - o['arms']['baseline']['net'])
     groups = [statistics.mean(values) for values in days.values()]
     lower = statistics.mean(groups) - (4.5 if row['spec'].get('weekly_reviews') else 3) * statistics.stdev(groups) / math.sqrt(len(groups)) if len(groups) > 1 else None
-    ends = stamp(row['state'].get('next_review_at') or
-                 (stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])).isoformat())
+    ends = review_due_at(row) if row['spec'].get('weekly_reviews') else stamp(
+        (stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])).isoformat()
+    )
     finished = now >= ends and (len(complete) == len(ops) or now >= ends + timedelta(days=15))
     verdict = 'insufficient_evidence'
     if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len(groups) >= 30 and len({(o['symbol'], o['time'][:10]) for o in usable}) >= row['spec']['minimum_symbol_days']:
@@ -495,7 +514,7 @@ def list_experiments(db, *, owner='founder', before='', attention=False, view=''
             r = dict(r)
             spec = json.loads(r.pop('spec_json'))
             r['hypothesis'] = spec['hypothesis']
-            r['spec'] = {k:spec.get(k) for k in ('evaluation_days','weekly_reviews')}
+            r['spec'] = {k:spec.get(k) for k in ('evaluation_days','review_interval_days','weekly_reviews')}
             r.update(broker=spec['broker'], currency=spec.get('currency', 'USD'), problem=spec.get('problem'),
                      expected_benefit=spec.get('expected_benefit'), priority=spec.get('priority', 3))
             r['report'] = json.loads(r.pop('report_json'))

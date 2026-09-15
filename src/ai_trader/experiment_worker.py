@@ -199,9 +199,14 @@ def tick(db, settings, *, now=None, answer=None):
         review_due = grouped_review(db, settings, now, policy, answer=answer)
         with exp.transaction(db) as conn:
             running = conn.execute("SELECT created_at,spec_json,state_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 10").fetchall()
-            checkpoint_due = any(json.loads(r['spec_json']).get('weekly_reviews') and
-                exp.stamp(json.loads(r['state_json']).get('next_review_at') or (exp.stamp(r['created_at'])+timedelta(days=7)).isoformat()) <= exp.stamp(now)
-                for r in running)
+            checkpoint_due = any(
+                json.loads(r['spec_json']).get('weekly_reviews') and exp.review_due_at({
+                    'created_at': r['created_at'],
+                    'spec': json.loads(r['spec_json']),
+                    'state': json.loads(r['state_json']),
+                }) <= exp.stamp(now)
+                for r in running
+            )
         # Reviews first, then justified new hypotheses. Reference arms consume
         # only unused daily allowance; they must not starve the whole pipeline.
         proposal = 'grouped_review_priority' if review_due or checkpoint_due else propose(db, settings, now, policy, answer=answer)
@@ -237,7 +242,10 @@ def tick(db, settings, *, now=None, answer=None):
                 continue
             cursor = row['state']['cursor']
             # Decision ingestion stops at frozen evaluation deadline, not indefinitely.
-            deadline = exp.stamp(row['created_at']) + timedelta(days=84 if row['spec'].get('weekly_reviews') else row['spec']['evaluation_days'])
+            deadline = exp.stamp(row['created_at']) + timedelta(
+                exp.review_interval_days(row['spec']) * row['spec'].get('maximum_cycles', 12)
+                if row['spec'].get('weekly_reviews') else row['spec']['evaluation_days']
+            )
             for d in decision_cache[row['spec']['broker']]:
                 if d['decision_id'] <= cursor or exp.stamp(d['created_at']) < exp.stamp(row['created_at']):
                     continue

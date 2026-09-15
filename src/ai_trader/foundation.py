@@ -542,13 +542,36 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
     initialize_foundation_schema(db_path)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        investment = _policy_map(conn, "INVESTMENT_POLICIES")
-        risk = _policy_map(conn, "RISK_POLICIES")
+        # This policy is loaded for every candidate.  The old implementation made five
+        # pooler round trips (investment, risk, then three broker keys) even though all five
+        # reads form one point-in-time policy snapshot.  Keep the snapshot fresh, but fetch
+        # it in one request so a safety decision never depends on a TTL cache.
+        policy_rows = conn.execute(
+            """
+            SELECT 'investment' AS scope, NULL AS broker, policy_key, policy_value, value_type
+            FROM INVESTMENT_POLICIES WHERE active = 1
+            UNION ALL
+            SELECT 'risk' AS scope, NULL AS broker, policy_key, policy_value, value_type
+            FROM RISK_POLICIES WHERE active = 1
+            UNION ALL
+            SELECT 'broker' AS scope, broker, policy_key, policy_value, value_type
+            FROM BROKER_POLICIES
+            WHERE active = 1 AND policy_key IN (
+                'enabled', 'maximum_concurrent_positions', 'minimum_stop_loss_pct'
+            )
+            """
+        ).fetchall()
+        investment = {
+            row["policy_key"]: _parse_value(row["policy_value"], row["value_type"])
+            for row in policy_rows if row["scope"] == "investment"
+        }
+        risk = {
+            row["policy_key"]: _parse_value(row["policy_value"], row["value_type"])
+            for row in policy_rows if row["scope"] == "risk"
+        }
         brokers = {
             row["broker"]: _parse_value(row["policy_value"], row["value_type"])
-            for row in conn.execute(
-                "SELECT broker, policy_value, value_type FROM BROKER_POLICIES WHERE policy_key = 'enabled' AND active = 1"
-            )
+            for row in policy_rows if row["scope"] == "broker" and row["policy_key"] == "enabled"
         }
         # 2026-09-01, Founder-directed: "what can we do to increase the number of trades that
         # can be done on alpaca."
@@ -564,17 +587,13 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         # with no explicit value keeps the shared one, so nothing changes by accident.
         broker_position_caps = {
             row["broker"]: _parse_value(row["policy_value"], row["value_type"])
-            for row in conn.execute(
-                "SELECT broker, policy_value, value_type FROM BROKER_POLICIES "
-                "WHERE policy_key = 'maximum_concurrent_positions' AND active = 1"
-            )
+            for row in policy_rows
+            if row["scope"] == "broker" and row["policy_key"] == "maximum_concurrent_positions"
         }
         broker_min_stop_loss_pct = {
             row["broker"]: _parse_value(row["policy_value"], row["value_type"])
-            for row in conn.execute(
-                "SELECT broker, policy_value, value_type FROM BROKER_POLICIES "
-                "WHERE policy_key = 'minimum_stop_loss_pct' AND active = 1"
-            )
+            for row in policy_rows
+            if row["scope"] == "broker" and row["policy_key"] == "minimum_stop_loss_pct"
         }
     # 2026-09-02, P4 of the "one home per decision" work: every number below now comes
     # from decision_registry.DECISIONS instead of being resolved by hand here.
@@ -795,22 +814,16 @@ def _macro_context_available(conn: sqlite3.Connection, proposal: TradeProposal) 
         keywords = {word.lower() for word in f"{company[0] or ''} {company[1] or ''}".split() if len(word) > 3}
         if not keywords:
             return False
-        themes = conn.execute("SELECT theme, summary, key_drivers FROM MARKET_THEMES").fetchall()
-        for theme_row in themes:
-            # 2026-08-24 hosted incident: this iterated the row directly. Under SQLite a
-            # row is a tuple, so that yields the three VALUES and matching works. Under
-            # Postgres a row is HybridRow, a dict subclass, so iterating yields the three
-            # KEYS -- the haystack became the literal string "theme summary key_drivers"
-            # and no company keyword could ever match it. Every equity therefore scored
-            # macro_status insufficient_data and macro_score 0, which failed due diligence
-            # outright AND dragged the seven-part investment score below its minimum, so
-            # Alpaca could not trade at all. Silent, backend-specific, and invisible to a
-            # test suite that only runs SQLite. Indexed by position because HybridRow
-            # deliberately preserves integer indexing, so this reads values on both.
-            haystack = " ".join(str(theme_row[index] or "") for index in range(3)).lower()
-            if any(keyword in haystack for keyword in keywords):
-                return True
-        return False
+        # Return only existence, rather than transferring every theme row to Python for
+        # every equity candidate.  This preserves the former case-insensitive substring
+        # match while reducing the normal result from every theme to zero or one row.
+        haystack = "LOWER(COALESCE(theme, '') || ' ' || COALESCE(summary, '') || ' ' || COALESCE(key_drivers, ''))"
+        ordered = sorted(keywords)
+        match = conn.execute(
+            f"SELECT 1 FROM MARKET_THEMES WHERE {' OR '.join(haystack + ' LIKE ?' for _ in ordered)} LIMIT 1",
+            tuple(f"%{keyword}%" for keyword in ordered),
+        ).fetchone()
+        return bool(match)
     except sqlite3.OperationalError:
         return False
 

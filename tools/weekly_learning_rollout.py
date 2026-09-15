@@ -16,18 +16,21 @@ def migrate_schedule(db, now):
             c.execute('SELECT pg_advisory_xact_lock(71911501)')
         for record in c.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') LIMIT 24").fetchall():
             row=e._load(c,record[0])
-            if row['spec'].get('weekly_reviews'):
+            if row['spec'].get('weekly_reviews') and row['spec'].get('review_interval_days') == e.REVIEW_INTERVAL_DAYS:
                 continue
             previous={'spec':row['spec'].copy(),'version':row['version'],'report':row['report'].copy()}
-            row['spec'].update(weekly_reviews=True,evaluation_days=7,maximum_cycles=12,
+            row['spec'].update(weekly_reviews=True,evaluation_days=e.REVIEW_INTERVAL_DAYS,
+                               review_interval_days=e.REVIEW_INTERVAL_DAYS,maximum_cycles=12,
                                baseline_fingerprint=e.baseline_fingerprint())
             row['version']=e.digest(row['spec'])
-            row['state']['next_review_at']=(e.stamp(row['created_at'])+timedelta(days=7)).isoformat()
+            accelerated=(e.stamp(row['created_at'])+timedelta(days=e.REVIEW_INTERVAL_DAYS)).isoformat()
+            existing=row['state'].get('next_review_at')
+            row['state']['next_review_at']=min(existing, accelerated) if existing else accelerated
             row['state'].pop('execution_validation',None)
             row['report']['evaluate_after']=row['state']['next_review_at']
             c.execute('UPDATE RULE_EXPERIMENTS SET version=?,spec_json=? WHERE id=?',
                       (row['version'],e.dump(row['spec']),row['id']))
-            e._event(c,row,'weekly_schedule_migrated',previous,'weekly-migration:'+row['id'])
+            e._event(c,row,'review_schedule_migrated',previous,'three-day-migration:'+row['id'])
             e._save(c,row)
 
 

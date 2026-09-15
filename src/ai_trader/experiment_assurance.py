@@ -190,6 +190,9 @@ def start_queued(db, now):
             row['state']['cursor'] = conn.execute('SELECT COALESCE(MAX(decision_id),0) FROM DECISION_JOURNAL').fetchone()[0]
             row['state']['queued_at'] = queued_at
             row['state']['started_at'] = now
+            row['state']['next_review_at'] = (
+                e.stamp(now) + timedelta(days=e.review_interval_days(row['spec']))
+            ).isoformat()
             row['created_at'] = now
             row['status'] = 'shadow_running'
             conn.execute('UPDATE RULE_EXPERIMENTS SET created_at=?,version=?,spec_json=? WHERE id=?',

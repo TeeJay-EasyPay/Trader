@@ -149,7 +149,9 @@ def upsert_asset_metadata(
 
 def calculate_portfolio_exposure(db_path: Path, positions: list[dict[str, Any]], *, broker: str | None = None) -> dict[str, Any]:
     initialize_portfolio_intelligence_schema(db_path)
-    metadata = _metadata_by_symbol(db_path)
+    held_symbols = {str(item.get("symbol") or item.get("pair") or "").upper() for item in positions}
+    held_symbols.discard("")
+    metadata = _metadata_by_symbol(db_path, held_symbols)
     total = sum(max(0.0, _float(item.get("market_value") or item.get("notional") or item.get("value")) or 0.0) for item in positions)
     buckets: dict[str, dict[str, float]] = {
         "asset_class": defaultdict(float),
@@ -292,21 +294,32 @@ def proposed_trade_portfolio_impact(
     }
 
 
-def _metadata_by_symbol(db_path: Path) -> dict[str, dict[str, Any]]:
+def _metadata_by_symbol(db_path: Path, symbols: set[str] | None = None) -> dict[str, dict[str, Any]]:
+    if symbols is not None and not symbols:
+        return {}
+    normalized = sorted({str(symbol).upper() for symbol in symbols or () if symbol})
+    scope = ""
+    params: tuple[Any, ...] = ()
+    if normalized:
+        placeholders = ",".join("?" for _ in normalized)
+        scope = f"WHERE UPPER(symbol) IN ({placeholders})"
+        params = tuple(normalized)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM ASSET_METADATA
             WHERE metadata_id IN (
                 SELECT MAX(metadata_id)
                 FROM ASSET_METADATA
+                {scope}
                 GROUP BY symbol
             )
-            """
+            """,
+            params,
         ).fetchall()
-    return {row["symbol"]: dict(row) for row in rows}
+    return {str(row["symbol"]).upper(): dict(row) for row in rows}
 
 
 def _bucket_percentages(values: dict[str, float], total: float) -> dict[str, dict[str, float | None]]:

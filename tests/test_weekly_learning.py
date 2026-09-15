@@ -33,16 +33,16 @@ def test_equivalent_hypothesis_is_not_a_new_test(db):
         e.create_experiment(db,row['spec'],queue=True)
 
 
-def test_weekly_continuation_keeps_books_and_stops_stalled_test(db):
+def test_three_day_continuation_keeps_books_and_stops_stalled_test(db):
     row=create(db)
     e.add_opportunity(db,row['id'],{**op(),'eligible':False,'rejection_reasons':['risk_limit']})
-    first=e.settle_bars(db,row['id'],[],now='2026-09-08T01:00:00+00:00')
+    first=e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
     assert first['status']=='shadow_running'
     assert first['state']['review_cycle']==1
     assert first['report']['observations']==1
-    assert first['state']['next_review_at']=='2026-09-15T01:00:00+00:00'
-    e.settle_bars(db,row['id'],[],now='2026-09-15T01:00:00+00:00')
-    third=e.settle_bars(db,row['id'],[],now='2026-09-22T01:00:00+00:00')
+    assert first['state']['next_review_at']=='2026-09-07T01:00:00+00:00'
+    e.settle_bars(db,row['id'],[],now='2026-09-07T01:00:00+00:00')
+    third=e.settle_bars(db,row['id'],[],now='2026-09-10T01:00:00+00:00')
     assert third['status']=='insufficient_evidence'
     assert third['report']['closed_trades']=={'baseline':0,'candidate':0}
     findings=period(db,'2026-09-01','2026-10-01')['findings']
@@ -50,10 +50,10 @@ def test_weekly_continuation_keeps_books_and_stops_stalled_test(db):
     assert all(f['source_type']=='experiment_review' for f in findings)
 
 
-def test_weekly_review_preserves_open_positions(db):
+def test_three_day_review_preserves_open_positions(db):
     row=create(db)
     e.add_opportunity(db,row['id'],op())
-    first=e.settle_bars(db,row['id'],[],now='2026-09-08T00:00:00+00:00')
+    first=e.settle_bars(db,row['id'],[],now='2026-09-04T00:00:00+00:00')
     assert first['report']['completed']==0
     assert e.detail(db,row['id'])['opportunities'][0]['arms']['baseline']['status']=='awaiting_bar'
     assert first['status']=='shadow_running'
@@ -63,14 +63,14 @@ def test_grouped_call_shared_budget_and_invalid_ids(db):
     rows=variants(db,2)
     a.start_queued(db,'2026-09-01T00:00:00+00:00')
     for row in rows:
-        e.settle_bars(db,row['id'],[],now='2026-09-08T01:00:00+00:00')
+        e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
     calls=[]
     def answer(q,context):
         calls.append(context)
         return json.dumps({'reviews':[{'id':'invented','version':'x','summary':'Great'}]})
     policy={**e.DEFAULT_POLICY,'model_enabled':True}
-    assert grouped_review(db,None,'2026-09-08T02:00:00+00:00',policy,answer)
-    grouped_review(db,None,'2026-09-08T03:00:00+00:00',policy,answer)
+    assert grouped_review(db,None,'2026-09-04T02:00:00+00:00',policy,answer)
+    grouped_review(db,None,'2026-09-04T03:00:00+00:00',policy,answer)
     assert len(calls)==1 and len(calls[0]['reviews'])==2
     with e.transaction(db) as c:
         assert e.control(c,'proposal_attempt')['status']=='grouped_review_failed'
@@ -108,6 +108,6 @@ def test_schedule_migration_keeps_existing_evidence_and_books(db):
     assert updated['created_at']==row['created_at']
     assert updated['state']['baseline']==row['state']['baseline']
     assert len(updated['opportunities'])==1
-    assert updated['state']['next_review_at']=='2026-09-08T00:00:00+00:00'
+    assert updated['state']['next_review_at']=='2026-09-04T00:00:00+00:00'
     module.migrate_schedule(db,'2026-09-03T00:00:00+00:00')
-    assert len([event for event in e.detail(db,row['id'])['events'] if event['action']=='weekly_schedule_migrated'])==1
+    assert len([event for event in e.detail(db,row['id'])['events'] if event['action']=='review_schedule_migrated'])==1

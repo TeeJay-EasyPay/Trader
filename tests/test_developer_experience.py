@@ -1336,6 +1336,15 @@ class MacroContextBackendShapeTests(unittest.TestCase):
 
             if "COMPANY_MASTER" in sql:
                 rows = [HybridRow(self._company)] if self._company else []
+            elif "SELECT 1 FROM MARKET_THEMES" in sql:
+                haystack = " ".join(
+                    str(theme.get(key) or "")
+                    for theme in self._themes
+                    for key in ("theme", "summary", "key_drivers")
+                ).lower()
+                rows = [HybridRow({"matched": 1})] if any(
+                    str(parameter).strip("%").lower() in haystack for parameter in params
+                ) else []
             else:
                 rows = [HybridRow(theme) for theme in self._themes]
 

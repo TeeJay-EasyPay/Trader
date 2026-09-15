@@ -5844,3 +5844,48 @@ read-only question. Its answer was treated as a lead, not as authority to change
   read back 80 symbols on the latest completed-bar date and the broker-separated shadow
   outcomes, confirming that the new evidence reached the model rather than merely passing a
   local test.
+
+## 2026-09-15 — Second egress pass and three-day experiment checkpoints
+
+The Founder requested another measured pass over Supabase egress and asked whether the
+seven-day experiment window could be shortened to speed learning. A five-minute production
+`pg_stat_statements` window was captured without resetting database history. It measured
+317 SELECT calls and approximately 0.7 MB of result data, including the audit's own catalog
+queries. The recurring application reads in that window exposed three safe reductions.
+
+### Measured reductions implemented
+
+| Read | Before in 5m 23s | After design | Estimated steady-state effect |
+|---|---:|---:|---:|
+| Trading policy snapshot | 70 requests / 462 rows | 14 requests / same current rows | 80% fewer policy round trips; no cache or stale safety values |
+| Asset metadata for exposure | 7 requests / 343 rows (49 per request) | one row per held symbol; no request for an empty portfolio | about 90–96% fewer rows for a typical 2–5-position account; measured baseline was about 35 MB/day |
+| Equity macro-theme match | 14 requests / 210 rows (15 per request) | 14 requests / at most 14 one-column rows | at least 93% fewer rows; measured baseline was about 23 MB/day |
+
+At the observed rate, the two payload reductions target roughly 50–55 MB/day. This is an
+engineering estimate from measured column widths and call rates, not a promise about the
+Supabase billing graph: the graph includes pooler and protocol overhead plus Auth, Storage,
+Realtime, API, Edge Functions and dashboard traffic. The unexplained `pg_timezone_names`
+query did not recur during this window and no caller exists in the repository, so no trading
+code was changed speculatively to address it.
+
+### Faster experiments without weaker evidence
+
+- New and existing governed shadow experiments now review every three calendar days.
+- The seven active production experiments are migrated in place: identifiers, opportunity
+  rows, virtual books and accumulated evidence are retained, and any later seven-day due date
+  is only brought forward.
+- Statistical and safety gates are unchanged: at least 60 usable opportunities, 40 symbol-days,
+  30 day clusters, the conservative lower bound, drawdown gate, execution validation and
+  paper-only human review are still required. Three days means earlier feedback and earlier
+  release of experiments that make no progress; it does not manufacture a three-day verdict.
+- Twelve checkpoints now bound a run to 36 rather than 84 calendar days when evidence remains
+  incomplete.
+
+### Verification
+
+- Focused request-count and experiment-schedule suite: 9 passed.
+- Broader policy, metadata, macro-context, experiment and developer-experience regression
+  pass: 68 passed.
+- The three consolidated/scoped SQL shapes were executed read-only against production
+  PostgreSQL: 33 current policy rows, one matching row for two scoped metadata symbols, and
+  one macro-theme existence row.
