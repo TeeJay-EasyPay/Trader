@@ -5836,3 +5836,11 @@ read-only question. Its answer was treated as a lead, not as authority to change
 - Focused evidence, assessment and egress regression suite: 27 passed.
 - Read-only production validation: 61 Alpaca month outcomes; 50 linked planned stops; 61/61
   closing-order types verified; 42 stop fills.
+- Release `a3594070` was pushed to `master` and verified on both Render services. The API
+  reported the exact revision; the replacement background worker reported the same revision,
+  entered startup reconciliation, and had no error.
+- A new production Trader turn after deployment correctly separated 50 planned-stop links,
+  42 verified stop-fill exits, and the still-unproved continuous-protection question. It also
+  read back 80 symbols on the latest completed-bar date and the broker-separated shadow
+  outcomes, confirming that the new evidence reached the model rather than merely passing a
+  local test.
