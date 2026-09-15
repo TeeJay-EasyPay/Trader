@@ -83,19 +83,20 @@ def verify_alpaca_protection(
         conn.row_factory = sqlite3.Row
         trades = conn.execute(
             "SELECT logical_trade_id,symbol,original_stop,entry_filled_quantity,"
-            "exit_filled_quantity,remaining_quantity FROM LOGICAL_TRADES "
+            "exit_filled_quantity,remaining_quantity,side,created_at FROM LOGICAL_TRADES "
             "WHERE broker='alpaca' AND terminal=0 AND entry_filled_quantity>exit_filled_quantity"
         ).fetchall()
         trades = [row for row in trades if str(row["symbol"] or "").upper() in live_positions]
-        if not trades:
-            return {"checked": 0, "changed": 0, "protected": 0, "gaps": 0, "unknown": 0}
         ids = [str(row["logical_trade_id"]) for row in trades]
-        marks = ",".join("?" for _ in ids)
-        links = conn.execute(
-            "SELECT logical_trade_id,broker_order_id,stage FROM LOGICAL_TRADE_EVENTS "
-            f"WHERE logical_trade_id IN ({marks}) AND broker_order_id IS NOT NULL",
-            tuple(ids),
-        ).fetchall()
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            links = conn.execute(
+                "SELECT logical_trade_id,broker_order_id,stage FROM LOGICAL_TRADE_EVENTS "
+                f"WHERE logical_trade_id IN ({marks}) AND broker_order_id IS NOT NULL",
+                tuple(ids),
+            ).fetchall()
+        else:
+            links = []
         try:
             managed_stops = conn.execute(
                 "SELECT entry_order_id,native_stop_order_id FROM MANAGED_TRADE_EXITS "
@@ -105,10 +106,7 @@ def verify_alpaca_protection(
             managed_stops = []
         current = {
             str(row["logical_trade_id"]): str(row["evidence_digest"])
-            for row in conn.execute(
-                f"SELECT logical_trade_id,evidence_digest FROM ALPACA_PROTECTION_STATE WHERE logical_trade_id IN ({marks})",
-                tuple(ids),
-            ).fetchall()
+            for row in conn.execute("SELECT logical_trade_id,evidence_digest FROM ALPACA_PROTECTION_STATE").fetchall()
         }
 
     linked: dict[str, set[str]] = {trade_id: set() for trade_id in ids}
@@ -124,24 +122,50 @@ def verify_alpaca_protection(
             if entry_id and entry_id in entry_ids:
                 linked[trade_id].add(str(row["native_stop_order_id"]))
 
-    observations: list[dict[str, Any]] = []
+    by_symbol: dict[str, list[Any]] = {}
     for trade in trades:
-        trade_id = str(trade["logical_trade_id"])
-        expected_qty = live_positions.get(str(trade["symbol"] or "").upper(), 0.0)
-        candidates = []
+        by_symbol.setdefault(str(trade["symbol"] or "").upper(), []).append(trade)
+
+    observations: list[dict[str, Any]] = []
+    for symbol, expected_qty in live_positions.items():
+        symbol_trades = by_symbol.get(symbol, [])
+        direct: list[tuple[Any, list[dict[str, Any]]]] = []
+        all_symbol_stops: list[dict[str, Any]] = []
         for order in orders:
             oid = str(order.get("id") or order.get("order_id") or "")
             parent = str(order.get("parent_order_id") or "")
             kind = str(order.get("type") or order.get("order_type") or "").lower()
-            if kind in STOP_TYPES and (oid in linked[trade_id] or parent in entries[trade_id]):
-                candidates.append(order)
+            if kind not in STOP_TYPES:
+                continue
+            for trade in symbol_trades:
+                trade_id = str(trade["logical_trade_id"])
+                if oid in linked[trade_id] or parent in entries[trade_id]:
+                    match = next((pair for pair in direct if pair[0] is trade), None)
+                    if match is None:
+                        direct.append((trade, [order]))
+                    else:
+                        match[1].append(order)
+            if str(order.get("symbol") or "").upper() == symbol:
+                all_symbol_stops.append(order)
+        if direct:
+            trade, candidates = max(direct, key=lambda pair: str(pair[0]["created_at"] or ""))
+            correlation = "broker_order_identity"
+        elif symbol_trades:
+            trade = max(symbol_trades, key=lambda row: str(row["created_at"] or ""))
+            candidates = all_symbol_stops
+            correlation = "broker_position_symbol_quantity"
+        else:
+            trade = None
+            candidates = all_symbol_stops
+            correlation = "broker_position_symbol_quantity"
+        trade_id = str(trade["logical_trade_id"]) if trade is not None else f"alpaca-position:{symbol}"
         active = [order for order in candidates if str(order.get("status") or "").lower() in ACTIVE]
         best = max(active, key=lambda order: _float(order.get("qty") or order.get("quantity")) or 0, default=None)
         protected_qty = _float((best or {}).get("qty") or (best or {}).get("quantity")) or 0.0
-        expected_stop = _float(trade["original_stop"])
+        expected_stop = _float(trade["original_stop"]) if trade is not None else None
         observed_stop = _float((best or {}).get("stop_price"))
         if best is None:
-            status = "unprotected" if candidates else "unknown"
+            status = "unprotected"
         elif protected_qty + 1e-9 < expected_qty:
             status = "undersized"
         elif expected_stop is not None and observed_stop is not None and abs(expected_stop - observed_stop) > max(0.01, abs(expected_stop) * 0.001):
@@ -149,11 +173,13 @@ def verify_alpaca_protection(
         else:
             status = "protected"
         evidence = {
-            "symbol": trade["symbol"], "status": status,
+            "symbol": symbol, "status": status,
             "expected_quantity": round(expected_qty, 8), "protected_quantity": round(protected_qty, 8),
             "expected_stop": expected_stop, "observed_stop": observed_stop,
             "stop_order_id": str((best or {}).get("id") or (best or {}).get("order_id") or "") or None,
             "candidate_stop_orders": len(candidates),
+            "correlation_basis": correlation,
+            "contract_price_verified": expected_stop is not None and observed_stop is not None,
         }
         digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         evidence["digest"] = digest
