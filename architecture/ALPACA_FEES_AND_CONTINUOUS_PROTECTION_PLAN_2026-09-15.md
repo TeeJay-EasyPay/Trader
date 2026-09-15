@@ -1,6 +1,6 @@
 # Alpaca Fees and Continuous Protection Implementation Plan
 
-Date: 2026-09-15  
+Date: 2026-09-15
 Status: Approved for implementation; not yet implemented
 
 ## Objective
