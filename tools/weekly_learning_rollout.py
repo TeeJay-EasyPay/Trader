@@ -61,7 +61,7 @@ def main():
         migrate_schedule(db,e.now_iso())
         from ai_trader.learning_findings import capture
         capture(db,e.now_iso())
-        print('Weekly schedules migrated without resetting observations or virtual books.')
+        print('Three-day review schedules migrated without resetting observations or virtual books.')
     elif args.action=='resume':
         with e.transaction(db) as c:
             prior=e.control(c,'weekly_rollout_previous_policy')

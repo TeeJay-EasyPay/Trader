@@ -5889,3 +5889,9 @@ code was changed speculatively to address it.
 - The three consolidated/scoped SQL shapes were executed read-only against production
   PostgreSQL: 33 current policy rows, one matching row for two scoped metadata symbols, and
   one macro-theme existence row.
+- Release `a9ffcbe2` was pushed to `master` and verified on both Render services. The API
+  and replacement background worker reported the exact revision. Shadow scheduling alone
+  was paused during rollout; trading controls were left unchanged.
+- All seven active experiment records were migrated in place and the scheduler was resumed.
+  The pre-migration 30 opportunity rows remained attached to the same experiment IDs
+  (12 + 6 + 6 + 6); all seven specs now report `review_interval_days = 3`.
