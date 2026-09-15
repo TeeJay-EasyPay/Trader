@@ -65,8 +65,19 @@ def _float(value: Any) -> float | None:
         return None
 
 
-def verify_alpaca_protection(db_path: Path, orders: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compare canonical open exposure with stops in the already-fetched order response."""
+def verify_alpaca_protection(
+    db_path: Path,
+    orders: list[dict[str, Any]],
+    positions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Compare current broker positions with canonical exposure and protective orders."""
+    if positions is None:
+        return {"status": "unavailable", "checked": 0, "changed": 0, "protected": 0, "gaps": 0, "unknown": 0}
+    live_positions = {
+        str(item.get("symbol") or "").upper(): abs(_float(item.get("qty") or item.get("quantity")) or 0.0)
+        for item in positions if isinstance(item, dict)
+    }
+    live_positions = {symbol: qty for symbol, qty in live_positions.items() if symbol and qty > 0}
     initialize_alpaca_protection_schema(db_path)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -75,6 +86,7 @@ def verify_alpaca_protection(db_path: Path, orders: list[dict[str, Any]]) -> dic
             "exit_filled_quantity,remaining_quantity FROM LOGICAL_TRADES "
             "WHERE broker='alpaca' AND terminal=0 AND entry_filled_quantity>exit_filled_quantity"
         ).fetchall()
+        trades = [row for row in trades if str(row["symbol"] or "").upper() in live_positions]
         if not trades:
             return {"checked": 0, "changed": 0, "protected": 0, "gaps": 0, "unknown": 0}
         ids = [str(row["logical_trade_id"]) for row in trades]
@@ -115,7 +127,7 @@ def verify_alpaca_protection(db_path: Path, orders: list[dict[str, Any]]) -> dic
     observations: list[dict[str, Any]] = []
     for trade in trades:
         trade_id = str(trade["logical_trade_id"])
-        expected_qty = max(0.0, float(trade["remaining_quantity"] or (float(trade["entry_filled_quantity"] or 0) - float(trade["exit_filled_quantity"] or 0))))
+        expected_qty = live_positions.get(str(trade["symbol"] or "").upper(), 0.0)
         candidates = []
         for order in orders:
             oid = str(order.get("id") or order.get("order_id") or "")

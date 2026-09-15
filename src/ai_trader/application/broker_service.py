@@ -306,7 +306,14 @@ class BrokerService:
                 )
                 continue
             fee_result: dict[str, Any] | None = None
+            alpaca_positions: list[dict[str, Any]] | None = None
             if broker_name == "alpaca":
+                position_reader = getattr(adapter, "get_positions", None)
+                if callable(position_reader):
+                    try:
+                        alpaca_positions = list(position_reader())
+                    except Exception as exc:
+                        logger.warning("Alpaca position snapshot for protection verification failed: %s", exc)
                 fee_reader = getattr(adapter, "get_fee_history", None)
                 if callable(fee_reader):
                     try:
@@ -390,7 +397,7 @@ class BrokerService:
                 elif alpaca_outcomes.get("status") == "failed":
                     print(f"[alpaca-reconciliation] failed: {alpaca_outcomes.get('error')}", flush=True)
                 try:
-                    protection = verify_alpaca_protection(self.settings.db_path, list(orders))
+                    protection = verify_alpaca_protection(self.settings.db_path, list(orders), alpaca_positions)
                     for change in protection.get("changes") or []:
                         trade_id = str(change.get("logical_trade_id") or "")
                         status = str(change.get("status") or "unknown")

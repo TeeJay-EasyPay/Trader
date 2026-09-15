@@ -5922,9 +5922,9 @@ they be implemented and deployed without pausing for intermediate approval.
 
 ### Continuous Alpaca broker protection evidence
 
-- Every existing Alpaca broker poll now compares AI-managed open canonical exposure with the
-  protective orders already returned by that poll. No second order/position polling loop was
-  introduced.
+- Every existing Alpaca broker poll now compares one bounded current-position snapshot and
+  AI-managed canonical exposure with the protective orders returned in the same cycle. No
+  second polling loop or per-position database query was introduced.
 - Bracket children are correlated through Alpaca parent identity; standalone native trailing
   stops are correlated through the managed-exit ledger. Quantity, active status and fixed-stop
   price tolerance are checked. An unprovable relationship is `unknown`, never `protected`.

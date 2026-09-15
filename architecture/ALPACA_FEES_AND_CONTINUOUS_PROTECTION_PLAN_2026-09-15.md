@@ -72,8 +72,9 @@ guardrails, activate live trading, or manufacture evidence that Alpaca does not 
 
 ### 1. Reuse existing polling data
 
-- Use the Alpaca positions and nested order/leg responses already fetched by broker polling.
-- Do not introduce a second high-frequency broker request or a per-position Supabase query.
+- Use one bounded Alpaca position snapshot plus the nested order/leg response in the existing
+  ten-minute broker cycle.
+- Do not introduce a second high-frequency polling loop or a per-position Supabase query.
 - Build one in-memory map of open positions and one map of active protective stop legs per poll.
 
 ### 2. Verify the protection contract

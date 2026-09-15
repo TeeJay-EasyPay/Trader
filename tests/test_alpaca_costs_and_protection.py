@@ -54,9 +54,10 @@ def test_continuous_protection_writes_only_on_change(tmp_path, monkeypatch):
         conn.commit()
     orders = [{"id": "stop-1", "parent_order_id": "entry-1", "type": "stop", "status": "new",
                "qty": "2", "stop_price": "95"}]
-    first = verify_alpaca_protection(db, orders)
-    second = verify_alpaca_protection(db, orders)
-    gap = verify_alpaca_protection(db, [{**orders[0], "status": "canceled"}])
+    positions = [{"symbol": "AAPL", "qty": "2"}]
+    first = verify_alpaca_protection(db, orders, positions)
+    second = verify_alpaca_protection(db, orders, positions)
+    gap = verify_alpaca_protection(db, [{**orders[0], "status": "canceled"}], positions)
     assert first["protected"] == 1 and first["changed"] == 1
     assert second["protected"] == 1 and second["changed"] == 0
     assert gap["gaps"] == 1 and gap["changed"] == 1
@@ -82,7 +83,8 @@ def test_protection_detects_undersized_stop_and_accepts_active_successor(tmp_pat
         )
         conn.commit()
     undersized = {"id": "old-stop", "parent_order_id": "entry-2", "type": "stop", "status": "new", "qty": "1", "stop_price": "90"}
-    assert verify_alpaca_protection(db, [undersized])["gaps"] == 1
+    positions = [{"symbol": "MSFT", "qty": "3"}]
+    assert verify_alpaca_protection(db, [undersized], positions)["gaps"] == 1
     successor = {"id": "new-stop", "parent_order_id": "entry-2", "type": "stop", "status": "accepted", "qty": "3", "stop_price": "90"}
-    result = verify_alpaca_protection(db, [{**undersized, "status": "replaced"}, successor])
+    result = verify_alpaca_protection(db, [{**undersized, "status": "replaced"}, successor], positions)
     assert result["protected"] == 1
