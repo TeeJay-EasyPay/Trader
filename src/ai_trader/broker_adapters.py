@@ -60,7 +60,10 @@ class AlpacaBrokerAdapter:
         return self.client.get_positions()
 
     def get_orders(self) -> list[dict[str, Any]]:
-        return self.client.get_orders(status="all", limit=50)
+        # Fifty recent flattened orders can omit held stop legs for current positions when
+        # activity is busy (observed in production: two of seven current stops fell just
+        # outside that window). The downstream event list remains capped at 100.
+        return self.client.get_orders(status="all", limit=100)
 
     def get_trade_history(self) -> list[dict[str, Any]]:
         try:

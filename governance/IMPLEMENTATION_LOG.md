@@ -5925,6 +5925,9 @@ they be implemented and deployed without pausing for intermediate approval.
 - Every existing Alpaca broker poll now compares one bounded current-position snapshot and
   AI-managed canonical exposure with the protective orders returned in the same cycle. No
   second polling loop or per-position database query was introduced.
+- The existing flattened order window was widened from 50 to 100 after production evidence
+  showed that 50 omitted two held stop legs for the seven current positions. Event persistence
+  remains capped at 100; this changes broker response coverage, not Supabase row fan-out.
 - Bracket children are correlated through Alpaca parent identity; standalone native trailing
   stops are correlated through the managed-exit ledger. Quantity, active status and fixed-stop
   price tolerance are checked. An unprovable relationship is `unknown`, never `protected`.
