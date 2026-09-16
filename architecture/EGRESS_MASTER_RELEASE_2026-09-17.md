@@ -1,5 +1,17 @@
 # Egress release — 17 September 2026
 
+## Deployed verification
+
+Final runtime `4c0e19609c23f15bc3e6e49f1f44a39378d5a20c` verified on API and
+worker at approximately 23:24 UTC September 16 (00:24 UK September 17).
+Worker heartbeat was on managed-exits with no last_error recorded. API telemetry
+was readable; worker publication awaits its next completed experiment tick.
+An additional 65 accounting/egress tests passed: 172 tests plus two subtests in
+the combined targeted sets, with a further overlapping 32-test final smoke run.
+Live counters include startup/fallback query errors; these are reported, not
+silently treated as successful calls. Sustained runtime/egress verification is
+still pending a complete observation window.
+
 Implements the verified first release of the consolidated egress plan.
 
 ## Changes
