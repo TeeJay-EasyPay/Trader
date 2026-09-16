@@ -121,15 +121,16 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
         <Text style={s.heading}>What was learnt</Text>
         {!findings.length && <Text style={s.body}>No new supported learning finding is recorded for this period yet. Activity alone is not evidence of improvement.</Text>}
         {findings.slice(0,findingLimit).map(f => <View key={f.id} style={s.divider}>
-          <Text style={s.small}>{f.source_type === 'experiment_review' ? 'From experiments' : 'From executed trade reviews'} · {f.broker} {f.symbol || ''} · {f.recorded_at}</Text>
+          <Text style={s.small}>{f.source_type === 'historical_screening' ? 'From historical screening (not forward proof)' : f.source_type === 'experiment_review' ? 'From experiments' : 'From executed trade reviews'} · {f.broker} {f.symbol || ''} · {f.recorded_at}</Text>
           <Text style={s.body}>{f.what_was_learnt}</Text>
           {!!f.model_explanation && <Text style={s.small}>Trader's interpretation: {f.model_explanation}</Text>}
           <Text style={s.small}>How this affects future decisions: {f.future_use}</Text>
           <Text style={s.small}>{f.evidence_status}. {f.supporting_ids?.length > 1 ? f.supporting_ids.length+' supporting records; repeated lesson shown once.' : ''}</Text>
           {!!f.source_excerpt && <Text style={s.small}>Recorded trade evidence: {f.source_excerpt}</Text>}
           {!!f.current_status && <Text style={s.small}>Current experiment state: {humanStatus(f.current_status)}. The finding above records the decision at review time.</Text>}
-          <Action compact link label={f.experiment_id ? 'Open experiment evidence →' : 'Read trade review evidence →'}
-            onPress={() => f.experiment_id ? setExperimentId(f.experiment_id) : onOpen('reviews')} />
+          {f.source_type !== 'historical_screening' && <Action compact link label={f.experiment_id ? 'Open experiment evidence →' : 'Read trade review evidence →'}
+            onPress={() => f.experiment_id ? setExperimentId(f.experiment_id) : onOpen('reviews')} />}
+          {f.source_type === 'historical_screening' && <Text style={s.small}>Historical screening details are in Experiments below; no trading rule was activated.</Text>}
           <Text selectable style={s.small}>Evidence {f.source_type} {f.source_id} · finding {f.id.slice(0,12)}</Text>
         </View>)}
         {findings.length > findingLimit && <Action compact label="More findings from this period" onPress={() => setFindingLimit(n => n+6)} />}

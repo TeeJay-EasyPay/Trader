@@ -8,7 +8,10 @@ def get(db, path, query):
     try:
         if path == '/experiments/detail':
             from .research_requests import annotate
-            return 200, annotate(db, exp.detail(db, first('id')))
+            detail = annotate(db, exp.detail(db, first('id')))
+            with exp.transaction(db) as conn:
+                detail['historical_screening'] = exp.control(conn, 'historical_link:'+first('id'))
+            return 200, detail
         if path == '/experiments/health':
             with exp.transaction(db) as conn:
                 return 200, {'policy': exp.control(conn, 'policy', exp.DEFAULT_POLICY),
@@ -19,7 +22,12 @@ def get(db, path, query):
         from .strategy_intake import list_sources
         with exp.transaction(db) as conn:
             requests = exp.control(conn, 'research_requests', [])[-40:]
-        return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db), 'research_requests': requests}
+            from .learning_measurement import snapshot
+            show_research = path == '/experiments' and first('attention') != 'true'
+            measurement = snapshot(conn) if show_research else None
+            historical = exp.control(conn, 'historical_screening_view', {}) if show_research else None
+        return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db), 'research_requests': requests,
+                     'learning_measurement':measurement, 'historical_screening':historical}
     except ValueError as exc:
         return 400, {'error': str(exc)}
 

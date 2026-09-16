@@ -48,6 +48,9 @@ def propose_batch(db, settings, now, policy, answer=None):
         context = dict(brokers=evidence, capacity=eligibility, research_requests=requests,
             previous_experiments=history,
             existing=[{k:s.get(k) for k in ('broker','rule_type','threshold','hypothesis')} for s in specs])
+        previous_screen = e.control(conn, 'historical_screening', {})
+        context['historical_screening'] = [{k:t.get(k) for k in ('broker','rule_type','threshold','status','reason')}
+                                          for t in previous_screen.get('trials', [])]
         from .reference_sets import snapshot
         try:
             context['methodology'] = snapshot('stock',candidate=True,topics=['experiment_design'])
@@ -88,6 +91,9 @@ def propose_batch(db, settings, now, policy, answer=None):
         candidates = payload.get('proposals', [])
         if not isinstance(candidates, list) or len(candidates) > 10:
             raise ValueError('invalid_batch')
+        from .historical_screening import screen_batch
+        screening = screen_batch(db, candidates, now)
+        trials = {t['candidate_key']:t for t in screening.get('trials', [])}
         accepted_specs = list(specs)
         for candidate in candidates:
             try:
@@ -100,6 +106,9 @@ def propose_batch(db, settings, now, policy, answer=None):
                 if sum(s['broker'] == broker for s in accepted_specs) >= 5:
                     raise ValueError('broker_capacity')
                 validated = e.validate_spec(candidate)
+                historical = trials.get(e.digest(candidate))
+                if not historical or historical['status'] not in ('promising', 'data_required'):
+                    raise ValueError('historical_screening: '+str((historical or {}).get('reason', screening['status'])))
                 if any(s['broker'] == broker and s['rule_type'] == validated['rule_type'] and
                        abs(s['threshold'] - validated['threshold']) < (25 if validated['rule_type']=='minimum_target_move_bps' else .25) for s in accepted_specs):
                     raise ValueError('near_duplicate')
@@ -111,6 +120,9 @@ def propose_batch(db, settings, now, policy, answer=None):
                 row = e.create_experiment(db, candidate, now=now, queue=True)
                 with e.transaction(db) as conn:
                     research.provenance(conn, row['id'], [r for r in requests if r['id'] in requested], now)
+                    e.put_control(conn, 'historical_link:'+row['id'], {**historical,
+                        'forward_purpose':'Validation of a historically promising candidate' if historical['status']=='promising'
+                        else 'Collect fresh evidence: historical data insufficient, not a historical pass.'})
                 result.setdefault('request_links', {})[row['id']] = requested
                 result['accepted'].append(row['id'])
                 accepted_specs.append(validated)

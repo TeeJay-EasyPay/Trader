@@ -20,6 +20,29 @@ function Button({ label, onPress, disabled, primary }) {
 }
 const human = text => String(text || '').replace(/_/g, ' ');
 const money = (n, currency = 'USD') => typeof n === 'number' ? (currency === 'GBP' ? '£' : '$') + n.toFixed(2) : 'Not available';
+function LearningProgress({ measurement, historical, onSelect }) {
+  return <View style={s.card}><Text style={s.title}>Is Trader improving?</Text>
+    <Text style={s.text}>{measurement?.summary || 'Waiting for the first daily evidence snapshot. No improvement claim yet.'}</Text>
+    {!!measurement?.at && <Text style={s.small}>Evidence snapshot: {measurement.at}</Text>}
+    {Object.entries(measurement?.periods || {}).map(([period, report]) => <View key={period}>
+      <Text style={s.text}>{human(period)} comparison: {human(report.status)}</Text>
+      {report.status === 'available' && !report.comparisons.length && <Text style={s.small}>No comparable unchanged versions with recorded results.</Text>}
+      {report.comparisons.map(item => <View key={item.id}><Text style={s.small}>{item.hypothesis || 'Recorded hypothesis'}{'\n'}{human(item.broker)} · {item.new_resolved_pairs} newly resolved pairs · change in candidate advantage: {money(item.delta_change,item.currency)} · {human(item.status)}{'\n'}{item.independent_days ?? 'Unknown'} accumulated signal days · {item.uncertain_pairs ?? 'Unknown'} uncertain pairs</Text>
+        {!!onSelect && <Button label="Open comparison evidence" onPress={() => onSelect(item.id)} />}</View>)}
+    </View>)}
+    <Text style={s.small}>{measurement?.caveat || 'Daily activity and recorded lessons are not evidence of a profitable strategy.'}</Text>
+    <Text style={s.title}>Historical screening</Text>
+    <Text style={s.small}>{historical?.status ? human(historical.status) + ' · ' + historical.day : 'Awaiting the next eligible daily proposal batch; no extra AI calls.'}</Text>
+    <Text style={s.small}>Replay recorded opportunities → chronological checks and doubled-cost stress → unchanged forward shadow comparison → approved paper review. Historical success never activates live trading.</Text>
+    {(historical?.trials || []).map((trial,i) => <View key={i}>
+      <Text style={s.text}>{trial.hypothesis || 'Candidate'}: {human(trial.status)}</Text>
+      <Text style={s.small}>{trial.reason}</Text>
+      {!!trial.coverage && <Text style={s.small}>{trial.coverage.recorded_signals} recorded signals · {trial.coverage.bars} stored bars · {trial.coverage.first_day || 'No start date'} to {trial.coverage.last_day || 'no end date'}</Text>}
+      {!!trial.later && <Text style={s.small}>Later historical window: {trial.later.completed_trade_pairs} completed trade pairs across {trial.later.independent_days} days; after-cost difference {money(trial.later.delta,trial.currency)}; {trial.later.unresolved} unresolved.</Text>}
+    </View>)}
+    <Text style={s.small}>Historical checks use a bounded sample of stored opportunities, not every possible market trade. Missing history is not a pass. Fresh forward evidence is still required.</Text>
+  </View>;
+}
 function TestingJourney({ data }) {
   const time = experimentTimeline(data);
   return <View style={s.card}><Text style={s.title}>Testing journey</Text>
@@ -83,6 +106,8 @@ function ExperimentDetail({ request, id, onBack }) {
       <Text selectable style={s.small}>Version {data.version.slice(0, 12)} · {data.created_at}</Text>
       {data.status !== 'queued' && <TestingJourney data={data} />}
       {!!data.report.reason && <Text style={s.text}>Evaluation note: {data.report.reason}</Text>}
+      <Text style={s.text}>Historical screening: {human(data.historical_screening?.status || 'not recorded for this experiment')}{'\n'}{data.historical_screening?.reason || 'Existing experiments are not retrospectively labelled as historically validated.'}</Text>
+      {!!data.historical_screening?.forward_purpose && <Text style={s.small}>{data.historical_screening.forward_purpose}</Text>}
       {!!data.state?.supersedes && <Text style={s.small}>Fresh prospective comparison following an engine update. Previous experiment: {data.state.supersedes}. Its observations are not pooled into this version.</Text>}
       <Text style={s.text}>{data.spec.rule_type === 'reference_set_filter'
         ? 'Both arms retain safety eligibility, then independently assess the same frozen facts with different reference sets. The daily AI allowance is shared; assessments may span days. Simulations start after both finish.'
@@ -158,6 +183,7 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       <Button key={key} label={label} primary={section === key} onPress={() => { setSection(key); setAttention(key === 'attention'); }} />)}</View>}
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
+    {!notifications && data && <LearningProgress measurement={data.learning_measurement} historical={data.historical_screening} onSelect={setSelected} />}
     {!!data?.pipeline?.length && <Text style={s.text}>Pipeline: {data.pipeline.map(p => human(p.status) + ' ' + p.count).join(' · ')}</Text>}
     {!!data?.broker_capacity && <Text style={s.text}>{Object.entries(data.broker_capacity).map(([broker,c]) => `${human(broker)}: ${c.active}/${c.limit} active`).join(' · ')}</Text>}
     {!!data?.proposal_eligibility?.brokers && <Text style={s.small}>{Object.entries(data.proposal_eligibility.brokers).map(([broker,c]) => `${human(broker)}: ${human(c.reason)} (${c.new_outcomes} new linked outcomes)`).join('\n')}</Text>}
@@ -202,4 +228,4 @@ function ExperimentPrompt({ request, onOpen }) {
   return <View style={s.card}><Text style={s.text}>{count === null ? 'Strategy requests: check notification history.' : count ? count + ' strategy request(s) ready for review.' : 'No strategy approval is pending.'}</Text>
     <Button label="Notifications and strategy approvals" onPress={onOpen} /></View>;
 }
-module.exports = { ExperimentsCard, ExperimentPrompt, ExperimentDetail, TestingJourney };
+module.exports = { ExperimentsCard, ExperimentPrompt, ExperimentDetail, TestingJourney, LearningProgress };

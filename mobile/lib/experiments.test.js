@@ -13,6 +13,19 @@ function load(states = []) {
   });
   return module.exports;
 }
+
+test('learning measurement distinguishes missing evidence from proven improvement', () => {
+  const ui = load();
+  const empty = JSON.stringify(ui.LearningProgress({}));
+  assert.ok(empty.includes('No improvement claim yet'));
+  assert.ok(empty.includes('Missing history is not a pass'));
+  const rendered = JSON.stringify(ui.LearningProgress({measurement:{periods:{weekly:{status:'available',comparisons:[{
+    id:'test',broker:'kraken',currency:'GBP',new_resolved_pairs:2,delta_change:-3,status:'not_established'}]}}},
+    historical:{status:'completed',day:'today',trials:[{status:'data_required',reason:'Missing historical bars'}]}}));
+  assert.ok(rendered.includes('£-3.00'));
+  assert.ok(rendered.includes('not established'));
+  assert.ok(rendered.includes('Missing historical bars'));
+});
 test('experiment UI has an honest empty state without fake performance', () => {
   const ui = load([{ items: [], policy: { enabled: false } }, '', false, null, false]);
   const rendered = JSON.stringify(ui.ExperimentsCard({ request: () => assert.fail('render sent a request') }));

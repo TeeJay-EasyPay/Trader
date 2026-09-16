@@ -70,6 +70,8 @@ def weekly_review(conn, row, now):
 
 def grouped_review(db, settings, now, policy, answer=None):
     """One call/day shared with proposals. Reserve first; never retry a paid failure."""
+    from .learning_measurement import refresh
+    refresh(db, now)
     with e.transaction(db) as c:
         if not policy.get('model_enabled'):
             return False
