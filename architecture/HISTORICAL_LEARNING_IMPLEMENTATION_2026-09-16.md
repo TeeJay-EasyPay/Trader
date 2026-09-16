@@ -104,3 +104,25 @@ measurement. Six or seven weeks is not a guarantee of improvement or profitabili
   by claiming a clean full-suite result.
 - Production worker was still on the prior release at the readiness audit. Deployment
   and publication, if subsequently performed, require separately recorded verification.
+
+## Release verification — 16 September
+
+- Implementation commit: `82995a9a0082034216ba37a6e20141a5ab503d6b`, fast-forwarded
+  into the main checkout and pushed. The four paused maintenance files remain modified
+  and excluded; their supporting untracked work was preserved.
+- Authenticated production API health and the worker heartbeat both report the
+  implementation commit. Live activation remains disabled in experiment health.
+- An operator-initialised measurement snapshot at 20:11 UTC records eight experiment
+  versions. Daily/weekly/monthly comparison states correctly say collecting baseline.
+  This initialization used ordinary database calculations, no model or broker calls.
+- Authenticated Experiments GET returned HTTP 200 with the new measurement data,
+  seven running experiments and zero fabricated historical trials; response body was
+  24,380 bytes for this sample, not a claim of total daily egress.
+- Android runtime 1.0.4, hosted-preview update group
+  `16b8da9a-a211-474a-9689-5aef1c037b13` published successfully. No native rebuild.
+  The EAS dirty marker was a test-mutated `unused.sqlite3` in the isolated checkout;
+  all published JavaScript was committed and no maintenance work was included.
+- No extra paid proposal batch was forced. Historical screening waits for the next
+  normal evidence-eligible batch. Existing experiments are not relabelled as backtested.
+- Publication and hosted verification do not prove the handset has downloaded the
+  update. Reopen the installed app to allow its normal update flow.
