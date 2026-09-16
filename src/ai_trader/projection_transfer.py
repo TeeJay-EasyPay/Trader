@@ -42,13 +42,13 @@ def _cache(key, value=None):
     return {}
 
 
-def read(raw_conn, sql, values=(), *, columns=None):
+def read(raw_conn, sql, values=(), *, columns=None, partition=None):
     """raw_conn is psycopg with dict rows; sql/columns are trusted code constants."""
     identity = tuple(str(getattr(raw_conn.info, k, '')) for k in ('host', 'port', 'dbname', 'user'))
     # Parameters intentionally do not partition the cache: rolling time boundaries
     # should reuse rows. The database still executes the exact parameters and its
     # ordered hashes, never the cache, determine the complete authorised result.
-    key = hashlib.sha256(repr((identity, sql, columns)).encode()).hexdigest()
+    key = hashlib.sha256(repr((identity, sql, columns, partition)).encode()).hexdigest()
     prior = _cache(key)
     names = '(' + ','.join(columns) + ')' if columns else ''
     statement = f'''WITH selected{names} AS ({sql.strip().rstrip(';')}),
@@ -59,6 +59,9 @@ def read(raw_conn, sql, values=(), *, columns=None):
                          WHERE NOT ((%s::jsonb) ? hash)), '{{}}'::json) AS changed'''
     result = raw_conn.execute(statement, (*values, json.dumps(list(prior)))).fetchone()
     ordering, changed = result['ordering'], result['changed']
+    from .db_telemetry import record
+    record("projection-cache", checks=1, unchanged_rows=sum(h not in changed for h in ordering),
+           changed_rows=len(changed), changed_bytes=sum(len(raw.encode()) for raw in changed.values()))
     available = {**prior, **changed}
     retained = {h: available[h] for h in ordering}
     _cache(key, retained)

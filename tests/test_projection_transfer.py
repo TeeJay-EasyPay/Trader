@@ -63,3 +63,13 @@ def test_identity_and_schema_column_change(conn):
     conn.rows=[{**r,'new_column':None} for r in conn.rows]
     assert t.read(conn,'SELECT example')==conn.rows
     assert len(conn.sent[-1])==2
+
+
+def test_table_partitions_survive_alternating_reads(conn):
+    original=list(conn.rows)
+    t.read(conn,'SELECT example',partition='table-a')
+    conn.rows=[{'id':9,'text':'other table'}]
+    t.read(conn,'SELECT example',partition='table-b')
+    conn.rows=original
+    assert t.read(conn,'SELECT example',partition='table-a')==original
+    assert conn.sent[-1]=={}

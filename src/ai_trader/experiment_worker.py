@@ -215,7 +215,10 @@ def tick(db, settings, *, now=None, answer=None):
             active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' ORDER BY created_at LIMIT 10").fetchall()
         processed, invalid = 0, 0
         decision_cache, bar_cache = {}, {}
-        active_rows = [exp.detail(db, r[0]) for r in active]
+        # UI events/recent opportunities are not worker inputs. Settlement loads
+        # its own complete sample below; keep that path and its cadence intact.
+        with exp.transaction(db) as conn:
+            active_rows = [exp._load(conn, r[0]) for r in active]
         for broker in ('alpaca','kraken'):
             own = [r for r in active_rows if r['spec']['broker'] == broker]
             if own:
@@ -317,6 +320,8 @@ def tick(db, settings, *, now=None, answer=None):
                   'invalid': invalid, 'elapsed_seconds': round(time.monotonic() - started, 3), 'broker_orders': 0}
         with exp.transaction(db) as conn:
             exp.put_control(conn, 'last_tick', status)
+        from .db_telemetry import publish
+        publish(db)
         try:
             from .learning_findings import capture
             capture(db, now)

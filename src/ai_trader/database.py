@@ -248,13 +248,16 @@ class PostgresConnection:
         self._psycopg = psycopg
         connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
         statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
+        from .db_telemetry import cursor_factory, record
         self._conn = psycopg.connect(
             url,
             row_factory=dict_row,
             connect_timeout=connect_timeout,
             options=f"-c statement_timeout={statement_timeout}",
             application_name=postgres_application_name(),
+            cursor_factory=cursor_factory(),
         )
+        record("connection", connections=1)
         self._row_factory = None
         # Identity for the schema cache: two databases in one process must never share it.
         try:
@@ -370,6 +373,7 @@ class PostgresConnection:
             ORDER BY ordinal_position
             """,
             (table.lower(), table),
+            partition=("schema", table.lower()),
         )
         described = [
             {

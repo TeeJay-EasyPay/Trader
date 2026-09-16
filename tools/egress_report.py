@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from egress_window import _row_bytes, snapshot  # noqa: E402
+from egress_window import _row_bytes, snapshot, validate_window  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO / "src" / "ai_trader"
@@ -136,6 +136,7 @@ def _postgres_only(query: str) -> bool:
 def report(before_path: str, after_path: str) -> None:
     before = json.load(open(before_path, encoding="utf-8"))
     after = json.load(open(after_path, encoding="utf-8"))
+    validate_window(before, after)
     was = {statement["queryid"]: statement for statement in before["statements"]}
     widths = after.get("widths") or {}
 

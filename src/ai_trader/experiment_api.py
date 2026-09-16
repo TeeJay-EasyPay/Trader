@@ -13,8 +13,11 @@ def get(db, path, query):
                 detail['historical_screening'] = exp.control(conn, 'historical_link:'+first('id'))
             return 200, detail
         if path == '/experiments/health':
+            from .db_telemetry import report
             with exp.transaction(db) as conn:
                 return 200, {'policy': exp.control(conn, 'policy', exp.DEFAULT_POLICY),
+                             'database_transfer_worker': exp.control(conn, 'db_transfer_view', {}),
+                             'database_transfer_api': report(),
                              'last_tick': exp.control(conn, 'last_tick', {}),
                              'proposal_attempt': exp.control(conn, 'proposal_attempt', {}),
                              'deployment_commit': os.getenv('RENDER_GIT_COMMIT'),

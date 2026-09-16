@@ -546,8 +546,7 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
         # pooler round trips (investment, risk, then three broker keys) even though all five
         # reads form one point-in-time policy snapshot.  Keep the snapshot fresh, but fetch
         # it in one request so a safety decision never depends on a TTL cache.
-        policy_rows = conn.execute(
-            """
+        policy_sql = """
             SELECT 'investment' AS scope, NULL AS broker, policy_key, policy_value, value_type
             FROM INVESTMENT_POLICIES WHERE active = 1
             UNION ALL
@@ -560,7 +559,11 @@ def load_trading_policy(db_path: Path, *, auto_trade: Any, guardrails: Any) -> T
                 'enabled', 'maximum_concurrent_positions', 'minimum_stop_loss_pct'
             )
             """
-        ).fetchall()
+        if hasattr(conn, "_conn"):
+            from .projection_transfer import read
+            policy_rows = read(conn._conn, policy_sql)
+        else:
+            policy_rows = conn.execute(policy_sql).fetchall()
         investment = {
             row["policy_key"]: _parse_value(row["policy_value"], row["value_type"])
             for row in policy_rows if row["scope"] == "investment"

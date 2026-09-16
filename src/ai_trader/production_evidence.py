@@ -770,6 +770,7 @@ def _load_closed_trade_history(db_path: Path, *, limit: int = 200) -> list[dict[
         LIMIT {n}
         """,
         limit=limit,
+        conditional=True,
     )
     ai_order_ids = _ai_decided_broker_order_ids(db_path)
     for row in rows:
@@ -1015,7 +1016,14 @@ def _assemble_founder_evidence_payload(
     period: str,
     db_path: Path | None = None,
     closed_trade_history: list[dict[str, Any]] | None = None,
+    shared_inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # One refresh owns this dictionary; never carry mutable state across cycles.
+    shared_inputs = {} if shared_inputs is None else shared_inputs
+    def shared(key, load):
+        if key not in shared_inputs:
+            shared_inputs[key] = load()
+        return shared_inputs[key]
     research, recommendations, snapshots_all, trades, learning, jobs, funnels, workers = rows
     # Defaults to the period-scoped `trades` (old behaviour) when no caller supplies the
     # broader history -- callers that matter (_build_founder_evidence_payload,
@@ -1025,7 +1033,7 @@ def _assemble_founder_evidence_payload(
     realized_pnl = sum(_number(row.get("realized_pnl")) or 0.0 for row in closed_trade_history)
     fees = sum(_number(row.get("fee")) or 0.0 for row in closed_trade_history)
     latest_activity = _latest_activity(research, trades, learning, jobs)
-    no_trade = _why_no_trade(funnels, jobs, trades, accepted_orders=_accepted_order_count(db_path))
+    no_trade = _why_no_trade(funnels, jobs, trades, accepted_orders=shared("accepted", lambda: _accepted_order_count(db_path)))
     broker_payload = []
     for row in snapshots:
         broker_row = _lift_broker_payload_fields(_decode_row(row, {"positions_json", "payload_json"}))
@@ -1045,7 +1053,8 @@ def _assemble_founder_evidence_payload(
             try:
                 broker_row["managed_exits"] = [
                     _compact_managed_exit_for_founder(_decode_row(exit_row, {"payload_json"}))
-                    for exit_row in open_managed_exits(db_path, broker_row.get("broker"))
+                    for exit_row in shared("exits:" + str(broker_row.get("broker")),
+                                           lambda: open_managed_exits(db_path, broker_row.get("broker")))
                 ]
             except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
                 broker_row["managed_exits"] = []
@@ -1057,7 +1066,7 @@ def _assemble_founder_evidence_payload(
         # Alpaca-only so far (daily_plan.py: crypto research already runs continuously, with
         # no single "morning" to decide against).
         try:
-            daily_plan = daily_trading_plan_status(db_path, broker="alpaca")
+            daily_plan = shared("daily_plan", lambda: daily_trading_plan_status(db_path, broker="alpaca"))
         except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
             daily_plan = {}
     return {
@@ -1309,10 +1318,11 @@ def refresh_founder_evidence_snapshots(
             "decision_audit_retention": decision_audit_retention,
             "generated_at": utc_now_iso(),
         }
+    shared_inputs: dict[str, Any] = {}
     for period in periods:
         try:
             period_rows = _filter_founder_evidence_rows(shared_rows, since=_period_start(period))
-            payload = _assemble_founder_evidence_payload(period_rows, period=period, db_path=db_path, closed_trade_history=closed_trade_history)
+            payload = _assemble_founder_evidence_payload(period_rows, period=period, db_path=db_path, closed_trade_history=closed_trade_history, shared_inputs=shared_inputs)
             persist_founder_evidence_snapshot(db_path, payload, period=period)
             refreshed.append(period)
         except Exception as exc:  # noqa: BLE001 - retain partial snapshots and expose failure evidence
@@ -1853,10 +1863,13 @@ def _upsert(db_path: Path, sql: str, values: tuple[Any, ...]) -> None:
             conn.execute(statement, values)
 
 
-def _query(db_path: Path, sql: str, values: tuple[Any, ...] = (), *, limit: int = 100) -> list[dict[str, Any]]:
+def _query(db_path: Path, sql: str, values: tuple[Any, ...] = (), *, limit: int = 100, conditional: bool = False) -> list[dict[str, Any]]:
     if uses_postgres():
         statement = sql.format(x="%s", n=max(1, min(limit, 500)))
         with postgres_connection() as conn:
+            if conditional:
+                from .projection_transfer import read
+                return read(conn, statement, values)
             with conn.cursor() as cur:
                 cur.execute(statement, values)
                 return [dict(row) for row in cur.fetchall()]
@@ -1879,6 +1892,12 @@ def _query_batch(
         from .projection_transfer import read
         with postgres_connection() as conn:
             for sql, values in queries:
+                if "FROM PRODUCTION_BROKER_SNAPSHOTS" in sql:
+                    # Only this Founder consumer drops the other payload keys.
+                    # Keep the full source row for accounting and drill-down.
+                    keys = ", ".join("'" + key + "', payload_json::jsonb->'" + key + "'"
+                                     for key in _BROKER_FOUNDER_PAYLOAD_KEYS)
+                    sql = sql.replace("payload_json", "jsonb_build_object(" + keys + ")::text AS payload_json", 1)
                 results.append(read(conn, sql.format(x="%s", n=bounded_limit), values))
         return results
     with closing(connect(db_path)) as conn:

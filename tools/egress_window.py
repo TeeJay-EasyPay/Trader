@@ -33,17 +33,20 @@ def _connect():
     url = os.environ.get("AUDIT_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not url:
         raise SystemExit("Set AUDIT_DATABASE_URL (or DATABASE_URL) first.")
-    return psycopg.connect(url)
+    return psycopg.connect(url, options="-c default_transaction_read_only=on -c statement_timeout=5000",
+                          application_name="egress-counter-audit")
 
 
 def snapshot(path: str) -> None:
     with _connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT NOW()::text")
         taken_at = cur.fetchone()[0]
+        cur.execute("SELECT stats_reset::text,dealloc FROM pg_stat_statements_info")
+        stats_reset, dealloc = cur.fetchone()
         cur.execute(
             r"""SELECT queryid, calls, rows, total_exec_time,
                       regexp_replace(query, '\s+', ' ', 'g') AS query
-               FROM pg_stat_statements WHERE query ILIKE 'SELECT%'"""
+               FROM pg_stat_statements WHERE query ILIKE 'SELECT%' OR query ILIKE 'WITH%'"""
         )
         rows = [
             {"queryid": str(q), "calls": c, "rows": r, "ms": float(t or 0), "query": s}
@@ -56,7 +59,8 @@ def snapshot(path: str) -> None:
         )
         widths = {f"{t}.{a}".lower(): int(w or DEFAULT_WIDTH) for t, a, w in cur.fetchall()}
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump({"taken_at": taken_at, "widths": widths, "statements": rows}, handle)
+        json.dump({"taken_at": taken_at, "stats_reset":stats_reset,"dealloc":dealloc,
+                   "widths": widths, "statements": rows}, handle)
     print(f"snapshot at {taken_at}: {len(rows)} SELECT statements -> {path}")
 
 
@@ -69,6 +73,8 @@ def _row_bytes(query: str, widths: dict[str, int]) -> int:
     if not match:
         return DEFAULT_WIDTH + OVERHEAD_PER_ROW
     selected = match.group(1)
+    if re.fullmatch(r"COUNT\s*\(\s*\*\s*\)(?:\s+AS\s+\w+)?", selected, re.I):
+        return 8 + OVERHEAD_PER_ROW
     if "*" in selected:
         # A star selects everything, so the widest table mentioned is the fair charge.
         by_table: dict[str, int] = {}
@@ -86,9 +92,22 @@ def _row_bytes(query: str, widths: dict[str, int]) -> int:
     return total + OVERHEAD_PER_ROW
 
 
+def validate_window(before, after):
+    if not before.get("stats_reset") or not after.get("stats_reset"):
+        raise ValueError("Missing reset metadata; cannot certify this comparison.")
+    if before["stats_reset"] != after["stats_reset"] or before.get("dealloc") != after.get("dealloc"):
+        raise ValueError("Statistics reset or evicted statements; take a fresh baseline.")
+    old = {s["queryid"]:s for s in before["statements"]}
+    for s in after["statements"]:
+        prior = old.get(s["queryid"])
+        if prior and (s["calls"] < prior["calls"] or s["rows"] < prior["rows"]):
+            raise ValueError("Counters moved backwards; comparison rejected.")
+
+
 def diff(before_path: str, after_path: str) -> None:
     before = json.load(open(before_path, encoding="utf-8"))
     after = json.load(open(after_path, encoding="utf-8"))
+    validate_window(before, after)
     was = {s["queryid"]: s for s in before["statements"]}
     widths = after.get("widths") or {}
 

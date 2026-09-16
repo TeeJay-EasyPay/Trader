@@ -1288,13 +1288,17 @@ def _postgres_connection():
         raise RuntimeError("Postgres backend requested but DATABASE_URL/SUPABASE_DATABASE_URL is not configured.")
     connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
     statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
-    return psycopg.connect(
+    from .db_telemetry import cursor_factory, record
+    conn = psycopg.connect(
         url,
         row_factory=dict_row,
         connect_timeout=connect_timeout,
         options=f"-c statement_timeout={statement_timeout}",
         application_name=postgres_application_name(),
+        cursor_factory=cursor_factory(),
     )
+    record("connection", connections=1)
+    return conn
 
 
 def postgres_connection():
