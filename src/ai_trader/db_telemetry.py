@@ -130,6 +130,8 @@ def report():
                     days=dict(days),
                     top_families=sorted(labels.items(),key=lambda x:x[1].get("row_bytes",0),reverse=True)[:12],
                     top_roles=sorted(roles.items(),key=lambda x:x[1].get("row_bytes",0),reverse=True)[:12],
+                    top_errors=sorted(((k,v) for k,v in labels.items() if v.get("errors")),
+                                      key=lambda x:x[1]["errors"],reverse=True)[:8],
                     provider_egress=None,
                     limitations="Host-local consumed values; excludes protocol, unfetched rows, killed-process buffers and platform traffic. First day is partial.")
     except Exception:
@@ -169,8 +171,9 @@ def cursor_factory():
             start = time.monotonic()
             try:
                 result = super().execute(query, params, **kwargs)
-            except Exception:
-                record(self._meter_family, calls=1, errors=1)
+            except Exception as exc:
+                code=getattr(exc,"sqlstate",None) or "unknown"
+                record(self._meter_family, calls=1, errors=1, **{"errors_"+code:1})
                 raise
             record(self._meter_family, calls=1, sql_ms=round((time.monotonic()-start)*1000))
             return result
@@ -180,8 +183,9 @@ def cursor_factory():
             start = time.monotonic()
             try:
                 result = super().executemany(query, params_seq, **kwargs)
-            except Exception:
-                record(self._meter_family, batches=1, errors=1)
+            except Exception as exc:
+                code=getattr(exc,"sqlstate",None) or "unknown"
+                record(self._meter_family, batches=1, errors=1, **{"errors_"+code:1})
                 raise
             record(self._meter_family, batches=1, sql_ms=round((time.monotonic()-start)*1000))
             return result

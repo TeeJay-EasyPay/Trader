@@ -38,7 +38,7 @@ check and was corrected before release.
 Targeted regression suite: 107 tests and 2 subtests passed after publication
 instrumentation; deployed revisions are recorded in the handoff.
 A pre-release query baseline is saved locally at
-data/egress-master-before-20260917.json (23:16:59 UTC September 16).
+data/egress-master-before-20260917.json (23:20:10 UTC September 16).
 
 Use AI Trader-only Supabase usage, not All projects. September 17 includes the
 release and cold-cache warmup; one partial day is not proof of sustained savings.
