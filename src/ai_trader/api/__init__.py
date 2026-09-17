@@ -1481,10 +1481,16 @@ class LocalApiService:
             answer = explainer.answer(SELF_ASSESSMENT_QUESTION, {"input_inventory": inventory})
         except Exception as exc:  # noqa: BLE001 - a failed assessment must never stop the worker
             logger.exception("Self-assessment failed.")
+            # The Founder needs a truthful daily reflection even when the reasoning call
+            # times out.  Derive it from the same verified experiment scorecard rather than
+            # showing an empty/error-only card or inventing progress.
+            from ..founder_learning import fallback
+            answer = fallback(self.settings.db_path, now=utc_now_iso())
+            _record_daily_checkin(self.settings.db_path, question=SELF_ASSESSMENT_QUESTION, answer=answer)
             return record_self_assessment(
-                self.settings.db_path, answer=f"Assessment could not be produced: {exc}",
-                model=self.settings.openai_reasoning_model, status="openai_failed",
-                inventory=inventory,
+                self.settings.db_path, answer=answer,
+                model=None, status="evidence_fallback",
+                inventory={**inventory, "reasoning_failure": type(exc).__name__},
             )
         # 2026-09-06, Founder-directed: "I just wanna see your question there in the history,
         # and I wanna see what ChatGPT says to you... I want to be able to read that history."

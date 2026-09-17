@@ -305,6 +305,23 @@ class WritingTests(unittest.TestCase):
                 self.assertEqual(
                     conn.execute("SELECT COUNT(*) FROM PERFORMANCE_ATTRIBUTION").fetchone()[0], 1)
 
+    def test_stable_cycle_does_not_reload_historical_entry_rationales(self):
+        """Old diligence JSON stays server-side unless a new/missing outcome needs it."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "audit.sqlite3"
+            self._seed(db)
+            reconcile_alpaca(db)
+            with patch(
+                "ai_trader.alpaca_reconciliation.trade_reasons.entry_reasons_for_proposals",
+                return_value={},
+            ) as reasons:
+                result = reconcile_alpaca(db)
+            self.assertEqual(result["written"], 0)
+            reasons.assert_called_once()
+            self.assertEqual(reasons.call_args.args[1], [])
+
     def test_a_missing_rationale_is_said_plainly_rather_than_invented(self):
         """A constant string here is what taught the Kraken learning loop nothing for weeks --
         every trade grouped into one bucket. Better to record that it is unknown."""

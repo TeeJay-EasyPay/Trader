@@ -29,8 +29,13 @@ def get(db, path, query):
             show_research = path == '/experiments' and first('attention') != 'true'
             measurement = snapshot(conn) if show_research else None
             historical = exp.control(conn, 'historical_screening_view', {}) if show_research else None
+            founder_learning = exp.control(conn, 'founder_learning_scorecard', {}) if show_research else None
+            if show_research and not founder_learning:
+                from .founder_learning import build
+                founder_learning = build(conn, now=exp.now_iso())
         return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db), 'research_requests': requests,
-                     'learning_measurement':measurement, 'historical_screening':historical}
+                     'learning_measurement':measurement, 'historical_screening':historical,
+                     'founder_learning':founder_learning}
     except ValueError as exc:
         return 400, {'error': str(exc)}
 

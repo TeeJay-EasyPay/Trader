@@ -63,6 +63,8 @@ def refresh(db, now):
         e.put_control(conn,'learning_measurement_history',(history+[current])[-35:])
         e.put_control(conn,'learning_measurement',result)
         e.put_control(conn,'learning_measurement_view',{k:v for k,v in result.items() if k!='experiments'})
+        from .founder_learning import refresh as refresh_founder_learning
+        refresh_founder_learning(conn, now=now)
         return result
 
 

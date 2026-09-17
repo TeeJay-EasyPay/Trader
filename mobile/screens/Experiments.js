@@ -20,8 +20,13 @@ function Button({ label, onPress, disabled, primary }) {
 }
 const human = text => String(text || '').replace(/_/g, ' ');
 const money = (n, currency = 'USD') => typeof n === 'number' ? (currency === 'GBP' ? '£' : '$') + n.toFixed(2) : 'Not available';
-function LearningProgress({ measurement, historical, onSelect }) {
+function LearningProgress({ measurement, historical, founderLearning, onSelect }) {
   return <View style={s.card}><Text style={s.title}>Is Trader improving?</Text>
+    {!!founderLearning?.headline && <View style={s.card}><Text style={s.title}>{founderLearning.headline}</Text>
+      <Text style={s.text}>{founderLearning.reflection}</Text>
+      <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>
+      <Text style={s.small}>Running {founderLearning.experiments?.running || 0} · Recommended {founderLearning.experiments?.recommended || 0} · Superseded/restarted {founderLearning.experiments?.superseded || 0} · Adopted {founderLearning.experiments?.adopted || 0}</Text>
+    </View>}
     <Text style={s.text}>{measurement?.summary || 'Waiting for the first daily evidence snapshot. No improvement claim yet.'}</Text>
     {!!measurement?.at && <Text style={s.small}>Evidence snapshot: {measurement.at}</Text>}
     {Object.entries(measurement?.periods || {}).map(([period, report]) => <View key={period}>
@@ -99,7 +104,7 @@ function ExperimentDetail({ request, id, onBack }) {
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {!!notice && <Text style={s.text}>{notice}</Text>}
     <Button label="Refresh report" disabled={busy} onPress={load} />
-    {data && <><Text style={s.text}>Hypothesis: {data.spec.hypothesis}</Text><Text style={s.small}>{human(data.status)} · {human(data.spec.broker)} · {data.spec.currency || 'USD'} · SIMULATED</Text>
+    {data && <><Text style={s.text}>Hypothesis: {data.spec.hypothesis}</Text><Text style={s.small}>{human(data.display_status || data.status)} · {human(data.spec.broker)} · {data.spec.currency || 'USD'} · SIMULATED</Text>
       <Text style={s.small}>Proposed by: {data.origin?.proposed_by || 'Not recorded in this version'} · Trigger: {human(data.origin?.trigger || 'unknown')}</Text>
       <Text style={s.text}>Problem: {data.spec.problem || 'See hypothesis'}{'\n'}Intended benefit: {data.spec.expected_benefit || 'Not yet documented'}</Text>
       <Text style={s.small}>Priority {data.spec.priority || 3} (1 is highest). {data.status === 'queued' ? 'Waiting for a resource slot. Testing has not started; dates are set when it starts.' : 'The worker shares a capped daily observation budget across experiments.'}</Text>
@@ -183,7 +188,7 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       <Button key={key} label={label} primary={section === key} onPress={() => { setSection(key); setAttention(key === 'attention'); }} />)}</View>}
     {busy && <ActivityIndicator />}{!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
     {data && <Text style={s.small}>{data.policy.enabled ? 'Shadow worker enabled within resource limits.' : 'Shadow worker disabled.'} Live activation is disabled.</Text>}
-    {!notifications && data && <LearningProgress measurement={data.learning_measurement} historical={data.historical_screening} onSelect={setSelected} />}
+    {!notifications && data && <LearningProgress measurement={data.learning_measurement} historical={data.historical_screening} founderLearning={data.founder_learning} onSelect={setSelected} />}
     {!!data?.pipeline?.length && <Text style={s.text}>Pipeline: {data.pipeline.map(p => human(p.status) + ' ' + p.count).join(' · ')}</Text>}
     {!!data?.broker_capacity && <Text style={s.text}>{Object.entries(data.broker_capacity).map(([broker,c]) => `${human(broker)}: ${c.active}/${c.limit} active`).join(' · ')}</Text>}
     {!!data?.proposal_eligibility?.brokers && <Text style={s.small}>{Object.entries(data.proposal_eligibility.brokers).map(([broker,c]) => `${human(broker)}: ${human(c.reason)} (${c.new_outcomes} new linked outcomes)`).join('\n')}</Text>}
@@ -212,7 +217,7 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       <Text style={s.small}>{data.evidence_coverage.caveat} Checked {data.evidence_coverage.checked_at}.</Text>
     </View>}
     {data?.items?.filter(row => notifications || section === 'attention' || (section === 'running' ? row.status === 'shadow_running' : section === 'queued' ? row.status === 'queued' : !['queued','shadow_running'].includes(row.status))).map(row => <View key={row.id} style={s.card}>
-      <Button label={human(row.status) + ' · Hypothesis: ' + row.hypothesis} onPress={() => setSelected(row.id)} />
+      <Button label={human(row.display_status || row.status) + ' · Hypothesis: ' + row.hypothesis} onPress={() => setSelected(row.id)} />
       <Text style={s.small}>{human(row.broker || 'alpaca')} · Priority {row.priority || 3}{'\n'}Problem: {row.problem || row.hypothesis}{'\n'}Intended benefit: {row.expected_benefit || 'See report'}</Text>
       <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Review date is set when a slot opens.' : row.status !== 'shadow_running' ? 'Ended: ' + experimentTimeline(row).end + '\n' + (row.report?.reason || human(row.status)) : 'Started: ' + experimentTimeline(row).start + '\nNext weekly review: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
       <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>

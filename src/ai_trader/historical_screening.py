@@ -100,7 +100,7 @@ def recorded_bars(conn, broker, signals, now):
     return bars
 
 
-def dataset(conn, broker, now):
+def dataset(conn, broker, now, cached_bars=None):
     """One shared bounded read per broker/batch, not one history read per variation.
 
     Reuse bars already paid for by the shadow worker; never download market data.
@@ -146,9 +146,16 @@ def dataset(conn, broker, now):
         if key in bars and bars[key]!=bar:
             return dict(signals=[],bars=[],reason='Conflicting recorded bars',broker=broker)
         bars[key]=bar
+    for bar in cached_bars or []:
+        if bar.get('quality') != 'verified_unadjusted' or bar.get('symbol') not in {s['symbol'] for s in signals}:
+            continue
+        key=(bar['symbol'],bar['start'])
+        if key in bars and bars[key]!=bar:
+            return dict(signals=[],bars=[],reason='Conflicting provider-cache bars',broker=broker)
+        bars[key]=bar
     result = dict(broker=broker, signals=signals, bars=sorted(bars.values(), key=lambda b: (b['start'], b['symbol'])),
                   fetched_rows=len(rows), row_limit=MAX_ROWS, conflicting_signals=len(conflicts),
-                  scope='Bounded recorded shadow signals plus one journal assessment/day, up to eight price symbols and 640 supplemental bars. Not a complete market or strategy history.')
+                  scope='Bounded recorded signals plus source-qualified provider bars from the Render research cache. Price history does not invent missing historical AI decisions.')
     result['dataset_version'] = e.digest(result)
     return result
 
@@ -295,7 +302,13 @@ def screen_batch(db, candidates, now):
                 spec = e.validate_spec(candidate)
                 if spec['broker'] not in datasets:
                     with e.transaction(db) as conn:
-                        loaded = dataset(conn, spec['broker'], now)
+                        signals = recorded_signals(conn, spec['broker'], now)
+                    from .config import load_settings
+                    from .historical_market_cache import refresh
+                    provider = refresh(db, load_settings(), spec['broker'], [s['symbol'] for s in signals], now)
+                    with e.transaction(db) as conn:
+                        loaded = dataset(conn, spec['broker'], now, provider['bars'])
+                    loaded['provider_cache'] = {k:v for k,v in provider.items() if k != 'bars'}
                     freeze_dataset(db, loaded)
                     datasets[spec['broker']] = loaded
                 trial = screen(spec, datasets[spec['broker']], now)
@@ -306,7 +319,7 @@ def screen_batch(db, candidates, now):
                 trials.append(dict(status='invalid', reason=str(exc)[:200], candidate_key=e.digest(candidate)))
         result = dict(day=now[:10], at=now, status='completed', trials=trials,
                       max_shadow_history_characters=2*MAX_ROWS*MAX_ROW_BYTES,
-                      scope='Recorded opportunity replay, not a full-market search. No additional AI calls or market downloads.')
+                      scope='Recorded-opportunity replay using a bounded provider-to-Render daily-bar cache. No additional AI calls; bulk bars are not stored in Supabase.')
     except Exception as exc:
         result = dict(day=now[:10], at=now, status='failed', trials=[], error_type=type(exc).__name__)
     with e.transaction(db) as conn:
@@ -326,4 +339,6 @@ def screen_batch(db, candidates, now):
                      what_was_learnt=f"Screened {len(own)} historical candidates: {counts['promising']} promising, {counts['not_supported']} unsupported by results, {counts['data_required']} need more data.",
                      future_use='Promising candidates still require unchanged forward comparisons. Missing history is not a pass.',
                      evidence_status='Historical development, not proven improvement', action='research', activation='not_activated'))
+        from .founder_learning import refresh as refresh_founder_learning
+        refresh_founder_learning(conn, now=now, force=True)
     return result

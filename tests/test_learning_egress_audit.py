@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_trader.api import LocalApiService
+from ai_trader.api import LocalApiService, SELF_ASSESSMENT_QUESTION
 from ai_trader import production_evidence, strategy_performance
 from ai_trader.learning_readiness import assess_learning_readiness, readiness_from_outcomes
 from ai_trader.proposal_context import _serialize_historical_analogues
@@ -60,6 +60,29 @@ def test_scheduled_self_assessment_success_uses_one_inventory_and_ai_call():
     inventory.assert_called_once()
     explainer.return_value.answer.assert_called_once()
     checkin.assert_called_once()
+
+
+def test_scheduled_self_assessment_timeout_uses_verified_learning_fallback():
+    service = SimpleNamespace(settings=SimpleNamespace(
+        db_path=Path("unused.sqlite3"), openai_api_key="test-only", openai_reasoning_model="test",
+    ))
+    with patch("ai_trader.api.input_inventory", return_value={"feeds": []}), \
+         patch("ai_trader.api.OpenAIReadOnlyExplainer") as explainer, \
+         patch("ai_trader.founder_learning.fallback", return_value="Verified learning fallback.") as fallback, \
+         patch("ai_trader.api._record_daily_checkin") as checkin, \
+         patch("ai_trader.api.record_self_assessment", return_value={"status": "evidence_fallback"}) as record:
+        explainer.return_value.answer.side_effect = TimeoutError("test timeout")
+        assert LocalApiService.run_self_assessment(service)["status"] == "evidence_fallback"
+    fallback.assert_called_once()
+    checkin.assert_called_once_with(
+        service.settings.db_path,
+        question=SELF_ASSESSMENT_QUESTION,
+        answer="Verified learning fallback.",
+    )
+    assert record.call_args.kwargs["answer"] == "Verified learning fallback."
+    assert record.call_args.kwargs["model"] is None
+    assert record.call_args.kwargs["status"] == "evidence_fallback"
+    assert record.call_args.kwargs["inventory"]["reasoning_failure"] == "TimeoutError"
 
 
 def test_snapshot_query_returns_only_latest_per_broker_with_tie_break(tmp_path):

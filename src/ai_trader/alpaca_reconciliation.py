@@ -382,36 +382,63 @@ def reconcile_alpaca(db_path: Path) -> dict[str, Any]:
             orders = collapse_fills(fills)
             round_trips, unmatched = pair_round_trips(orders)
             exits = recorded_exit_evidence(conn, [trip.exit_order_id for trip in round_trips if trip.exit_order_id])
-
+            # Reconciliation revisits historical fill pairs for correction assurance.  Load
+            # their narrow identities once, then fetch the wide diligence rationale only for
+            # a genuinely new outcome or a legacy row whose proposal link is missing.  The
+            # old path re-downloaded dozens of reasoning_json documents every cycle even when
+            # all outcomes were already complete.
+            existing_rows = conn.execute(
+                """SELECT attribution_id, exit_reason, proposal_id, symbol, closed_at
+                   FROM PERFORMANCE_ATTRIBUTION WHERE broker='alpaca'
+                   ORDER BY attribution_id DESC"""
+            ).fetchall()
+            existing_by_key = {}
+            for stored in existing_rows:
+                existing_by_key.setdefault((str(stored[3]), str(stored[4])), stored)
+            reason_proposals = []
+            for trip in round_trips:
+                stored = existing_by_key.get((str(trip.symbol), str(trip.closed_at)))
+                if trip.entry_proposal_id and (stored is None or not stored[2]):
+                    reason_proposals.append(trip.entry_proposal_id)
             entry_reasons = trade_reasons.entry_reasons_for_proposals(
-                conn, [trip.entry_proposal_id for trip in round_trips if trip.entry_proposal_id]
+                conn, reason_proposals
             )
             written = 0
             with conn:
                 for trip in round_trips:
                     _publish_order_result(conn, trip)
-                    existing = conn.execute(
-                        """
-                        SELECT attribution_id, exit_reason, primary_factors_json, proposal_id FROM PERFORMANCE_ATTRIBUTION
-                        WHERE broker = 'alpaca' AND symbol = ? AND closed_at = ?
-                        LIMIT 1
-                        """,
-                        (trip.symbol, trip.closed_at),
-                    ).fetchone()
+                    existing = existing_by_key.get((str(trip.symbol), str(trip.closed_at)))
                     if existing:
+                        # primary_factors_json is one of the widest fields in this table.  A
+                        # stable reconciliation used to download it for every completed trade
+                        # every cycle even though it is needed only for an actual repair.
+                        # Fetch it lazily on the exceptional update path and retain the decoded
+                        # value if two repairs apply to the same record.
+                        factors = None
+
+                        def existing_factors():
+                            nonlocal factors
+                            if factors is None:
+                                stored = conn.execute(
+                                    'SELECT primary_factors_json FROM PERFORMANCE_ATTRIBUTION '
+                                    'WHERE attribution_id=?', (existing[0],)
+                                ).fetchone()
+                                factors = json.loads((stored[0] if stored else None) or '{}')
+                            return factors
+
                         if trip.mixed_entry_decisions:
-                            factors = json.loads(existing[2] or '{}')
+                            factors = existing_factors()
                             factors.update(entry_proposal_ids=list(trip.entry_proposal_ids),mixed_entry_decisions=True)
-                            if existing[3]:
-                                factors['previous_single_proposal_id']=existing[3]
+                            if existing[2]:
+                                factors['previous_single_proposal_id']=existing[2]
                             conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET proposal_id=NULL, primary_factors_json=? WHERE attribution_id=?',
                                          (json.dumps(factors,sort_keys=True),existing[0]))
-                        if not existing[3] and trip.entry_proposal_id:
+                        if not existing[2] and trip.entry_proposal_id:
                             conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET proposal_id = ?, entry_reason = ? WHERE attribution_id = ? AND proposal_id IS NULL',
                                          (trip.entry_proposal_id, entry_reasons.get(trip.entry_proposal_id) or trade_reasons.UNRECORDED_ENTRY, existing[0]))
                         evidence = exits.get(trip.exit_order_id)
                         if evidence and (not existing[1] or 'not recorded' in existing[1].lower()):
-                            factors = json.loads(existing[2] or '{}')
+                            factors = existing_factors()
                             factors['exit_evidence'] = evidence
                             conn.execute('UPDATE PERFORMANCE_ATTRIBUTION SET exit_reason = ?, primary_factors_json = ? WHERE attribution_id = ?',
                                          (evidence['reason'], json.dumps(factors, sort_keys=True), existing[0]))

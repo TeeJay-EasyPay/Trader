@@ -522,6 +522,8 @@ def list_experiments(db, *, owner='founder', before='', attention=False, view=''
                 ended = conn.execute("SELECT created_at FROM EXPERIMENT_EVENTS WHERE experiment_id=? AND action IN ('baseline_changed','evaluation_finished') ORDER BY created_at DESC LIMIT 1", (r['id'],)).fetchone()
                 if ended:
                     r['report']['ended_at'] = ended[0]
+            r['display_status'] = ('superseded_restarted' if
+                str(r['report'].get('reason') or '').startswith('Baseline deployment changed') else r['status'])
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
                     reference_blockers=[json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_CONTROL WHERE id LIKE ? LIMIT 10',('reference_budget:%',)).fetchall()],
@@ -540,6 +542,8 @@ def detail(db, eid, owner='founder'):
         for event in row['events']:
             if event['action']=='weekly_review':
                 event['interpretation']=control(conn,'interpreted:'+event['id'],{'status':'pending'})
+        row['display_status'] = ('superseded_restarted' if any(
+            event['action'] == 'baseline_changed' for event in row['events']) else row['status'])
         row['opportunities'] = [json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id=? ORDER BY created_at DESC LIMIT 20', (eid,)).fetchall()]
         return row
 

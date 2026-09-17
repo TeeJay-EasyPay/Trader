@@ -5957,3 +5957,67 @@ they be implemented and deployed without pausing for intermediate approval.
   transition evidence from this release; it does not invent historical continuity.
 - Repeating the same evidence check twice produced zero changed rows both times, verifying the
   no-write path for an unchanged healthy poll.
+
+## 2026-09-17 — Learning, historical evidence and Founder reflection action plan
+
+The Founder reviewed why experiments were ending without conclusions, what the new
+historical screen actually processed, how learning should be judged, and how the app should
+explain progress in human terms. No trading or production change was authorised in this
+discussion. The durable agreed action plan is recorded in
+`architecture/LEARNING_AND_FOUNDER_REFLECTION_ACTION_PLAN_2026-09-17.md`.
+
+Key decisions recorded there are: retain three-day review checkpoints but treat evidence,
+not elapsed time, as the decision basis; present baseline-changed experiments as superseded
+and restarted; add a bounded persistent Alpaca/Kraken historical-price cache without routing
+the replay dataset through Supabase; add a Founder scorecard separating capability, learning
+and demonstrated trading improvement; generate a short daily Trader reflection from verified
+evidence with a deterministic fallback; and repair the hosted Trader/self-assessment and
+Strategy Lab timeout paths required to make that reflection dependable.
+
+## 2026-09-17 — Further egress pass (implemented locally; not deployed)
+
+A clean 21-hour `pg_stat_statements` delta measured 59.0 MB of SQL row data, annualising to
+approximately 67 MB/day with one worker restart. That is about 62% below the earlier
+178 MB/day SQL estimate, although it is not the Supabase billed total. The provider dashboard
+could not be read because the current in-app Supabase session was signed out.
+
+The largest avoidable residual was Alpaca reconciliation repeatedly downloading historical
+diligence rationale and wide attribution factors for already-complete outcomes. The path now
+loads one narrow existing-outcome index per cycle, fetches entry rationale only for new or
+unlinked outcomes, and fetches attribution factors only for an actual repair. The measured
+pre-change paths represented 13.88 MB/day; expected stable transfer is about 1.8 MB/day plus
+rare repairs, a projected reduction of roughly 12.1 MB/day and about 98.5% fewer attribution
+lookup calls. This does not alter broker polling cadence or trading/protection behaviour.
+
+Regression evidence: 81 relevant tests passed, followed by 55 focused tests after adding an
+explicit stable-cycle no-rationale-reload assertion. Full measurement, limitations and the
+ranked next reductions are in `architecture/EGRESS_FOLLOWUP_2026-09-17.md`.
+
+## 2026-09-17 — Historical learning, Founder reflection and reliability bundle
+
+The Founder authorised implementation and deployment of the five workstreams agreed earlier
+in the day, bundled with the further egress reduction above.
+
+- Added a bounded Render-side market-data cache: a five-year Alpaca daily-bar backfill and
+  Kraken's bounded GBP OHLC history, followed by small overlap refreshes. Symbol, page,
+  per-symbol bar and total-cache limits prevent an unbounded research download. Full bars are
+  not stored in or repeatedly read through Supabase.
+- Connected source-qualified cached bars to historical screening. Only compact screening
+  results and provenance reach Supabase, and the system continues to replay only genuinely
+  recorded signals rather than inventing past Trader decisions.
+- Preserved three-day review checkpoints, evidence gates and the 36-day maximum. Experiments
+  ended solely by a baseline deployment change are now presented as `Superseded and restarted`.
+- Added a Founder-facing learning scorecard and daily reflection that distinctly answers
+  whether Trader is more capable, learned something, and has demonstrated better trading.
+  A verified-improvement headline requires adopted forward evidence; counts of research or
+  experiments cannot create that claim.
+- Added a deterministic scorecard-based self-assessment fallback so a reasoning timeout still
+  produces a truthful stored daily reflection, and moved Strategy Lab refresh to the longer
+  research execution budget.
+- Live read-only provider validation returned 1,253 completed MSFT daily bars from Alpaca and
+  720 completed XRPGBP daily bars from Kraken. It placed no orders and wrote no bar history to
+  Supabase.
+- Focused backend suite: 102 passed. Mobile experiment suite: 5 passed. A dedicated timeout
+  fallback regression was added before release.
+
+Deployment revision and production/OTA verification are recorded after rollout below.
