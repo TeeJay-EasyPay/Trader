@@ -5974,7 +5974,7 @@ and demonstrated trading improvement; generate a short daily Trader reflection f
 evidence with a deterministic fallback; and repair the hosted Trader/self-assessment and
 Strategy Lab timeout paths required to make that reflection dependable.
 
-## 2026-09-17 — Further egress pass (implemented locally; not deployed)
+## 2026-09-17 — Further egress pass (deployed; measurement pending)
 
 A clean 21-hour `pg_stat_statements` delta measured 59.0 MB of SQL row data, annualising to
 approximately 67 MB/day with one worker restart. That is about 62% below the earlier
