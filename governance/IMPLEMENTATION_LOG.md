@@ -6020,4 +6020,18 @@ in the day, bundled with the further egress reduction above.
 - Focused backend suite: 102 passed. Mobile experiment suite: 5 passed. A dedicated timeout
   fallback regression was added before release.
 
-Deployment revision and production/OTA verification are recorded after rollout below.
+### Deployment verification
+
+- Release `6a47b978` was pushed to `master`. The hosted API reported the exact revision,
+  and the live background worker reported the same revision, a fresh heartbeat and healthy
+  status while running its normal managed-exit loop.
+- The production Experiments response returned the new scorecard with headline `Learning
+  activity only`: `more_capable=true`, `learned_something=false` and
+  `trading_better=false`. Its plain reflection says cached historical screening is available
+  and four forward experiments are being tracked, while explicitly stating that better
+  trading performance has not yet been proved.
+- Android runtime 1.0.4 OTA updates were published from the clean release revision:
+  `hosted-preview` group `8182e63c-01a1-4e61-bfa4-9753341893a1` and `preview` group
+  `e0f521a3-f21f-4c7c-b9df-3d1ba6e7a4ac`.
+- Final focused backend suite: 103 passed, including forced self-assessment timeout fallback.
+  Mobile experiment suite: 5 passed.

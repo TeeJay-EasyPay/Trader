@@ -87,5 +87,6 @@ Supabase.
 
 - Focused and egress regression suites: **81 passed**.
 - Final focused suite after the explicit stable-cycle test: **55 passed**.
-- No production deployment or provider-level saving is claimed by this entry.
-
+- Release `6a47b978` is deployed on the Render API and background worker. The projected
+  reduction still requires a clean post-release measurement window; deployment itself is
+  not evidence that Supabase's provider-level chart has fallen by the same amount.

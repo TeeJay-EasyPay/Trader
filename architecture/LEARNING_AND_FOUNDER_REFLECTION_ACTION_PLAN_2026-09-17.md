@@ -1,7 +1,7 @@
 # Learning and Founder reflection — action plan
 
 **Date:** 17 September 2026  
-**Status:** Implemented locally and regression-tested; production deployment pending.  
+**Status:** Implemented, deployed and production-verified.  
 **Safety boundary:** Research, simulation and reporting only. Nothing in this plan
 authorises live strategy activation, higher risk, new orders or weaker safeguards.
 
@@ -160,3 +160,10 @@ This plan is complete only when production demonstrates all of the following:
 - Strategy Lab refresh now receives the research-job execution budget rather than
   the shorter default job timeout.
 - Focused backend regression suite: 102 passed. Mobile experiment checks: 5 passed.
+- Release `6a47b978` is live on the Render API and background worker. The first
+  production scorecard returned `Learning activity only`: Trader is more capable,
+  four forward experiments are being tracked, and better trading performance has
+  not yet been proved.
+- Android runtime 1.0.4 OTA was published from the clean release revision to
+  `hosted-preview` (group `8182e63c-01a1-4e61-bfa4-9753341893a1`) and `preview`
+  (group `e0f521a3-f21f-4c7c-b9df-3d1ba6e7a4ac`).
