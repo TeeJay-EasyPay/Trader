@@ -1,7 +1,7 @@
 # Learning and Founder reflection — action plan
 
 **Date:** 17 September 2026  
-**Status:** Implemented, deployed and production-verified.  
+**Status:** Implemented, deployed and production-verified.
 **Safety boundary:** Research, simulation and reporting only. Nothing in this plan
 authorises live strategy activation, higher risk, new orders or weaker safeguards.
 
