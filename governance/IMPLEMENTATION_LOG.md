@@ -6044,8 +6044,9 @@ implemented but had not run in production.
 
 - Production telemetry identified repeated downloads of immutable decision-evidence JSON as
   the largest measured transfer family (about 125 MB by 09:07 UTC). Added a 128-entry/32 MB
-  content-addressed process cache. A blob is SHA-256 verified and remains transaction-local
-  until commit; rollback discards it. This preserves fail-closed execution semantics while
+  content-addressed memory plus worker-host cache. A blob is SHA-256 verified and remains
+  transaction-local until commit; rollback discards it. The bounded 128-entry/32 MB host
+  layer carries safe committed values across short-lived auto-execution child processes,
   avoiding repeated transfer of identical evidence across worker cycles.
 - Combined the latest portfolio snapshot and peak-equity lookup into one database request,
   removing one connection/query from every call to that hot helper without changing values.

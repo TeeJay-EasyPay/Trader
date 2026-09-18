@@ -70,6 +70,19 @@ def test_rolled_back_blob_is_never_reused():
         hydrate_rows([row], other)
 
 
+def test_committed_blob_is_reused_across_process_memory_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv('AI_TRADER_DECISION_EVIDENCE_CACHE_DIR', str(tmp_path))
+    raw, original, compact = fixture()
+    row = dict(payload_json=json.dumps(compact))
+    hydrate_rows([row], raw)
+    promote_connection_cache(raw)
+    clear_evidence_cache()  # simulate a new short-lived worker child process
+    other = Mock()
+    assert json.loads(hydrate_rows([row], other)[0]['payload_json']) == original
+    other.execute.assert_not_called()
+    clear_evidence_cache(clear_disk=True)
+
+
 def test_inline_and_projected_reads_need_no_lookup():
     raw = Mock()
     rows = [{'payload_json': '{"proposal": {"entry_price": 1.34}}'}, {'count': 30}]

@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from collections import OrderedDict
+from pathlib import Path
 from threading import RLock
 
 MARKER = '__decision_evidence_sha256_v1'
@@ -27,12 +30,76 @@ _PENDING_BY_CONNECTION: dict[int, dict[str, tuple[str, object]]] = {}
 _CACHE_LOCK = RLock()
 
 
+def _disk_cache_root():
+    configured = os.getenv('AI_TRADER_DECISION_EVIDENCE_CACHE_DIR')
+    if not configured and not os.getenv('RENDER'):
+        return None
+    return Path(configured or tempfile.gettempdir()) / 'ai-trader-decision-evidence-v1'
+
+
+def _disk_cache_get(digest):
+    root = _disk_cache_root()
+    if root is None:
+        return None
+    path = root / (digest + '.json')
+    try:
+        text = path.read_text(encoding='utf-8')
+        if hashlib.sha256(text.encode('utf-8')).hexdigest() != digest:
+            path.unlink(missing_ok=True)
+            return None
+        return text, json.loads(text)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _disk_cache_put(digest, text):
+    root = _disk_cache_root()
+    if root is None:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / (digest + '.json')
+    if not target.exists():
+        temporary = root / f'.{digest}.{os.getpid()}.tmp'
+        try:
+            temporary.write_text(text, encoding='utf-8')
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    def modified(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0
+    files = sorted(root.glob('*.json'), key=modified, reverse=True)
+    total = 0
+    for index, path in enumerate(files):
+        try:
+            total += path.stat().st_size
+            if index >= _CACHE_MAX_ITEMS or total > _CACHE_MAX_BYTES:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 def _cache_get(digest):
+    global _COMMITTED_CACHE_BYTES
     with _CACHE_LOCK:
         item = _COMMITTED_CACHE.get(digest)
         if item is not None:
             _COMMITTED_CACHE.move_to_end(digest)
-        return item
+            return item
+    item = _disk_cache_get(digest)
+    if item is not None:
+        with _CACHE_LOCK:
+            old = _COMMITTED_CACHE.pop(digest, None)
+            if old is not None:
+                _COMMITTED_CACHE_BYTES -= len(old[0].encode('utf-8'))
+            _COMMITTED_CACHE[digest] = item
+            _COMMITTED_CACHE_BYTES += len(item[0].encode('utf-8'))
+            while len(_COMMITTED_CACHE) > _CACHE_MAX_ITEMS or _COMMITTED_CACHE_BYTES > _CACHE_MAX_BYTES:
+                _, (text, _) = _COMMITTED_CACHE.popitem(last=False)
+                _COMMITTED_CACHE_BYTES -= len(text.encode('utf-8'))
+    return item
 
 
 def promote_connection_cache(raw_connection):
@@ -47,6 +114,7 @@ def promote_connection_cache(raw_connection):
                 _COMMITTED_CACHE_BYTES -= len(old[0].encode('utf-8'))
             _COMMITTED_CACHE[digest] = item
             _COMMITTED_CACHE_BYTES += len(text.encode('utf-8'))
+            _disk_cache_put(digest, text)
         while len(_COMMITTED_CACHE) > _CACHE_MAX_ITEMS or _COMMITTED_CACHE_BYTES > _CACHE_MAX_BYTES:
             _, (text, _) = _COMMITTED_CACHE.popitem(last=False)
             _COMMITTED_CACHE_BYTES -= len(text.encode('utf-8'))
@@ -57,13 +125,18 @@ def discard_connection_cache(raw_connection):
         _PENDING_BY_CONNECTION.pop(id(raw_connection), None)
 
 
-def clear_evidence_cache():
+def clear_evidence_cache(*, clear_disk=False):
     """Test/diagnostic hook; runtime eviction is automatic and bounded."""
     global _COMMITTED_CACHE_BYTES
     with _CACHE_LOCK:
         _COMMITTED_CACHE.clear()
         _PENDING_BY_CONNECTION.clear()
         _COMMITTED_CACHE_BYTES = 0
+    if clear_disk:
+        root = _disk_cache_root()
+        if root is not None and root.exists():
+            for path in root.glob('*.json'):
+                path.unlink(missing_ok=True)
 
 
 def prepare_insert(sql):
