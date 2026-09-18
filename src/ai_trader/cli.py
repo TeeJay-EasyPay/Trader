@@ -1179,6 +1179,11 @@ def _due_worker_jobs(
     if not settings.worker_research_enabled:
         return due
     research_seconds = max(300, settings.research_scheduler_interval_minutes * 60)
+    # Put the bounded, model-free cache refresh ahead of slower provider/AI research. On
+    # startup this means historical coverage is repaired promptly instead of waiting behind
+    # every other job whose daily/hourly bucket also became due during the deployment.
+    if startup_catchup or now.minute < 2:
+        due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
     # 2026-08-22: this job existed only as an IntervalWorker inside the API process, and
     # hosted production runs the API with AI_TRADER_DISABLE_BACKGROUND_WORKERS set -- so it
     # had never actually run anywhere. Without it CRYPTO_MASTER is never populated from the
@@ -1233,12 +1238,6 @@ def _due_worker_jobs(
     # timescale of data and code changes, not minutes, and each run is a real reasoning-model
     # call. A 12-hour bucket also means a missed window costs at most one assessment.
     due.append(("self-assessment", _time_bucket(now, 24 * 3600)))
-    # Offer the current UTC-day bucket only near the top of each hour. The durable claim still
-    # permits just one successful run/day, while an outage can catch up at the next hour
-    # instead of waiting until tomorrow. Keeping it out of the other ~58 worker laps/hour also
-    # avoids turning the catch-up mechanism into a stream of duplicate database claim checks.
-    if startup_catchup or now.minute < 2:
-        due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see

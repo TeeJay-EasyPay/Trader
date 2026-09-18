@@ -578,6 +578,10 @@ class ProductionCompletionTests(unittest.TestCase):
             startup_catchup=True,
         ))
         self.assertEqual(startup["historical-market-refresh"], morning["historical-market-refresh"])
+        self.assertEqual(
+            _due_worker_jobs(settings, datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc), startup_catchup=True)[0][0],
+            "historical-market-refresh",
+        )
 
     def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
         from datetime import datetime, timezone
