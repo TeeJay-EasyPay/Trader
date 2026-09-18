@@ -557,7 +557,6 @@ class ProductionCompletionTests(unittest.TestCase):
         # equity jobs below it which are gated on market_now.weekday() < 5.
         due = _due_worker_jobs(settings, datetime(2026, 8, 16, 3, 30, tzinfo=timezone.utc))
         self.assertIn("rejection-outcome-review", [name for name, _ in due])
-        self.assertIn("historical-market-refresh", [name for name, _ in due])
 
     def test_historical_market_refresh_is_daily_and_catches_up_outside_night_window(self):
         from datetime import datetime, timezone
@@ -571,6 +570,8 @@ class ProductionCompletionTests(unittest.TestCase):
         morning = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 8, 0, tzinfo=timezone.utc)))
         evening = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc)))
         self.assertEqual(morning["historical-market-refresh"], evening["historical-market-refresh"])
+        outside_window = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc)))
+        self.assertNotIn("historical-market-refresh", outside_window)
 
     def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
         from datetime import datetime, timezone

@@ -1226,10 +1226,12 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # timescale of data and code changes, not minutes, and each run is a real reasoning-model
     # call. A 12-hour bucket also means a missed window costs at most one assessment.
     due.append(("self-assessment", _time_bucket(now, 24 * 3600)))
-    # Daily provider history refresh is always due for the current UTC-day bucket.  The
-    # scheduled-job claim makes all later worker cycles no-ops, while a deploy or outage that
-    # misses a narrow overnight window can still catch up immediately the same day.
-    due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
+    # Offer the current UTC-day bucket only near the top of each hour. The durable claim still
+    # permits just one successful run/day, while an outage can catch up at the next hour
+    # instead of waiting until tomorrow. Keeping it out of the other ~58 worker laps/hour also
+    # avoids turning the catch-up mechanism into a stream of duplicate database claim checks.
+    if now.minute < 2:
+        due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see
