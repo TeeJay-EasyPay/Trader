@@ -1183,7 +1183,12 @@ def _due_worker_jobs(
     # startup this means historical coverage is repaired promptly instead of waiting behind
     # every other job whose daily/hourly bucket also became due during the deployment.
     if startup_catchup or now.minute < 2:
-        due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
+        # The provider cache is host-local and disappears with its container. A startup uses
+        # a minute bucket so a newly deployed container rebuilds it even when the prior
+        # container already completed today's durable daily claim. Normal hourly catch-up
+        # retains the one-per-day key.
+        scheduled_for = _time_bucket(now, 60) if startup_catchup else _time_bucket(now, 24 * 3600)
+        due.append(("historical-market-refresh", scheduled_for))
     # 2026-08-22: this job existed only as an IntervalWorker inside the API process, and
     # hosted production runs the API with AI_TRADER_DISABLE_BACKGROUND_WORKERS set -- so it
     # had never actually run anywhere. Without it CRYPTO_MASTER is never populated from the

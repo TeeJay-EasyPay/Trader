@@ -577,7 +577,8 @@ class ProductionCompletionTests(unittest.TestCase):
             datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc),
             startup_catchup=True,
         ))
-        self.assertEqual(startup["historical-market-refresh"], morning["historical-market-refresh"])
+        self.assertNotEqual(startup["historical-market-refresh"], morning["historical-market-refresh"])
+        self.assertTrue(startup["historical-market-refresh"].startswith("2026-09-18T20:10"))
         self.assertEqual(
             _due_worker_jobs(settings, datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc), startup_catchup=True)[0][0],
             "historical-market-refresh",
