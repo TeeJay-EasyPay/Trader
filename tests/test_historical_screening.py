@@ -68,6 +68,36 @@ def test_dataset_and_daily_batch_read_once_no_live_mutation(db,monkeypatch):
     assert e.detail(db,row['id'])==before
 
 
+def test_dataset_accepts_identical_provider_bar_with_provenance(db, monkeypatch):
+    signal = op()
+    recorded = bar(2)
+    monkeypatch.setattr(h, 'recorded_signals', lambda *args: [signal])
+    monkeypatch.setattr(h, 'recorded_bars', lambda *args: [recorded])
+    provider = {**recorded, 'source': 'kraken_public_exact_gbp_pair'}
+
+    with e.transaction(db) as conn:
+        result = h.dataset(conn, 'kraken', '2026-09-16T00:00:00+00:00', [provider])
+
+    assert len(result['signals']) == 1
+    assert len(result['bars']) == 1
+    assert result.get('reason') is None
+
+
+def test_dataset_rejects_genuinely_conflicting_provider_price(db, monkeypatch):
+    signal = op()
+    recorded = bar(2)
+    monkeypatch.setattr(h, 'recorded_signals', lambda *args: [signal])
+    monkeypatch.setattr(h, 'recorded_bars', lambda *args: [recorded])
+    provider = {**recorded, 'close': recorded['close'] + 1,
+                'source': 'kraken_public_exact_gbp_pair'}
+
+    with e.transaction(db) as conn:
+        result = h.dataset(conn, 'kraken', '2026-09-16T00:00:00+00:00', [provider])
+
+    assert result['signals'] == [] and result['bars'] == []
+    assert result['reason'] == 'Conflicting provider-cache bars'
+
+
 def test_force_refresh_replays_same_day_without_model_budget(db, monkeypatch):
     create(db)
     calls=[]

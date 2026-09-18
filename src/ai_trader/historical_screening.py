@@ -23,6 +23,12 @@ MAX_TRIALS = 10
 MAX_CACHE_BYTES = 10 * 1024 * 1024
 
 
+def _same_bar(left, right):
+    """Compare replay semantics while ignoring optional provenance metadata."""
+    fields = ('symbol', 'start', 'end', 'open', 'high', 'low', 'close', 'quality')
+    return all(left.get(field) == right.get(field) for field in fields)
+
+
 def recorded_signals(conn, broker, now):
     """One recorded buy assessment/day, at most 64 days; no historical AI recreation."""
     names = ('entry_price','stop_loss','take_profit','side','quote_currency','pre_experiment_eligibility')
@@ -131,7 +137,7 @@ def dataset(conn, broker, now, cached_bars=None):
                 continue
             bar = {**raw, 'symbol': signal['symbol']}
             identity = (bar['symbol'], bar['start'])
-            if identity in bars and bars[identity] != bar:
+            if identity in bars and not _same_bar(bars[identity], bar):
                 # Conflicting market history invalidates the dataset, not just one winner.
                 return dict(signals=[], bars=[], reason='Conflicting recorded bars', broker=broker)
             bars[identity] = bar
@@ -143,14 +149,14 @@ def dataset(conn, broker, now, cached_bars=None):
     signals = sorted((v for k, v in signals.items() if k not in conflicts), key=lambda s: (s['time'], s['symbol'], str(s['source_id'])))
     for bar in recorded_bars(conn,broker,signals,now):
         key=(bar['symbol'],bar['start'])
-        if key in bars and bars[key]!=bar:
+        if key in bars and not _same_bar(bars[key], bar):
             return dict(signals=[],bars=[],reason='Conflicting recorded bars',broker=broker)
         bars[key]=bar
     for bar in cached_bars or []:
         if bar.get('quality') != 'verified_unadjusted' or bar.get('symbol') not in {s['symbol'] for s in signals}:
             continue
         key=(bar['symbol'],bar['start'])
-        if key in bars and bars[key]!=bar:
+        if key in bars and not _same_bar(bars[key], bar):
             return dict(signals=[],bars=[],reason='Conflicting provider-cache bars',broker=broker)
         bars[key]=bar
     result = dict(broker=broker, signals=signals, bars=sorted(bars.values(), key=lambda b: (b['start'], b['symbol'])),
