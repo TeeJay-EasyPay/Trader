@@ -259,6 +259,7 @@ class PostgresConnection:
         )
         record("connection", connections=1)
         self._row_factory = None
+        self._mutated = False
         # Identity for the schema cache: two databases in one process must never share it.
         try:
             self._schema_key = str(self._conn.info.dbname or "") + "@" + str(self._conn.info.host or "")
@@ -293,6 +294,8 @@ class PostgresConnection:
             return self._table_info(pragma)
         from .decision_storage import prepare_insert
         statement = _postgres_sql(prepare_insert(sql))
+        if re.match(r"^\s*(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b", statement, re.IGNORECASE):
+            self._mutated = True
         try:
             returning_column = self._returning_column(statement)
             if returning_column is not None:
@@ -312,6 +315,8 @@ class PostgresConnection:
     def executemany(self, sql: str, params_seq: Iterable[Iterable[Any]]):
         from .decision_storage import prepare_insert
         statement = _postgres_sql(prepare_insert(sql))
+        if re.match(r"^\s*(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b", statement, re.IGNORECASE):
+            self._mutated = True
         try:
             cursor = self._conn.cursor()
             cursor.executemany(statement, params_seq)
@@ -328,9 +333,15 @@ class PostgresConnection:
 
     def commit(self) -> None:
         self._conn.commit()
+        from .decision_storage import promote_connection_cache
+        promote_connection_cache(self._conn)
+        self._mutated = False
 
     def rollback(self) -> None:
         self._conn.rollback()
+        from .decision_storage import discard_connection_cache
+        discard_connection_cache(self._conn)
+        self._mutated = False
 
     def set_autocommit(self, value: bool) -> None:
         # Narrow escape hatch for statements Postgres refuses to run inside a transaction
@@ -341,6 +352,13 @@ class PostgresConnection:
         self._conn.autocommit = value
 
     def close(self) -> None:
+        from .decision_storage import discard_connection_cache, promote_connection_cache
+        if self._mutated:
+            discard_connection_cache(self._conn)
+        else:
+            # A read-only transaction can only have observed committed database rows, even
+            # though DB-API close will end that transaction without an explicit commit.
+            promote_connection_cache(self._conn)
         self._conn.close()
 
     def cursor(self):

@@ -6035,3 +6035,29 @@ in the day, bundled with the further egress reduction above.
   `e0f521a3-f21f-4c7c-b9df-3d1ba6e7a4ac`.
 - Final focused backend suite: 103 passed, including forced self-assessment timeout fallback.
   Mobile experiment suite: 5 passed.
+
+## 2026-09-18 — Briefing resilience, measured egress and historical-learning activation
+
+The Founder authorised one coordinated fix for the stale-cache screen, the residual
+approximately 300 MB/day Supabase egress and the historical learning data that had been
+implemented but had not run in production.
+
+- Production telemetry identified repeated downloads of immutable decision-evidence JSON as
+  the largest measured transfer family (about 125 MB by 09:07 UTC). Added a 128-entry/32 MB
+  content-addressed process cache. A blob is SHA-256 verified and remains transaction-local
+  until commit; rollback discards it. This preserves fail-closed execution semantics while
+  avoiding repeated transfer of identical evidence across worker cycles.
+- Combined the latest portfolio snapshot and peak-equity lookup into one database request,
+  removing one connection/query from every call to that hot helper without changing values.
+- A single failed mobile refresh after a successful live response no longer immediately
+  relabels fresh on-screen evidence as Cached Data. The bounded network retry remains, a
+  second consecutive failed cycle still surfaces Cached Data, and a first-start failure with
+  no live response remains an explicit failure.
+- Added an independent daily `historical-market-refresh` worker job. It refreshes the bounded
+  Alpaca/Kraken provider-to-Render bar cache and replays frozen active experiment specs with
+  zero model calls. It no longer depends on the shared daily proposal budget, whose prior
+  `reference_pair_reserved` state had prevented the importer from running.
+- Bulk bars remain off Supabase; only compact screening summaries are stored there. The job
+  cannot create/promote experiments or place orders.
+- Pre-deployment verification: 171 focused backend tests passed (plus two subtests), and 31
+  mobile freshness-state tests passed.

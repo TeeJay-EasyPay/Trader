@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
                                 # certainly not the default meant for single-query work. Given
                                 # it up front rather than after being caught by the same
                                 # silent-timeout trap that hid forecast-refresh and daily-report.
-                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment", "crypto-universe-refresh", "crypto-candle-refresh", "strategy-lab-refresh"}
+                                if job_name in {"premarket-equity", "market-open-equity", "market-close-equity", "crypto-research", "daily-report", "daily-learning", "benchmark-research-refresh", "external-intelligence-refresh", "self-assessment", "crypto-universe-refresh", "crypto-candle-refresh", "strategy-lab-refresh", "historical-market-refresh"}
                                 # 2026-08-23: external-intelligence-refresh timed out on the
                                 # shared 180s budget. It makes many small sequential HTTP
                                 # calls in one run -- SEC EDGAR per symbol, Alpaca News
@@ -742,6 +742,13 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
         return service.poll_broker_activity_kraken()
     if job_name == "evidence-snapshot":
         return service.capture_production_broker_snapshots()
+    if job_name == "historical-market-refresh":
+        from .historical_screening import refresh_active_screening
+        return refresh_active_screening(
+            service.settings.db_path,
+            service.settings,
+            datetime.now(timezone.utc).isoformat(),
+        )
     if job_name == "managed-exits":
         return service.monitor_managed_exits()
     if job_name == "position-reconciliation":
@@ -1248,6 +1255,10 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         due.append(("benchmark-research-refresh", f"{now.date().isoformat()}T10:00:00+00:00"))
     if 3 <= now.hour < 4:
         due.append(("rejection-outcome-review", f"{now.date().isoformat()}T03:00:00+00:00"))
+        # Provider-to-Render price history is refreshed independently of proposal/model
+        # budgets.  Bulk bars remain on the worker host; Supabase receives only a compact
+        # screening summary, so learning coverage no longer competes with database egress.
+        due.append(("historical-market-refresh", f"{now.date().isoformat()}T03:20:00+00:00"))
     if now.day == 1 and 4 <= now.hour < 5:
         due.append(("rejection-outcome-rollup", f"{now.strftime('%Y-%m')}-01T04:00:00+00:00"))
     # 2026-08-21 Founder-directed fix: daily-learning has a working dispatch handler

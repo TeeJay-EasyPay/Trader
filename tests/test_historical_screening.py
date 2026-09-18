@@ -68,6 +68,16 @@ def test_dataset_and_daily_batch_read_once_no_live_mutation(db,monkeypatch):
     assert e.detail(db,row['id'])==before
 
 
+def test_force_refresh_replays_same_day_without_model_budget(db, monkeypatch):
+    create(db)
+    calls=[]
+    monkeypatch.setattr(h, 'screen_batch', lambda database, candidates, now, force=False:
+        calls.append((len(candidates), force)) or {'status':'completed','trials':[]})
+    result=h.refresh_active_screening(db, object(), '2026-09-18T03:20:00+00:00')
+    assert result['status']=='completed' and result['model_calls']==0
+    assert calls==[(1, True)]
+
+
 def test_temporal_split_purges_and_never_force_closes(monkeypatch):
     start=datetime(2026,1,1,tzinfo=timezone.utc)
     signals=[op(source=str(i),time=(start+timedelta(days=i)).isoformat()) for i in range(60)]

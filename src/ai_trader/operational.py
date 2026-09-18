@@ -316,22 +316,19 @@ def latest_pnl_snapshot(db_path: Path, broker: str) -> dict[str, Any]:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT day_pnl, week_pnl, month_pnl, portfolio_value
+            SELECT day_pnl, week_pnl, month_pnl, portfolio_value,
+                   (SELECT MAX(portfolio_value) FROM PORTFOLIO_SNAPSHOTS WHERE broker = ?) AS peak_equity
             FROM PORTFOLIO_SNAPSHOTS WHERE broker = ?
             ORDER BY snapshot_id DESC LIMIT 1
             """,
-            (broker.lower(),),
-        ).fetchone()
-        peak = conn.execute(
-            "SELECT MAX(portfolio_value) FROM PORTFOLIO_SNAPSHOTS WHERE broker = ?",
-            (broker.lower(),),
+            (broker.lower(), broker.lower()),
         ).fetchone()
     return {
         "day_pnl": row["day_pnl"] if row else None,
         "week_pnl": row["week_pnl"] if row else None,
         "month_pnl": row["month_pnl"] if row else None,
         "portfolio_value": row["portfolio_value"] if row else None,
-        "peak_equity": peak[0] if peak and peak[0] is not None else None,
+        "peak_equity": row["peak_equity"] if row else None,
     }
 
 

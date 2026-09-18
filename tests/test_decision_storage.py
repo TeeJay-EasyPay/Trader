@@ -7,7 +7,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from ai_trader.decision_storage import MARKER, hydrate_rows, prepare_insert
+from ai_trader.decision_storage import (
+    MARKER, clear_evidence_cache, discard_connection_cache, hydrate_rows,
+    prepare_insert, promote_connection_cache,
+)
 from ai_trader.database import PostgresCursor
 
 
@@ -26,6 +29,7 @@ def test_other_queries_unchanged(sql):
 
 
 def fixture():
+    clear_evidence_cache()
     body = json.dumps({'news': 'example '*1000, 'numbers': [1, None, 2.5], 'unicode': '£'}, ensure_ascii=False)
     digest = hashlib.sha256(body.encode()).hexdigest()
     raw = Mock()
@@ -42,6 +46,28 @@ def test_batch_hydration_preserves_exact_values_and_uses_one_lookup():
     assert all(json.loads(r['payload_json']) == original for r in result)
     assert json.loads(rows[0]['payload_json']) == compact  # no mutation
     raw.execute.assert_called_once()
+
+
+def test_verified_blob_is_reused_only_after_commit_promotion():
+    raw, original, compact = fixture()
+    row = dict(payload_json=json.dumps(compact))
+    assert json.loads(hydrate_rows([row], raw)[0]['payload_json']) == original
+    assert raw.execute.call_count == 1
+    promote_connection_cache(raw)
+    other = Mock()
+    assert json.loads(hydrate_rows([row], other)[0]['payload_json']) == original
+    other.execute.assert_not_called()
+
+
+def test_rolled_back_blob_is_never_reused():
+    raw, _, compact = fixture()
+    row = dict(payload_json=json.dumps(compact))
+    hydrate_rows([row], raw)
+    discard_connection_cache(raw)
+    other = Mock()
+    other.execute.return_value.fetchall.return_value = []
+    with pytest.raises(ValueError, match='Missing decision evidence'):
+        hydrate_rows([row], other)
 
 
 def test_inline_and_projected_reads_need_no_lookup():

@@ -32,6 +32,7 @@ const {
 const {
   DISPLAY_STATE,
   classifyDisplayState,
+  shouldReportRefreshFailure,
   snapshotFreshness,
   cacheBannerDetails,
   displayStateBadge,
@@ -232,6 +233,13 @@ function useFounderEvidence() {
   // into the single already-running attempt instead of issuing duplicate network requests.
   const isMountedRef = useRef(true);
   const refreshInFlightRef = useRef(false);
+  // One transient mobile/network failure should not relabel a still-fresh, successfully
+  // loaded briefing as Cached Data.  We continue showing that last verified snapshot and
+  // only enter the explicit Cached state after two consecutive failed refresh cycles.  A
+  // success resets the streak immediately; a first-ever failure with no live data still
+  // reports failure normally.
+  const consecutiveRefreshFailuresRef = useRef(0);
+  const hasSuccessfulLiveRefreshRef = useRef(false);
   // When the last automatic refresh ran, so returning to the foreground cannot fire one
   // that the timer would have skipped anyway. See the AppState effect below.
   const lastAutoRefreshRef = useRef(Date.now());
@@ -449,10 +457,12 @@ function useFounderEvidence() {
       // decision logic AT-ED-011.5's tests exercise directly, applied here to the real fetch.
       const outcome = resolveFounderEvidenceRefresh({ founderEvidence, fetchError, applyError });
       setHasAttempted(true);
-      setLastRefreshSucceeded(outcome.succeeded);
       setLastRefreshError(outcome.error);
 
       if (outcome.succeeded) {
+        consecutiveRefreshFailuresRef.current = 0;
+        hasSuccessfulLiveRefreshRef.current = true;
+        setLastRefreshSucceeded(true);
         // AT-ED-011.9: local cache persistence happens here - after success is already
         // determined and the UI already reflects the live data - and is never awaited, so it
         // cannot delay this function returning or setLoading(false) in the finally block
@@ -521,6 +531,14 @@ function useFounderEvidence() {
             }
           });
         return;
+      }
+
+      consecutiveRefreshFailuresRef.current += 1;
+      if (shouldReportRefreshFailure({
+        consecutiveFailures: consecutiveRefreshFailuresRef.current,
+        hadSuccessfulLiveRefresh: hasSuccessfulLiveRefreshRef.current,
+      })) {
+        setLastRefreshSucceeded(false);
       }
 
       // Either the fetch failed (both attempts) or the fetch succeeded but could not be

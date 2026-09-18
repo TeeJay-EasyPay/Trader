@@ -282,7 +282,7 @@ def screen(spec, data, now):
             'reason':'Historical checks passed; requires fresh shadow evidence.' if passed else 'Historical after-cost or risk checks did not support this candidate.'}
 
 
-def screen_batch(db, candidates, now):
+def screen_batch(db, candidates, now, *, force=False):
     """One deterministic batch/day, shared datasets, no extra model requests."""
     if len(candidates) > MAX_TRIALS:
         raise ValueError('Historical batch limit exceeded')
@@ -291,7 +291,7 @@ def screen_batch(db, candidates, now):
         if uses_postgres():
             conn.execute('SELECT pg_advisory_xact_lock(71911504)')
         prior = e.control(conn, 'historical_screening', {})
-        if prior.get('day') == now[:10]:
+        if prior.get('day') == now[:10] and not force:
             return prior
         # Reserve before computation: restart/error cannot repeat the daily work.
         e.put_control(conn, 'historical_screening', dict(day=now[:10], status='reserved', trials=[]))
@@ -341,4 +341,35 @@ def screen_batch(db, candidates, now):
                      evidence_status='Historical development, not proven improvement', action='research', activation='not_activated'))
         from .founder_learning import refresh as refresh_founder_learning
         refresh_founder_learning(conn, now=now, force=True)
+    return result
+
+
+def refresh_active_screening(db, settings, now):
+    """Refresh provider history and replay active experiments without an AI call.
+
+    This is intentionally independent of the once-daily proposal/model budget.  The former
+    implementation put the market-data import behind successful candidate generation, so a
+    reference-set refresh could consume the shared budget first and leave the historical
+    cache empty indefinitely.  Existing frozen specs are sufficient to exercise the importer
+    and replay engine; this job cannot create, promote, or trade an experiment.
+    """
+    with e.transaction(db) as conn:
+        rows = conn.execute(
+            "SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') "
+            "ORDER BY created_at DESC LIMIT ?", (MAX_TRIALS,)
+        ).fetchall()
+    candidates = []
+    for row in rows:
+        try:
+            value = json.loads(row[0])
+            e.validate_spec(value)
+            candidates.append(value)
+        except (ValueError, TypeError, KeyError):
+            continue
+    if not candidates:
+        return dict(status='no_active_experiments', at=now, trials=[],
+                    message='No frozen active experiment specs were available to replay.')
+    result = screen_batch(db, candidates, now, force=True)
+    result['trigger'] = 'scheduled_historical_market_refresh'
+    result['model_calls'] = 0
     return result

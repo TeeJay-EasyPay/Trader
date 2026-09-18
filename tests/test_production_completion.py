@@ -557,6 +557,7 @@ class ProductionCompletionTests(unittest.TestCase):
         # equity jobs below it which are gated on market_now.weekday() < 5.
         due = _due_worker_jobs(settings, datetime(2026, 8, 16, 3, 30, tzinfo=timezone.utc))
         self.assertIn("rejection-outcome-review", [name for name, _ in due])
+        self.assertIn("historical-market-refresh", [name for name, _ in due])
 
     def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
         from datetime import datetime, timezone

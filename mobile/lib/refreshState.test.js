@@ -9,6 +9,7 @@ const {
   DISPLAY_STATE,
   TONE_EMOJI,
   classifyDisplayState,
+  shouldReportRefreshFailure,
   snapshotFreshness,
   formatAgeSeconds,
   cacheBannerDetails,
@@ -107,6 +108,15 @@ test('classifyDisplayState: a prior successful fetch never gets reported as Live
     backendSnapshotStale: false,
   });
   assert.strictEqual(result, DISPLAY_STATE.REFRESHING);
+});
+
+test('one isolated failure after live data does not immediately downgrade the briefing', () => {
+  assert.strictEqual(shouldReportRefreshFailure({ consecutiveFailures: 1, hadSuccessfulLiveRefresh: true }), false);
+  assert.strictEqual(shouldReportRefreshFailure({ consecutiveFailures: 2, hadSuccessfulLiveRefresh: true }), true);
+});
+
+test('a bootstrap failure is always reported because no live response exists', () => {
+  assert.strictEqual(shouldReportRefreshFailure({ consecutiveFailures: 1, hadSuccessfulLiveRefresh: false }), true);
 });
 
 // --- snapshotFreshness ---

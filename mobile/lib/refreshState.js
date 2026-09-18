@@ -48,6 +48,13 @@ function classifyDisplayState({ isRefreshing, hasAttempted, lastRefreshSucceeded
   return hasCachedData ? DISPLAY_STATE.CACHED : DISPLAY_STATE.REFRESH_FAILED;
 }
 
+// Keep a previously successful, fresh briefing on screen through one isolated failed
+// refresh cycle.  The second consecutive failure is a genuine degraded condition and must
+// be surfaced.  This never masks bootstrap failure because hadSuccessfulLiveRefresh is false.
+function shouldReportRefreshFailure({ consecutiveFailures, hadSuccessfulLiveRefresh }) {
+  return !hadSuccessfulLiveRefresh || consecutiveFailures >= 2;
+}
+
 // Normalizes the backend's snapshot metadata (production_evidence.py's
 // load_founder_evidence_snapshot() attaches this under payload["snapshot"]) into a shape
 // safe to render even when the field is missing entirely (e.g. _snapshot_not_ready_payload,
@@ -177,6 +184,7 @@ module.exports = {
   DISPLAY_STATE,
   TONE_EMOJI,
   classifyDisplayState,
+  shouldReportRefreshFailure,
   snapshotFreshness,
   formatAgeSeconds,
   cacheBannerDetails,
