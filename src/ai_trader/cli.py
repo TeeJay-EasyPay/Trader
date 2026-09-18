@@ -1226,6 +1226,10 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # timescale of data and code changes, not minutes, and each run is a real reasoning-model
     # call. A 12-hour bucket also means a missed window costs at most one assessment.
     due.append(("self-assessment", _time_bucket(now, 24 * 3600)))
+    # Daily provider history refresh is always due for the current UTC-day bucket.  The
+    # scheduled-job claim makes all later worker cycles no-ops, while a deploy or outage that
+    # misses a narrow overnight window can still catch up immediately the same day.
+    due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself
         # is also a defensive no-op when the flag is off (see
@@ -1255,10 +1259,6 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
         due.append(("benchmark-research-refresh", f"{now.date().isoformat()}T10:00:00+00:00"))
     if 3 <= now.hour < 4:
         due.append(("rejection-outcome-review", f"{now.date().isoformat()}T03:00:00+00:00"))
-        # Provider-to-Render price history is refreshed independently of proposal/model
-        # budgets.  Bulk bars remain on the worker host; Supabase receives only a compact
-        # screening summary, so learning coverage no longer competes with database egress.
-        due.append(("historical-market-refresh", f"{now.date().isoformat()}T03:20:00+00:00"))
     if now.day == 1 and 4 <= now.hour < 5:
         due.append(("rejection-outcome-rollup", f"{now.strftime('%Y-%m')}-01T04:00:00+00:00"))
     # 2026-08-21 Founder-directed fix: daily-learning has a working dispatch handler

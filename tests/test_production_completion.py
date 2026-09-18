@@ -559,6 +559,19 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertIn("rejection-outcome-review", [name for name, _ in due])
         self.assertIn("historical-market-refresh", [name for name, _ in due])
 
+    def test_historical_market_refresh_is_daily_and_catches_up_outside_night_window(self):
+        from datetime import datetime, timezone
+        from ai_trader.cli import _due_worker_jobs
+        settings = SimpleNamespace(
+            production_snapshot_interval_seconds=300,
+            worker_research_enabled=True,
+            research_scheduler_interval_minutes=60,
+            external_intelligence_enabled=False,
+        )
+        morning = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 8, 0, tzinfo=timezone.utc)))
+        evening = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc)))
+        self.assertEqual(morning["historical-market-refresh"], evening["historical-market-refresh"])
+
     def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
         from datetime import datetime, timezone
 
