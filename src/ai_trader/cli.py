@@ -347,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
                         "broker_orders_submitted": 0,
                     },
                 )
+            first_worker_cycle = True
             while True:
                 try:
                     pulse.set_job("starting")
@@ -359,7 +360,8 @@ def main(argv: list[str] | None = None) -> int:
                         scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
                     )
                     scheduled_results = {}
-                    due_jobs = _due_worker_jobs(settings, now)
+                    due_jobs = _due_worker_jobs(settings, now, startup_catchup=first_worker_cycle)
+                    first_worker_cycle = False
                     # broker-poll and auto-execution are scheduled per broker so
                     # one broker's slow API or transient failure cannot delay or
                     # starve the other broker's cycle, and each broker gets its
@@ -1160,7 +1162,12 @@ class EvidenceSnapshotScheduler:
                 return
 
 
-def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tuple[str, str]]:
+def _due_worker_jobs(
+    settings: Settings,
+    now: datetime | None = None,
+    *,
+    startup_catchup: bool = False,
+) -> list[tuple[str, str]]:
     """Return durable work buckets owned by the worker, independent of the mobile app.
 
     evidence-snapshot is deliberately NOT included here as of 2026-08-19 -- it now runs on
@@ -1230,7 +1237,7 @@ def _due_worker_jobs(settings: Settings, now: datetime | None = None) -> list[tu
     # permits just one successful run/day, while an outage can catch up at the next hour
     # instead of waiting until tomorrow. Keeping it out of the other ~58 worker laps/hour also
     # avoids turning the catch-up mechanism into a stream of duplicate database claim checks.
-    if now.minute < 2:
+    if startup_catchup or now.minute < 2:
         due.append(("historical-market-refresh", _time_bucket(now, 24 * 3600)))
     if settings.external_intelligence_enabled:
         # Hourly, same bucket cadence as crypto-research's default. The job itself

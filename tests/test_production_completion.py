@@ -572,6 +572,12 @@ class ProductionCompletionTests(unittest.TestCase):
         self.assertEqual(morning["historical-market-refresh"], evening["historical-market-refresh"])
         outside_window = dict(_due_worker_jobs(settings, datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc)))
         self.assertNotIn("historical-market-refresh", outside_window)
+        startup = dict(_due_worker_jobs(
+            settings,
+            datetime(2026, 9, 18, 20, 10, tzinfo=timezone.utc),
+            startup_catchup=True,
+        ))
+        self.assertEqual(startup["historical-market-refresh"], morning["historical-market-refresh"])
 
     def test_due_worker_jobs_omits_rejection_outcome_review_outside_its_window(self):
         from datetime import datetime, timezone
