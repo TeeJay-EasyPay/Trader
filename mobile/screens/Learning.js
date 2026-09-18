@@ -97,68 +97,88 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
   const [opportunityBroker, setOpportunityBroker] = useState('all');
   const [notes, setNotes] = useState(false);
   const [experimentId, setExperimentId] = useState(null);
-  const [findingLimit, setFindingLimit] = useState(3);
+  const [findingLimit, setFindingLimit] = useState(1);
+  const [expandedFinding, setExpandedFinding] = useState(null);
+  const [activity, setActivity] = useState(false);
+  const [library, setLibrary] = useState(false);
+  const [view, setView] = useState('overview');
+  useEffect(() => { setFindingLimit(1); setExpandedFinding(null); }, [period, anchor]);
   const findings = data.learning?.findings || [];
   if (experimentId) return <ExperimentDetail request={request} id={experimentId} onBack={() => setExperimentId(null)} />;
   const preview = (data.opportunity_previews || []).find(p => opportunityBroker === 'all' || p.broker === opportunityBroker);
-  const latest = data.reviews[0];
-  const lesson = latest?.lessons?.[0] || latest?.what_happened || 'No lesson is recorded for this period yet. Evidence is still being gathered.';
-  const count = data.unavailable.includes('lesson proposals') ? '—' : data.proposals.reduce((n, x) => n + Number(x.total || 0), 0);
+  if (view === 'tests') return <View style={s.page}>
+    <Action compact link label="‹ Back to learning" onPress={() => setView('overview')} />
+    <ExperimentsCard request={request} />
+  </View>;
+  if (view === 'overview') return <View style={s.page}>
+    <Text style={s.title}>Learning</Text>
+    <View style={s.segmented}>{['daily', 'weekly', 'monthly'].map(p => <TouchableOpacity key={p} accessibilityRole="tab"
+      accessibilityState={{ selected: p === period }} style={[s.segment, p === period && s.active]} onPress={() => onPeriod(p)}>
+      <Text style={[s.buttonText, p === period && s.selectedText]}>{p === 'daily' ? 'Day' : p === 'weekly' ? 'Week' : 'Month'}</Text>
+    </TouchableOpacity>)}</View>
+    <View style={[s.row, { justifyContent: 'space-between' }]}>
+      <Action compact link label="‹" onPress={() => onMove(-1)} disabled={anchor <= '2020-01-01'} />
+      <Text style={s.small}>{periodLabel(data.period)} · UTC</Text>
+      <Action compact link label="›" onPress={() => onMove(1)} disabled={shiftedDate(data.period.start, period, 1) > today} />
+    </View>
+    <View style={s.card}>
+      <Text style={s.heading}>What we’ve found</Text>
+      <Text style={s.body} numberOfLines={3}>{findings[0]?.what_was_learnt || (data.unavailable.includes('learning findings') ? 'Findings are unavailable right now.' : 'No new findings yet.')}</Text>
+      {!!findings.length && <Text style={s.small}>{findings[0].source_type === 'historical_screening' ? 'Backtest' : findings[0].source_type === 'experiment_review' ? 'Test finding' : 'Idea to investigate'} · {findings[0].broker}</Text>}
+      {request && <ExperimentsCard request={request} brief onOpenTests={() => setView('tests')} />}
+      <Text style={s.heading}>Next step</Text>
+      <Text style={s.body}>{data.unavailable.includes('learning findings') ? 'Test status is unavailable.' : data.learning?.next_tests?.length ? 'Keep collecting results for the current tests.' : 'No active tests are listed.'}</Text>
+      {data.learning?.next_tests?.[0]?.next_review && <Text style={s.small}>Next review: {data.learning.next_tests[0].next_review.slice(0, 10)}</Text>}
+      {data.unavailable.length > 0 && <Text style={s.badge}>Some information couldn’t be loaded.</Text>}
+    </View>
+    <Action label="View learning details" onPress={() => { setFindingLimit(findings.length || 1); setView('details'); }} />
+  </View>;
   return <View style={s.page}>
-    <View><Text style={s.title}>What are we learning?</Text><Text style={s.body}>From decisions to evidence.</Text></View>
+    <Action compact link label="‹ Back to learning" onPress={() => setView('overview')} />
+    <Text style={s.title}>Learning details</Text>
     <View style={[s.card, s.summary]}>
       <LearningCloud wide={wide} />
       <View style={s.summaryContent}>
-        <View style={{ paddingRight: wide ? 180 : 65 }}><SectionHeading icon="▤" title="Learning summary" /></View>
+        <View style={{ paddingRight: wide ? 180 : 65 }}><SectionHeading icon="▤" title={period === 'daily' ? (anchor === today ? "Today’s learning" : "Day’s learning") : period === 'weekly' ? "Week’s learning" : "Month’s learning"} /></View>
         <View style={[s.segmented, wide && { width: '65%' }]}>{['daily', 'weekly', 'monthly'].map(p => <TouchableOpacity key={p} accessibilityRole="tab"
           accessibilityState={{ selected: p === period }} style={[s.segment, p === period && s.active]} onPress={() => onPeriod(p)}>
           <Text style={[s.buttonText, p === period && s.selectedText]}>{p[0].toUpperCase() + p.slice(1)}</Text></TouchableOpacity>)}</View>
         <View style={[s.row, { justifyContent: 'center' }]}><Action compact link label="‹" onPress={() => onMove(-1)} disabled={anchor <= '2020-01-01'} />
           <Text style={[s.small, { textAlign: 'center', flexShrink: 1 }]}>{periodLabel(data.period)} · UTC</Text>
           <Action compact link label="›" onPress={() => onMove(1)} disabled={shiftedDate(data.period.start, period, 1) > today} /></View>
-        <Text style={[s.badge, { alignSelf: 'center' }]}>{data.period.in_progress ? '◷ In progress' : 'Period complete · evidence may update'}</Text>
-        <Text style={s.heading}>{period === 'daily' ? "The day's learning" : period === 'weekly' ? "The week's learning" : "The month's learning"}</Text>
-        <Text style={s.heading}>What was learnt</Text>
-        {!findings.length && <Text style={s.body}>No new supported learning finding is recorded for this period yet. Activity alone is not evidence of improvement.</Text>}
+        <Text style={[s.badge, { alignSelf: 'center' }]}>{data.period.in_progress ? '◷ In progress' : 'Period complete'}</Text>
+        {!findings.length && <Text style={s.body}>No new findings yet.</Text>}
         {findings.slice(0,findingLimit).map(f => <View key={f.id} style={s.divider}>
-          <Text style={s.small}>{f.source_type === 'historical_screening' ? 'From historical screening (not forward proof)' : f.source_type === 'experiment_review' ? 'From experiments' : 'From executed trade reviews'} · {f.broker} {f.symbol || ''} · {f.recorded_at}</Text>
-          <Text style={s.body}>{f.what_was_learnt}</Text>
+          <Text style={s.small}>{f.source_type === 'historical_screening' ? 'Backtest' : f.source_type === 'experiment_review' ? 'Experiment' : 'Trade review'} · {f.broker} {f.symbol || ''}</Text>
+          <Text style={s.badge}>{f.source_type === 'experiment_review' ? 'Test finding' : 'Idea to investigate'}</Text>
+          <Text style={s.body} numberOfLines={expandedFinding === f.id ? undefined : 3}>{f.what_was_learnt}</Text>
+          <Action compact link label={expandedFinding === f.id ? 'Hide details' : 'See details'} onPress={() => setExpandedFinding(expandedFinding === f.id ? null : f.id)} />
+          {expandedFinding === f.id && <>
           {!!f.model_explanation && <Text style={s.small}>Trader's interpretation: {f.model_explanation}</Text>}
-          <Text style={s.small}>How this affects future decisions: {f.future_use}</Text>
+          <Text style={s.small}>What happens next: {f.future_use}</Text>
           <Text style={s.small}>{f.evidence_status}. {f.supporting_ids?.length > 1 ? f.supporting_ids.length+' supporting records; repeated lesson shown once.' : ''}</Text>
           {!!f.source_excerpt && <Text style={s.small}>Recorded trade evidence: {f.source_excerpt}</Text>}
-          {!!f.current_status && <Text style={s.small}>Current experiment state: {humanStatus(f.current_status)}. The finding above records the decision at review time.</Text>}
+          {!!f.current_status && <Text style={s.small}>Test status: {humanStatus(f.current_status)}. The finding above records the decision at review time.</Text>}
           {f.source_type !== 'historical_screening' && <Action compact link label={f.experiment_id ? 'Open experiment evidence →' : 'Read trade review evidence →'}
             onPress={() => f.experiment_id ? setExperimentId(f.experiment_id) : onOpen('reviews')} />}
           {f.source_type === 'historical_screening' && <Text style={s.small}>Historical screening details are in Experiments below; no trading rule was activated.</Text>}
-          <Text selectable style={s.small}>Evidence {f.source_type} {f.source_id} · finding {f.id.slice(0,12)}</Text>
+          <Text selectable style={s.small}>Evidence {f.source_type} {f.source_id} · finding {f.id.slice(0,12)} · {f.recorded_at}</Text>
+          </>}
         </View>)}
-        {findings.length > findingLimit && <Action compact label="More findings from this period" onPress={() => setFindingLimit(n => n+6)} />}
+        {findings.length > findingLimit && <Action compact label="View all findings" onPress={() => setFindingLimit(findings.length)} />}
         {data.learning?.truncated && <Text style={s.small}>More than 300 records in this period; select a shorter period to inspect remaining evidence.</Text>}
-        <Text style={s.small}>{data.learning?.caveat || 'Recorded hypotheses—not proven improvement.'}</Text>
         {data.unavailable.length > 0 && <Text style={s.badge}>Unavailable: {data.unavailable.join(', ')}</Text>}
-        {[['Evidence', data.unavailable.length ? 'Some evidence is unavailable; see details below.' : `${data.outcomes.reduce((n, o) => n + o.total, 0)} completed outcomes · ${data.review_count ?? 'Unknown'} reviews · ${data.shadows.reduce((n, o) => n + o.total, 0)} shadow candidates`],
-          ['Next test', data.learning?.next_tests?.length ? 'Current experiments are listed below; a linked source is required before claiming a lesson caused a test.' : 'No active experiment is recorded. No rule change is implied.']].map(([label, value]) => <View key={label} style={s.fact}><Text style={s.factLabel}>{label}</Text><Text style={s.factValue}>{value}</Text></View>)}
-        {(data.learning?.next_tests || []).map(test => <Action key={test.id} compact link
-          label={test.hypothesis + (test.next_review ? ' · Review '+test.next_review.slice(0,10) : ' · Review date pending')}
+        <Text style={s.heading}>What happens next</Text>
+        <Text style={s.body}>{data.learning?.next_tests?.length ? 'We’re testing these ideas before changing any rules.' : (data.unavailable.includes('learning findings') ? 'Test status is unavailable right now.' : 'No active tests are listed.')}</Text>
+        {(data.learning?.next_tests || []).slice(0, 2).map(test => <Action key={test.id} compact link
+          label={test.hypothesis + (test.next_review ? ' · Review '+test.next_review.slice(0,10) : ' · Review date to be set')}
           onPress={() => setExperimentId(test.id)} />)}
-        {(data.learning?.actions || []).map((action,i) => <Action key={i} compact link
-          label={humanStatus(action.action)+' · '+action.created_at}
-          onPress={() => setExperimentId(action.experiment_id)} />)}
         <Action compact link label="Read trade reviews →" onPress={() => onOpen('reviews')} />
-        <Text style={s.small}>Daily, weekly and monthly evidence · earlier reports may update.</Text>
       </View>
     </View>
-    <View style={s.card}>
-      <View style={[wide ? [s.footer, { flexWrap: 'nowrap' }] : { gap: 6 }]}><SectionHeading icon="▥" title="Is learning helping?" />
-        <View style={[s.segmented, { width: 170, alignSelf: 'flex-end' }]}>{[['daily', 'Today'], ['weekly', 'This week']].map(([p, label]) => <TouchableOpacity key={p} accessibilityRole="tab" accessibilityState={{ selected: period === p }} onPress={() => onPeriod(p)} style={[s.segment, period === p && s.active]}><Text style={[s.buttonText, period === p && s.selectedText]}>{label}</Text></TouchableOpacity>)}</View></View>
-      <Text style={s.badge}>Findings are not proof of improved trading</Text>
-      <View style={s.row}><View style={s.metric}><Text style={s.value}>{count}</Text><Text style={s.small}>proposals recorded</Text></View>
-        <View style={s.metric}><Text style={s.value}>{data.review_count ?? '—'}</Text><Text style={s.small}>reviews written</Text></View>
-        <View style={s.metric}><Text style={s.value}>—</Text><Text style={s.small}>validated change</Text></View></View>
-      <Text style={s.body}>Compare baseline and candidate results in the named experiment reports below. Realised broker results and estimated shadow results remain separate.</Text>
-      <View style={s.footer}><Text style={[s.small, s.footerNote]}>Reviews alone do not prove improvement.</Text><Action compact label="View proposed lessons →" onPress={() => onOpen('proposals')} /></View>
-    </View>
+    {request && <ExperimentsCard request={request} compact />}
+    <Action label={activity ? 'Hide trades and skipped opportunities' : 'Trades and skipped opportunities'} onPress={() => setActivity(v => !v)} />
+    {activity && <>
     <View style={s.card}><View style={wide ? [s.footer, { flexWrap: 'nowrap' }] : { gap: 6 }}><SectionHeading icon="⊘" title="Rejected opportunities" />
       <View style={[s.row, { alignSelf: 'flex-end', gap: 4 }]}>{['all', 'kraken', 'alpaca'].map(b => <Action compact key={b} label={b[0].toUpperCase() + b.slice(1)} selected={b === opportunityBroker} onPress={() => setOpportunityBroker(b)} />)}</View></View>
       <Text style={s.small}>{data.unavailable.includes('rejection events') ? 'Rejection counts unavailable' : data.rejections.reduce((n, x) => n + Number(x.events), 0) + ' rejection events'} · includes repeated checks.</Text>
@@ -171,7 +191,7 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
           <Text style={s.small}>{typeof preview.estimated_net_r === 'number' ? `Estimated net outcome: ${preview.estimated_net_r.toFixed(2)}R (planned risk, not currency).` : 'Estimated outcome pending / unknown.'}</Text>
           </View></View>
           <Action compact link label="View tracked opportunities →" onPress={() => onOpen('rejected')} />
-        </> : <Text style={s.body}>No linked rejected-opportunity preview is available for this selection.</Text>}
+        </> : <Text style={s.body}>No tracked opportunities to show.</Text>}
       </BrokerCard>
       {!preview && <Action compact link label="View tracked opportunities →" onPress={() => onOpen('rejected')} />}
       <View style={s.footer}><Text style={[s.small, s.footerNote]}>Simulated, not verified fills · prices rounded.</Text>
@@ -187,7 +207,9 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       </BrokerCard>; })}
       <View style={s.footer}><Text style={[s.small, s.footerNote]}>AI-managed trades · Alpaca fees unreconciled.</Text><Action compact label="Review completed trades →" onPress={() => onOpen('trades')} /></View>
     </View>
-    {request && <ExperimentsCard request={request} />}
+    </>}
+    <Action label={library ? 'Hide strategy library' : 'Strategy library and backtests'} onPress={() => setLibrary(v => !v)} />
+    {library && <>
     <View style={s.card}><SectionHeading icon="⚗" title="Strategy library" />
       <Text style={s.small}>Saved strategy ideas and historical backtests. Active shadow tests and weekly reviews appear in Experiments above. A saved idea is not approval to trade.</Text>
       <BrokerCard><View style={wide ? s.footer : { gap: 4 }}><View style={{ flex: wide ? 1 : undefined }}><Text style={[s.body, { fontWeight: '700' }]}>{data.strategy_preview?.name || 'Awaiting a strategy record'}</Text>
@@ -196,11 +218,18 @@ function LearningOverview({ data, period, anchor, onPeriod, onMove, onOpen, toda
       </BrokerCard>
       <View style={[s.row, { flexWrap: 'nowrap' }]}><Action compact grow selected label="Saved strategies" onPress={() => onOpen('strategies')} /><Action compact grow label="Past backtests" onPress={() => onOpen('tests')} /></View>
       <Text style={s.small}>{data.backtest_count == null ? 'Historical backtest count unavailable.' : `${data.backtest_count} historical backtest records. These are separate from current experiments.`}</Text>
+      <Action compact label="View proposed lessons →" onPress={() => onOpen('proposals')} />
       {request && <StrategyImports request={request} />}
     </View>
+    </>}
     <Action compact link label={notes ? 'Hide evidence notes −' : 'Evidence notes & limitations +'} onPress={() => setNotes(v => !v)} />
     {notes && <View style={s.card}><Text style={s.small}>Evidence updated {data.generated_at}. Cached for up to 10 minutes.</Text>
       <Text style={s.small}>{data.assessment.explanation}</Text>
+      <Text style={s.small}>{data.learning?.caveat}</Text>
+        {(data.learning?.actions || []).map((action,i) => <Action key={i} compact link
+          label={humanStatus(action.action)+' · '+action.created_at}
+          onPress={() => setExperimentId(action.experiment_id)} />)}
+
       <Text style={s.small}>Tracked-opportunity simulations assume entry and use stop-first daily candles with estimated costs. These are separate from the Alpaca paired Experiments card. Prices are rounded; exact prices appear in tracked opportunities.</Text>
       {data.caveats.map(note => <Text key={note} style={s.small}>• {note}</Text>)}</View>}
   </View>;
@@ -241,13 +270,13 @@ function LearningScreen({ request, onNavigate }) {
   useEffect(() => { if (matchesLearningView(data, detail) && onNavigate) onNavigate(Boolean(detail)); }, [data, detail, onNavigate]);
   const open = (kind, selectedBroker = 'all') => { if (onNavigate) onNavigate(true); setPage(0); setBroker(selectedBroker); setDetail(kind); };
   if (busy || error || !matchesLearningView(data, detail)) return <View style={s.card}>{detail && <Action label="‹ Back to Learning" onPress={() => setDetail(null)} />}
-    <Text style={s.heading}>Learning</Text>{!error ? <ActivityIndicator /> : <Action label="Retry" onPress={() => setRetry(n => n + 1)} />}<Text style={s.body}>{error || 'Loading compact evidence…'}</Text></View>;
+    <Text style={s.heading}>Learning</Text>{!error ? <ActivityIndicator /> : <Action label="Retry" onPress={() => setRetry(n => n + 1)} />}<Text style={s.body}>{error || 'Loading your learning update…'}</Text></View>;
   if (!detail) return <LearningOverview request={request} data={data} period={period} anchor={anchor} today={today} onPeriod={setPeriod}
     onMove={n => setAnchor(shiftedDate(data.period.start, period, n))} onOpen={open} />;
   return <View style={s.page}><Action label="‹ Back to Learning" onPress={() => setDetail(null)} />
     <Text style={s.title}>{HEADINGS[detail]}</Text><Text style={s.small}>{periodLabel(data.period)} · UTC. {data.note}</Text>
     {['rejected', 'decisions', 'trades', 'reviews'].includes(detail) && <View style={s.row}>{['all', 'kraken', 'alpaca'].map(b => <Action key={b} grow label={b[0].toUpperCase() + b.slice(1)} selected={broker === b} onPress={() => { setPage(0); setBroker(b); }} />)}</View>}
-    {!data.rows.length && <View style={s.card}><Text style={s.body}>No recorded evidence for this selection.</Text></View>}
+    {!data.rows.length && <View style={s.card}><Text style={s.body}>Nothing to show for this period.</Text></View>}
     {data.rows.map((row, i) => <EvidenceRow key={(row.id || row.symbol) + '-' + i} row={row} kind={detail} />)}
     <View style={s.row}><Action grow label="‹ Previous" disabled={page === 0} onPress={() => setPage(n => n - 1)} /><Text style={s.small}>Page {page + 1}</Text><Action grow label="Next ›" disabled={!data.has_more} onPress={() => setPage(n => n + 1)} /></View>
   </View>;

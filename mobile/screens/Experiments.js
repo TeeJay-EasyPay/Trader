@@ -21,7 +21,11 @@ function Button({ label, onPress, disabled, primary }) {
 const human = text => String(text || '').replace(/_/g, ' ');
 const money = (n, currency = 'USD') => typeof n === 'number' ? (currency === 'GBP' ? '£' : '$') + n.toFixed(2) : 'Not available';
 function LearningProgress({ measurement, historical, founderLearning, onSelect }) {
-  return <View style={s.card}><Text style={s.title}>Is Trader improving?</Text>
+  const [details, setDetails] = useState(false);
+  return <View style={s.card}><Text style={s.title}>Are results improving?</Text>
+    <Text style={s.text}>{founderLearning?.trading_better ? 'Improvement recorded — see the comparison below.' : 'We haven’t confirmed an improvement yet.'}</Text>
+    <Button label={details ? 'Hide supporting evidence' : 'See supporting evidence'} onPress={() => setDetails(v => !v)} />
+    {details && <>
     {!!founderLearning?.headline && <View style={s.card}><Text style={s.title}>{founderLearning.headline}</Text>
       <Text style={s.text}>{founderLearning.reflection}</Text>
       <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>
@@ -46,6 +50,7 @@ function LearningProgress({ measurement, historical, founderLearning, onSelect }
       {!!trial.later && <Text style={s.small}>Later historical window: {trial.later.completed_trade_pairs} completed trade pairs across {trial.later.independent_days} days; after-cost difference {money(trial.later.delta,trial.currency)}; {trial.later.unresolved} unresolved.</Text>}
     </View>)}
     <Text style={s.small}>Historical checks use a bounded sample of stored opportunities, not every possible market trade. Missing history is not a pass. Fresh forward evidence is still required.</Text>
+    </>}
   </View>;
 }
 function TestingJourney({ data }) {
@@ -160,10 +165,11 @@ function ExperimentDetail({ request, id, onBack }) {
     </>}
   </View>;
 }
-function ExperimentsCard({ request, notifications = false, onBack }) {
+function ExperimentsCard({ request, notifications = false, onBack, compact = false, brief = false, onOpenTests }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null), [attention, setAttention] = useState(notifications);
   const [section, setSection] = useState('running');
+  const [showAll, setShowAll] = useState(false);
   const [sourceConfirm,setSourceConfirm]=useState(null);
   async function approveSource(item) {
     setBusy(true);setError('');
@@ -180,9 +186,23 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
   }
   useEffect(() => { setData(null); load(); }, [attention, section, request]);
   if (selected) return <ExperimentDetail request={request} id={selected} onBack={() => { setSelected(null); load(); }} />;
+  if (brief) return <View style={{ gap: 4 }}>
+    <Text style={s.title}>Are results improving?</Text>
+    <Text style={s.text}>{error ? 'Results are unavailable right now.' : !data ? 'Checking the latest results…' : data.founder_learning?.trading_better ? 'Improvement recorded in the latest tests.' : 'Not confirmed yet.'}</Text>
+    <TouchableOpacity accessibilityRole="button" onPress={onOpenTests} style={{ minHeight: 44, justifyContent: 'center' }}>
+      <Text style={[s.buttonText, { textAlign: 'left' }]}>View tests →</Text>
+    </TouchableOpacity>
+  </View>;
+  if (compact && !showAll) return <View>
+    {busy && <ActivityIndicator />}
+    {!!error && <View style={s.card}><Text accessibilityRole="alert" style={s.error}>Couldn’t load test results. {error}</Text><Button label="Try again" onPress={() => load()} /></View>}
+    {data && <LearningProgress measurement={data.learning_measurement} historical={data.historical_screening} founderLearning={data.founder_learning} onSelect={setSelected} />}
+    <Button label="View all tests and requests" onPress={() => setShowAll(true)} />
+  </View>;
   return <View style={s.card}>{onBack && <Button label="Back to Executive Briefing" onPress={onBack} />}
+    <>{compact && <Button label="Back to learning overview" onPress={() => setShowAll(false)} />}</>
     <Text style={s.title}>{notifications ? 'Notifications' : 'Experiments'}</Text>
-    <Text style={s.small}>{notifications ? 'Strategy requests and approval history' : 'Evidence → proposed rule → paired simulation → review'}</Text>
+    <Text style={s.small}>{notifications ? 'Strategy requests and approval history' : 'Ideas we’re testing before changing the rules'}</Text>
     {notifications && <Button label={attention ? 'View history and all experiments' : 'View needs attention'} onPress={() => setAttention(v => !v)} />}
     {!notifications && <View style={{ gap:6 }}>{[['running','Running'],['queued','Queued'],['history','Previous tests'],['attention','Needs attention']].map(([key,label]) =>
       <Button key={key} label={label} primary={section === key} onPress={() => { setSection(key); setAttention(key === 'attention'); }} />)}</View>}
@@ -222,7 +242,7 @@ function ExperimentsCard({ request, notifications = false, onBack }) {
       <Text style={s.small}>{row.status === 'queued' ? 'Queued — test has not started. Review date is set when a slot opens.' : row.status !== 'shadow_running' ? 'Ended: ' + experimentTimeline(row).end + '\n' + (row.report?.reason || human(row.status)) : 'Started: ' + experimentTimeline(row).start + '\nNext weekly review: ' + experimentTimeline(row).target + '\n' + experimentTimeline(row).remaining}</Text>
       <Text style={s.small}>Tap the hypothesis for duration, testing stages and results.</Text>
     </View>)}
-    {data && !data.items.length && !data.source_intake?.some(x=>x.status==='development_required') && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : section === 'running' ? 'No experiment recorded yet in Running. Check Queued or Previous tests. Reviews alone do not demonstrate improvement.' : 'No records in this section.'}</Text>}
+    {data && !data.items.length && !data.source_intake?.some(x=>x.status==='development_required') && <Text style={s.text}>{attention ? 'No strategy request needs your approval.' : section === 'running' ? 'No tests are running. Check Queued or Previous tests.' : 'No records in this section.'}</Text>}
     <Button label="Refresh" disabled={busy} onPress={() => load()} />
     {!!data?.next_cursor && <Button label="Load older records" disabled={busy} onPress={() => load(true)} />}
   </View>;

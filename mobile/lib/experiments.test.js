@@ -15,11 +15,14 @@ function load(states = []) {
 }
 
 test('learning measurement distinguishes missing evidence from proven improvement', () => {
-  const ui = load();
+  const compact = JSON.stringify(load().LearningProgress({}));
+  assert.ok(compact.includes('We haven’t confirmed an improvement yet.'));
+  assert.ok(!compact.includes('Historical screening'));
+  const ui = load([true]);
   const empty = JSON.stringify(ui.LearningProgress({}));
   assert.ok(empty.includes('No improvement claim yet'));
   assert.ok(empty.includes('Missing history is not a pass'));
-  const rendered = JSON.stringify(ui.LearningProgress({measurement:{periods:{weekly:{status:'available',comparisons:[{
+  const rendered = JSON.stringify(load([true]).LearningProgress({measurement:{periods:{weekly:{status:'available',comparisons:[{
     id:'test',broker:'kraken',currency:'GBP',new_resolved_pairs:2,delta_change:-3,status:'not_established'}]}}},
     historical:{status:'completed',day:'today',trials:[{status:'data_required',reason:'Missing historical bars'}]}}));
   assert.ok(rendered.includes('£-3.00'));
@@ -29,7 +32,7 @@ test('learning measurement distinguishes missing evidence from proven improvemen
 test('experiment UI has an honest empty state without fake performance', () => {
   const ui = load([{ items: [], policy: { enabled: false } }, '', false, null, false]);
   const rendered = JSON.stringify(ui.ExperimentsCard({ request: () => assert.fail('render sent a request') }));
-  assert.ok(rendered.includes('No experiment recorded yet'));
+  assert.ok(rendered.includes('No tests are running.'));
   assert.ok(rendered.includes('Live activation is disabled'));
 });
 test('recommendation detail separates library approval from live trading', () => {

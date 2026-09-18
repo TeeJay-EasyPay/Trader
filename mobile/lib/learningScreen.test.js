@@ -59,7 +59,7 @@ test('Learning overview has deliberate narrow/wide layouts and compact footer ac
   assert.ok(source.includes('<Action compact label="View rejected decisions →"'));
   assert.ok(source.includes('Evidence notes & limitations +'));
   assert.ok(source.includes("onOpen('trades', b)"));
-  assert.ok(source.includes("['weekly', 'This week']"));
+  assert.ok(source.includes("['daily', 'weekly', 'monthly']"));
   assert.ok(source.includes('No paired rule experiment recorded'));
 });
 test('unknown results are not zero, currencies and losses remain separate', () => {
@@ -98,21 +98,32 @@ test('overview renders missing sources safely and wires all seven evidence pages
   const babel = require('@babel/core'), vm = require('node:vm');
   const file = require.resolve('../screens/Learning'), local = require('node:module').createRequire(file);
   const module = { exports: {} };
+  const states = []; let stateIndex = 0;
   vm.runInNewContext(babel.transformFileSync(file, { presets: [require.resolve('babel-preset-expo')] }).code, {
     module, exports: module.exports, require: name => name === 'react-native'
       ? { View: 'View', Text: 'Text', TouchableOpacity: 'Button', StyleSheet: { create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 840 }) }
-      : name === 'react' ? { ...local(name), useState: value => [value, () => {}] }
+      : name === 'react' ? { ...local(name), useEffect: () => {}, useState: value => { const i = stateIndex++; if (!(i in states)) states[i] = value; return [states[i], next => { states[i] = typeof next === 'function' ? next(states[i]) : next; }]; } }
       : name === '../components/LearningCloud' ? { LearningCloud: 'CloudArtwork' }
       : name === '../components/StrategyImports' ? { StrategyImports: 'StrategyImports' }
       : name === './Experiments' ? { ExperimentsCard: 'ExperimentsCard' } : local(name),
   });
   const opened = [];
-  const tree = module.exports.LearningOverview({ period: 'daily', anchor: '2026-09-09', today: '2026-09-09', onOpen: x => opened.push(x),
+  const props = { period: 'daily', anchor: '2026-09-09', today: '2026-09-09', onOpen: x => opened.push(x),
     data: { period: { kind: 'daily', start: '2026-09-09', end: '2026-09-10', in_progress: true },
       proposals: [], unavailable: ['completed trades', 'shadow tracking', 'rejection events', 'lesson proposals'],
-      reviews: [], rejections: [], shadows: [], outcomes: [], assessment: { explanation: 'Insufficient evidence' }, caveats: [] } });
+      reviews: [], rejections: [], shadows: [], outcomes: [], assessment: { explanation: 'Insufficient evidence' }, caveats: [] } };
+  const render = () => { stateIndex = 0; return module.exports.LearningOverview(props); };
+  let tree = render();
   function walk(n) { if (!n) return []; if (Array.isArray(n)) return n.flatMap(walk); if (typeof n !== 'object') return [];
     return [n, ...walk(n.props?.children)]; }
+  assert.ok(!JSON.stringify(tree).includes('Rejection counts unavailable'));
+  assert.ok(!JSON.stringify(tree).includes('Strategy library and backtests'));
+  walk(tree).find(n => n.props?.label === 'View learning details').props.onPress();
+  tree = render();
+  for (const label of ['Trades and skipped opportunities', 'Strategy library and backtests']) {
+    walk(tree).find(n => n.props?.label === label).props.onPress();
+    tree = render();
+  }
   for (const n of walk(tree)) if (['Read trade reviews →', 'View proposed lessons →', 'View tracked opportunities →',
     'View rejected decisions →', 'Review completed trades →', 'Saved strategies', 'Past backtests'].includes(n.props?.label)) n.props.onPress();
   assert.deepEqual(opened.sort(), ['decisions', 'proposals', 'rejected', 'reviews', 'strategies', 'tests', 'trades']);
