@@ -6062,3 +6062,30 @@ implemented but had not run in production.
   cannot create/promote experiments or place orders.
 - Pre-deployment verification: 171 focused backend tests passed (plus two subtests), and 31
   mobile freshness-state tests passed.
+
+Production release and verification:
+
+- Backend revisions through `e799805f` were pushed to `master`; the authenticated API and
+  background-worker heartbeat both reported the full final revision
+  `e799805f6f1f4eaef35d9b33ee282a29f53b794e` with no worker error.
+- Android runtime 1.0.4 was published from the clean release revision: `hosted-preview`
+  update group `2f09723c-402b-4ce9-b243-5b93c85abd83` and `preview` update group
+  `02ef9e24-68dc-4415-be09-21576b2194c2`. The installed app must fully close and reopen to
+  download and launch the update.
+- The first production historical refresh exposed and then verified a final Kraken merge
+  defect: semantically identical OHLC bars were rejected because the provider-cache copy
+  also carried a provenance `source` field. Replay now compares prices, timestamps and
+  quality while ignoring optional metadata; actual price conflicts still fail closed. The
+  focused final regression set passed 70/70 tests.
+- Production job `47415` completed on the final revision. Alpaca loaded 6,262 daily bars
+  against 32 recorded signals across nine signal days; Kraken loaded 2,162 daily bars
+  against 13 recorded signals across four signal days. The screens honestly remain
+  `data_required`: price history is now present, but it does not invent historical AI
+  decisions and the current recorded decision-day samples are below the 20-day gate.
+- On the first final-worker telemetry interval, total measured consumed row values were
+  approximately 2.51 MB and decision-evidence blobs were no longer among the eight largest
+  transfer families. This is host-local application telemetry, not Supabase billed egress,
+  and covers only a partial post-restart interval. The earlier approximately 125 MB observed
+  for repeated immutable decision-evidence reads is therefore addressed at source, but the
+  actual daily billing reduction must still be judged from a complete deployment-free day
+  in the Supabase dashboard.
