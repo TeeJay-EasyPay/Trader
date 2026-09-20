@@ -63,3 +63,11 @@ application cannot count.
   fixtures, Standup copy and absent mobile `node_modules`).
 - Live checks were read-only. They placed no orders and changed no production data.
 
+## Deployment verification
+
+Release `291ced6f` was deployed on both Render services. The API reported the full revision,
+and a direct read-only heartbeat query showed the replacement worker on the same revision,
+running normally with no last error. The first hosted API report on the new build recorded
+214 SQL calls but only two physical connections, confirming that session reuse is active in
+production. Provider billing still needs a complete deployment-free day before a before/after
+claim is made.

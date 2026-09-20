@@ -6110,3 +6110,15 @@ Pooler egress remained around 330–390 MB/day despite three days of payload red
 - No trading, order, risk, protection, experiment-evidence or broker-polling cadence was
   weakened. Detailed measurements and limitations are recorded in
   `architecture/EGRESS_CONNECTION_AND_REPAIR_REDUCTION_2026-09-20.md`.
+
+Production release and verification:
+
+- Release `291ced6f` was pushed to `master`. The authenticated API reported the exact full
+  revision `291ced6fd69c3ae69c03d5a21e34c96554fe365f` after its Render rollout.
+- A direct read-only production heartbeat check showed the replacement background worker on
+  the same full revision, running its normal combined auto-execution cycle with no last error.
+- The first new-revision API transfer report recorded 214 SQL calls using two physical
+  connections. This verifies hosted session reuse is active; it is not yet a complete-day
+  Supabase billed-egress result.
+- Final focused regression: 112 tests and two subtests passed. The first authoritative cost
+  comparison is the next complete deployment-free 24-hour Supabase usage day.
