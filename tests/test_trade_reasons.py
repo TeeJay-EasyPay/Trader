@@ -207,6 +207,7 @@ class BackfillTests(unittest.TestCase):
         first = self.stored()
         second_outcome = backfill_trade_reasons(self.db_path)
         self.assertEqual(self.stored(), first)
+        self.assertEqual(second_outcome["examined"], 0)
         self.assertEqual(second_outcome["entry_reasons_set"], 0)
         self.assertEqual(second_outcome["holding_periods_set"], 0)
 

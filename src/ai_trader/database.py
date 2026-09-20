@@ -4,6 +4,8 @@ import os
 import re
 import sqlite3
 import sys
+import threading
+from contextlib import contextmanager
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -198,6 +200,73 @@ _SEQUENCE_NAME_CACHE: dict[tuple[str, str], str] = {}
 # be remembered as "has no key".
 _PRIMARY_KEY_CACHE: dict[tuple[str, str], str] = {}
 
+# One small application-side pool per process.  The Supabase "shared pooler" still charges
+# network traffic for opening a client session: before this pool the compatibility layer
+# opened a brand-new psycopg connection for each of the hundreds of short `closing(connect())`
+# blocks in the codebase.  A clean 12.9-hour production window on 2026-09-19 recorded 2,938
+# pgbouncer authentication calls (about 5,470/day), while measured SQL row values explained
+# only ~67 MB of the ~350 MB billed egress.  Reusing a bounded set of sessions removes that
+# protocol churn without changing transaction boundaries or query results.
+_POSTGRES_POOLS: dict[tuple[int, str, str], Any] = {}
+_POSTGRES_POOL_LOCK = threading.Lock()
+
+
+def _configure_physical_connection(_conn: Any) -> None:
+    """Count physical sessions, not cheap pool checkouts, in transfer telemetry."""
+
+    from .db_telemetry import record
+    record("connection", connections=1)
+
+
+def _postgres_pool(url: str):
+    key = (os.getpid(), url, postgres_application_name())
+    with _POSTGRES_POOL_LOCK:
+        cached = _POSTGRES_POOLS.get(key)
+        if cached is not None:
+            return cached
+        try:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:  # pragma: no cover - hosted install owns dependencies
+            raise RuntimeError("Postgres runtime requires psycopg-pool.") from exc
+        from .db_telemetry import cursor_factory
+        connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
+        statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
+        maximum = max(2, min(12, int(os.getenv("AI_TRADER_DB_POOL_MAX_SIZE", "6"))))
+        pool = ConnectionPool(
+            conninfo=url,
+            # Child jobs are intentionally short-lived.  A non-zero minimum opens a warm
+            # session in the background while the first checkout opens another immediately,
+            # doubling rather than reducing connections for those processes.
+            min_size=0,
+            max_size=maximum,
+            timeout=connect_timeout,
+            kwargs={
+                "row_factory": dict_row,
+                "connect_timeout": connect_timeout,
+                "options": f"-c statement_timeout={statement_timeout}",
+                "application_name": postgres_application_name(),
+                "cursor_factory": cursor_factory(),
+            },
+            configure=_configure_physical_connection,
+            open=True,
+            name="ai-trader-db",
+        )
+        _POSTGRES_POOLS[key] = pool
+        return pool
+
+
+@contextmanager
+def pooled_postgres_connection():
+    """Yield a raw psycopg connection with commit/rollback and bounded reuse."""
+
+    url = database_url()
+    if not url:
+        raise RuntimeError("Postgres was selected but no database URL is configured.")
+    pool = _postgres_pool(url)
+    with pool.connection() as conn:
+        yield conn
+
 
 def row_values(row: Any) -> list[Any]:
     """Every value of one result row, in column order, whatever the row factory is.
@@ -242,22 +311,13 @@ class PostgresConnection:
     def __init__(self, url: str):
         try:
             import psycopg
-            from psycopg.rows import dict_row
         except ImportError as exc:  # pragma: no cover - exercised by hosted startup validation
             raise RuntimeError("Postgres runtime requires the psycopg package.") from exc
         self._psycopg = psycopg
         connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
-        statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
-        from .db_telemetry import cursor_factory, record
-        self._conn = psycopg.connect(
-            url,
-            row_factory=dict_row,
-            connect_timeout=connect_timeout,
-            options=f"-c statement_timeout={statement_timeout}",
-            application_name=postgres_application_name(),
-            cursor_factory=cursor_factory(),
-        )
-        record("connection", connections=1)
+        self._pool = _postgres_pool(url)
+        self._conn = self._pool.getconn(timeout=connect_timeout)
+        self._closed = False
         self._row_factory = None
         self._mutated = False
         # Identity for the schema cache: two databases in one process must never share it.
@@ -352,6 +412,8 @@ class PostgresConnection:
         self._conn.autocommit = value
 
     def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
         from .decision_storage import discard_connection_cache, promote_connection_cache
         if self._mutated:
             discard_connection_cache(self._conn)
@@ -359,7 +421,18 @@ class PostgresConnection:
             # A read-only transaction can only have observed committed database rows, even
             # though DB-API close will end that transaction without an explicit commit.
             promote_connection_cache(self._conn)
-        self._conn.close()
+        pool = getattr(self, "_pool", None)
+        if pool is None:  # compatibility for focused tests constructing via __new__
+            self._conn.close()
+        else:
+            # A connection returned outside a context may still have a read transaction.
+            # Roll it back before reuse; committed writes were already committed by the
+            # surrounding `with conn:` block used throughout the application.
+            try:
+                self._conn.rollback()
+            finally:
+                pool.putconn(self._conn)
+        self._closed = True
 
     def cursor(self):
         return PostgresCursor(self._conn.cursor(), raw_connection=self._conn)

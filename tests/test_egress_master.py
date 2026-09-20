@@ -12,7 +12,8 @@ def test_schema_cache_has_explicit_partition():
 def test_worker_no_longer_fetches_ui_detail():
     source=Path("src/ai_trader/experiment_worker.py").read_text()
     assert "exp.detail(db" not in source
-    assert "exp._load(conn, r[0])" in source
+    assert "exp._load(conn, r[0])" not in source
+    assert "SELECT * FROM RULE_EXPERIMENTS WHERE status='shadow_running'" in source
 
 
 def test_common_refresh_inputs_read_once():

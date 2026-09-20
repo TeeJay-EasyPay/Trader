@@ -37,6 +37,8 @@ point.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -44,7 +46,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import PostgresConnection, connect
+from .database import PostgresConnection, connect, uses_postgres
 from .learning_readiness import _parse as _parse_stamp
 from .learning_readiness import readiness_from_outcomes
 
@@ -57,6 +59,19 @@ CONFIDENT_SAMPLE = 30
 
 # Reuse only inside an explicitly bounded calculation, never across trading cycles.
 _read_scope: ContextVar[dict | None] = ContextVar("strategy_read_scope", default=None)
+
+# Strategy selection can run once per candidate.  Without a cycle cache, a 19-symbol
+# research pass downloaded the complete outcome table 19 times even though no trade can
+# close between two candidates in the same pass.  Keep hosted results for one research
+# cycle only; SQLite tests and local tools retain immediate read-after-write behaviour.
+STRATEGY_RESULT_CACHE_SECONDS = 300
+_result_cache: dict[tuple[str, int | None, bool], tuple[float, dict[Any, "StrategyRecord"]]] = {}
+_result_cache_lock = threading.Lock()
+
+
+def clear_strategy_result_cache() -> None:
+    with _result_cache_lock:
+        _result_cache.clear()
 
 
 @contextmanager
@@ -159,6 +174,22 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
     Python, not SQL, because 26 of 66 rows store a raw epoch and "1787586949" sorts before
     "2026-08-31" as text -- a SQL date predicate would silently drop the newest trades.
     """
+    cache_key = (str(db_path), window_days, by_symbol)
+    def finish(value):
+        if uses_postgres():
+            with _result_cache_lock:
+                _result_cache[cache_key] = (
+                    time.monotonic() + STRATEGY_RESULT_CACHE_SECONDS, value
+                )
+        return value
+
+    if uses_postgres():
+        now = time.monotonic()
+        with _result_cache_lock:
+            cached = _result_cache.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+
     cutoff = None
     if window_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
@@ -176,7 +207,7 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
                 (row[7], row[1], row[3], row[5], row[6]) for row in outcomes
             ])
             if not readiness.ready:
-                return {}
+                return finish({})
             if cutoff is not None:
                 outcomes = [
                     row for row in outcomes
@@ -184,7 +215,7 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
                 ]
             proposal_ids = [row[0] for row in outcomes if row[0]]
             if not proposal_ids:
-                return {}
+                return finish({})
             # Narrowed to the proposals that actually have an outcome, deliberately.
             # `payload_json` averages ~11KB, so selecting it for every agent_proposal row
             # pulls tens of megabytes out of Supabase on each call -- the precise pattern
@@ -267,7 +298,7 @@ def _grouped_outcomes(db_path: Path, *, window_days: int | None = None,
             verdict=verdict,
             r_sample_size=len(r_values),
         )
-    return records
+    return finish(records)
 
 
 def strategy_records(db_path: Path, *, window_days: int | None = None) -> dict[str, StrategyRecord]:

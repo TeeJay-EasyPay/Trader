@@ -211,14 +211,22 @@ def tick(db, settings, *, now=None, answer=None):
         # only unused daily allowance; they must not starve the whole pipeline.
         proposal = 'grouped_review_priority' if review_due or checkpoint_due else propose(db, settings, now, policy, answer=answer)
         start_queued(db, now)
-        with exp.transaction(db) as conn:
-            active = conn.execute("SELECT id FROM RULE_EXPERIMENTS WHERE status='shadow_running' ORDER BY created_at LIMIT 10").fetchall()
         processed, invalid = 0, 0
         decision_cache, bar_cache = {}, {}
         # UI events/recent opportunities are not worker inputs. Settlement loads
-        # its own complete sample below; keep that path and its cadence intact.
+        # its own complete sample below; keep that path and its cadence intact. Load the
+        # active rows in this query rather than selecting ten IDs and issuing ten more
+        # one-row SELECTs through exp._load on every 15-minute tick.
         with exp.transaction(db) as conn:
-            active_rows = [exp._load(conn, r[0]) for r in active]
+            active_rows = []
+            for raw in conn.execute(
+                "SELECT * FROM RULE_EXPERIMENTS WHERE status='shadow_running' "
+                "ORDER BY created_at LIMIT 10"
+            ).fetchall():
+                row = dict(raw)
+                for key in ('spec', 'report', 'state'):
+                    row[key] = json.loads(row.pop(key + '_json'))
+                active_rows.append(row)
         for broker in ('alpaca','kraken'):
             own = [r for r in active_rows if r['spec']['broker'] == broker]
             if own:

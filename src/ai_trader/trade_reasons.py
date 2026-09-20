@@ -468,8 +468,23 @@ def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> d
                 LEFT JOIN KRAKEN_AI_ORDER_OWNERSHIP o ON o.managed_exit_id = m.managed_exit_id
                 LEFT JOIN LOGICAL_TRADES t ON t.logical_trade_id = o.logical_trade_id
                 WHERE m.broker = ? AND m.status = 'closed'
+                  AND (
+                    m.exit_reason IS NULL OR m.exit_reason = ''
+                    OR m.exit_reason IN (?, ?, ?)
+                    OR EXISTS (
+                        SELECT 1 FROM KRAKEN_AI_ORDER_OWNERSHIP ox
+                        JOIN LOGICAL_TRADES tx ON tx.logical_trade_id = ox.logical_trade_id
+                        JOIN PERFORMANCE_ATTRIBUTION pa ON pa.proposal_id = tx.proposal_id
+                        WHERE ox.managed_exit_id = m.managed_exit_id
+                          AND (pa.exit_reason IS NULL OR pa.exit_reason = ''
+                               OR pa.exit_reason IN (?, ?, ?))
+                    )
+                  )
                 """,
-                (broker.lower(),),
+                (
+                    broker.lower(), LEGACY_PLACEHOLDER, UNRECORDED_EXIT, UNRECORDED_ENTRY,
+                    LEGACY_PLACEHOLDER, UNRECORDED_EXIT, UNRECORDED_ENTRY,
+                ),
             ).fetchall()
 
             seen: set[Any] = set()
@@ -515,7 +530,17 @@ def backfill_missing_exit_reasons(db_path: Path, *, broker: str = "kraken") -> d
                 changed = getattr(cursor, "rowcount", 0) or 0
                 outcome["attribution_rows_updated"] += max(0, int(changed))
 
-    outcome["attribution"] = backfill_trade_reasons(db_path, broker=broker)
+    # The former unconditional call reread every attribution row on every managed-exit
+    # cycle even when the targeted query above found nothing.  Run the broader repair only
+    # when an actual incomplete managed exit/attribution link made this pass relevant.
+    outcome["attribution"] = (
+        backfill_trade_reasons(db_path, broker=broker)
+        if rows else {
+            "examined": 0, "entry_reasons_set": 0, "exit_reasons_set": 0,
+            "holding_periods_set": 0, "timestamps_converted": 0,
+            "symbols_normalised": 0,
+        }
+    )
     return outcome
 
 
@@ -539,8 +564,22 @@ def backfill_trade_reasons(db_path: Path, *, broker: str = "kraken") -> dict[str
             SELECT attribution_id, proposal_id, symbol, opened_at, closed_at,
                    entry_reason, exit_reason, holding_period_seconds
             FROM PERFORMANCE_ATTRIBUTION WHERE broker = ?
+              AND (
+                entry_reason IS NULL OR entry_reason = '' OR entry_reason = ?
+                OR exit_reason IS NULL OR exit_reason = '' OR exit_reason = ?
+                OR holding_period_seconds IS NULL
+                OR (opened_at IS NOT NULL AND opened_at <> '' AND opened_at NOT LIKE ?)
+                OR (closed_at IS NOT NULL AND closed_at <> '' AND closed_at NOT LIKE ?)
+                OR symbol IN (?, ?)
+                OR symbol LIKE ? OR symbol LIKE ? OR symbol LIKE ?
+                OR symbol LIKE ? OR symbol LIKE ?
+              )
             """,
-            (broker.lower(),),
+            (
+                broker.lower(), LEGACY_PLACEHOLDER, LEGACY_PLACEHOLDER,
+                "%-%", "%-%", "XBT", "XDG",
+                "%GBP", "%USDT", "%USDC", "%USD", "%EUR",
+            ),
         ).fetchall()
         if not rows:
             return outcome

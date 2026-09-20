@@ -6089,3 +6089,24 @@ Production release and verification:
   for repeated immutable decision-evidence reads is therefore addressed at source, but the
   actual daily billing reduction must still be judged from a complete deployment-free day
   in the Supabase dashboard.
+
+## 2026-09-20 — Egress root-cause pass: session reuse and completed-repair stop condition
+
+The Founder authorised investigation, implementation, commit and deployment after Shared
+Pooler egress remained around 330–390 MB/day despite three days of payload reductions.
+
+- A clean 12.9-hour production interval contained about 35.8 MB of measured consumed SQL
+  values but 29,843 SQL calls and 2,938 pooler authentication calls. This exposed the main
+  remaining mismatch: payload optimisations were working, but the application still opened
+  an estimated 5,470 PostgreSQL sessions per day and paid connection/protocol overhead that
+  row-value instrumentation cannot see.
+- Added bounded process-local PostgreSQL pooling to both database access paths while
+  preserving per-checkout transaction cleanup. A live read-only verification reused one
+  physical backend for eight sequential application operations.
+- Corrected trade-reason backfill so completed normalized exits are not scanned on every
+  managed-exit cycle. Clean cycles now stop after the narrow incomplete-row query.
+- Cached identical hosted strategy-attribution reads for five minutes and replaced the
+  experiment worker's active-record N+1 load with one bounded batch query.
+- No trading, order, risk, protection, experiment-evidence or broker-polling cadence was
+  weakened. Detailed measurements and limitations are recorded in
+  `architecture/EGRESS_CONNECTION_AND_REPAIR_REDUCTION_2026-09-20.md`.

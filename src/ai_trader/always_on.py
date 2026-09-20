@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect, database_url, postgres_application_name, requested_backend, uses_postgres
+from .database import connect, database_url, requested_backend, uses_postgres
 from .models import utc_now_iso
 from .multi_broker import record_notification
 from .operational import latest_research_run, safe_float
@@ -1276,29 +1276,11 @@ def _broker_auto_state(db_path: Path, broker: str) -> dict[str, Any]:
 
 
 def _postgres_connection():
-    try:
-        import psycopg
-        from psycopg.rows import dict_row
-    except ImportError as exc:  # pragma: no cover - exercised only when postgres mode is enabled without dependency
-        raise RuntimeError(
-            "Postgres backend requested but psycopg is not installed. Install ai-trading-assistant with psycopg[binary]."
-        ) from exc
-    url = database_url()
-    if not url:
-        raise RuntimeError("Postgres backend requested but DATABASE_URL/SUPABASE_DATABASE_URL is not configured.")
-    connect_timeout = max(1, int(os.getenv("AI_TRADER_DB_CONNECT_TIMEOUT_SECONDS", "5")))
-    statement_timeout = max(1000, int(os.getenv("AI_TRADER_DB_STATEMENT_TIMEOUT_MS", "8000")))
-    from .db_telemetry import cursor_factory, record
-    conn = psycopg.connect(
-        url,
-        row_factory=dict_row,
-        connect_timeout=connect_timeout,
-        options=f"-c statement_timeout={statement_timeout}",
-        application_name=postgres_application_name(),
-        cursor_factory=cursor_factory(),
-    )
-    record("connection", connections=1)
-    return conn
+    # Keep the existing raw-psycopg call contract while sharing the same bounded pool as
+    # database.connect().  This module formerly opened a second family of one-shot sessions,
+    # bypassing every saving made in the compatibility layer.
+    from .database import pooled_postgres_connection
+    return pooled_postgres_connection()
 
 
 def postgres_connection():

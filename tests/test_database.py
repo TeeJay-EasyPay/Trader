@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -160,6 +161,26 @@ class PostgresCompatibilityExceptionTranslationTests(unittest.TestCase):
         conn._conn = _FakeConn()
         conn._row_factory = None
         return conn
+
+    def test_close_returns_a_clean_connection_to_the_application_pool(self):
+        from ai_trader.database import PostgresConnection
+
+        raw = Mock()
+        pool = Mock()
+        conn = PostgresConnection.__new__(PostgresConnection)
+        conn._conn = raw
+        conn._pool = pool
+        conn._mutated = False
+        conn._closed = False
+
+        conn.close()
+        raw.rollback.assert_called_once_with()
+        raw.close.assert_not_called()
+        pool.putconn.assert_called_once_with(raw)
+
+        # contextlib.closing and defensive finally blocks can both call close.
+        conn.close()
+        pool.putconn.assert_called_once_with(raw)
 
     def test_undefined_table_becomes_sqlite_operational_error(self):
         import sqlite3
