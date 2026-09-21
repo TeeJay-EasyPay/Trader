@@ -60,3 +60,16 @@ egress includes protocol and pooler overhead and is reported after aggregation, 
 authoritative MB reduction must be measured over the first complete deployment-free day.
 The restored hourly transfer report will make any remaining application query families
 visible instead of relying only on the provider's aggregate bar.
+
+## Production verification
+
+- Release `7290410919de1e33487bddd07c295f22007931c9` was pushed to `master` and
+  reported by both the authenticated hosted API and the replacement background worker.
+- The new worker reported a fresh healthy heartbeat with no last error while running its
+  normal combined auto-execution cycle.
+- The worker transfer report, previously frozen at `2026-09-20T00:01:49Z`, advanced to
+  `2026-09-21T16:06:15Z` immediately after rollout. The API transfer report was also fresh
+  at `2026-09-21T16:06:20Z`.
+- The next complete deployment-free Supabase day is the authoritative provider-level
+  comparison. A partial bar containing pre-release traffic must not be treated as the
+  result of this correction.

@@ -6145,3 +6145,14 @@ the expensive auto-execution cadence from about 84 to about 294 runs per broker 
   subtests.
 - Full evidence and the provider-measurement boundary are recorded in
   `architecture/EGRESS_SPIKE_CORRECTION_2026-09-21.md`.
+
+Production release and verification:
+
+- Release `7290410919de1e33487bddd07c295f22007931c9` was pushed to `master`.
+  The authenticated API and replacement background worker both reported that exact
+  revision; the worker heartbeat was fresh, running and had no last error.
+- The worker database-transfer report had been frozen at `2026-09-20T00:01:49Z`.
+  After rollout it advanced to `2026-09-21T16:06:15Z`, with the API report fresh at
+  `2026-09-21T16:06:20Z`, confirming the observability repair is active.
+- Final affected regression: 230 tests and two subtests passed; source compilation and
+  staged-diff checks also passed.
