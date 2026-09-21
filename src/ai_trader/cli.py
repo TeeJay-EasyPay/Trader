@@ -395,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
                         ["auto-execution-alpaca", "auto-execution-kraken"],
                         worker_id,
                         pulse,
-                        scheduled_for=_time_bucket(now, max(60, settings.auto_execution_interval_seconds)),
+                        scheduled_for=_time_bucket(
+                            now, _auto_execution_review_interval_seconds(settings)
+                        ),
                         # trade_audit candidates are evaluated one at a time through the full
                         # Strategy/Portfolio/Risk/Sentinel governance chain (~50-55s each even
                         # after fixing the schema-reinit costs found 2026-08-01) -- the shared
@@ -511,6 +513,11 @@ def main(argv: list[str] | None = None) -> int:
                             "kraken_startup_reconciliation": _job_summary(startup_reconciliation),
                         },
                     )
+                    # Export from the durable main worker too. This used to be owned only by
+                    # the shadow-experiment thread; when that thread stopped ticking after the
+                    # 2026-09-20 deploy, the transfer report froze immediately before the
+                    # provider spike and removed the evidence needed to diagnose it.
+                    _publish_worker_db_transfer(settings.db_path)
                 except Exception as exc:  # noqa: BLE001 - worker must persist and record failures
                     pulse.set_status("degraded", current_job="background-cycle")
                     record_worker_heartbeat(
@@ -1311,6 +1318,23 @@ def _time_bucket(now: datetime, interval_seconds: int) -> str:
     epoch = int(now.timestamp())
     bucket = epoch - (epoch % interval_seconds)
     return datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat()
+
+
+def _auto_execution_review_interval_seconds(settings: Settings) -> int:
+    """A cost-controlled proposal cadence, independent of protection checks.
+
+    Faster code must not silently turn into more database-heavy work. Managed exits retain
+    their existing cadence; only repeated evaluation of the same proposal set is bounded.
+    """
+
+    return max(900, int(getattr(settings, "auto_execution_review_interval_seconds", 900)))
+
+
+def _publish_worker_db_transfer(db_path: Path) -> None:
+    """Publish worker transfer evidence independently of the experiment thread."""
+
+    from .db_telemetry import publish
+    publish(db_path)
 
 
 def _job_summary(result: object) -> object:

@@ -6122,3 +6122,26 @@ Production release and verification:
   Supabase billed-egress result.
 - Final focused regression: 112 tests and two subtests passed. The first authoritative cost
   comparison is the next complete deployment-free 24-hour Supabase usage day.
+
+## 2026-09-21 — Emergency egress spike correction
+
+The Founder reported that Shared Pooler egress had risen to almost 1 GB on 20 September
+and remained elevated on 21 September. Production job history showed that the earlier
+optimisations made the shared worker complete its loop faster, unintentionally increasing
+the expensive auto-execution cadence from about 84 to about 294 runs per broker per day.
+
+- Separated proposal-review cadence from managed-exit protection and imposed a 15-minute
+  minimum for proposal evaluation. This caps each broker at 96 scheduled reviews per day,
+  about 67% fewer than the spike day, while leaving broker polling and protective managed
+  exits unchanged.
+- Replaced the unbounded hosted day/week P&L history download with a one-row indexed cutoff
+  lookup. Live read-only parity checks matched the previous values exactly and reduced the
+  four-query evidence refresh from about 27,052 returned rows to four (>99.98%). At the
+  observed refresh rate, this removes roughly 3.65 million returned rows per day.
+- Moved database-transfer publication into the durable main worker so telemetry cannot
+  silently freeze when the experiment scheduler is inactive.
+- Added regressions for the independent cadence floor, durable telemetry publication and
+  bounded hosted P&L lookup. The affected verification suites passed 230 tests plus two
+  subtests.
+- Full evidence and the provider-measurement boundary are recorded in
+  `architecture/EGRESS_SPIKE_CORRECTION_2026-09-21.md`.

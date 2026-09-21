@@ -1171,6 +1171,27 @@ def _pnl_since(db_path: Path, broker: str, exchange: str, current_value: float |
     cutoff = (datetime.now(timezone.utc).timestamp() - days * 86400)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
+        if selected_backend() == "postgres":
+            # ISO timestamps sort chronologically. Ask Postgres for the single applicable
+            # row instead of downloading the broker's entire snapshot history twice per
+            # evidence refresh. The previous query returned about five million rows between
+            # 11 and 21 September and grew more expensive every day.
+            cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+            row = conn.execute(
+                """
+                SELECT created_at, portfolio_value FROM PORTFOLIO_SNAPSHOTS
+                WHERE broker = ? AND exchange = ? AND portfolio_value IS NOT NULL
+                  AND created_at <= ?
+                ORDER BY created_at DESC, snapshot_id DESC LIMIT 1
+                """,
+                (broker, exchange, cutoff_iso),
+            ).fetchone()
+            if row is None:
+                return None
+            parsed = _parse_dt(row["created_at"])
+            if parsed is None or parsed.timestamp() > cutoff:
+                return None
+            return current_value - float(row["portfolio_value"])
         rows = conn.execute(
             """
             SELECT created_at, portfolio_value FROM PORTFOLIO_SNAPSHOTS

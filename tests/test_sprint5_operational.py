@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -13,7 +14,13 @@ from ai_trader.benchmark import BenchmarkIntelligenceDatabase
 from ai_trader.broker_adapters import CoinbaseAdapter, KrakenAdapter
 from ai_trader.config import Settings
 from ai_trader.models import AutoTradeConfig, GuardrailConfig, OrderRequest, TradeProposal, ValidationResult
-from ai_trader.operational import initialize_operational_schema, record_portfolio_snapshot, safe_score, seed_crypto_universe
+from ai_trader.operational import (
+    _pnl_since,
+    initialize_operational_schema,
+    record_portfolio_snapshot,
+    safe_score,
+    seed_crypto_universe,
+)
 
 
 def settings_for(tmp: str) -> Settings:
@@ -34,6 +41,26 @@ def settings_for(tmp: str) -> Settings:
 
 
 class Sprint5OperationalTests(unittest.TestCase):
+    def test_hosted_pnl_lookup_fetches_one_bounded_snapshot(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = {
+            "created_at": "2000-01-01T00:00:00+00:00",
+            "portfolio_value": 900.0,
+        }
+        with (
+            patch("ai_trader.operational.connect", return_value=conn),
+            patch("ai_trader.operational.selected_backend", return_value="postgres"),
+        ):
+            result = _pnl_since(
+                Path("unused.sqlite3"), "alpaca", "Alpaca", 1000.0, days=1
+            )
+
+        self.assertEqual(result, 100.0)
+        sql, params = conn.execute.call_args.args
+        self.assertIn("created_at <= ?", sql)
+        self.assertIn("ORDER BY created_at DESC, snapshot_id DESC LIMIT 1", sql)
+        self.assertEqual(params[:2], ("alpaca", "Alpaca"))
+
     def test_qualitative_scores_parse_safely(self):
         self.assertEqual(safe_score("Good"), 0.75)
         self.assertEqual(safe_score("Medium"), 0.5)

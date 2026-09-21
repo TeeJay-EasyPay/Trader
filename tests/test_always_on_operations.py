@@ -32,7 +32,14 @@ from ai_trader.always_on import (
 from ai_trader.api import LocalApiService
 from ai_trader.config import Settings
 from ai_trader.multi_broker import list_notifications
-from ai_trader.cli import WorkerHeartbeatPulse, _research_worker_jobs, _run_broker_job_group, _run_pulsed_job
+from ai_trader.cli import (
+    WorkerHeartbeatPulse,
+    _auto_execution_review_interval_seconds,
+    _publish_worker_db_transfer,
+    _research_worker_jobs,
+    _run_broker_job_group,
+    _run_pulsed_job,
+)
 from ai_trader.models import AutoTradeConfig, GuardrailConfig
 from unittest.mock import MagicMock, patch
 
@@ -55,6 +62,28 @@ def settings_for(tmp: str) -> Settings:
 
 
 class AlwaysOnOperationsTests(unittest.TestCase):
+    def test_auto_execution_review_has_an_independent_fifteen_minute_floor(self) -> None:
+        # Faster worker cycles must not multiply the expensive proposal evaluation rate.
+        # Managed exits continue using auto_execution_interval_seconds separately.
+        self.assertEqual(
+            _auto_execution_review_interval_seconds(
+                SimpleNamespace(auto_execution_review_interval_seconds=60)
+            ),
+            900,
+        )
+        self.assertEqual(
+            _auto_execution_review_interval_seconds(
+                SimpleNamespace(auto_execution_review_interval_seconds=1800)
+            ),
+            1800,
+        )
+
+    def test_main_worker_can_publish_transfer_evidence_without_experiment_thread(self) -> None:
+        db_path = Path("runtime.sqlite3")
+        with patch("ai_trader.db_telemetry.publish") as publish:
+            _publish_worker_db_transfer(db_path)
+        publish.assert_called_once_with(db_path)
+
     def test_research_worker_jobs_excludes_priority_evidence_snapshot(self) -> None:
         due = [
             ("evidence-snapshot", "2026-07-23T16:00:00+00:00"),
