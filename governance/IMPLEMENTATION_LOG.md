@@ -25,10 +25,19 @@ bars can therefore be reused across overnight runs instead of producing the fals
 "Cached historical dataset differs from its frozen version" result. This changes no
 trade, risk, fee, stop-loss, or live-trading permission.
 
-Focused verification before release: 143 tests passed across scheduling, always-on
-operations, historical screening, multi-broker execution, and trading intelligence.
+Focused verification before release: 244 tests passed across scheduling, always-on
+operations, historical screening, experiments, production evidence, multi-broker
+execution, orchestration, and trading intelligence.
 Provider-level egress remains a lagging daily metric and must be compared after a full
 post-deployment day; no immediate billing reduction is claimed here.
+
+Production release: commit `7aa7dcd7` was pushed to `master`. The authenticated API and
+the live background-worker heartbeat both reported the exact full revision
+`7aa7dcd71e619ba36b2969957245468bebcea10b`; API health returned OK. The first hosted
+historical refresh completed successfully on that revision. Its seven trials contained
+no frozen-cache mismatch: Alpaca exposed 6,257 bars across 32 recorded signals and Kraken
+2,162 bars across 18 signals. Current trials remain honestly `data_required` because the
+signal-day sample is still small, not because the downloaded history was rejected.
 
 ## 2026-09-14 — Remove duplicate Trader conversation start (published)
 
