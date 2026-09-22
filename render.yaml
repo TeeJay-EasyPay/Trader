@@ -163,6 +163,12 @@ services:
         value: "30"
       - key: AUTO_EXECUTION_INTERVAL_SECONDS
         value: "60"
+      # New-entry proposal review is deliberately slower than the one-minute protection
+      # loop above. Equities change on market-hours timescales; crypto remains more frequent.
+      - key: AI_TRADER_AUTO_EXECUTION_ALPACA_REVIEW_INTERVAL_SECONDS
+        value: "3600"
+      - key: AI_TRADER_AUTO_EXECUTION_KRAKEN_REVIEW_INTERVAL_SECONDS
+        value: "1800"
       - key: PAPER_TRADING_ONLY
         value: "true"
       # 2026-08-30: the ONE confidence bar, and the Founder manages it in the Render

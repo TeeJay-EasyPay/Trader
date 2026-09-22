@@ -333,6 +333,18 @@ def database_backend_status(db_path: Path) -> dict[str, Any]:
     }
 
 
+# Job result payloads can contain complete broker responses and research summaries.  The
+# scheduler only needs lifecycle/count fields while claiming, completing, and listing jobs;
+# returning payload_json on every one of those hot-path reads was shipping the same large
+# JSON thousands of times per day through Supabase's shared pooler.
+SCHEDULED_JOB_READ_COLUMNS = """
+    job_run_id, job_name, scheduled_for, started_at, completed_at, status,
+    attempt, worker_id, idempotency_key, assets_requested, assets_processed,
+    recommendations_created, shadow_decisions_created, paper_orders_submitted,
+    paper_orders_filled, rejection_count, failure_count, failure_reason
+""".strip()
+
+
 def claim_scheduled_job(
     db_path: Path,
     *,
@@ -351,7 +363,10 @@ def claim_scheduled_job(
     if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = %s", (idempotency_key,))
+                cur.execute(
+                    f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = %s",
+                    (idempotency_key,),
+                )
                 existing = cur.fetchone()
                 if existing:
                     return {
@@ -361,12 +376,12 @@ def claim_scheduled_job(
                         "message": "This scheduled job was already claimed or completed.",
                     }
                 cur.execute(
-                    """
+                    f"""
                     INSERT INTO SCHEDULED_JOB_RUNS (
                         job_name, scheduled_for, started_at, status, attempt, worker_id,
                         idempotency_key, assets_requested, payload_json
                     ) VALUES (%s, %s, %s, 'started', 1, %s, %s, %s, %s)
-                    RETURNING *
+                    RETURNING {SCHEDULED_JOB_READ_COLUMNS}
                     """,
                     (job_name, scheduled_for, now, worker_id, idempotency_key, int(assets_requested or 0), payload_json),
                 )
@@ -377,7 +392,7 @@ def claim_scheduled_job(
         conn.row_factory = sqlite3.Row
         with conn:
             existing = conn.execute(
-                "SELECT * FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = ?",
+                f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = ?",
                 (idempotency_key,),
             ).fetchone()
             if existing:
@@ -397,7 +412,7 @@ def claim_scheduled_job(
                 (job_name, scheduled_for, now, worker_id, idempotency_key, int(assets_requested or 0), payload_json),
             )
             row = conn.execute(
-                "SELECT * FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = ?",
+                f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE idempotency_key = ?",
                 (idempotency_key,),
             ).fetchone()
     return {**dict(row), "claimed": True, "message": "Scheduled job claimed."}
@@ -419,7 +434,7 @@ def complete_scheduled_job(
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     UPDATE SCHEDULED_JOB_RUNS
                     SET completed_at = %s, status = %s, assets_processed = %s,
                         recommendations_created = %s, shadow_decisions_created = %s,
@@ -427,7 +442,7 @@ def complete_scheduled_job(
                         rejection_count = %s, failure_count = %s, failure_reason = %s,
                         payload_json = %s
                     WHERE job_run_id = %s
-                    RETURNING *
+                    RETURNING {SCHEDULED_JOB_READ_COLUMNS}
                     """,
                     (
                         utc_now_iso(),
@@ -475,7 +490,10 @@ def complete_scheduled_job(
                     job_run_id,
                 ),
             )
-            row = conn.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = ?", (job_run_id,)).fetchone()
+            row = conn.execute(
+                f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE job_run_id = ?",
+                (job_run_id,),
+            ).fetchone()
     return dict(row) if row else {"job_run_id": job_run_id, "status": "missing"}
 
 
@@ -485,13 +503,16 @@ def get_scheduled_job_run(db_path: Path, job_run_id: int) -> dict[str, Any]:
     if uses_postgres():
         with _postgres_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = %s", (int(job_run_id),))
+                cur.execute(
+                    f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE job_run_id = %s",
+                    (int(job_run_id),),
+                )
                 row = cur.fetchone()
         return dict(row) if row else {"job_run_id": int(job_run_id), "status": "missing"}
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT * FROM SCHEDULED_JOB_RUNS WHERE job_run_id = ?",
+            f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS WHERE job_run_id = ?",
             (int(job_run_id),),
         ).fetchone()
     return dict(row) if row else {"job_run_id": int(job_run_id), "status": "missing"}
@@ -903,7 +924,7 @@ def record_operations_incident(
 def list_job_runs(db_path: Path, *, limit: int = 50, job_name: str | None = None) -> list[dict[str, Any]]:
     initialize_always_on_schema(db_path)
     params: tuple[Any, ...]
-    sql = "SELECT * FROM SCHEDULED_JOB_RUNS"
+    sql = f"SELECT {SCHEDULED_JOB_READ_COLUMNS} FROM SCHEDULED_JOB_RUNS"
     if job_name:
         sql += " WHERE job_name = %s" if uses_postgres() else " WHERE job_name = ?"
         params = (job_name,)

@@ -1236,7 +1236,12 @@ def record_lifecycle_stage(
             )
 
 
-def latest_intelligence_packet(db_path: Path, proposal_id: str) -> dict[str, Any] | None:
+def latest_intelligence_packet(
+    db_path: Path,
+    proposal_id: str,
+    *,
+    include_lifecycle: bool = True,
+) -> dict[str, Any] | None:
     initialize_trading_intelligence_schema(db_path)
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -1252,10 +1257,14 @@ def latest_intelligence_packet(db_path: Path, proposal_id: str) -> dict[str, Any
             "SELECT * FROM TRADE_SIGNALS WHERE proposal_id = ? ORDER BY signal_name ASC",
             (proposal_id,),
         ).fetchall()
-        lifecycle = conn.execute(
-            "SELECT * FROM TRADE_LIFECYCLE WHERE proposal_id = ? ORDER BY lifecycle_id ASC",
-            (proposal_id,),
-        ).fetchall()
+        lifecycle = (
+            conn.execute(
+                "SELECT * FROM TRADE_LIFECYCLE WHERE proposal_id = ? ORDER BY lifecycle_id ASC",
+                (proposal_id,),
+            ).fetchall()
+            if include_lifecycle
+            else []
+        )
     if not committee and not probability and not signals:
         return None
     committee_dict = _row_dict(committee)

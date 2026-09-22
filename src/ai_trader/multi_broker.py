@@ -1075,9 +1075,24 @@ def record_native_stop_order_id(db_path: Path, managed_exit_id: int, order_id: s
             )
 
 
-def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[str, Any]]:
+MANAGED_EXIT_READ_COLUMNS = """
+    managed_exit_id, created_at, updated_at, broker, symbol, side, quantity,
+    entry_order_id, entry_price, stop_loss, take_profit, status, exit_order_id,
+    exit_reason, last_checked_at, trailing_stop_pct, high_water_mark,
+    low_water_mark, native_stop_order_id
+""".strip()
+
+
+def open_managed_exits(
+    db_path: Path,
+    broker: str | None = None,
+    *,
+    include_payload: bool = False,
+) -> list[dict[str, Any]]:
+    """Return open exit controls without repeatedly transferring their bulky JSON payload."""
     initialize_multi_broker_schema(db_path)
-    sql = "SELECT * FROM MANAGED_TRADE_EXITS WHERE status = 'open'"
+    columns = MANAGED_EXIT_READ_COLUMNS + (", payload_json" if include_payload else "")
+    sql = f"SELECT {columns} FROM MANAGED_TRADE_EXITS WHERE status = 'open'"
     params: tuple[Any, ...] = ()
     if broker:
         sql += " AND broker = ?"
@@ -1087,6 +1102,33 @@ def open_managed_exits(db_path: Path, broker: str | None = None) -> list[dict[st
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def managed_exit_payload(db_path: Path, managed_exit_id: int) -> dict[str, Any]:
+    """Load entry provenance only at the rare point where an exit is submitted."""
+    initialize_multi_broker_schema(db_path)
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM MANAGED_TRADE_EXITS WHERE managed_exit_id = ?",
+            (int(managed_exit_id),),
+        ).fetchone()
+    if not row:
+        return {}
+    raw = row[0] if not hasattr(row, "keys") else row["payload_json"]
+    return _json_dict(raw)
+
+
+def count_open_managed_exits(db_path: Path, broker: str | None = None) -> int:
+    """Count capacity without transferring every open trade row."""
+    initialize_multi_broker_schema(db_path)
+    sql = "SELECT COUNT(*) FROM MANAGED_TRADE_EXITS WHERE status = 'open'"
+    params: tuple[Any, ...] = ()
+    if broker:
+        sql += " AND broker = ?"
+        params = (broker.lower(),)
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(sql, params).fetchone()
+    return int(row[0] if row else 0)
 
 
 def _merge_managed_exit_payload(conn: Any, managed_exit_id: int, new_fields: dict[str, Any] | None) -> str:

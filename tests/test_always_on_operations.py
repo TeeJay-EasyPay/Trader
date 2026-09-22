@@ -62,20 +62,26 @@ def settings_for(tmp: str) -> Settings:
 
 
 class AlwaysOnOperationsTests(unittest.TestCase):
-    def test_auto_execution_review_has_an_independent_fifteen_minute_floor(self) -> None:
+    def test_auto_execution_review_uses_agreed_broker_specific_floors(self) -> None:
         # Faster worker cycles must not multiply the expensive proposal evaluation rate.
         # Managed exits continue using auto_execution_interval_seconds separately.
         self.assertEqual(
             _auto_execution_review_interval_seconds(
-                SimpleNamespace(auto_execution_review_interval_seconds=60)
+                SimpleNamespace(auto_execution_alpaca_review_interval_seconds=60), "alpaca"
             ),
-            900,
+            3600,
         )
         self.assertEqual(
             _auto_execution_review_interval_seconds(
-                SimpleNamespace(auto_execution_review_interval_seconds=1800)
+                SimpleNamespace(auto_execution_kraken_review_interval_seconds=60), "kraken"
             ),
             1800,
+        )
+        self.assertEqual(
+            _auto_execution_review_interval_seconds(
+                SimpleNamespace(auto_execution_alpaca_review_interval_seconds=7200), "alpaca"
+            ),
+            7200,
         )
 
     def test_main_worker_can_publish_transfer_evidence_without_experiment_thread(self) -> None:
@@ -229,6 +235,9 @@ class AlwaysOnOperationsTests(unittest.TestCase):
             self.assertEqual(completed["status"], "completed_no_action")
             self.assertEqual(completed["assets_processed"], 2)
             self.assertEqual(completed["rejection_count"], 1)
+            self.assertNotIn("payload_json", claim)
+            self.assertNotIn("payload_json", completed)
+            self.assertNotIn("payload_json", list_job_runs(db_path, limit=1)[0])
 
     def test_worker_health_uses_heartbeat_freshness(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -468,6 +477,34 @@ class BrokerJobGroupConcurrencyTests(unittest.TestCase):
         # A timed-out Kraken job must not change Alpaca's own completed status.
         self.assertEqual(results["auto-execution-alpaca"]["status"], "completed")
         self.assertEqual(results["auto-execution-kraken"]["status"], "timed_out")
+
+    def test_group_can_assign_independent_broker_schedule_buckets(self):
+        schedules: dict[str, str] = {}
+
+        def fake_run_worker_cycle_job(service, job_name, worker_id, *, scheduled_for, timeout_seconds, restart_worker_on_timeout):
+            schedules[job_name] = scheduled_for
+            return {"status": "completed", "job_name": job_name}
+
+        service = SimpleNamespace(settings=SimpleNamespace(worker_job_timeout_seconds=180))
+        with (
+            patch("ai_trader.cli.selected_backend", return_value="sqlite"),
+            patch("ai_trader.cli._run_worker_cycle_job", side_effect=fake_run_worker_cycle_job),
+        ):
+            _run_broker_job_group(
+                service,
+                "auto-execution",
+                ["auto-execution-alpaca", "auto-execution-kraken"],
+                "worker-1",
+                MagicMock(),
+                scheduled_for="fallback",
+                scheduled_for_by_job={
+                    "auto-execution-alpaca": "hourly",
+                    "auto-execution-kraken": "half-hourly",
+                },
+            )
+
+        self.assertEqual(schedules["auto-execution-alpaca"], "hourly")
+        self.assertEqual(schedules["auto-execution-kraken"], "half-hourly")
 
     def test_group_falls_back_to_sequential_execution_off_postgres(self):
         call_order: list[str] = []

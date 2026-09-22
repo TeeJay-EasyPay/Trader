@@ -184,6 +184,24 @@ def _load(conn, eid, owner='founder'):
     return row
 
 
+def _load_opportunity_experiment(conn, eid, owner='founder'):
+    """Load only fields needed to attach a prospective opportunity.
+
+    This path runs once per candidate/active-experiment pair.  Pulling report_json and
+    state_json here transferred the growing simulation books even though add_opportunity
+    never reads either field.
+    """
+    row = conn.execute(
+        'SELECT id,owner,created_at,status,spec_json FROM RULE_EXPERIMENTS WHERE id=? AND owner=?',
+        (eid, owner),
+    ).fetchone()
+    if not row:
+        raise ValueError('Experiment not found')
+    decoded = dict(row)
+    decoded['spec'] = json.loads(decoded.pop('spec_json'))
+    return decoded
+
+
 def _event(conn, row, action, payload, key):
     conn.execute('INSERT INTO EXPERIMENT_EVENTS VALUES (?,?,?,?,?,?,?,?)',
                  (str(uuid4()), row['id'], row['owner'], now_iso(), action, row['version'], dump(payload), key))
@@ -275,7 +293,7 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
     op = {key: op[key] for key in ('entry', 'stop', 'target', 'time', 'eligible', 'symbol', 'source_id')}
     op['rejection_reasons'] = reasons
     with transaction(db) as conn:
-        row = _load(conn, eid, owner)
+        row = _load_opportunity_experiment(conn, eid, owner)
         if row['status'] != 'shadow_running' or stamp(op['time']) < stamp(row['created_at']):
             raise ValueError('Only prospective opportunities in running experiments')
         if row['spec']['rule_type']=='reference_set_filter':

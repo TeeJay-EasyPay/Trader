@@ -395,9 +395,15 @@ def main(argv: list[str] | None = None) -> int:
                         ["auto-execution-alpaca", "auto-execution-kraken"],
                         worker_id,
                         pulse,
-                        scheduled_for=_time_bucket(
-                            now, _auto_execution_review_interval_seconds(settings)
-                        ),
+                        scheduled_for=_time_bucket(now, _auto_execution_review_interval_seconds(settings)),
+                        scheduled_for_by_job={
+                            "auto-execution-alpaca": _time_bucket(
+                                now, _auto_execution_review_interval_seconds(settings, "alpaca")
+                            ),
+                            "auto-execution-kraken": _time_bucket(
+                                now, _auto_execution_review_interval_seconds(settings, "kraken")
+                            ),
+                        },
                         # trade_audit candidates are evaluated one at a time through the full
                         # Strategy/Portfolio/Risk/Sentinel governance chain (~50-55s each even
                         # after fixing the schema-reinit costs found 2026-08-01) -- the shared
@@ -997,6 +1003,7 @@ def _run_broker_job_group(
     pulse: "WorkerHeartbeatPulse",
     *,
     scheduled_for: str,
+    scheduled_for_by_job: dict[str, str] | None = None,
     timeout_seconds: int | None = None,
 ) -> dict[str, dict]:
     """Run independent broker-specific jobs concurrently within one named group.
@@ -1020,12 +1027,13 @@ def _run_broker_job_group(
     group_start = time.monotonic()
     effective_timeout = timeout_seconds if timeout_seconds is not None else service.settings.worker_job_timeout_seconds
     results: dict[str, dict] = {}
+    schedules = scheduled_for_by_job or {}
     if selected_backend() != "postgres":
         for job_name in job_names:
             job_start = time.monotonic()
             results[job_name] = _run_worker_cycle_job(
                 service, job_name, worker_id,
-                scheduled_for=scheduled_for,
+                scheduled_for=schedules.get(job_name, scheduled_for),
                 timeout_seconds=effective_timeout,
                 restart_worker_on_timeout=True,
             )
@@ -1036,7 +1044,7 @@ def _run_broker_job_group(
             futures = {
                 pool.submit(
                     _run_worker_cycle_job, service, job_name, worker_id,
-                    scheduled_for=scheduled_for,
+                    scheduled_for=schedules.get(job_name, scheduled_for),
                     timeout_seconds=effective_timeout,
                     restart_worker_on_timeout=True,
                 ): job_name
@@ -1320,13 +1328,17 @@ def _time_bucket(now: datetime, interval_seconds: int) -> str:
     return datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat()
 
 
-def _auto_execution_review_interval_seconds(settings: Settings) -> int:
+def _auto_execution_review_interval_seconds(settings: Settings, broker: str | None = None) -> int:
     """A cost-controlled proposal cadence, independent of protection checks.
 
     Faster code must not silently turn into more database-heavy work. Managed exits retain
     their existing cadence; only repeated evaluation of the same proposal set is bounded.
     """
 
+    if broker == "alpaca":
+        return max(3600, int(getattr(settings, "auto_execution_alpaca_review_interval_seconds", 3600)))
+    if broker == "kraken":
+        return max(1800, int(getattr(settings, "auto_execution_kraken_review_interval_seconds", 1800)))
     return max(900, int(getattr(settings, "auto_execution_review_interval_seconds", 900)))
 
 

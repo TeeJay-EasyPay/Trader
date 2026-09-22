@@ -19,6 +19,7 @@ from ..multi_broker import (
     broker_auto_settings,
     broker_auto_trading_enabled,
     complete_order_intent_lock,
+    managed_exit_payload,
     mark_managed_exit_submitted,
     open_managed_exits,
     record_notification,
@@ -34,6 +35,19 @@ from ..persistence.query_executor import QueryExecutor
 # Matches the sibling services; see broker_service.py and research_service.py.
 logger = logging.getLogger("ai_trader.api")
 from .shared_helpers import _int_or_default
+
+
+# These outcomes depend on immutable proposal content, rather than temporary market/account
+# state. Re-running the complete governance chain for the same proposal cannot change them;
+# genuinely new proposal IDs still enter immediately on the next broker-specific cycle.
+_UNCHANGED_PROPOSAL_REJECTIONS = {
+    "due_diligence_incomplete",
+    "max_stop_loss_pct_exceeded",
+    "not_in_permitted_universe",
+    "reward_risk_below_minimum",
+    "stop_loss_too_tight",
+    "target_move_below_cost_hurdle",
+}
 
 
 # Phase 8 (architecture/AI_TRADER_MODULARISATION_ARCHITECTURE_2026-08-02.md): these
@@ -444,6 +458,44 @@ class ExecutionService:
                 continue
             surviving_rows.append(row)
 
+        if surviving_rows:
+            placeholders = ",".join("?" for _ in surviving_rows)
+            ids = tuple(row["proposal_id"] for row in surviving_rows)
+            previous_rows = self._query_executor.rows(
+                f"""
+                SELECT d.recommendation_id, d.rejection_reason
+                FROM ORCHESTRATOR_DECISIONS d
+                JOIN (
+                    SELECT recommendation_id, MAX(decision_id) AS decision_id
+                    FROM ORCHESTRATOR_DECISIONS
+                    WHERE recommendation_id IN ({placeholders})
+                    GROUP BY recommendation_id
+                ) latest ON latest.decision_id = d.decision_id
+                """,
+                ids,
+            )
+            terminal_by_id = {}
+            for previous in previous_rows:
+                reason = str(previous["rejection_reason"] or "")
+                failures = {part.strip() for part in reason.split(",") if part.strip()}
+                if failures and failures <= _UNCHANGED_PROPOSAL_REJECTIONS:
+                    terminal_by_id[previous["recommendation_id"]] = reason
+            if terminal_by_id:
+                retained = []
+                for row in surviving_rows:
+                    reason = terminal_by_id.get(row["proposal_id"])
+                    if reason:
+                        skipped.append({
+                            "proposal_id": row["proposal_id"],
+                            "symbol": row["symbol"],
+                            "confidence": safe_score(row["ai_confidence"]) or 0.0,
+                            "reason": "unchanged_proposal_already_reviewed",
+                            "message": f"Unchanged proposal was already rejected: {reason}.",
+                        })
+                    else:
+                        retained.append(row)
+                surviving_rows = retained
+
         payloads_by_proposal_id: dict[str, str] = {}
         if surviving_rows:
             placeholders = ",".join("?" for _ in surviving_rows)
@@ -769,7 +821,7 @@ class ExecutionService:
                 notes=json_safe(result),
             )
             if result.get("status") in {"accepted", "submitted"}:
-                entry_payload = _json_loads_safe(item.get("payload_json")) or {}
+                entry_payload = managed_exit_payload(self.settings.db_path, int(item["managed_exit_id"]))
                 proposal_id = entry_payload.get("proposal_id")
                 exit_order_id = str(result.get("id") or result.get("order_id") or "")
                 mark_managed_exit_submitted(
@@ -869,7 +921,7 @@ class ExecutionService:
         if result.get("status") not in {"accepted", "submitted"}:
             release_order_intent_lock(self.settings.db_path, broker=broker, client_order_id=client_order_id)
             return {"status": "rejected", "message": f"Kraken exit order was not accepted: {result.get('reason') or result.get('status')}", "order": result}
-        entry_payload = _json_loads_safe(item.get("payload_json")) or {}
+        entry_payload = managed_exit_payload(self.settings.db_path, managed_exit_id)
         proposal_id = entry_payload.get("proposal_id")
         exit_order_id = str(result.get("id") or result.get("order_id") or "")
         mark_managed_exit_submitted(

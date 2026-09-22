@@ -42,6 +42,8 @@ from ai_trader.multi_broker import (
     latest_recommendation_set,
     list_performance_attribution,
     mark_managed_exit_submitted,
+    managed_exit_payload,
+    open_managed_exits,
     record_broker_trade_history,
     record_crypto_research_score,
     record_managed_trade_exit,
@@ -1903,6 +1905,22 @@ class ManagedExitPayloadPreservationTests(unittest.TestCase):
     \"logical_trades_proposal_id_key\""), which aborted reconciliation before
     enqueue_learning_workflow ever ran for any trade in that cycle. These pin that the
     entry-time payload -- proposal_id specifically -- survives every exit-time payload write."""
+
+    def test_hot_open_exit_read_omits_payload_and_targeted_loader_preserves_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "audit.sqlite3"
+            entry = record_managed_trade_exit(
+                db_path, broker="kraken", symbol="ETH", side="buy", quantity=0.001,
+                entry_order_id="entry-light", entry_price=1500.0, stop_loss=1470.0,
+                take_profit=1560.0, payload={"proposal_id": "proposal-light", "large": "x" * 1000},
+            )
+            rows = open_managed_exits(db_path, "kraken")
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("payload_json", rows[0])
+            self.assertEqual(
+                managed_exit_payload(db_path, int(entry["managed_exit_id"]))["proposal_id"],
+                "proposal-light",
+            )
 
     def test_mark_managed_exit_submitted_preserves_the_entry_time_proposal_id(self):
         with tempfile.TemporaryDirectory() as tmp:

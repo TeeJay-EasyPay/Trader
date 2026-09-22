@@ -166,6 +166,16 @@ def dataset(conn, broker, now, cached_bars=None):
     return result
 
 
+def _semantic_frozen_dataset(data):
+    """Return only content that contributes to the dataset version.
+
+    Provider refresh metadata (request time, cache hit counters, and similar operational
+    fields) can change while the actual signals and bars remain identical.  It must not be
+    written beneath the same content-addressed filename and then mistaken for corruption.
+    """
+    return {key: value for key, value in data.items() if key != 'provider_cache'}
+
+
 def freeze_dataset(db, data):
     """Content-addressed host cache; one copy per dataset, no database duplication.
 
@@ -175,11 +185,17 @@ def freeze_dataset(db, data):
     """
     root = Path(os.getenv('AI_TRADER_RESEARCH_CACHE_DIR') or (Path(db).parent / 'research-cache'))
     root.mkdir(parents=True, exist_ok=True)
-    version = data.get('dataset_version') or e.digest(data)
+    frozen = _semantic_frozen_dataset(data)
+    version = frozen.get('dataset_version') or e.digest(frozen)
     target = root / (version+'.json')
-    raw = e.dump(data).encode('utf-8')
+    raw = e.dump(frozen).encode('utf-8')
     if target.exists():
-        if target.read_bytes() != raw:
+        try:
+            existing = _semantic_frozen_dataset(json.loads(target.read_text(encoding='utf-8')))
+            existing_raw = e.dump(existing).encode('utf-8')
+        except (OSError, ValueError, TypeError):
+            existing_raw = target.read_bytes()
+        if existing_raw != raw:
             raise ValueError('Cached historical dataset differs from its frozen version')
         return version
     if sum(p.stat().st_size for p in root.glob('*.json')) + len(raw) > MAX_CACHE_BYTES:

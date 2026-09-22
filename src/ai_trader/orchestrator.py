@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS ORCHESTRATOR_DECISIONS (
     order_id TEXT,
     notes TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_orchestrator_decisions_recommendation_latest
+ON ORCHESTRATOR_DECISIONS(recommendation_id, decision_id DESC);
 
 CREATE TABLE IF NOT EXISTS AUTO_TRADE_EVENTS (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +132,12 @@ class InvestmentOrchestrator:
     ) -> OrchestratorDecision:
         _eval_t0 = time.monotonic()
         p = proposal.normalized()
-        intelligence = latest_intelligence_packet(self.db_path, p.proposal_id) or {}
+        # The governance decision needs the current committee/probability context, not the
+        # proposal's entire historical lifecycle.  Omitting that append-only JSON history
+        # removes the largest measured hot query without weakening any decision input.
+        intelligence = latest_intelligence_packet(
+            self.db_path, p.proposal_id, include_lifecycle=False
+        ) or {}
         strategy_id = (
             (intelligence.get("committee") or {}).get("strategy_id")
             or (intelligence.get("probability") or {}).get("strategy_id")

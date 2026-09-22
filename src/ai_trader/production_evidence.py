@@ -936,8 +936,8 @@ def _load_founder_evidence_rows(
 _JOB_HEALTH_SPECS: tuple[tuple[str, str, int, str | None, tuple[str, ...]], ...] = (
     ("broker-poll-alpaca", "Alpaca Broker Poll", 400, "alpaca", ("broker-poll-alpaca", "broker-poll")),
     ("broker-poll-kraken", "Kraken Broker Poll", 400, "kraken", ("broker-poll-kraken", "broker-poll")),
-    ("auto-execution-alpaca", "Alpaca Auto-Execution", 180, "alpaca", ("auto-execution-alpaca", "auto-execution")),
-    ("auto-execution-kraken", "Kraken Auto-Execution", 180, "kraken", ("auto-execution-kraken", "auto-execution")),
+    ("auto-execution-alpaca", "Alpaca Auto-Execution", 3600, "alpaca", ("auto-execution-alpaca", "auto-execution")),
+    ("auto-execution-kraken", "Kraken Auto-Execution", 1800, "kraken", ("auto-execution-kraken", "auto-execution")),
     ("managed-exits", "Managed Exits", 180, None, ("managed-exits",)),
     # 2026-08-19: matches production_snapshot_interval_seconds's new default (600s) --
     # config.py's own comment explains the balance between the app's 900s staleness
@@ -1054,7 +1054,9 @@ def _assemble_founder_evidence_payload(
                 broker_row["managed_exits"] = [
                     _compact_managed_exit_for_founder(_decode_row(exit_row, {"payload_json"}))
                     for exit_row in shared("exits:" + str(broker_row.get("broker")),
-                                           lambda: open_managed_exits(db_path, broker_row.get("broker")))
+                                           lambda: open_managed_exits(
+                                               db_path, broker_row.get("broker"), include_payload=True
+                                           ))
                 ]
             except Exception:  # noqa: BLE001 - evidence enrichment must never break the payload
                 broker_row["managed_exits"] = []

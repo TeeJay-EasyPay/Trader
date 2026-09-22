@@ -1,5 +1,35 @@
 # Implementation Log
 
+## 2026-09-22 — Broker-specific evaluation cadence and hot-query egress reduction
+
+Implemented the Founder-agreed cadence: Alpaca proposal evaluation hourly and Kraken
+proposal evaluation every 30 minutes. Broker polling and managed-exit protection retain
+their existing safety cadence. Each broker now receives its own idempotent schedule bucket,
+and health evidence uses the same expected intervals. Genuinely new proposal IDs enter on
+the next broker cycle; unchanged proposals with only immutable structural rejection reasons
+are not put through the complete governance chain again.
+
+Live PostgreSQL statistics before the change identified repeated large-row reads rather
+than one dashboard endpoint as the remaining egress source: 147,996 lifecycle rows,
+92,949 open managed-exit rows, 24,669 experiment loads, and scheduled-job result payloads
+on more than 10,000 claim/complete cycles in the retained statistics window. Hot paths now
+project only fields they consume. Scheduler operations omit result payload JSON; open-exit
+polls omit entry payload JSON and fetch it only when an exit is actually submitted;
+orchestrator evaluation omits lifecycle history; experiment opportunity intake omits the
+growing report and state books. Count-only capacity checks now use COUNT rather than
+transferring every open exit row.
+
+The historical research cache comparison was also corrected: volatile provider refresh
+metadata is excluded from the content-addressed frozen dataset. Identical Alpaca/Kraken
+bars can therefore be reused across overnight runs instead of producing the false
+"Cached historical dataset differs from its frozen version" result. This changes no
+trade, risk, fee, stop-loss, or live-trading permission.
+
+Focused verification before release: 143 tests passed across scheduling, always-on
+operations, historical screening, multi-broker execution, and trading intelligence.
+Provider-level egress remains a lagging daily metric and must be compared after a full
+post-deployment day; no immediate billing reduction is claimed here.
+
 ## 2026-09-14 — Remove duplicate Trader conversation start (published)
 
 Trader mode no longer renders the generic `Start conversation` control beneath its

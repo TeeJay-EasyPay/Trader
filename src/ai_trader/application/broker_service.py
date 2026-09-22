@@ -19,6 +19,7 @@ from ..config import Settings
 from ..database import selected_backend
 from ..multi_broker import (
     broker_auto_settings,
+    count_open_managed_exits,
     latest_broker_trades,
     open_managed_exits,
     record_broker_trade_history,
@@ -983,7 +984,7 @@ class BrokerService:
         }
 
     def _ai_managed_open_trade_count(self, broker: str) -> int:
-        return len(open_managed_exits(self.settings.db_path, broker))
+        return count_open_managed_exits(self.settings.db_path, broker)
 
     def _kraken_ai_capital_ledger(
         self,

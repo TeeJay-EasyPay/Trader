@@ -156,6 +156,14 @@ def test_cache_content_addressing_and_capacity(tmp_path,monkeypatch):
         h.freeze_dataset(tmp_path/'db',dict(signals=[],bars=[{'x':1}]))
 
 
+def test_cache_ignores_volatile_provider_refresh_metadata(tmp_path):
+    data=dict(signals=[],bars=[],dataset_version='stable-version',
+              provider_cache={'refreshed_at':'2026-09-21T01:00:00+00:00','cache_hits':1})
+    version=h.freeze_dataset(tmp_path/'db',data)
+    later={**data,'provider_cache':{'refreshed_at':'2026-09-22T01:00:00+00:00','cache_hits':9}}
+    assert h.freeze_dataset(tmp_path/'db',later)==version
+
+
 def test_identical_signals_do_not_multiply_samples():
     signal=op(target=130)
     bars=[{**bar(2),'low':85}]

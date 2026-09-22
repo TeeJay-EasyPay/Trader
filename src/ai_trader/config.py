@@ -69,6 +69,8 @@ class Settings:
     # Production evidence on 2026-09-20 showed that making each cycle faster increased
     # proposal reviews from ~84 to ~294/day and drove Supabase egress close to 1 GB.
     auto_execution_review_interval_seconds: int = 900
+    auto_execution_alpaca_review_interval_seconds: int = 3600
+    auto_execution_kraken_review_interval_seconds: int = 1800
     worker_research_enabled: bool = True
     # 2026-08-19 hosted finding: this defaulted to 1200s (20 min) while the mobile app's own
     # staleness threshold (FOUNDER_SNAPSHOT_MAX_AGE_SECONDS, production_evidence.py) is 900s
@@ -240,6 +242,12 @@ def load_settings() -> Settings:
         auto_execution_interval_seconds=_int_env("AUTO_EXECUTION_INTERVAL_SECONDS", 60),
         auto_execution_review_interval_seconds=_int_env(
             "AI_TRADER_AUTO_EXECUTION_REVIEW_INTERVAL_SECONDS", 900
+        ),
+        auto_execution_alpaca_review_interval_seconds=_int_env(
+            "AI_TRADER_AUTO_EXECUTION_ALPACA_REVIEW_INTERVAL_SECONDS", 3600
+        ),
+        auto_execution_kraken_review_interval_seconds=_int_env(
+            "AI_TRADER_AUTO_EXECUTION_KRAKEN_REVIEW_INTERVAL_SECONDS", 1800
         ),
         worker_research_enabled=_bool_env("AI_TRADER_WORKER_RESEARCH_ENABLED", True),
         production_snapshot_interval_seconds=_int_env("AI_TRADER_PRODUCTION_SNAPSHOT_INTERVAL_SECONDS", 600),
