@@ -22,13 +22,13 @@ const human = text => String(text || '').replace(/_/g, ' ');
 const money = (n, currency = 'USD') => typeof n === 'number' ? (currency === 'GBP' ? '£' : '$') + n.toFixed(2) : 'Not available';
 function LearningProgress({ measurement, historical, founderLearning, onSelect }) {
   const [details, setDetails] = useState(false);
-  return <View style={s.card}><Text style={s.title}>Are results improving?</Text>
-    <Text style={s.text}>{founderLearning?.trading_better ? 'Improvement recorded — see the comparison below.' : 'We haven’t confirmed an improvement yet.'}</Text>
+  return <View style={s.card}><Text style={s.title}>Is Trader getting better?</Text>
+    {!!founderLearning?.headline && <Text style={s.text}>{founderLearning.headline}</Text>}
+    <Text style={s.text}>{founderLearning?.reflection || 'Waiting for Trader’s first learning assessment. No improvement claim yet.'}</Text>
+    {!!founderLearning && <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>}
     <Button label={details ? 'Hide supporting evidence' : 'See supporting evidence'} onPress={() => setDetails(v => !v)} />
     {details && <>
-    {!!founderLearning?.headline && <View style={s.card}><Text style={s.title}>{founderLearning.headline}</Text>
-      <Text style={s.text}>{founderLearning.reflection}</Text>
-      <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>
+    {!!founderLearning && <View style={s.card}><Text style={s.title}>Learning activity</Text>
       <Text style={s.small}>Running {founderLearning.experiments?.running || 0} · Recommended {founderLearning.experiments?.recommended || 0} · Superseded/restarted {founderLearning.experiments?.superseded || 0} · Adopted {founderLearning.experiments?.adopted || 0}</Text>
     </View>}
     <Text style={s.text}>{measurement?.summary || 'Waiting for the first daily evidence snapshot. No improvement claim yet.'}</Text>
@@ -187,8 +187,9 @@ function ExperimentsCard({ request, notifications = false, onBack, compact = fal
   useEffect(() => { setData(null); load(); }, [attention, section, request]);
   if (selected) return <ExperimentDetail request={request} id={selected} onBack={() => { setSelected(null); load(); }} />;
   if (brief) return <View style={{ gap: 4 }}>
-    <Text style={s.title}>Are results improving?</Text>
-    <Text style={s.text}>{error ? 'Results are unavailable right now.' : !data ? 'Checking the latest results…' : data.founder_learning?.trading_better ? 'Improvement recorded in the latest tests.' : 'Not confirmed yet.'}</Text>
+    <Text style={s.title}>Is Trader getting better?</Text>
+    <Text style={s.text}>{error ? 'Trader’s learning assessment is unavailable right now.' : !data ? 'Checking Trader’s latest learning assessment…' : data.founder_learning?.reflection || 'Waiting for Trader’s first learning assessment. No improvement claim yet.'}</Text>
+    {!!data?.founder_learning && <Text style={s.small}>More capable: {data.founder_learning.more_capable ? 'yes' : 'not yet'} · Learned something: {data.founder_learning.learned_something ? 'yes' : 'not yet'} · Trading better: {data.founder_learning.trading_better ? 'verified' : 'not proven'}</Text>}
     <TouchableOpacity accessibilityRole="button" onPress={onOpenTests} style={{ minHeight: 44, justifyContent: 'center' }}>
       <Text style={[s.buttonText, { textAlign: 'left' }]}>View tests →</Text>
     </TouchableOpacity>

@@ -6195,3 +6195,18 @@ Production release and verification:
   `2026-09-21T16:06:20Z`, confirming the observability repair is active.
 - Final affected regression: 230 tests and two subtests passed; source compilation and
   staged-diff checks also passed.
+
+## 2026-09-23 — Restore Trader's visible learning reflection
+
+The Founder reported that the Learning overview no longer showed Trader's plain-English
+message about whether it was getting better. The underlying production assessment was
+still being generated, but the 18 September overview simplification had hidden it behind
+the supporting-evidence view and replaced it with only a binary confirmation label.
+
+- Restored Trader's current plain-English reflection directly to the Learning overview.
+- Restored the three distinct, honest signals: more capable, learned something, and trading
+  better. Better trading remains explicitly "not proven" until the evidence supports it.
+- Kept technical test, experiment and historical-screening detail behind the existing
+  supporting-evidence action so the overview remains concise.
+- Added regressions proving the reflection and status signals remain visible without opening
+  test details, while detailed evidence stays collapsed by default.

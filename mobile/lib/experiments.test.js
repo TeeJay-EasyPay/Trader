@@ -13,10 +13,20 @@ function load(states = []) {
   });
   return module.exports;
 }
+function visibleText(node) {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(visibleText).join('');
+  return visibleText(node.props?.children);
+}
 
 test('learning measurement distinguishes missing evidence from proven improvement', () => {
-  const compact = JSON.stringify(load().LearningProgress({}));
-  assert.ok(compact.includes('We haven’t confirmed an improvement yet.'));
+  const founderLearning = { headline: 'Still learning', reflection: 'I learned that the current evidence is not yet strong enough.',
+    more_capable: true, learned_something: true, trading_better: false, experiments: { running: 2 } };
+  const compact = visibleText(load().LearningProgress({ founderLearning }));
+  assert.ok(compact.includes(founderLearning.reflection));
+  assert.ok(compact.includes('More capable: yes'));
+  assert.ok(compact.includes('Trading better: not proven'));
   assert.ok(!compact.includes('Historical screening'));
   const ui = load([true]);
   const empty = JSON.stringify(ui.LearningProgress({}));
@@ -28,6 +38,18 @@ test('learning measurement distinguishes missing evidence from proven improvemen
   assert.ok(rendered.includes('£-3.00'));
   assert.ok(rendered.includes('not established'));
   assert.ok(rendered.includes('Missing historical bars'));
+});
+test('learning overview keeps Trader reflection visible without opening test details', () => {
+  const reflection = 'I am more capable because I completed new research, but better trading is not proven yet.';
+  const data = { founder_learning: { reflection, more_capable: true, learned_something: true, trading_better: false },
+    items: [], policy: { enabled: true } };
+  const ui = load([data, '', false, null, false, 'running', false, null]);
+  const rendered = visibleText(ui.ExperimentsCard({ request: () => assert.fail('render sent a request'), brief: true }));
+  assert.ok(rendered.includes('Is Trader getting better?'));
+  assert.ok(rendered.includes(reflection));
+  assert.ok(rendered.includes('Learned something: yes'));
+  assert.ok(rendered.includes('Trading better: not proven'));
+  assert.ok(!rendered.includes('Historical screening'));
 });
 test('experiment UI has an honest empty state without fake performance', () => {
   const ui = load([{ items: [], policy: { enabled: false } }, '', false, null, false]);
