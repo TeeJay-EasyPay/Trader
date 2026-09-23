@@ -6210,3 +6210,12 @@ the supporting-evidence view and replaced it with only a binary confirmation lab
   supporting-evidence action so the overview remains concise.
 - Added regressions proving the reflection and status signals remain visible without opening
   test details, while detailed evidence stays collapsed by default.
+
+Release and verification:
+
+- Focused Learning and experiment UI regression: 17 tests passed; the Android production
+  bundle exported successfully.
+- Commit `34399c3d` was pushed to `master` without triggering an unnecessary backend deploy.
+- Android/iOS runtime 1.0.4 was published to preview group
+  `25ce5e02-89af-4717-9ae9-e33cc7a7b312` and hosted-preview group
+  `efb5302c-828c-4ffa-902a-c638285e1333` using the production mobile environment.
