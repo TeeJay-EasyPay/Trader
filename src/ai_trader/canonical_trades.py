@@ -589,8 +589,17 @@ def _fill_role_from_order(
 def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any] | None:
     with _connection(db_path, conn) as active:
         active.row_factory = sqlite3.Row
+        # Supabase's pooler returns REAL as six significant text digits when
+        # extra_float_digits=0 (and ignores startup overrides). Widen the SELECT,
+        # not stored data or tolerances, before comparing against the retained fill.
+        # SQLite also accepts DOUBLE PRECISION. No extra query/session setting.
         fills = active.execute(
-            "SELECT * FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id",
+            "SELECT fill_id,logical_trade_id,broker,broker_fill_id,broker_order_id,"
+            "fill_role,side,CAST(quantity AS DOUBLE PRECISION) AS quantity,"
+            "CAST(price AS DOUBLE PRECISION) AS price,"
+            "CAST(broker_fee AS DOUBLE PRECISION) AS broker_fee,"
+            "CAST(exchange_fee AS DOUBLE PRECISION) AS exchange_fee,filled_at,payload_json "
+            "FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id",
             (logical_trade_id,),
         ).fetchall()
         # 2026-09-05 Supabase egress finding: SELECT * here cost the whole row, and

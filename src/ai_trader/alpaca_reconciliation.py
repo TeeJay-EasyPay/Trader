@@ -271,7 +271,7 @@ def pair_round_trips(orders: list[Order]) -> tuple[list[RoundTrip], list[dict[st
     return round_trips, unmatched
 
 
-def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
+def _alpaca_fill_rows(conn: Any, *, order_ids: list[str] | None = None) -> list[dict[str, Any]]:
     """Alpaca's own fill events, with our proposal id attached wherever we recorded one.
 
     The proposal is a LEFT join for a reason: the broker's record is complete and ours is not,
@@ -285,6 +285,16 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
             return f"h.payload_json::jsonb ->> '{name}'"
         return f"json_extract(CASE WHEN json_valid(h.payload_json) THEN h.payload_json ELSE '{{}}' END, '$.{name}')"
 
+    params = ()
+    restriction = ''
+    if order_ids is not None:
+        order_ids = sorted(set(order_ids))
+        if not order_ids:
+            return []
+        if len(order_ids) > 20:
+            raise ValueError('Targeted fill audit is limited to twenty orders')
+        restriction = f" AND {field('order_id')} IN ({','.join('?' for _ in order_ids)})"
+        params = tuple(order_ids)
     statement = f"""
         SELECT h.symbol, h.side, h.quantity, h.price, h.opened_at,
                {field('order_id')} AS broker_order_id, {field('leaves_qty')} AS leaves_quantity,
@@ -305,17 +315,23 @@ def _alpaca_fill_rows(conn: Any) -> list[dict[str, Any]]:
             HAVING COUNT(DISTINCT original.logical_trade_id)=1
         ) linked ON linked.broker_order_id={field('order_id')}
         WHERE LOWER(h.broker) = 'alpaca' AND h.status IN ('fill', 'partial_fill')
+        {restriction}
         ORDER BY h.opened_at
         """
+    if order_ids is not None:
+        statement += ' LIMIT 201'
     from .database import PostgresConnection, HybridRow
     if isinstance(conn, PostgresConnection):
         from .projection_transfer import read
         # Alias every expression to preserve sqlite-compatible positional access.
         columns = ('symbol','side','quantity','price','opened_at','broker_order_id','leaves_quantity',
                    'proposal_id','logical_trade_id','external_id','broker_fee','exchange_fee','cumulative_quantity')
-        rows = [HybridRow(r) for r in read(conn._conn, statement, columns=columns)]
+        from .database import _postgres_sql
+        rows = [HybridRow(r) for r in read(conn._conn, _postgres_sql(statement), params, columns=columns)]
     else:
-        rows = conn.execute(statement).fetchall()
+        rows = conn.execute(statement, params).fetchall()
+    if order_ids is not None and len(rows) > 200:
+        raise ValueError('Targeted fill audit exceeded two hundred fills; do not use a truncated history')
 
     fills: list[dict[str, Any]] = []
     for row in rows:

@@ -8,7 +8,8 @@ from . import experiments as e
 _INITIALIZED = set()
 
 
-def reconcile_completed(db, fills, orders, trips, exits, *, limit=10, force=False):
+def reconcile_completed(db, fills, orders, trips, exits, *, limit=10, force=False,
+                        checkpoint_key='alpaca_canonical_repair'):
     from .canonical_trades import _refresh_trade_aggregate, canonical_trade
     from .sprint6 import enqueue_learning_workflow, _learning_payload_from_canonical_trade
     groups = {}
@@ -22,13 +23,39 @@ def reconcile_completed(db, fills, orders, trips, exits, *, limit=10, force=Fals
         e.migrate(db)
         _INITIALIZED.add(schema_key)
     with e.transaction(db) as conn:
-        progress = e.control(conn, 'alpaca_canonical_repair', {})
+        progress = e.control(conn, checkpoint_key, {})
         if not force and progress.get('day') == e.now_iso()[:10]:
             return dict(canonical_queued=[], unresolved=progress.get('unresolved', []), status='daily_budget_reached')
+        # Do not spend the small daily repair batch on already reviewed trades or
+        # exits with no explicit ownership. One bounded metadata query replaces
+        # days of repeatedly attempting these known-ineligible older groups.
+        if len(groups) > 1000:
+            return dict(canonical_queued=[], unresolved=[], status='metadata_bound_exceeded')
+        marks=','.join('?' for _ in groups)
+        linked=conn.execute(f"""SELECT t.proposal_id,ev.broker_order_id
+            FROM LOGICAL_TRADES t LEFT JOIN LOGICAL_TRADE_EVENTS ev
+              ON ev.logical_trade_id=t.logical_trade_id AND ev.stage='exit_order_linked'
+            WHERE t.broker='alpaca' AND t.proposal_id IN ({marks})
+              AND NOT EXISTS (SELECT 1 FROM CLOSED_LOOP_LEARNING_RUNS l
+                              WHERE l.logical_trade_id=t.logical_trade_id)
+            LIMIT 2001""",tuple(groups)).fetchall()
+        if len(linked)>2000:
+            return dict(canonical_queued=[], unresolved=[], status='metadata_bound_exceeded')
+        ownership={}
+        for row in linked:
+            ownership.setdefault(row[0],set()).add(row[1])
+        missing=[dict(proposal_id=pid,reason='Closing order lacks an explicit canonical parent/exit link; FIFO alone is not ownership')
+                 for pid,group in groups.items() if pid in ownership
+                 and not {t.exit_order_id for t in group}.issubset(ownership[pid])]
+        groups={pid:group for pid,group in groups.items() if pid in ownership
+                and {t.exit_order_id for t in group}.issubset(ownership[pid])}
+        if not groups:
+            e.put_control(conn,checkpoint_key,dict(day=e.now_iso()[:10],cursor=0,status='no_owned_pending_closures',unresolved=missing[:10]))
+            return dict(canonical_queued=[],unresolved=missing[:10],status='no_owned_pending_closures')
         start = int(progress.get('cursor', 0)) % len(groups)
         selected_groups = list(groups.items())[start:start + max(1, min(limit, 10))]
-        e.put_control(conn, 'alpaca_canonical_repair', dict(day=e.now_iso()[:10], cursor=start + len(selected_groups), status='reserved'))
-    completed, blocked = [], []
+        e.put_control(conn, checkpoint_key, dict(day=e.now_iso()[:10], cursor=start + len(selected_groups), status='reserved'))
+    completed, blocked = [], missing[:10]
     for proposal_id, group in selected_groups:
         entries = [o for o in orders if o.side == 'buy' and o.proposal_id == proposal_id]
         if not entries or any(o.incomplete for o in entries) or any(t.incomplete or t.mixed_entry_decisions for t in group):
@@ -111,7 +138,7 @@ def reconcile_completed(db, fills, orders, trips, exits, *, limit=10, force=Fals
         enqueue_learning_workflow(db, logical_trade_id=logical, broker='alpaca', payload=payload)
         completed.append(logical)
     with e.transaction(db) as conn:
-        e.put_control(conn, 'alpaca_canonical_repair', dict(day=e.now_iso()[:10], cursor=start + len(selected_groups),
+        e.put_control(conn, checkpoint_key, dict(day=e.now_iso()[:10], cursor=start + len(selected_groups),
             status='completed', canonical_queued=completed, unresolved=blocked[:10]))
     return dict(canonical_queued=completed, unresolved=blocked[:10],
                 limitation='Missing fee and exit evidence remains unknown; reporting and canonical reviews must not be counted as separate trades.')

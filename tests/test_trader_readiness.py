@@ -70,6 +70,16 @@ def test_original_fill_precision_is_not_a_dust_tolerance():
     assert _precise_kraken_fill(fill(2,'1.9999999','order_snapshot'))['quantity']==2
 
 
+def test_pooler_short_text_is_not_mistaken_for_corrupt_fill():
+    from ai_trader.canonical_trades import _refresh_trade_aggregate
+    # Observed on production: REAL text 19.9322, actual float32 cast to float64
+    # 19.932243347168. Do not widen the guard to accept the shortened text.
+    row=dict(broker='kraken',quantity=19.932243347168,
+             payload_json=json.dumps(dict(record_type='trade_fill',filled_quantity='19.93224263')))
+    assert _precise_kraken_fill(row)['quantity']==19.93224263
+    assert 'CAST(quantity AS DOUBLE PRECISION)' in inspect.getsource(_refresh_trade_aggregate)
+
+
 def test_blocked_reference_cursor_does_not_pin_other_test(db, monkeypatch):
     row=create(db)
     with e.transaction(db) as c:
@@ -153,3 +163,4 @@ def test_exact_closure_repair_is_bounded_and_idempotent(tmp_path, monkeypatch):
     with e.transaction(p) as c:
         assert c.execute('SELECT COUNT(*) FROM LOGICAL_TRADE_FILLS').fetchone()[0]==2
         assert c.execute('SELECT COUNT(*) FROM SPRINT6_WORKFLOW_OUTBOX').fetchone()[0]==1
+        assert c.execute("SELECT closed_at FROM LOGICAL_TRADES WHERE logical_trade_id='owned'").fetchone()[0].startswith('2026-09-02')

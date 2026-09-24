@@ -42,6 +42,11 @@ def repair(db, *, apply=False):
             if not valid or not totals['entry'] or totals['entry']!=totals['exit']:
                 results.append({'id':tid,'status':'not_exactly_balanced_no_change'});continue
             item={'id':tid,'status':'verified_exact_fill_balance','previous_remaining':before['remaining_quantity']}
+            from ai_trader.trade_reasons import to_iso
+            exit_times=[to_iso(json.loads(f['payload_json']).get('timestamp'))
+                        for f in fills if f['fill_role']=='exit']
+            if not exit_times or any(t is None for t in exit_times):
+                results.append({'id':tid,'status':'missing_exit_timestamp_no_change'});continue
             if apply:
                 before['managed_controls']=[dict(r) for r in c.execute("""SELECT managed_exit_id,status,updated_at,last_checked_at
                     FROM MANAGED_TRADE_EXITS WHERE broker='kraken' AND status IN ('open','exit_submitted')
@@ -49,6 +54,10 @@ def repair(db, *, apply=False):
                     WHERE logical_trade_id=? AND order_role='exit') LIMIT 12""",(tid,)).fetchall()]
                 trade=_refresh_trade_aggregate(db,tid,conn=c)
                 if not trade['terminal']:raise ValueError('Exact evidence did not produce a closed aggregate')
+                # The repair date is not the execution date. Preserve the real
+                # latest exit time so daily learning does not count an old exit today.
+                c.execute('UPDATE LOGICAL_TRADES SET closed_at=? WHERE logical_trade_id=?',
+                          (max(exit_times),tid))
                 result=_refresh_reconciled_result(db,tid,conn=c)
                 _mark_managed_exit_reconciled(db,logical_trade_id=tid,result=result,conn=c)
                 full=canonical_trade(db,tid,conn=c)

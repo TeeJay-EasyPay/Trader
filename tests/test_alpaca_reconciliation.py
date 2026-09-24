@@ -50,7 +50,7 @@ class CollapsingFillsTests(unittest.TestCase):
     def test_payload_projection_names_both_fields_for_postgres(self):
         from ai_trader.alpaca_reconciliation import _alpaca_fill_rows
         class Capture:
-            def execute(inner, sql):
+            def execute(inner, sql, params=()):
                 self.assertIn('AS broker_order_id', sql)
                 self.assertIn('AS leaves_quantity', sql)
                 self.assertNotIn('h.opened_at, h.payload_json,', sql)

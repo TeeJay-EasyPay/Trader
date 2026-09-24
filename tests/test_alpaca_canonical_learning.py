@@ -51,3 +51,27 @@ def test_partial_or_mixed_round_trip_does_not_close(tmp_path):
     trips = [replace(trips[0], incomplete=True)]
     assert not reconcile_completed(db, fills, orders, trips, {})['canonical_queued']
     assert canonical_trade(db,p.proposal_id)['terminal'] == 0
+
+
+def test_unowned_old_group_does_not_spend_repair_slot(tmp_path):
+    db=tmp_path/'priority.db'
+    p,fills,orders,trips=setup(db)
+    old=replace(p,proposal_id='old-unlinked')
+    register_execution_intent(db,proposal=old,broker='alpaca',decision_context={})
+    old_fills=[{**f,'fill_id':'old-'+f['fill_id'],'order_id':'old-'+f['order_id'],
+                'proposal_id':old.proposal_id if f['side']=='buy' else None} for f in fills]
+    old_orders=collapse_fills(old_fills);old_trips,_=pair_round_trips(old_orders)
+    result=reconcile_completed(db,old_fills+fills,old_orders+orders,old_trips+trips,{},limit=1)
+    assert result['canonical_queued']==[p.proposal_id]
+    assert result['unresolved'][0]['proposal_id']=='old-unlinked'
+
+
+def test_targeted_checkpoint_does_not_reset_daily_repair_budget(tmp_path):
+    from ai_trader import experiments as e
+    db=tmp_path/'targeted.db'
+    p,fills,orders,trips=setup(db);e.migrate(db)
+    before={'day':e.now_iso()[:10],'cursor':50,'status':'completed'}
+    with e.transaction(db) as c:e.put_control(c,'alpaca_canonical_repair',before)
+    result=reconcile_completed(db,fills,orders,trips,{},limit=1,checkpoint_key='approved-targeted-repair')
+    assert result['canonical_queued']==[p.proposal_id]
+    with e.transaction(db) as c:assert e.control(c,'alpaca_canonical_repair')==before

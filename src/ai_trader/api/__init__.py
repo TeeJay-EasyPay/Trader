@@ -1035,6 +1035,12 @@ class LocalApiService:
             return 200, self.force_managed_exit(body)
         if path == "/close-position":
             return 200, self.close_position(body)
+        if path == "/readiness/kraken-order-evidence":
+            from ..readiness_broker_evidence import kraken_orders
+            try:
+                return 200, kraken_orders(self.settings.db_path, KrakenAdapter(), body.get('order_ids'))
+            except ValueError as exc:
+                return 400, {'error': str(exc)}
         if path == "/kraken-reconciliation/replay":
             return 200, replay_persisted_kraken_evidence(
                 self.settings.db_path,
