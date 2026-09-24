@@ -212,3 +212,19 @@ def test_measurement_api_reads_compact_views_without_refresh(db,monkeypatch):
     assert code==200 and 'experiments' not in result['learning_measurement']
     code,result=experiment_api.get(db,'/experiment-notifications',{})
     assert code==200 and result['learning_measurement'] is None
+
+
+def test_experiments_api_upgrades_a_persisted_pre_provisional_scorecard(db, monkeypatch):
+    from ai_trader import experiment_api
+    with e.transaction(db) as conn:
+        e.put_control(conn, 'founder_learning_scorecard', {
+            'brokers': {'alpaca': {}, 'kraken': {}},
+            'learned_something': False,
+            'trading_better': False,
+        })
+    monkeypatch.setattr('ai_trader.strategy_intake.list_sources', lambda db: [])
+
+    code, result = experiment_api.get(db, '/experiments', {})
+
+    assert code == 200
+    assert result['founder_learning']['lesson_status'] in ('none', 'provisional', 'validated')

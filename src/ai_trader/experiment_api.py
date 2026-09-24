@@ -34,7 +34,9 @@ def get(db, path, query):
             # persisted snapshot still has yesterday's shape. Rebuild the read view
             # immediately; the normal daily refresh persists it on its next cycle.
             if show_research and (
-                not founder_learning or not isinstance(founder_learning.get('brokers'), dict)
+                not founder_learning
+                or not isinstance(founder_learning.get('brokers'), dict)
+                or founder_learning.get('lesson_status') not in ('none', 'provisional', 'validated')
             ):
                 from .founder_learning import build
                 founder_learning = build(conn, now=exp.now_iso())
