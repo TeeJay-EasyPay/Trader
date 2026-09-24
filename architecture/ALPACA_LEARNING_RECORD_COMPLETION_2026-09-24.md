@@ -27,6 +27,9 @@ as measured results.
   it creates evidence only and has no broker-order capability.
 - Trader's assessment prompt must distinguish configured code, measured production outcomes,
   provisional estimates, and actual after-cost results.
+- The shared candle loader builds its time predicates only when a bound exists. This avoids
+  PostgreSQL's untyped `NULL`-placeholder failure, discovered by the first production refresh,
+  while keeping the same bounded date window.
 
 ## Expected production proof
 

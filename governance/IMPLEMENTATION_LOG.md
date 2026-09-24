@@ -23,6 +23,11 @@ read-only trace confirmed the expected pre-release boundary: 25 Alpaca workflows
 evidence-complete canonical net results, 25 provisional estimates, 120 newer pending shadows,
 and 870 excluded legacy shadows.
 
+The first post-deployment historical refresh then exposed a PostgreSQL-only query defect:
+nullable time-bound placeholders were rejected as indeterminate types before settlement could
+read any candles. The follow-up replaces those guards with dynamically present, always-typed
+time predicates; the date window and evidence rules are unchanged.
+
 ## 2026-09-24 — Experiment continuity and faster provisional learning
 
 Replaced broad source-file hashing with an explicit behaviour contract: only declared

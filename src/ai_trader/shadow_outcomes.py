@@ -87,18 +87,24 @@ def _load_candles(conn: Any, symbols: set[tuple[str, str]], *,
         return {}
     market_symbols = sorted({symbol for _asset, symbol in symbols})
     placeholders = ",".join("?" for _ in market_symbols)
+    time_clauses = []
+    params: list[Any] = list(market_symbols)
+    if start_at is not None:
+        time_clauses.append("observation_time > ?")
+        params.append(start_at.isoformat())
+    if end_at is not None:
+        time_clauses.append("observation_time <= ?")
+        params.append(end_at.isoformat())
+    time_filter = "" if not time_clauses else " AND " + " AND ".join(time_clauses)
     rows = conn.execute(
         f"""
         SELECT UPPER(normalized_symbol), LOWER(asset_type), observation_time, high, low, close
         FROM MARKET_DATA_OBSERVATIONS
         WHERE timeframe = '1d' AND UPPER(normalized_symbol) IN ({placeholders})
-          AND (? IS NULL OR observation_time > ?)
-          AND (? IS NULL OR observation_time <= ?)
+          {time_filter}
         ORDER BY observation_time
         """,
-        (*market_symbols,
-         start_at.isoformat() if start_at else None, start_at.isoformat() if start_at else None,
-         end_at.isoformat() if end_at else None, end_at.isoformat() if end_at else None),
+        tuple(params),
     ).fetchall()
     out: dict[tuple[str, str], list[tuple[datetime, float, float, float]]] = {}
     for row in rows:
