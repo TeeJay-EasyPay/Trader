@@ -589,19 +589,6 @@ def _fill_role_from_order(
 def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any = None) -> dict[str, Any] | None:
     with _connection(db_path, conn) as active:
         active.row_factory = sqlite3.Row
-        # Supabase's pooler returns REAL as six significant text digits when
-        # extra_float_digits=0 (and ignores startup overrides). Widen the SELECT,
-        # not stored data or tolerances, before comparing against the retained fill.
-        # SQLite also accepts DOUBLE PRECISION. No extra query/session setting.
-        fills = active.execute(
-            "SELECT fill_id,logical_trade_id,broker,broker_fill_id,broker_order_id,"
-            "fill_role,side,CAST(quantity AS DOUBLE PRECISION) AS quantity,"
-            "CAST(price AS DOUBLE PRECISION) AS price,"
-            "CAST(broker_fee AS DOUBLE PRECISION) AS broker_fee,"
-            "CAST(exchange_fee AS DOUBLE PRECISION) AS exchange_fee,filled_at,payload_json "
-            "FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id",
-            (logical_trade_id,),
-        ).fetchall()
         # 2026-09-05 Supabase egress finding: SELECT * here cost the whole row, and
         # decision_context_json on LOGICAL_TRADES averages 45,433 of its ~50,000 bytes. This
         # function reads exactly two fields off trade_row -- `side` just below and `state` a
@@ -620,6 +607,20 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
         ).fetchone()
         if not trade_row:
             return None
+        # Supabase's pooler shortens REAL text at extra_float_digits=0. Widen
+        # Kraken projections before comparing retained fills. Other brokers keep
+        # their existing numeric reader; no global setting or tolerance change.
+        columns = '*'
+        if trade_row['broker'] == 'kraken':
+            columns = ('fill_id,logical_trade_id,broker,broker_fill_id,broker_order_id,'
+                       'fill_role,side,CAST(quantity AS DOUBLE PRECISION) AS quantity,'
+                       'CAST(price AS DOUBLE PRECISION) AS price,'
+                       'CAST(broker_fee AS DOUBLE PRECISION) AS broker_fee,'
+                       'CAST(exchange_fee AS DOUBLE PRECISION) AS exchange_fee,filled_at,payload_json')
+        fills = active.execute(
+            f'SELECT {columns} FROM LOGICAL_TRADE_FILLS WHERE logical_trade_id = ? ORDER BY filled_at, fill_id',
+            (logical_trade_id,),
+        ).fetchall()
         # PostgreSQL REAL rounds quantities to float32. Preserve the actual Kraken
         # fill precision already retained in the immutable broker event, otherwise
         # split entries and one exit can manufacture a residual position.
