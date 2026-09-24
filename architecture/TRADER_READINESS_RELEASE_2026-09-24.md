@@ -89,4 +89,27 @@ The existing polling path already captures FEE activities, so it is not duplicat
 Successful tests and Trader feedback do not prove profitable learning. Forward
 comparisons must settle naturally; historical, paper and live evidence remain distinct.
 
-Deployment and post-release results will be appended after verification.
+## Production verification, 24 September 2026
+
+- Release 193adb6ea421d2331b926654a773ca075c72d7f0 pushed to master.
+  Hosted API and worker both reported that revision at 22:38 UTC; worker had no
+  reported last error. Final focused regression group: 132 passed.
+- At 22:39:26 UTC, after the worker lease cleared, the prospective admission
+  rollout completed for four Alpaca and three Kraken versions. Original evidence
+  remains separate; daily budgets and live risk settings were not reset or changed.
+- IMPORTANT: the exact-closure repair did NOT complete. Although retained payload
+  quantities balance, XRP's stored exit quantity is 19.9322 versus payload
+  19.93224263, outside the implemented float32-consistency guard. The repair raised
+  before closure and stopped; subsequent SELECT confirmed terminal=0 and the
+  original remaining quantity 4.263e-05. No broker order was submitted. Do not
+  describe the four candidates as repaired. This requires reconciling the stored
+  fill projection with authoritative evidence, not widening a dust tolerance.
+- Voice UI remains deferred. Actual provider egress savings require a full-day
+  comparison; these checks do not establish billed savings or improved returns.
+- One read-only Trader review returned `answered`, `read_only=true`. Trader was
+  partly satisfied, corroborating accessible Kraken history, separated daily
+  reporting and existing account-fee ingestion. It correctly distinguished supplied
+  deployment facts from independent verification. Remaining requests were settled
+  version-specific comparisons, Alpaca trade-level verified costs/newer closure
+  coverage, cash reconciliation and measured provider egress. These are feedback,
+  not proof of strategy quality or independent database validation.
