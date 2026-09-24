@@ -231,11 +231,10 @@ def tick(db, settings, *, now=None, answer=None):
                 for key in ('spec', 'state'):
                     row[key] = json.loads(row.pop(key + '_json'))
                 active_rows.append(row)
-        for broker in ('alpaca','kraken'):
-            own = [r for r in active_rows if r['spec']['broker'] == broker]
-            if own:
-                decision_cache[broker] = _decisions(db, min(r['state']['cursor'] for r in own),
-                    min(r['created_at'] for r in own), broker)
+        # Independent cursor groups: a budget-waiting reference test must not pin
+        # every other experiment to its old batch. Share only identical ranges.
+        # Non-AI comparisons run first; the paid allowance stays unchanged.
+        active_rows.sort(key=lambda r: r['spec']['rule_type'] == 'reference_set_filter')
         for row in active_rows:
             row_invalid = 0
             # One-time compatibility migration for experiments created before the
@@ -289,7 +288,10 @@ def tick(db, settings, *, now=None, answer=None):
                 exp.review_interval_days(row['spec']) * row['spec'].get('maximum_cycles', 12)
                 if row['spec'].get('weekly_reviews') else row['spec']['evaluation_days']
             )
-            for d in decision_cache[row['spec']['broker']]:
+            batch_key = (row['spec']['broker'], cursor, row['created_at'])
+            if batch_key not in decision_cache:
+                decision_cache[batch_key] = _decisions(db, cursor, row['created_at'], row['spec']['broker'])
+            for d in decision_cache[batch_key]:
                 if d['decision_id'] <= cursor or exp.stamp(d['created_at']) < exp.stamp(row['created_at']):
                     continue
                 if time.monotonic() - started > 45:
@@ -312,6 +314,16 @@ def tick(db, settings, *, now=None, answer=None):
                             symbol += 'GBP'
                     reasons = json.loads(d['reasons']) if isinstance(d['reasons'], str) else d['reasons']
                     baseline = d.get('baseline_eligibility') or d['execution_eligibility']
+                    if row['spec'].get('admission_policy') == 'informative-first-v1' and not exp.admissible(row['spec'], baseline == 'eligible', reasons):
+                        # Frozen prospective selection, before either future prices
+                        # or paid reference assessments. Bounded counters retain
+                        # exclusion evidence without spending comparison slots.
+                        counts = row['state'].setdefault('admission_rejections', {})
+                        for reason in (reasons or ['unknown_eligibility']):
+                            key = reason if reason in counts or len(counts) < 24 else 'other'
+                            counts[key] = counts.get(key, 0) + 1
+                        cursor = d['decision_id']
+                        continue
                     if row['spec']['rule_type']=='reference_set_filter':
                         from .reference_sets import pair
                         assessed=pair(db,row['id'],dict(source_id=d['proposal_id'],symbol=symbol,time=d['created_at'],
@@ -333,6 +345,7 @@ def tick(db, settings, *, now=None, answer=None):
                 # the batch query above. A concurrent review wins and this tick retries.
                 row['state']['cursor'] = cursor
                 row['state']['blocked'] += row_invalid
+                row['state']['intake_updated_at'] = now
                 updated = conn.execute(
                     'UPDATE RULE_EXPERIMENTS SET revision=revision+1,state_json=? '
                     'WHERE id=? AND revision=?',

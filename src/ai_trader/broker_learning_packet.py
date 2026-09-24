@@ -86,6 +86,8 @@ def broker_learning_packets(db_path: Path) -> dict[str, Any]:
                     "latest_learning": facts.get("latest_learning"), "age_hours": age_hours,
                     "status": "fresh" if age_hours is not None and age_hours <= 36 else "stale_or_no_recent_closure"},
                 "limitations": ["A finished workflow is not labelled an evidence-complete learning loop unless its individual net result is known.",
+                                "Missing verified net outcomes does not mean reviews are absent: use reviews_completed separately.",
+                                "Numeric zero fee defaults alone do not verify account costs; unknown actual costs remain unknown.",
                                 "Legacy incomplete rows are not used to claim learning progress.",
                                 "A linked result proves recorded evidence, not strategy improvement."],
             }
@@ -95,6 +97,20 @@ def broker_learning_packets(db_path: Path) -> dict[str, Any]:
                 }
             )
             packets[broker]["simulation_evidence"] = _simulation_evidence(conn, broker, asset_class, currency)
+    # Account-level fee capture already exists. Surface it without asserting a
+    # per-trade allocation or changing canonical net results from defaults.
+    try:
+        with closing(connect(db_path)) as conn:
+            fee = row_values(conn.execute("""SELECT COUNT(*) AS records,SUM(net_amount) AS net_debits,
+                MIN(activity_date) AS first_activity,MAX(activity_date) AS last_activity,MAX(observed_at) AS last_observed
+                FROM ALPACA_ACCOUNT_FEES WHERE currency='USD'""").fetchone())
+        packets['alpaca']['account_fee_evidence'] = dict(available=bool(fee[0]),
+            records=fee[0], recorded_net_debits=fee[1], currency='USD',
+            first_activity=fee[2], last_activity=fee[3], last_observed=fee[4],
+            scope='account ledger, not individual trade fees',
+            limitation='Existing FEE ingestion is not missing. Empty periods or stale records do not prove zero costs. Do not subtract these again from already-net results or allocate them to trades without evidence.')
+    except Exception:
+        packets['alpaca']['account_fee_evidence'] = {'available': False, 'reason': 'Account fee ledger unavailable'}
     return {"schema_version": PACKET_SCHEMA_VERSION, "generated_at": generated.isoformat(),
             "brokers": packets, "separation": "Alpaca/USD/equity and Kraken/GBP/crypto are never pooled."}
 

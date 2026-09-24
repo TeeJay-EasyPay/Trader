@@ -155,6 +155,7 @@ def validate_spec(raw):
                 reference_sets=raw.get('reference_sets') if raw['rule_type']=='reference_set_filter' else None,
                 source_intake_id=raw.get('source_intake_id'),
                 hypothesis=hypothesis, evidence_ids=sorted(set(int(x) for x in ids)),
+                admission_policy='informative-first-v1',
                 problem=str(raw.get('problem') or hypothesis)[:1000],
                 expected_benefit=str(raw.get('expected_benefit') or 'Test net improvement at comparable risk; benefit not established.')[:1000],
                 priority=int(number(raw.get('priority', 3), 1, 5)),
@@ -284,6 +285,18 @@ def create_experiment(db, raw, *, owner='founder', now=None, queue=False):
 def passes(rule, opportunity):
     risk = opportunity['entry'] - opportunity['stop']
     return risk > 0 and (opportunity['target'] - opportunity['entry']) / risk >= rule
+
+
+def admissible(spec, eligible, reasons):
+    """Can either arm act? Uses only information available at proposal time."""
+    if eligible:
+        return True
+    reasons = set(reasons or [])
+    return bool(reasons and (
+        (spec.get('portfolio_basis') == 'independent-shadow-capacity-v1'
+         and reasons == {'maximum_capital_allocation_exceeded'})
+        or (spec['rule_type'] == 'replace_target_r_gate'
+            and reasons == {'reward_risk_below_minimum'})))
 
 
 def add_opportunity(db, eid, opportunity, *, owner='founder'):

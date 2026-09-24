@@ -48,7 +48,8 @@ from ai_trader.symbol_track_record import (
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS PERFORMANCE_ATTRIBUTION (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol TEXT, profit_loss REAL, closed_at TEXT, created_at TEXT
+    symbol TEXT, profit_loss REAL, closed_at TEXT, created_at TEXT,
+    broker TEXT DEFAULT 'kraken', asset_type TEXT DEFAULT 'crypto'
 );
 """
 

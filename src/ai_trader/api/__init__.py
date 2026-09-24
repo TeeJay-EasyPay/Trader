@@ -2134,12 +2134,24 @@ class LocalApiService:
         context["recent_crypto_news"] = _NOT_LOADED_YET if fast_only else self._ask_recent_crypto_news()
         # The Founder's own realised record per coin -- the only evidence here that is
         # not published free to every other trader. See symbol_track_record.py.
-        context["own_track_record_by_coin"] = all_symbol_track_records(self.settings.db_path)
+        from ..symbol_track_record import symbol_history_packet
+        history = symbol_history_packet(self.settings.db_path)
+        context["own_track_record_by_coin"] = history['records']
+        context["own_track_record_availability"] = {k: v for k, v in history.items() if k != 'records'}
+        from ..capital_readiness import kraken_capital_evidence
+        try:
+            context['kraken_capital_accounting'] = kraken_capital_evidence(self.settings.db_path)
+        except Exception as exc:
+            context['kraken_capital_accounting'] = {'available': False, 'reason': type(exc).__name__}
         # Measured at ~25s in production. Worth having when there's room for it -- it is
         # what answers "is AI Trader getting better?" -- but never worth spending the
         # budget that the actual answer needs.
         if _seconds_left(deadline) > _ASK_LEARNING_SECTION_MIN_SECONDS:
-            context["daily_learning"] = self.daily_learning_update(date.today().isoformat())
+            from ..conversation_learning import daily_summary
+            try:
+                context["daily_learning"] = daily_summary(self.settings.db_path)
+            except Exception as exc:
+                context["daily_learning"] = {"available": False, "reason": type(exc).__name__}
         else:
             context["daily_learning"] = {
                 "skipped": "Omitted to keep this answer inside the request time budget."
@@ -2533,6 +2545,8 @@ class LocalApiService:
         ]
         benchmark = self.benchmark_daily_brief(learning_date)
         total_pnl = sum(safe_float(row.get("profit_loss")) or 0.0 for row in attribution)
+        outcome_brokers = {row.get('broker') for row in attribution}
+        mixed_outcome_basis = len(outcome_brokers) > 1 or bool(outcome_brokers - {'kraken', 'alpaca'})
         wins = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) > 0]
         losses = [row for row in attribution if (safe_float(row.get("profit_loss")) or 0.0) < 0]
         rejected = [row for row in decisions if row.get("decision") == "rejected"]
@@ -2587,9 +2601,11 @@ class LocalApiService:
                 "wins": len(wins),
                 "losses": len(losses),
                 "win_rate": (len(wins) / len(attribution)) if attribution else None,
-                "total_profit_loss": round(total_pnl, 4),
-                "largest_gain": max((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
-                "largest_loss": min((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
+                "total_profit_loss": None if mixed_outcome_basis else round(total_pnl, 4),
+                "largest_gain": None if mixed_outcome_basis else max((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
+                "largest_loss": None if mixed_outcome_basis else min((safe_float(row.get("profit_loss")) or 0.0 for row in attribution), default=None),
+                "currency": None if mixed_outcome_basis or not outcome_brokers else {'kraken':'GBP','alpaca':'USD'}[next(iter(outcome_brokers))],
+                "cost_basis": 'mixed_not_aggregated' if mixed_outcome_basis else 'gross_before_unverified_costs' if outcome_brokers == {'alpaca'} else 'recorded_net',
             },
             "trade_lessons": trade_lessons,
             "benchmark_learning": benchmark_lessons,

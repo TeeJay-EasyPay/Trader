@@ -171,7 +171,8 @@ class SymbolTrackRecordTests(unittest.TestCase):
 
             record = symbol_track_record(db_path, "BTC", now=NOW)
 
-            self.assertEqual(record.verdict, "insufficient_evidence")
+            self.assertEqual(record.verdict, "unavailable")
+            self.assertFalse(record.available)
             self.assertEqual(record.confidence_penalty, 0.0)
             self.assertEqual(all_symbol_track_records(db_path, now=NOW), [])
 

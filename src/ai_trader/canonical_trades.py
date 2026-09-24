@@ -611,6 +611,10 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
         ).fetchone()
         if not trade_row:
             return None
+        # PostgreSQL REAL rounds quantities to float32. Preserve the actual Kraken
+        # fill precision already retained in the immutable broker event, otherwise
+        # split entries and one exit can manufacture a residual position.
+        fills = [_precise_kraken_fill(row) for row in fills]
         entries = [row for row in fills if row["fill_role"] == "entry"]
         exits = [row for row in fills if row["fill_role"] == "exit"]
         entry_qty = sum(float(row["quantity"]) for row in entries)
@@ -669,6 +673,23 @@ def _refresh_trade_aggregate(db_path: Path, logical_trade_id: str, *, conn: Any 
         # 4,306 reads a day -- so that caller now fetches the full row for itself, and this
         # returns the lean one for the thousands of ordinary fill events that never look at it.
         return canonical_trade(db_path, logical_trade_id, conn=active, include_decision_context=False)
+
+
+def _precise_kraken_fill(row):
+    row = dict(row)
+    if row.get('broker') != 'kraken':
+        return row
+    try:
+        payload = json.loads(row.get('payload_json') or '{}')
+        if payload.get('record_type') != 'trade_fill':
+            return row
+        quantity = _number(payload.get('filled_quantity'))
+        stored = float(row['quantity'])
+        if quantity and quantity > 0 and abs(quantity-stored) <= max(abs(quantity)*1e-6, 1e-12):
+            row['quantity'] = quantity
+    except (ValueError, TypeError):
+        pass
+    return row
 
 
 def _weighted_average(rows: list[Any]) -> float | None:

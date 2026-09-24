@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .database import connect
+from .database import connect, uses_postgres
 
 # Only the recent past counts. A coin that behaved badly in a different market regime
 # should stop being held against it once the evidence ages out.
@@ -86,6 +86,7 @@ class SymbolRecord:
     verdict: str          # "avoid" | "caution" | "neutral" | "insufficient_evidence"
     confidence_penalty: float
     summary: str
+    available: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +99,9 @@ class SymbolRecord:
             "verdict": self.verdict,
             "confidence_penalty": self.confidence_penalty,
             "summary": self.summary,
+            "available": self.available,
+            "broker": "kraken",
+            "currency": "GBP",
         }
 
 
@@ -157,60 +161,54 @@ def _at_or_after(observed_at: Any, cutoff_iso: str) -> bool:
 def symbol_track_record(db_path: Path, symbol: str, *, now: datetime | None = None) -> SymbolRecord:
     """This system's realised record on one coin, over the recent window."""
     coin = normalize_symbol(symbol)
+    try:
+        totals = _symbol_totals(db_path, now=now)
+    except Exception:
+        return SymbolRecord(coin, 0, 0, 0, 0.0, None, "unavailable", 0.0,
+                            "Closed-trade history is unavailable; this is not evidence of no trades.", False)
+    return _record_from_totals(coin, totals.get(coin, (0, 0, 0.0)))
+
+
+def _symbol_totals(db_path: Path, *, now: datetime | None = None):
+    """One bounded aggregate, not a history download for every coin.
+
+    Keep percent-bearing prose outside SQL: psycopg parses placeholders even in
+    SQL comments. Kraken's recorded results must never absorb Alpaca gross USD.
+    """
     moment = now or datetime.now(timezone.utc)
     window_start = (moment - timedelta(days=LOOKBACK_DAYS)).isoformat()
-    # Whichever is LATER: the rolling window, or the day the fee rule started working.
     cutoff = max(window_start, FEE_GATE_EFFECTIVE_FROM)
-    rows: list[tuple[Any, Any]] = []
-    try:
-        with closing(connect(db_path)) as conn:
-            rows = [
-                (row[0], row[1], row[2])
-                for row in conn.execute(
-                    """
-                    -- 2026-09-03: a COARSE filter, deliberately. The precise cutoff is
-                    -- applied in Python by _at_or_after, because 26 of these rows store an
-                    -- epoch integer and "1787586949" sorts before "2026-08-31" as text. But
-                    -- fetching the whole table and filtering entirely in Python is the exact
-                    -- pattern behind this month's Supabase egress bill, so the window still
-                    -- narrows here on the rows that ARE ISO-dated.
-                    SELECT symbol, profit_loss, COALESCE(closed_at, created_at)
-                    FROM PERFORMANCE_ATTRIBUTION
-                    -- 2026-09-04: this was a NOT-LIKE against a literal percent sign, and it
-                    -- CRASHED on Postgres.
-                    -- psycopg reads the % as the start of a placeholder and raises
-                    -- ProgrammingError before the query ever runs. The bare `except` below
-                    -- then swallowed it, so this function returned zero trades for every
-                    -- coin, on every call, for as long as the app has run on Postgres --
-                    -- silently, and indistinguishably from "this coin has no history".
-                    -- SUBSTR expresses the same test and is valid on both backends.
-                    WHERE COALESCE(closed_at, created_at) >= ?
-                       OR SUBSTR(COALESCE(closed_at, created_at), 1, 2) <> '20'
-                    """,
-                    (window_start,),
-                ).fetchall()
-            ]
-    except Exception:  # noqa: BLE001 - a missing history must never block a proposal
-        rows = []
-    rows = [row for row in rows if _at_or_after(row[2], cutoff)]
+    value = 'COALESCE(closed_at, created_at)'
+    if uses_postgres():
+        observed = (f"CASE WHEN {value} ~ '^[0-9]+([.][0-9]+)?$' "
+                    f"THEN to_timestamp(CAST({value} AS DOUBLE PRECISION)) "
+                    f"ELSE CAST(NULLIF({value}, '') AS TIMESTAMPTZ) END")
+        predicate = f'({observed}) >= CAST(? AS TIMESTAMPTZ)'
+    else:
+        predicate = f"julianday({value}, 'auto') >= julianday(?)"
+    from .verified_reads import rows as verified_rows
+    with closing(connect(db_path)) as conn:
+        rows = verified_rows(conn, f"""SELECT symbol,
+            SUM(CASE WHEN profit_loss>0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN profit_loss<=0 THEN 1 ELSE 0 END) AS losses,
+            SUM(profit_loss) AS net
+            FROM PERFORMANCE_ATTRIBUTION
+            WHERE broker='kraken' AND asset_type='crypto' AND {predicate}
+              AND profit_loss IS NOT NULL
+            GROUP BY symbol ORDER BY symbol LIMIT 501""", (cutoff,), partition='kraken-symbol-summary')
+    if len(rows) > 500:
+        raise ValueError('Symbol summary exceeds bounded capacity')
+    totals = {}
+    for symbol, wins, losses, net in (tuple(r) if not hasattr(r, 'keys') else
+                                     (r['symbol'], r['wins'], r['losses'], r['net']) for r in rows):
+        coin = normalize_symbol(symbol)
+        old = totals.get(coin, (0, 0, 0.0))
+        totals[coin] = (old[0] + int(wins or 0), old[1] + int(losses or 0), old[2] + float(net or 0))
+    return totals
 
-    # Matched in Python rather than SQL: the normalisation above is the whole point, and
-    # no SQL predicate can express "XBTGBP and BTC are the same coin".
-    wins = losses = 0
-    net = 0.0
-    for row_symbol, profit_loss, _observed_at in rows:
-        if normalize_symbol(row_symbol) != coin:
-            continue
-        try:
-            amount = float(profit_loss)
-        except (TypeError, ValueError):
-            continue
-        net += amount
-        if amount > 0:
-            wins += 1
-        else:
-            losses += 1
 
+def _record_from_totals(coin, totals):
+    wins, losses, net = totals
     trades = wins + losses
     if trades == 0:
         return SymbolRecord(coin, 0, 0, 0, 0.0, None, "insufficient_evidence", 0.0,
@@ -252,19 +250,20 @@ def all_symbol_track_records(db_path: Path, *, now: datetime | None = None) -> l
     answer about a coin can cite what this system's own money did rather than only what
     the chart says.
     """
-    moment = now or datetime.now(timezone.utc)
-    cutoff = (moment - timedelta(days=LOOKBACK_DAYS)).isoformat()
     try:
-        with closing(connect(db_path)) as conn:
-            symbols = {
-                normalize_symbol(row[0])
-                for row in conn.execute(
-                    "SELECT DISTINCT symbol FROM PERFORMANCE_ATTRIBUTION WHERE COALESCE(closed_at, created_at) >= ?",
-                    (cutoff,),
-                ).fetchall()
-                if row[0]
-            }
+        totals = _symbol_totals(db_path, now=now)
     except Exception:  # noqa: BLE001
         return []
-    records = [symbol_track_record(db_path, symbol, now=moment) for symbol in sorted(symbols)]
+    records = [_record_from_totals(symbol, value) for symbol, value in totals.items()]
     return [record.to_dict() for record in sorted(records, key=lambda item: item.net_profit_loss)]
+
+
+def symbol_history_packet(db_path: Path) -> dict[str, Any]:
+    """Explicit availability for conversation; do not disguise a failed read as zero."""
+    try:
+        totals = _symbol_totals(db_path)
+        return {'available': True, 'broker': 'kraken', 'currency': 'GBP',
+                'records': [_record_from_totals(s, v).to_dict() for s, v in sorted(totals.items())]}
+    except Exception as exc:
+        return {'available': False, 'records': [], 'reason': type(exc).__name__,
+                'note': 'History could not be read; do not infer that no trades occurred.'}
