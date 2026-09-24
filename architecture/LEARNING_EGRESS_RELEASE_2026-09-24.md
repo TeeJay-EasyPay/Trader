@@ -86,3 +86,35 @@ local maintenance/navigation edits are preserved and excluded from this release.
 - Direct PostgreSQL aggregate verification distinguishes Alpaca's 120 standalone
   settled outcomes from 30 active paired opportunities, all skipped by both arms
   in that retained sample. Kraken's retained active sample likewise has 30 skips.
+
+## Deployment and Trader review
+
+- Backend release d57d700dcf113b9a30d185fbc7a1cdf94d467e34 was pushed and verified
+  on both the hosted API and worker. Worker verification at 20:55:32 UTC reported
+  the release commit and no last error.
+- Android OTA runtime 1.0.4 published to hosted-preview group
+  f10c1dd1-0d43-47c9-bda6-ac1234349e7d and preview group
+  0b58b833-fffc-49dd-be57-bd0c3c77d932. No new native build was required.
+- Transactional shadow rollout applied at 2026-09-24T20:55:50.730478+00:00.
+  Three legacy Kraken experiments were preserved and replaced prospectively by
+  6f0bcf17-af2b-4135-ab3f-449708b93be8,
+  59ec9829-dea5-436e-867f-c0799108f36b, and
+  8fabdc70-0549-4301-8b5a-5fb30560c187. Alpaca reports were corrected without
+  restarting their experiments. Hosted detail responses verified both behaviours.
+- Trader was asked once through the normal authenticated /ask-ai-trader endpoint,
+  in the Standup conversation, with a factual release summary and a read-only
+  review request. The response was answered, read_only=true, and "partly satisfied".
+  It supported the engineering changes but requested subsequent version-specific
+  eligible entries, completed comparisons, blockers and after-cost differences,
+  plus a full post-release provider egress measurement. Its learning packet
+  predated the transition; it did not verify new forward outcomes.
+- Trader also raised a valid accounting-basis question: the application labels
+  a cash-capped approved trading allocation as account equity. Its sampled
+  rejection arithmetic is consistent with that basis, but this does not establish
+  that the denominator is the intended policy. Whole-account holdings and managed
+  trading allocation must be reconciled before deciding whether code should change.
+  No live capital cap or account settings were relaxed by this release.
+- Other Trader-reported gaps (Alpaca actual-cost learning coverage, per-coin closure
+  reporting and mixed-currency daily aggregates) are feedback for follow-up, not
+  independently verified findings or fixes in this release. Its opinion is not
+  evidence of improved profitability. No additional research cycle was requested.
