@@ -22,6 +22,8 @@ _pending = {}
 _last_flush = time.monotonic()
 _started = time.monotonic()
 MAX_FAMILIES = 64
+DEFAULT_DAILY_ROW_VALUE_BUDGET = 150 * 1024 * 1024
+DEFAULT_FAMILY_ROW_VALUE_BUDGET = 40 * 1024 * 1024
 
 
 def family(sql):
@@ -125,13 +127,26 @@ def report():
             days[hour[:10]].update(counts)
             labels[label].update(counts)
             roles[role].update(counts)
+        day_map = dict(days)
+        latest_day = sorted(day_map)[-1] if day_map else None
+        daily_budget = int(os.getenv("AI_TRADER_DB_DAILY_VALUE_BUDGET_BYTES", DEFAULT_DAILY_ROW_VALUE_BUDGET))
+        family_budget = int(os.getenv("AI_TRADER_DB_FAMILY_VALUE_BUDGET_BYTES", DEFAULT_FAMILY_ROW_VALUE_BUDGET))
+        family_breaches = [dict(family=name, row_bytes=counts.get("row_bytes", 0))
+                           for name, counts in labels.items()
+                           if counts.get("row_bytes", 0) > family_budget]
+        current_bytes = day_map.get(latest_day, {}).get("row_bytes", 0) if latest_day else 0
         return dict(metric="consumed_value_bytes_not_billed_egress",
                     generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
-                    days=dict(days),
+                    days=day_map,
                     top_families=sorted(labels.items(),key=lambda x:x[1].get("row_bytes",0),reverse=True)[:12],
                     top_roles=sorted(roles.items(),key=lambda x:x[1].get("row_bytes",0),reverse=True)[:12],
                     top_errors=sorted(((k,v) for k,v in labels.items() if v.get("errors")),
                                       key=lambda x:x[1]["errors"],reverse=True)[:8],
+                    budget=dict(day=latest_day, measured_row_bytes=current_bytes,
+                                daily_row_value_budget_bytes=daily_budget,
+                                status="over_budget" if current_bytes > daily_budget else "within_budget",
+                                family_row_value_budget_bytes=family_budget,
+                                family_breaches=sorted(family_breaches,key=lambda x:x["row_bytes"],reverse=True)),
                     provider_egress=None,
                     limitations="Host-local consumed values; excludes protocol, unfetched rows, killed-process buffers and platform traffic. First day is partial.")
     except Exception:

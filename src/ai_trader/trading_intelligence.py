@@ -126,6 +126,21 @@ CREATE TABLE IF NOT EXISTS CONFIDENCE_CALIBRATION (
     calibration_note TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS CALIBRATION_CHANGE_AUDIT (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    asset_type TEXT NOT NULL,
+    prior_sample_size INTEGER,
+    new_sample_size INTEGER NOT NULL,
+    prior_observed_win_rate REAL,
+    new_observed_win_rate REAL,
+    prior_calibration_error REAL,
+    new_calibration_error REAL,
+    change_reason TEXT NOT NULL,
+    evidence_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS STRATEGY_LAB_RUNS (
     lab_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -1259,7 +1274,10 @@ def latest_intelligence_packet(
         ).fetchall()
         lifecycle = (
             conn.execute(
-                "SELECT * FROM TRADE_LIFECYCLE WHERE proposal_id = ? ORDER BY lifecycle_id ASC",
+                """SELECT lifecycle_id,created_at,proposal_id,symbol,broker,strategy_id,
+                          stage,stage_reason,measurable,fees,slippage,r_multiple,mae,mfe,
+                          holding_time_seconds,'{}' AS payload_json
+                   FROM TRADE_LIFECYCLE WHERE proposal_id = ? ORDER BY lifecycle_id ASC""",
                 (proposal_id,),
             ).fetchall()
             if include_lifecycle
@@ -1304,7 +1322,11 @@ def latest_intelligence_packets_batch(db_path: Path, proposal_ids: list[str]) ->
             ids,
         ).fetchall()
         lifecycle_rows = conn.execute(
-            f"SELECT * FROM TRADE_LIFECYCLE WHERE proposal_id IN ({placeholders}) ORDER BY proposal_id, lifecycle_id ASC",
+            f"""SELECT lifecycle_id,created_at,proposal_id,symbol,broker,strategy_id,
+                       stage,stage_reason,measurable,fees,slippage,r_multiple,mae,mfe,
+                       holding_time_seconds,'{{}}' AS payload_json
+                FROM TRADE_LIFECYCLE WHERE proposal_id IN ({placeholders})
+                ORDER BY proposal_id,lifecycle_id ASC""",
             ids,
         ).fetchall()
     committee_by_id = _first_row_per_proposal(committee_rows)
@@ -1387,6 +1409,36 @@ def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
         updated = 0
         with conn:
             for strategy_id, asset_type, history, calibration, perf in refresh_rows:
+                prior = conn.execute(
+                    """SELECT sample_size,observed_win_rate,
+                              (SELECT calibration_error FROM PERFORMANCE_INTELLIGENCE pi
+                               WHERE pi.strategy_id=? AND COALESCE(pi.asset_type,'unknown')=?
+                               ORDER BY performance_id DESC LIMIT 1) AS calibration_error
+                       FROM CONFIDENCE_CALIBRATION
+                       WHERE strategy_id=? AND COALESCE(asset_type,'unknown')=?
+                       ORDER BY calibration_id DESC LIMIT 1""",
+                    (strategy_id, asset_type, strategy_id, asset_type),
+                ).fetchone()
+                prior_values = row_values(prior) if prior else (None, None, None)
+                new_values = (history.get("sample_size", 0), history.get("observed_win_rate"),
+                              calibration.get("calibration_error"))
+                changed = prior is None or any(
+                    (a is None) != (b is None) or (
+                        a is not None and b is not None and abs(float(a)-float(b)) > 1e-12
+                    ) for a, b in zip(prior_values, new_values)
+                )
+                if changed:
+                    conn.execute(
+                        """INSERT INTO CALIBRATION_CHANGE_AUDIT (
+                            created_at,strategy_id,asset_type,prior_sample_size,new_sample_size,
+                            prior_observed_win_rate,new_observed_win_rate,
+                            prior_calibration_error,new_calibration_error,change_reason,evidence_json
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        (utc_now_iso(), strategy_id, asset_type, prior_values[0], new_values[0],
+                         prior_values[1], new_values[1], prior_values[2], new_values[2],
+                         "New broker-separated closed-trade evidence changed calibration.",
+                         json.dumps({"history": history, "calibration": calibration}, sort_keys=True)),
+                    )
                 conn.execute(
                     """
                     INSERT INTO CONFIDENCE_CALIBRATION (
@@ -1434,7 +1486,9 @@ def update_calibration_from_attribution(db_path: Path) -> dict[str, Any]:
                 )
                 updated += 1
                 metrics_written += 1
-    return {"status": "completed", "strategies_updated": updated, "performance_metrics_written": metrics_written}
+    return {"status": "completed", "strategies_updated": updated,
+            "performance_metrics_written": metrics_written,
+            "audit_trail": "CALIBRATION_CHANGE_AUDIT"}
 
 
 def record_historical_candle(

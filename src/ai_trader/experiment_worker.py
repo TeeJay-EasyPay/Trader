@@ -220,11 +220,12 @@ def tick(db, settings, *, now=None, answer=None):
         with exp.transaction(db) as conn:
             active_rows = []
             for raw in conn.execute(
-                "SELECT * FROM RULE_EXPERIMENTS WHERE status='shadow_running' "
+                "SELECT id,owner,created_at,status,revision,spec_json,state_json "
+                "FROM RULE_EXPERIMENTS WHERE status='shadow_running' "
                 "ORDER BY created_at LIMIT 10"
             ).fetchall():
                 row = dict(raw)
-                for key in ('spec', 'report', 'state'):
+                for key in ('spec', 'state'):
                     row[key] = json.loads(row.pop(key + '_json'))
                 active_rows.append(row)
         for broker in ('alpaca','kraken'):
@@ -293,10 +294,21 @@ def tick(db, settings, *, now=None, answer=None):
                     invalid += 1
                 cursor = d['decision_id']
             with exp.transaction(db) as conn:
-                current = exp._load(conn, row['id'])
-                current['state']['cursor'] = cursor
-                current['state']['blocked'] += invalid
-                exp._save(conn, current)
+                # report_json contains the growing books and is not needed for the cursor
+                # checkpoint.  Re-reading the full experiment here on every 15-minute tick
+                # was the largest measured database-transfer family.  Preserve the same
+                # optimistic revision guard while writing only the state already loaded by
+                # the batch query above. A concurrent review wins and this tick retries.
+                row['state']['cursor'] = cursor
+                row['state']['blocked'] += invalid
+                updated = conn.execute(
+                    'UPDATE RULE_EXPERIMENTS SET revision=revision+1,state_json=? '
+                    'WHERE id=? AND revision=?',
+                    (exp.dump(row['state']), row['id'], row['revision']),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError('Concurrent update; reload and retry')
+                row['revision'] += 1
                 # Re-evaluate the full small paired sample at most once per day,
                 # not on every 15-minute tick (important for Supabase egress).
                 settled_day = exp.control(conn, 'settled:' + row['id'], '')

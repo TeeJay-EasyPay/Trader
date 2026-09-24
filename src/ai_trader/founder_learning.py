@@ -1,6 +1,8 @@
 """Plain-English Founder scorecard derived only from verified learning evidence."""
 from __future__ import annotations
 
+import json
+
 from . import experiments as e
 
 
@@ -23,6 +25,36 @@ def build(conn, *, now: str) -> dict:
         "Candidate improvement detected" if candidate else "Learning activity only"
     )
     history_trials = historical.get("trials") or []
+    broker_progress = {}
+    experiment_rows = conn.execute(
+        "SELECT status,spec_json FROM RULE_EXPERIMENTS WHERE owner=?", ("founder",)
+    ).fetchall()
+    for broker in ("alpaca", "kraken"):
+        own = []
+        for experiment_row in experiment_rows:
+            status, spec_json = experiment_row[0], experiment_row[1]
+            try:
+                if json.loads(spec_json).get("broker") == broker:
+                    own.append(str(status))
+            except (TypeError, ValueError):
+                continue
+        own_supported = [item for item in supported if item.get("broker") == broker]
+        own_adopted = sum(status in ("paper_active", "ready_for_activation") for status in own)
+        own_verified = bool(own_adopted and own_supported)
+        broker_progress[broker] = {
+            "status": "improvement_verified" if own_verified else (
+                "candidate_detected" if own_supported or "recommended" in own else "not_proven"
+            ),
+            "plain_english": (
+                f"Yes—{broker.title()} has a supported comparison and controlled adopted version; after-cost monitoring continues."
+                if own_verified else
+                f"Not proven yet for {broker.title()}. {sum(status == 'shadow_running' for status in own)} "
+                "broker-specific experiment(s) are running, but no adopted after-cost improvement is verified."
+            ),
+            "running": sum(status == "shadow_running" for status in own),
+            "supported_comparisons": len(own_supported),
+            "adopted": own_adopted,
+        }
     scorecard = dict(
         day=now[:10], at=now, headline=headline,
         more_capable=bool(history_trials or measurement.get("at")),
@@ -36,6 +68,7 @@ def build(conn, *, now: str) -> dict:
             candidates=len(history_trials), promising=sum(t.get("status") == "promising" for t in history_trials),
             data_required=sum(t.get("status") == "data_required" for t in history_trials)),
         supported_forward_comparisons=len(supported),
+        brokers=broker_progress,
         evidence_note=("Trading improvement is shown only after a frozen candidate beats its baseline after costs "
                        "and remains supported after controlled paper adoption."),
     )
@@ -47,7 +80,8 @@ def build(conn, *, now: str) -> dict:
                       "but I have not yet proved that I am trading better. Forward and adoption evidence is still required.")
     elif history_trials or statuses.get("shadow_running", 0):
         reflection = (f"I am more capable because I can screen recorded ideas against cached market history and I am "
-                      f"tracking {statuses.get('shadow_running', 0)} forward experiment(s). I have not yet proved better trading performance.")
+                      f"tracking {statuses.get('shadow_running', 0)} forward experiment(s). I have not yet proved better "
+                      "trading performance on either Alpaca or Kraken; each is measured separately.")
     else:
         reflection = "I have not collected enough comparable evidence to claim a new lesson or better trading performance yet."
     return {**scorecard, "reflection": reflection}

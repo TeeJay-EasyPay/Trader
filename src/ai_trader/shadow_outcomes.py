@@ -47,6 +47,7 @@ from typing import Any
 
 from .database import connect
 from .learning_readiness import _parse as _parse_stamp
+from .shadow_settlement import SETTLEMENT_SCHEMA_VERSION, adapter_for
 
 # A candidate is abandoned rather than settled once this long has passed without either level
 # being reached. Matches the 24h freshness a real recommendation gets, times a working week:
@@ -73,7 +74,9 @@ class ShadowOutcome:
     holding_time_minutes: float | None
 
 
-def _load_candles(conn: Any, symbols: set[str]) -> dict[str, list[tuple[datetime, float, float, float]]]:
+def _load_candles(conn: Any, symbols: set[tuple[str, str]], *,
+                  start_at: datetime | None = None,
+                  end_at: datetime | None = None) -> dict[tuple[str, str], list[tuple[datetime, float, float, float]]]:
     """Daily OHLC for every symbol needed, in ONE query, oldest first.
 
     Loaded up front rather than per shadow trade. The first version queried inside the loop
@@ -82,25 +85,39 @@ def _load_candles(conn: Any, symbols: set[str]) -> dict[str, list[tuple[datetime
     """
     if not symbols:
         return {}
-    placeholders = ",".join("?" for _ in symbols)
+    market_symbols = sorted({symbol for _asset, symbol in symbols})
+    placeholders = ",".join("?" for _ in market_symbols)
     rows = conn.execute(
         f"""
-        SELECT UPPER(normalized_symbol), observation_time, high, low, close
+        SELECT UPPER(normalized_symbol), LOWER(asset_type), observation_time, high, low, close
         FROM MARKET_DATA_OBSERVATIONS
         WHERE timeframe = '1d' AND UPPER(normalized_symbol) IN ({placeholders})
+          AND (? IS NULL OR observation_time > ?)
+          AND (? IS NULL OR observation_time <= ?)
         ORDER BY observation_time
         """,
-        tuple(sorted(symbols)),
+        (*market_symbols,
+         start_at.isoformat() if start_at else None, start_at.isoformat() if start_at else None,
+         end_at.isoformat() if end_at else None, end_at.isoformat() if end_at else None),
     ).fetchall()
-    out: dict[str, list[tuple[datetime, float, float, float]]] = {}
+    out: dict[tuple[str, str], list[tuple[datetime, float, float, float]]] = {}
     for row in rows:
-        stamp = _parse_stamp(row[1])
+        # Five-column form is retained for small legacy test/local adapters that predate
+        # asset_type. Production returns six and is always broker separated.
+        legacy = len(row) == 5
+        asset, symbol = ("crypto", str(row[0]).upper()) if legacy else (str(row[1]).lower(), str(row[0]).upper())
+        stamp = _parse_stamp(row[1] if legacy else row[2])
         if stamp is None:
             continue
         try:
-            out.setdefault(str(row[0]), []).append(
-                (stamp, float(row[2]), float(row[3]), float(row[4]))
+            offset = 1 if legacy else 2
+            out.setdefault((asset, symbol), []).append(
+                (stamp, float(row[offset+1]), float(row[offset+2]), float(row[offset+3]))
             )
+            if legacy and asset == "crypto" and not symbol.endswith("GBP"):
+                out.setdefault((asset, symbol + "GBP"), []).append(
+                    (stamp, float(row[offset+1]), float(row[offset+2]), float(row[offset+3]))
+                )
         except (TypeError, ValueError):
             continue
     return out
@@ -124,6 +141,7 @@ def resolve_shadow_trades(
     pending and is picked up next time. Never raises.
     """
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    legacy_reconciliation = reconcile_legacy_shadow_rows(db_path, limit=min(int(limit), 500), now=moment)
     settled: list[ShadowOutcome] = []
     still_pending = 0
     unsettleable: list[Any] = []
@@ -132,7 +150,8 @@ def resolve_shadow_trades(
             rows = conn.execute(
                 """
                 SELECT shadow_trade_id, created_at, symbol, strategy, intended_entry,
-                       stop_loss, take_profit
+                       stop_loss, take_profit, intended_broker, asset_type, quantity,
+                       simulated_costs_json
                 FROM SHADOW_TRADES
                 WHERE outcome_status = 'pending'
                 ORDER BY created_at
@@ -141,19 +160,35 @@ def resolve_shadow_trades(
                 (int(limit),),
             ).fetchall()
 
-            candles_by_symbol = _load_candles(
-                conn, {str(row[2] or "").upper() for row in rows if row[2]}
-            )
+            normalized = {}
+            for raw in rows:
+                data = dict(raw) if hasattr(raw, "keys") else dict(zip(
+                    ("shadow_trade_id","created_at","symbol","strategy","intended_entry",
+                     "stop_loss","take_profit","intended_broker","asset_type","quantity",
+                     "simulated_costs_json"), raw))
+                data.setdefault("intended_broker", "kraken")
+                data.setdefault("asset_type", "crypto")
+                data.setdefault("quantity", 1.0)
+                data.setdefault("simulated_costs_json", "{}")
+                try:
+                    normalized[data["shadow_trade_id"]] = adapter_for(data["intended_broker"]).normalize(data)
+                except ValueError:
+                    normalized[data["shadow_trade_id"]] = None
+            created_values = [_parse_stamp(row[1]) for row in rows]
+            created_values = [value for value in created_values if value is not None]
+            candles_by_symbol = _load_candles(conn, {
+                (trade.asset_class, trade.market_symbol) for trade in normalized.values() if trade
+            }, start_at=min(created_values) if created_values else None,
+                end_at=min(moment, max(created_values) + timedelta(days=SHADOW_HORIZON_DAYS)) if created_values else moment)
 
             for row in rows:
                 created = _parse_stamp(row[1])
-                entry, stop, target = (
-                    _as_float(row[4]), _as_float(row[5]), _as_float(row[6]),
-                )
-                if created is None or not entry or not stop or not target:
+                trade = normalized.get(row[0])
+                if created is None or trade is None:
                     still_pending += 1
                     _note_unsettleable(unsettleable, row[0], created, moment)
                     continue
+                entry, stop, target = trade.entry, trade.stop, trade.target
                 risk_per_unit = entry - stop
                 if risk_per_unit <= 0:
                     still_pending += 1
@@ -162,7 +197,7 @@ def resolve_shadow_trades(
 
                 horizon = created + timedelta(days=SHADOW_HORIZON_DAYS)
                 candles = _window(
-                    candles_by_symbol.get(str(row[2] or "").upper(), []), created, horizon
+                    candles_by_symbol.get((trade.asset_class, trade.market_symbol), []), created, horizon
                 )
                 if not candles:
                     still_pending += 1
@@ -192,13 +227,18 @@ def resolve_shadow_trades(
 
                 # Fees in R: the round trip costs a share of notional, and notional is entry
                 # size, so the cost in units of risk is fee_pct * entry / risk_per_unit.
-                fee_r = round_trip_fee_pct * entry / risk_per_unit
+                adapter = adapter_for(trade.broker)
+                fee_r = adapter.cost_r(trade, risk_per_unit)
+                if fee_r is None:
+                    still_pending += 1
+                    _note_unsettleable(unsettleable, row[0], created, moment)
+                    continue
                 net_r = gross_r - fee_r
                 holding_minutes = (
                     (closed_at - created).total_seconds() / 60.0 if closed_at else None
                 )
                 settled.append(ShadowOutcome(
-                    shadow_trade_id=row[0], symbol=str(row[2] or ""), strategy=row[3],
+                    shadow_trade_id=row[0], symbol=trade.symbol, strategy=row[3],
                     outcome_status=status, gross_r=round(gross_r, 4),
                     estimated_net_r=round(net_r, 4), final_price=final_price,
                     holding_time_minutes=round(holding_minutes, 2) if holding_minutes else None,
@@ -229,17 +269,26 @@ def resolve_shadow_trades(
                         [(moment.isoformat(), sid) for sid in unsettleable],
                     )
             for outcome in settled:
+                settled_trade = normalized.get(outcome.shadow_trade_id)
+                provenance = (
+                    f"schema:v{SETTLEMENT_SCHEMA_VERSION}:{settled_trade.broker}:"
+                    f"{settled_trade.asset_class}:{settled_trade.currency}:{settled_trade.cost_basis}"
+                    if settled_trade else f"schema:v{SETTLEMENT_SCHEMA_VERSION}:unknown"
+                )
                 with conn:
                     conn.execute(
                         """
                         UPDATE SHADOW_TRADES
                         SET outcome_status = ?, gross_r = ?, estimated_net_r = ?,
-                            final_price = ?, holding_time_minutes = ?, updated_at = ?
+                            final_price = ?, holding_time_minutes = ?, updated_at = ?,
+                            benchmark_outcome = ?
                         WHERE shadow_trade_id = ?
                         """,
                         (outcome.outcome_status, outcome.gross_r, outcome.estimated_net_r,
                          outcome.final_price, outcome.holding_time_minutes,
-                         moment.isoformat(), outcome.shadow_trade_id),
+                         moment.isoformat(),
+                         provenance,
+                         outcome.shadow_trade_id),
                     )
     except Exception as exc:  # noqa: BLE001 - a settlement failure must never stop the worker
         return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}",
@@ -254,8 +303,64 @@ def resolve_shadow_trades(
         "still_pending": still_pending,
         "retired_unsettleable": len(unsettleable),
         "by_outcome": by_status,
-        "fee_r_basis": round_trip_fee_pct,
+        "schema_version": SETTLEMENT_SCHEMA_VERSION,
+        "adapters": sorted({trade.broker for trade in normalized.values() if trade}),
+        "legacy_reconciliation": legacy_reconciliation,
     }
+
+
+def reconcile_legacy_shadow_rows(db_path: Path, *, limit: int = 500,
+                                 now: datetime | None = None) -> dict[str, Any]:
+    """Requeue only old rows that the correct broker adapter can now measure.
+
+    Every legacy row is considered once. Unrecoverable rows remain account-history
+    evidence and receive an explicit marker; no result or cost is fabricated.
+    """
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    try:
+        with closing(connect(db_path)) as conn:
+            rows = conn.execute("""SELECT shadow_trade_id,created_at,symbol,strategy,
+                    intended_entry,stop_loss,take_profit,intended_broker,asset_type,quantity,
+                    simulated_costs_json
+                FROM SHADOW_TRADES WHERE outcome_status='unsettleable'
+                  AND (benchmark_outcome IS NULL OR benchmark_outcome='')
+                ORDER BY created_at LIMIT ?""", (int(limit),)).fetchall()
+            parsed: list[tuple[dict[str, Any], Any]] = []
+            for raw in rows:
+                data = dict(raw) if hasattr(raw, "keys") else dict(zip(
+                    ("shadow_trade_id","created_at","symbol","strategy","intended_entry","stop_loss",
+                     "take_profit","intended_broker","asset_type","quantity","simulated_costs_json"), raw))
+                try:
+                    trade = adapter_for(data["intended_broker"]).normalize(data)
+                except ValueError:
+                    trade = None
+                parsed.append((data, trade))
+            starts = [_parse_stamp(data.get("created_at")) for data, trade in parsed if trade]
+            starts = [value for value in starts if value]
+            candles = _load_candles(conn, {(trade.asset_class, trade.market_symbol)
+                for _data, trade in parsed if trade}, start_at=min(starts) if starts else None,
+                end_at=moment)
+            requeue, retain = [], []
+            for data, trade in parsed:
+                created = _parse_stamp(data.get("created_at"))
+                has_follow_up = bool(trade and created and _window(
+                    candles.get((trade.asset_class, trade.market_symbol), []),
+                    created, created + timedelta(days=SHADOW_HORIZON_DAYS)))
+                (requeue if has_follow_up else retain).append(data["shadow_trade_id"])
+            with conn:
+                if requeue:
+                    conn.executemany("""UPDATE SHADOW_TRADES SET outcome_status='pending',updated_at=?,
+                        benchmark_outcome=? WHERE shadow_trade_id=? AND outcome_status='unsettleable'""",
+                        [(moment.isoformat(), f"schema:v{SETTLEMENT_SCHEMA_VERSION}:legacy_requeued", sid)
+                         for sid in requeue])
+                if retain:
+                    conn.executemany("""UPDATE SHADOW_TRADES SET updated_at=?,benchmark_outcome=?
+                        WHERE shadow_trade_id=? AND outcome_status='unsettleable'""",
+                        [(moment.isoformat(), f"schema:v{SETTLEMENT_SCHEMA_VERSION}:legacy_unrecoverable", sid)
+                         for sid in retain])
+        return {"checked": len(rows), "requeued": len(requeue), "retained_unrecoverable": len(retain)}
+    except Exception as exc:  # reconciliation is evidence repair, never a trading dependency
+        return {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
 
 
 def _note_unsettleable(bucket: list[Any], shadow_trade_id: Any, created: Any, moment: Any) -> None:

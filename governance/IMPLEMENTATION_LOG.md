@@ -1,5 +1,26 @@
 # Implementation Log
 
+## 2026-09-24 — Broker learning evidence and measured egress completion
+
+Implemented the nine Founder-approved actions as one safety-neutral release: broker-specific
+Alpaca/Kraken shadow adapters, canonical settlement schema v2, compact broker-separated
+learning packets, recoverable legacy-shadow reconciliation, explicit Kraken gross/cost/net
+accounting checks, a calibration-change audit trail, per-broker freshness, separate
+plain-English Learning-card answers, and daily/per-family database-transfer budgets.
+
+The same release removes the largest newly measured repeat transfers: active experiment
+cursor updates no longer reload growing report books, routine lifecycle projections omit
+large payload JSON, analogue lookup is broker/asset scoped and bounded to 20, broker panels
+omit raw payloads when normalised fields exist, and legacy candle reads are time bounded.
+Managed exits, broker polling, risk gates, eligibility and order behaviour are unchanged.
+Detailed boundaries and completion mapping are recorded in
+`architecture/BROKER_LEARNING_AND_EGRESS_COMPLETION_2026-09-24.md`.
+
+Verification: 187 focused backend tests and all 6 mobile Learning-screen tests passed;
+Android Expo export also completed. The full repository run reached 2,013 passes, 1 skip
+and the same 8 previously documented baseline failures (stale fee-hurdle fixtures and
+obsolete Standup markup expectations), with no new failure family.
+
 ## 2026-09-22 — Broker-specific evaluation cadence and hot-query egress reduction
 
 Implemented the Founder-agreed cadence: Alpaca proposal evaluation hourly and Kraken

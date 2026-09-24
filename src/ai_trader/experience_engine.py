@@ -253,6 +253,8 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
     symbol = str(query.get("symbol") or "").upper()
     strategy_id = query.get("strategy_id")
     regime_id = query.get("regime_id")
+    broker = str(query.get("broker") or "").lower()
+    asset_type = str(query.get("asset_type") or query.get("asset_class") or "").lower()
     clauses = []
     params: list[Any] = []
     if strategy_id:
@@ -264,10 +266,19 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
     if symbol:
         clauses.append("symbol = ?")
         params.append(symbol)
+    if broker:
+        clauses.append("broker = ?")
+        params.append(broker)
+    if asset_type:
+        clauses.append("asset_type = ?")
+        params.append(asset_type)
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(f"SELECT * FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 50", tuple(params)).fetchall()
+        rows = conn.execute(f"""SELECT experience_id,created_at,proposal_id,recommendation_id,
+            broker,symbol,asset_type,strategy_id,regime_id,decision_context_json,
+            execution_context_json,result_context_json,immutable_hash
+            FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 20""", tuple(params)).fetchall()
     # Reporting-only outcomes lack the decision evidence required for precedent.
     cases = [dict(row) for row in rows
              if json.loads(row["result_context_json"] or "{}").get("record_kind") != "outcome_only"]

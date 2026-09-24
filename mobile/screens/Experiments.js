@@ -26,6 +26,8 @@ function LearningProgress({ measurement, historical, founderLearning, onSelect }
     {!!founderLearning?.headline && <Text style={s.text}>{founderLearning.headline}</Text>}
     <Text style={s.text}>{founderLearning?.reflection || 'Waiting for Trader’s first learning assessment. No improvement claim yet.'}</Text>
     {!!founderLearning && <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>}
+    {Object.entries(founderLearning?.brokers || {}).map(([broker, progress]) =>
+      <Text key={broker} style={s.small}>{human(broker)}: {progress.plain_english}</Text>)}
     <Button label={details ? 'Hide supporting evidence' : 'See supporting evidence'} onPress={() => setDetails(v => !v)} />
     {details && <>
     {!!founderLearning && <View style={s.card}><Text style={s.title}>Learning activity</Text>

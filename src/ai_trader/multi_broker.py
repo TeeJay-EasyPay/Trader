@@ -740,7 +740,11 @@ def latest_broker_trades(db_path: Path, broker: str, limit: int = 20) -> list[di
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM BROKER_TRADE_HISTORY WHERE broker = ? ORDER BY trade_history_id DESC LIMIT ?",
+            """SELECT trade_history_id,broker,external_id,symbol,asset_type,side,quantity,
+                      price,notional,status,opened_at,closed_at,updated_at,
+                      CASE WHEN symbol IS NULL OR symbol='' THEN payload_json ELSE '{}' END AS payload_json
+               FROM BROKER_TRADE_HISTORY WHERE broker = ?
+               ORDER BY trade_history_id DESC LIMIT ?""",
             (broker.lower(), limit),
         ).fetchall()
     return [dict(row) for row in rows]
