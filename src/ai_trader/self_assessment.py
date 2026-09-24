@@ -130,7 +130,11 @@ QUESTION = (
     "and proof that broker protection stayed active continuously; they are not the same claim. "
     "Treat authoritative_broker_learning_packets as the only compact source for claims about "
     "per-broker after-cost outcomes and learning-loop coverage. Never combine Alpaca and Kraken, "
-    "and never use legacy incomplete rows to claim that trading improved."
+    "and never use legacy incomplete rows to claim that trading improved. A completed workflow "
+    "is not an evidence-complete learning loop unless its individual net result is known. Label "
+    "Alpaca published-formula results as estimates, not broker-attributed actual costs. For "
+    "simulations, distinguish an adapter that is configured from one that has settled production "
+    "outcomes; do not claim the backlog is fixed merely because code exists."
 )
 
 

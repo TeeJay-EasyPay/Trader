@@ -37,6 +37,7 @@ class CanonicalShadow:
 class SettlementAdapter:
     broker = ""
     asset_class = ""
+    asset_aliases: tuple[str, ...] = ()
     currency = ""
 
     def market_symbol(self, symbol: str) -> str:
@@ -48,7 +49,8 @@ class SettlementAdapter:
     def normalize(self, row: dict[str, Any]) -> CanonicalShadow:
         broker = str(row.get("intended_broker") or "").strip().lower()
         asset = str(row.get("asset_type") or "").strip().lower()
-        if broker != self.broker or (asset and asset != self.asset_class):
+        accepted_assets = {self.asset_class, *self.asset_aliases}
+        if broker != self.broker or (asset and asset not in accepted_assets):
             raise ValueError(f"{broker or 'unknown'} / {asset or 'unknown'} is not supported by {self.broker}")
         entry = _positive(row.get("intended_entry"), "entry")
         stop = _positive(row.get("stop_loss"), "stop")
@@ -99,6 +101,9 @@ class KrakenSettlementAdapter(SettlementAdapter):
 class AlpacaSettlementAdapter(SettlementAdapter):
     broker = "alpaca"
     asset_class = "equity"
+    # Existing Alpaca journal rows use both labels.  They describe the same asset
+    # class and must enter the equity adapter, never the crypto adapter.
+    asset_aliases = ("stock",)
     currency = "USD"
 
     def cost_basis(self, row: dict[str, Any]) -> str:

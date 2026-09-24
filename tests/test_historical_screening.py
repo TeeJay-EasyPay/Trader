@@ -103,9 +103,14 @@ def test_force_refresh_replays_same_day_without_model_budget(db, monkeypatch):
     calls=[]
     monkeypatch.setattr(h, 'screen_batch', lambda database, candidates, now, force=False:
         calls.append((len(candidates), force)) or {'status':'completed','trials':[]})
+    settlements=[]
+    monkeypatch.setattr('ai_trader.shadow_outcomes.resolve_shadow_trades',
+        lambda database, limit=500: settlements.append((database, limit)) or {'settled': 3})
     result=h.refresh_active_screening(db, object(), '2026-09-18T03:20:00+00:00')
     assert result['status']=='completed' and result['model_calls']==0
     assert calls==[(1, True)]
+    assert settlements == [(db, 500)]
+    assert result['shadow_settlement'] == {'settled': 3}
 
 
 def test_temporal_split_purges_and_never_force_closes(monkeypatch):

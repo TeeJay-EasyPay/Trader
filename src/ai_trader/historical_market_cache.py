@@ -44,6 +44,26 @@ def _path(db, broker: str, symbol: str) -> Path:
     return _root(db) / broker / f"{safe}.json"
 
 
+def cached_bars(db, broker: str, symbols: list[str]) -> list[dict]:
+    """Read verified host-cache bars without a provider or database request.
+
+    Shadow settlement and historical screening now share the same broker-specific market
+    history. Missing files remain missing evidence; this function never downloads data.
+    """
+    if broker not in MAX_SYMBOLS:
+        return []
+    result = []
+    for symbol in sorted(set(str(value).upper() for value in symbols))[:MAX_SYMBOLS[broker]]:
+        saved = _read(_path(db, broker, symbol))
+        if saved.get("broker") != broker or str(saved.get("symbol") or "").upper() != symbol:
+            continue
+        for bar in saved.get("bars") or []:
+            if (bar.get("quality") == "verified_unadjusted"
+                    and str(bar.get("symbol") or "").upper() == symbol):
+                result.append(bar)
+    return result
+
+
 def _read(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -130,8 +150,19 @@ def refresh(db, settings, broker: str, symbols: list[str], now: str) -> dict:
     """Initial backfill once, then only a seven-day overlap for correction safety."""
     if broker not in MAX_SYMBOLS:
         raise ValueError("Unsupported historical market-data broker")
-    chosen = [s for s in sorted(set(str(x).upper() for x in symbols))
-              if s.isalnum() and (broker != "kraken" or s.endswith("GBP"))][:MAX_SYMBOLS[broker]]
+    # Preserve caller priority while deduplicating.  Alpaca settlement supplies unresolved
+    # shadow symbols first, so an alphabetical sort must not crowd them out of the bounded
+    # provider budget.
+    chosen, seen = [], set()
+    for raw_symbol in symbols:
+        symbol = str(raw_symbol).upper()
+        if (symbol in seen or not symbol.isalnum()
+                or (broker == "kraken" and not symbol.endswith("GBP"))):
+            continue
+        seen.add(symbol)
+        chosen.append(symbol)
+        if len(chosen) >= MAX_SYMBOLS[broker]:
+            break
     all_bars, coverage, errors, downloaded = [], [], [], 0
     for symbol in chosen:
         path = _path(db, broker, symbol)

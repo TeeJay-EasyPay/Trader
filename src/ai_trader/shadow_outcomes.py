@@ -128,6 +128,35 @@ def _window(candles: list[tuple[datetime, float, float, float]],
     return [c for c in candles if start < c[0] <= horizon]
 
 
+def _merge_cached_equity_bars(db_path: Path, candles: dict, symbols: set[str]) -> None:
+    """Reuse the verified Render cache that historical screening already downloaded.
+
+    Alpaca simulations previously looked only in MARKET_DATA_OBSERVATIONS, while equity
+    history deliberately lives in the host research cache to avoid Supabase egress.  That
+    disconnected handoff left every new Alpaca shadow pending despite a correct adapter.
+    """
+    if not symbols:
+        return
+    try:
+        from .historical_market_cache import cached_bars
+        rows = cached_bars(db_path, "alpaca", sorted(symbols))
+    except Exception:
+        return
+    for row in rows:
+        try:
+            stamp = _parse_stamp(row.get("start"))
+            if stamp is None:
+                continue
+            key = ("equity", str(row.get("symbol") or "").upper())
+            value = (stamp, float(row["high"]), float(row["low"]), float(row["close"]))
+            if value not in candles.setdefault(key, []):
+                candles[key].append(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    for key in list(candles):
+        candles[key].sort(key=lambda value: value[0])
+
+
 def resolve_shadow_trades(
     db_path: Path,
     *,
@@ -180,6 +209,10 @@ def resolve_shadow_trades(
                 (trade.asset_class, trade.market_symbol) for trade in normalized.values() if trade
             }, start_at=min(created_values) if created_values else None,
                 end_at=min(moment, max(created_values) + timedelta(days=SHADOW_HORIZON_DAYS)) if created_values else moment)
+            _merge_cached_equity_bars(db_path, candles_by_symbol, {
+                trade.market_symbol for trade in normalized.values()
+                if trade and trade.broker == "alpaca"
+            })
 
             for row in rows:
                 created = _parse_stamp(row[1])
@@ -340,6 +373,10 @@ def reconcile_legacy_shadow_rows(db_path: Path, *, limit: int = 500,
             candles = _load_candles(conn, {(trade.asset_class, trade.market_symbol)
                 for _data, trade in parsed if trade}, start_at=min(starts) if starts else None,
                 end_at=moment)
+            _merge_cached_equity_bars(db_path, candles, {
+                trade.market_symbol for _data, trade in parsed
+                if trade and trade.broker == "alpaca"
+            })
             requeue, retain = [], []
             for data, trade in parsed:
                 created = _parse_stamp(data.get("created_at"))

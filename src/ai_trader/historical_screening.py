@@ -341,9 +341,25 @@ def screen_batch(db, candidates, now, *, force=False):
                 if spec['broker'] not in datasets:
                     with e.transaction(db) as conn:
                         signals = recorded_signals(conn, spec['broker'], now)
+                        # Give unresolved simulations first call on the bounded cache.  This
+                        # small aggregate replaces repeated fruitless settlement reads and
+                        # ensures the evidence Trader is waiting for receives its price bars.
+                        try:
+                            pending_rows = conn.execute(
+                                "SELECT UPPER(symbol),MAX(created_at) FROM SHADOW_TRADES "
+                                "WHERE intended_broker=? AND outcome_status='pending' "
+                                "GROUP BY UPPER(symbol) ORDER BY MAX(created_at) DESC LIMIT ?",
+                                (spec['broker'], 20 if spec['broker'] == 'alpaca' else 10),
+                            ).fetchall()
+                        except Exception:
+                            # Isolated/unit databases may not install the legacy journal. The
+                            # governed experiment replay remains useful without it.
+                            pending_rows = []
+                        pending_symbols = [row[0] for row in pending_rows]
                     from .config import load_settings
                     from .historical_market_cache import refresh
-                    provider = refresh(db, load_settings(), spec['broker'], [s['symbol'] for s in signals], now)
+                    provider = refresh(db, load_settings(), spec['broker'],
+                                       pending_symbols + [s['symbol'] for s in signals], now)
                     with e.transaction(db) as conn:
                         loaded = dataset(conn, spec['broker'], now, provider['bars'])
                     loaded['provider_cache'] = {k:v for k,v in provider.items() if k != 'bars'}
@@ -409,6 +425,11 @@ def refresh_active_screening(db, settings, now):
         return dict(status='no_active_experiments', at=now, trials=[],
                     message='No frozen active experiment specs were available to replay.')
     result = screen_batch(db, candidates, now, force=True)
+    # The Alpaca bars downloaded by screen_batch live in the bounded host cache rather
+    # than Supabase.  Settle shadow evidence immediately while that same cache is warm;
+    # this creates no order and avoids a second provider or database history download.
+    from .shadow_outcomes import resolve_shadow_trades
+    result['shadow_settlement'] = resolve_shadow_trades(db, limit=500)
     result['trigger'] = 'scheduled_historical_market_refresh'
     result['model_calls'] = 0
     return result

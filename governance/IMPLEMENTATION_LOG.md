@@ -1,5 +1,28 @@
 # Implementation Log
 
+## 2026-09-24 — Alpaca learning-record evidence completion
+
+Corrected the precise production gaps Trader reported. A completed Alpaca workflow is no
+longer called a complete learning loop unless the same trade has an individual canonical net
+result. Production's 25 gross-known, net-unknown Alpaca records are exposed separately with
+published-formula regulatory-cost estimates, labelled provisional and never broker-attributed.
+
+Connected Alpaca's broker-specific shadow adapter to the verified Render historical-bar cache,
+accepted the existing `stock` asset label as an equity alias, prioritised unresolved Alpaca
+symbols within the existing provider budget, and added settlement immediately after the
+scheduled cache refresh. This keeps bulk bars out of Supabase while allowing new simulations
+to reach measured outcomes. The 870 genuinely unrecoverable legacy rows remain excluded.
+Details and production proof criteria are in
+`architecture/ALPACA_LEARNING_RECORD_COMPLETION_2026-09-24.md`.
+
+Verification before release: 59 focused tests, 199 broader learning/experiment tests and
+190 API/Standup tests passed. The full repository run completed with 2,022 passes, 1 skip
+and the same 8 documented baseline failures (six stale crypto fee-hurdle fixtures and two
+obsolete Standup markup assertions). The production
+read-only trace confirmed the expected pre-release boundary: 25 Alpaca workflows, zero
+evidence-complete canonical net results, 25 provisional estimates, 120 newer pending shadows,
+and 870 excluded legacy shadows.
+
 ## 2026-09-24 — Experiment continuity and faster provisional learning
 
 Replaced broad source-file hashing with an explicit behaviour contract: only declared

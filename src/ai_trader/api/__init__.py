@@ -2108,6 +2108,21 @@ class LocalApiService:
                 )
             ],
         }
+        # Always include the compact, broker-separated learning truth. Previously it was
+        # reachable only through the expensive daily-learning section below, which is
+        # deliberately skipped when the request deadline is tight. That made Standup tell
+        # the Founder it could not see evidence that already existed. This packet is small,
+        # read-only and explicitly distinguishes actual, estimated and incomplete results.
+        try:
+            from ..broker_learning_packet import broker_learning_packets
+            context["authoritative_broker_learning_packets"] = broker_learning_packets(
+                self.settings.db_path
+            )
+        except Exception as exc:
+            context["authoritative_broker_learning_packets"] = {
+                "available": False,
+                "reason": f"Broker learning packet unavailable: {type(exc).__name__}",
+            }
         # 2026-08-24, Founder: "it works but only using its own traded data". Ask could
         # see what it had bought and sold, but none of the research it runs every hour --
         # so asked how XRP might do, it answered that it had no view, while a 14-day XRP

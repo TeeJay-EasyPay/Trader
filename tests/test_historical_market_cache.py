@@ -37,3 +37,15 @@ def test_kraken_cache_keeps_old_bars_when_one_refresh_fails(tmp_path, monkeypatc
     assert len(first['bars']) == len(later['bars']) == 1
     assert later['status'] == 'partial' and later['errors'][0]['error_type'] == 'TimeoutError'
 
+
+def test_cached_bars_returns_only_verified_matching_equity_history(tmp_path, monkeypatch):
+    monkeypatch.setenv('AI_TRADER_RESEARCH_CACHE_DIR', str(tmp_path / 'cache'))
+    monkeypatch.setattr(cache, '_fetch_alpaca', lambda *_args: [
+        {'t':'2026-09-15T00:00:00+00:00','o':100,'h':110,'l':90,'c':105},
+    ])
+    cache.refresh(tmp_path / 'db.sqlite3', settings(), 'alpaca', ['MSFT'],
+                  '2026-09-17T01:00:00+00:00')
+    bars = cache.cached_bars(tmp_path / 'db.sqlite3', 'alpaca', ['MSFT'])
+    assert len(bars) == 1
+    assert bars[0]['symbol'] == 'MSFT' and bars[0]['quality'] == 'verified_unadjusted'
+

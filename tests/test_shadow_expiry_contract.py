@@ -54,3 +54,16 @@ def test_partial_horizon_and_terminal_levels(tmp_path, current_day, high, low, e
     else:
         assert result["by_outcome"] == {expected: 1}
         assert conn.updates[0][0] == expected
+
+
+def test_alpaca_shadow_settles_from_verified_host_cache(tmp_path, monkeypatch):
+    from ai_trader.shadow_outcomes import _merge_cached_equity_bars
+
+    monkeypatch.setattr('ai_trader.historical_market_cache.cached_bars', lambda *_args: [{
+        'broker': 'alpaca', 'symbol': 'AAPL', 'quality': 'verified_unadjusted',
+        'start': '2026-09-09T00:00:00+00:00', 'high': 112, 'low': 99, 'close': 111,
+    }])
+    candles = {}
+    _merge_cached_equity_bars(tmp_path / 'db.sqlite3', candles, {'AAPL'})
+    assert ('equity', 'AAPL') in candles
+    assert candles[('equity', 'AAPL')][0][1:] == (112.0, 99.0, 111.0)
