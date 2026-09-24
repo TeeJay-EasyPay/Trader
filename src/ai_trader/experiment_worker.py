@@ -234,6 +234,33 @@ def tick(db, settings, *, now=None, answer=None):
                 decision_cache[broker] = _decisions(db, min(r['state']['cursor'] for r in own),
                     min(r['created_at'] for r in own), broker)
         for row in active_rows:
+            # One-time compatibility migration for experiments created before the
+            # explicit behaviour contract existed.  The former fingerprint hashed
+            # whole source files, so harmless logging/UI/query changes looked like
+            # trading-behaviour changes.  Preserve accumulated observations and
+            # adopt the explicit contract without ending or recreating the test.
+            if not row['spec'].get('baseline_contract_version'):
+                with exp.transaction(db) as conn:
+                    current = exp._load(conn, row['id'])
+                    previous_version = current['version']
+                    current['spec']['baseline_contract_version'] = (
+                        exp.BASELINE_BEHAVIOUR_CONTRACT['contract_version'])
+                    current['spec']['baseline_fingerprint'] = exp.baseline_fingerprint()
+                    current['version'] = exp.digest(current['spec'])
+                    updated = conn.execute(
+                        'UPDATE RULE_EXPERIMENTS SET version=?,revision=?,spec_json=? '
+                        'WHERE id=? AND revision=?',
+                        (current['version'], current['revision'] + 1,
+                         exp.dump(current['spec']), current['id'], current['revision']))
+                    if updated.rowcount != 1:
+                        raise RuntimeError('Concurrent experiment contract migration')
+                    current['revision'] += 1
+                    exp._event(conn, current, 'baseline_contract_migrated', {
+                        'previous_version': previous_version,
+                        'preserved_observations': current['report'].get('observations', 0),
+                        'reason': 'Replace operational source hashes with explicit result-affecting contract',
+                    }, 'baseline-contract:' + current['id'])
+                    row = current
             if row['spec']['baseline_fingerprint'] != exp.baseline_fingerprint():
                 with exp.transaction(db) as conn:
                     current = exp._load(conn, row['id'])

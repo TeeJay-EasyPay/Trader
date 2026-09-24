@@ -4,6 +4,18 @@ Date: 2026-07-07
 
 ## High Priority
 
+- **Resolved 2026-09-24 — Experiment continuity:** the baseline fingerprint now changes only
+  when trading decisions, risk rules, cost assumptions, market-data interpretation or
+  simulation outcomes can change. UI wording, mobile layout, observability, logging and
+  egress-only optimisations do not invalidate otherwise comparable evidence. A one-time
+  compatibility migration preserves evidence collected under the former operational hash.
+- **Resolved 2026-09-24 — Faster evidence without weaker safeguards:** the research path now
+  generates point-in-time historical opportunities by replaying a frozen market-only rule
+  over cached data, exposes an explicitly provisional stage after a smaller broker-appropriate
+  sample, retains the full gate before recommending or adopting any rule, uses separate Kraken
+  and Alpaca evidence requirements, and prioritises fewer, higher-value experiments. Provisional
+  findings are labelled clearly and cannot change trading behaviour automatically. Final
+  recommendation still requires the larger broker-specific prospective evidence gate.
 - Native mobile push token registration is not implemented in the client. Backend push dispatch exists, but the physical phone app must be rebuilt with `expo-notifications` before end-to-end push delivery can be trusted.
 - Render route stability is not fully green: hosted `/healthz` and `/status` are healthy after deploy, but `/notifications`, `/performance-attribution`, and unauthenticated POST verification were unstable externally and need Render log review.
 - Kraken managed exits are app-managed. If the backend is down, exits are not checked until the backend is running again. Keep order sizes small until uptime is proven.

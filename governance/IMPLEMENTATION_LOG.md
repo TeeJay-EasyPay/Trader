@@ -1,5 +1,25 @@
 # Implementation Log
 
+## 2026-09-24 — Experiment continuity and faster provisional learning
+
+Replaced broad source-file hashing with an explicit behaviour contract: only declared
+changes to eligibility, prices, risk, costs, market-data semantics or paired simulation
+invalidate an experiment. Operational query, telemetry, UI, wording and logging edits no
+longer reset otherwise comparable evidence.
+
+Historical screening now supplements recorded decisions with clearly labelled,
+point-in-time market-rule opportunities generated from the existing Render research cache.
+They use prior prices only and never claim to reconstruct an AI opinion, news, fundamentals
+or another trader. Alpaca and Kraken have separate provisional and final evidence profiles.
+Provisional findings are visible as learning, but cannot recommend, adopt or activate a rule;
+the full broker-specific forward gate remains mandatory.
+
+Verification: 65 focused backend tests passed, followed by a full repository run with
+2,019 passes, 1 skip and the same 8 documented baseline failures (six stale crypto
+fee-hurdle fixtures and two old Standup markup assertions). The policy-specific follow-up
+passed 13/13, the mobile Learning suite passed 7/7, Python compilation and diff checks
+passed, and the Android Expo production export completed successfully.
+
 ## 2026-09-24 — Broker learning evidence and measured egress completion
 
 Implemented the nine Founder-approved actions as one safety-neutral release: broker-specific

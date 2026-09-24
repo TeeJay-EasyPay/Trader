@@ -25,7 +25,7 @@ function LearningProgress({ measurement, historical, founderLearning, onSelect }
   return <View style={s.card}><Text style={s.title}>Is Trader getting better?</Text>
     {!!founderLearning?.headline && <Text style={s.text}>{founderLearning.headline}</Text>}
     <Text style={s.text}>{founderLearning?.reflection || 'Waiting for Trader’s first learning assessment. No improvement claim yet.'}</Text>
-    {!!founderLearning && <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>}
+    {!!founderLearning && <Text style={s.small}>More capable: {founderLearning.more_capable ? 'yes' : 'not yet'} · Learned something: {founderLearning.lesson_status === 'provisional' ? 'provisional' : founderLearning.learned_something ? 'yes' : 'not yet'} · Trading better: {founderLearning.trading_better ? 'verified' : 'not proven'}</Text>}
     {Object.entries(founderLearning?.brokers || {}).map(([broker, progress]) =>
       <Text key={broker} style={s.small}>{human(broker)}: {progress.plain_english}</Text>)}
     <Button label={details ? 'Hide supporting evidence' : 'See supporting evidence'} onPress={() => setDetails(v => !v)} />
@@ -48,10 +48,10 @@ function LearningProgress({ measurement, historical, founderLearning, onSelect }
     {(historical?.trials || []).map((trial,i) => <View key={i}>
       <Text style={s.text}>{trial.hypothesis || 'Candidate'}: {human(trial.status)}</Text>
       <Text style={s.small}>{trial.reason}</Text>
-      {!!trial.coverage && <Text style={s.small}>{trial.coverage.recorded_signals} recorded signals · {trial.coverage.bars} stored bars · {trial.coverage.first_day || 'No start date'} to {trial.coverage.last_day || 'no end date'}</Text>}
+      {!!trial.coverage && <Text style={s.small}>{trial.coverage.recorded_signals} recorded signals · {trial.coverage.synthetic_opportunities || 0} point-in-time historical opportunities · {trial.coverage.bars} stored bars · {trial.coverage.first_day || 'No start date'} to {trial.coverage.last_day || 'no end date'}</Text>}
       {!!trial.later && <Text style={s.small}>Later historical window: {trial.later.completed_trade_pairs} completed trade pairs across {trial.later.independent_days} days; after-cost difference {money(trial.later.delta,trial.currency)}; {trial.later.unresolved} unresolved.</Text>}
     </View>)}
-    <Text style={s.small}>Historical checks use a bounded sample of stored opportunities, not every possible market trade. Missing history is not a pass. Fresh forward evidence is still required.</Text>
+    <Text style={s.small}>Historical checks use recorded decisions plus labelled market-only opportunities generated from information available at each historical date. They do not recreate an AI opinion or another trader. Missing history is not a pass, and fresh forward evidence is still required.</Text>
     </>}
   </View>;
 }
@@ -191,7 +191,7 @@ function ExperimentsCard({ request, notifications = false, onBack, compact = fal
   if (brief) return <View style={{ gap: 4 }}>
     <Text style={s.title}>Is Trader getting better?</Text>
     <Text style={s.text}>{error ? 'Trader’s learning assessment is unavailable right now.' : !data ? 'Checking Trader’s latest learning assessment…' : data.founder_learning?.reflection || 'Waiting for Trader’s first learning assessment. No improvement claim yet.'}</Text>
-    {!!data?.founder_learning && <Text style={s.small}>More capable: {data.founder_learning.more_capable ? 'yes' : 'not yet'} · Learned something: {data.founder_learning.learned_something ? 'yes' : 'not yet'} · Trading better: {data.founder_learning.trading_better ? 'verified' : 'not proven'}</Text>}
+    {!!data?.founder_learning && <Text style={s.small}>More capable: {data.founder_learning.more_capable ? 'yes' : 'not yet'} · Learned something: {data.founder_learning.lesson_status === 'provisional' ? 'provisional' : data.founder_learning.learned_something ? 'yes' : 'not yet'} · Trading better: {data.founder_learning.trading_better ? 'verified' : 'not proven'}</Text>}
     <TouchableOpacity accessibilityRole="button" onPress={onOpenTests} style={{ minHeight: 44, justifyContent: 'center' }}>
       <Text style={[s.buttonText, { textAlign: 'left' }]}>View tests →</Text>
     </TouchableOpacity>

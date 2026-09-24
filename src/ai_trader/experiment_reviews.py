@@ -35,6 +35,10 @@ def weekly_review(conn, row, now):
         action, reason = 'stop', 'Two review cycles produced no useful trading evidence or no progress; release this experiment slot.'
     elif report['candidate']['max_drawdown'] > row['spec']['max_drawdown_fraction']:
         action, reason = 'stop', 'The simulated candidate exceeded its frozen drawdown limit.'
+    elif report.get('evidence_stage') == 'provisional':
+        human = report.get('provisional_signal', 'no_clear_difference').replace('_', ' ')
+        reason = (f"Provisional evidence is available ({human}), but the full broker-specific "
+                  "evidence gate is not complete; no rule change is permitted.")
     elif closed == 0:
         reason = 'No simulated trades have closed; skips alone do not demonstrate a trading benefit.'
     elif report['paired_mean_usd'] is not None and report['paired_mean_usd'] <= 0:
@@ -47,6 +51,8 @@ def weekly_review(conn, row, now):
         'skipped': report['skipped'], 'unresolved': report['observations']-report['completed'],
         'baseline_net': report['baseline']['realised'], 'candidate_net': report['candidate']['realised'],
         'currency': report['currency'], 'uncertain': report['uncertain'], 'action': action,
+        'evidence_stage': report.get('evidence_stage', 'collecting'),
+        'provisional_signal': report.get('provisional_signal', 'collecting'),
         'reason': reason, 'version': row['version'],
         'what_was_learnt': f"Compared {report['observations']} opportunities, with {closed} closed simulated trades across both portfolios. " + reason,
         'future_use': 'No rule activated. ' + ('Request evidence-backed paper review.' if action == 'recommend' else 'Keep approved trading rules unchanged.'),

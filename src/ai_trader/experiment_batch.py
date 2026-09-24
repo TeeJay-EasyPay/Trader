@@ -4,6 +4,7 @@ from datetime import timedelta
 from . import experiments as e
 from .database import uses_postgres
 from . import research_requests as research
+from .experiment_contract import MAX_ACTIVE_PER_BROKER
 
 
 def propose_batch(db, settings, now, policy, answer=None):
@@ -23,7 +24,7 @@ def propose_batch(db, settings, now, policy, answer=None):
                 usable=report.get('usable'),mean_difference=report.get('paired_mean_usd'),verdict=report.get('verdict')))
         evidence, eligibility = {}, {}
         for broker in ('alpaca', 'kraken'):
-            slots = max(0, 5 - sum(s['broker'] == broker for s in specs))
+            slots = max(0, MAX_ACTIVE_PER_BROKER - sum(s['broker'] == broker for s in specs))
             rows = conn.execute('SELECT DISTINCT p.attribution_id,p.symbol,p.closed_at,p.profit_loss,p.holding_period_seconds,'
                 't.intended_entry_price,t.original_stop,t.intended_target FROM PERFORMANCE_ATTRIBUTION p '
                 'JOIN LOGICAL_TRADES t ON t.proposal_id=p.proposal_id AND t.broker=p.broker '
@@ -103,7 +104,7 @@ def propose_batch(db, settings, now, policy, answer=None):
                 ids = candidate.get('evidence_ids', [])
                 if not ids or not set(ids).issubset({r['attribution_id'] for r in evidence[broker]}):
                     raise ValueError('unsupported_evidence')
-                if sum(s['broker'] == broker for s in accepted_specs) >= 5:
+                if sum(s['broker'] == broker for s in accepted_specs) >= MAX_ACTIVE_PER_BROKER:
                     raise ValueError('broker_capacity')
                 validated = e.validate_spec(candidate)
                 historical = trials.get(e.digest(candidate))

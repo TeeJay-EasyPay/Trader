@@ -21,6 +21,13 @@ def build(conn, *, now: str) -> dict:
     adopted = sum(statuses.get(k, 0) for k in ("paper_active", "ready_for_activation"))
     verified = bool(adopted and supported)
     candidate = bool(statuses.get("recommended", 0) or supported)
+    finding_rows = conn.execute(
+        "SELECT broker,COUNT(*) FROM LEARNING_FINDINGS "
+        "WHERE source_type IN ('historical_screening','experiment_review','trade_review') GROUP BY broker"
+    ).fetchall()
+    provisional_by_broker = {str(row[0]): int(row[1]) for row in finding_rows}
+    provisional_findings = sum(provisional_by_broker.values())
+    validated_lesson = bool(statuses.get("recommended", 0) or statuses.get("rejected", 0))
     headline = "Improvement verified" if verified else (
         "Candidate improvement detected" if candidate else "Learning activity only"
     )
@@ -41,6 +48,7 @@ def build(conn, *, now: str) -> dict:
         own_supported = [item for item in supported if item.get("broker") == broker]
         own_adopted = sum(status in ("paper_active", "ready_for_activation") for status in own)
         own_verified = bool(own_adopted and own_supported)
+        own_findings = provisional_by_broker.get(broker, 0)
         broker_progress[broker] = {
             "status": "improvement_verified" if own_verified else (
                 "candidate_detected" if own_supported or "recommended" in own else "not_proven"
@@ -48,17 +56,21 @@ def build(conn, *, now: str) -> dict:
             "plain_english": (
                 f"Yes—{broker.title()} has a supported comparison and controlled adopted version; after-cost monitoring continues."
                 if own_verified else
-                f"Not proven yet for {broker.title()}. {sum(status == 'shadow_running' for status in own)} "
-                "broker-specific experiment(s) are running, but no adopted after-cost improvement is verified."
+                f"Not proven yet for {broker.title()}. {own_findings} provisional research finding(s) "
+                f"are recorded and {sum(status == 'shadow_running' for status in own)} broker-specific "
+                "experiment(s) are running, but no adopted after-cost improvement is verified."
             ),
             "running": sum(status == "shadow_running" for status in own),
             "supported_comparisons": len(own_supported),
             "adopted": own_adopted,
+            "provisional_findings": own_findings,
         }
     scorecard = dict(
         day=now[:10], at=now, headline=headline,
         more_capable=bool(history_trials or measurement.get("at")),
-        learned_something=bool(statuses.get("recommended", 0) or statuses.get("rejected", 0)),
+        learned_something=bool(validated_lesson or provisional_findings),
+        lesson_status="validated" if validated_lesson else "provisional" if provisional_findings else "none",
+        provisional_findings=provisional_findings,
         trading_better=verified,
         experiments=dict(running=statuses.get("shadow_running", 0), queued=statuses.get("queued", 0),
             recommended=statuses.get("recommended", 0), rejected=statuses.get("rejected", 0),
@@ -78,10 +90,11 @@ def build(conn, *, now: str) -> dict:
     elif candidate:
         reflection = (f"I found {len(supported) + statuses.get('recommended', 0)} candidate improvement signal(s), "
                       "but I have not yet proved that I am trading better. Forward and adoption evidence is still required.")
-    elif history_trials or statuses.get("shadow_running", 0):
-        reflection = (f"I am more capable because I can screen recorded ideas against cached market history and I am "
-                      f"tracking {statuses.get('shadow_running', 0)} forward experiment(s). I have not yet proved better "
-                      "trading performance on either Alpaca or Kraken; each is measured separately.")
+    elif history_trials or statuses.get("shadow_running", 0) or provisional_findings:
+        reflection = (f"I have recorded {provisional_findings} provisional research finding(s) and I am tracking "
+                      f"{statuses.get('shadow_running', 0)} forward experiment(s). These findings help focus testing, "
+                      "but I have not yet proved better trading performance on either Alpaca or Kraken; each is "
+                      "measured separately.")
     else:
         reflection = "I have not collected enough comparable evidence to claim a new lesson or better trading performance yet."
     return {**scorecard, "reflection": reflection}

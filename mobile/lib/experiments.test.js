@@ -51,6 +51,13 @@ test('learning overview keeps Trader reflection visible without opening test det
   assert.ok(rendered.includes('Trading better: not proven'));
   assert.ok(!rendered.includes('Historical screening'));
 });
+
+test('provisional learning is visible without claiming better trading', () => {
+  const source = fs.readFileSync(require.resolve('../screens/Experiments'), 'utf8');
+  assert.match(source, /lesson_status === 'provisional' \? 'provisional'/);
+  assert.match(source, /point-in-time historical opportunities/);
+  assert.match(source, /They do not recreate an AI opinion or another trader/);
+});
 test('experiment UI has an honest empty state without fake performance', () => {
   const ui = load([{ items: [], policy: { enabled: false } }, '', false, null, false]);
   const rendered = JSON.stringify(ui.ExperimentsCard({ request: () => assert.fail('render sent a request') }));

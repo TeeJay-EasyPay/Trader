@@ -22,3 +22,19 @@ def test_scorecard_labels_baseline_change_as_superseded(db):
     assert result['experiments']['superseded'] == 1
     assert e.detail(db, row['id'])['display_status'] == 'superseded_restarted'
 
+
+def test_scorecard_calls_recorded_research_a_provisional_lesson_not_proven_improvement(db):
+    create(db)
+    with e.transaction(db) as conn:
+        from ai_trader.learning_findings import save
+        save(conn, source_type='historical_screening', source_id='day:alpaca',
+             recorded_at='2026-09-17T08:00:00+00:00', broker='alpaca', symbol=None,
+             payload={'what_was_learnt':'The historical sample needs more independent days.',
+                      'future_use':'Collect forward evidence.', 'evidence_status':'provisional',
+                      'action':'research', 'activation':'not_activated'})
+        result = build(conn, now='2026-09-17T09:00:00+00:00')
+    assert result['learned_something'] is True
+    assert result['lesson_status'] == 'provisional'
+    assert result['trading_better'] is False
+    assert 'provisional research finding' in result['reflection']
+

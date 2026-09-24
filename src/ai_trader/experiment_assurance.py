@@ -8,6 +8,7 @@ import os
 from datetime import timedelta
 from . import experiments as e
 from .database import uses_postgres
+from .experiment_contract import MAX_ACTIVE_PER_BROKER
 
 
 def json_field(column, path, *, text=True):
@@ -181,7 +182,7 @@ def start_queued(db, now):
             if slots <= 0:
                 break
             broker = row['spec']['broker']
-            if broker_counts[broker] >= 5:
+            if broker_counts[broker] >= MAX_ACTIVE_PER_BROKER:
                 continue
             queued_at = row['created_at']
             row['spec'].update(frozen_at=now, baseline_fingerprint=e.baseline_fingerprint(),

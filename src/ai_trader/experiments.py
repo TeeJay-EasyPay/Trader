@@ -14,9 +14,10 @@ import os
 import sqlite3
 import statistics
 from uuid import uuid4
-from pathlib import Path
 
 from .database import connect, uses_postgres
+from .experiment_contract import (BASELINE_BEHAVIOUR_CONTRACT, MAX_ACTIVE_PER_BROKER,
+    baseline_fingerprint as contract_fingerprint, evidence_profile)
 
 REVIEW_INTERVAL_DAYS = 3
 
@@ -76,11 +77,8 @@ def digest(value):
 
 
 def baseline_fingerprint():
-    """UI/docs-only deployments must not reset a 60-day experiment."""
-    root = Path(__file__).parent
-    return hashlib.sha256(b''.join((root / name).read_text(encoding='utf-8').replace('\r\n', '\n').encode() for name in
-        ('experiments.py', 'experiment_worker.py', 'experiment_market_data.py', 'experiment_assurance.py',
-         'sprint6.py', 'guardrails.py', 'decision_economics.py'))).hexdigest()
+    """Only an explicit result-affecting contract change invalidates evidence."""
+    return contract_fingerprint()
 
 
 @contextmanager
@@ -152,6 +150,7 @@ def validate_spec(raw):
     broker = raw.get('broker', 'alpaca')
     if broker not in ('alpaca', 'kraken'):
         raise ValueError('Unsupported shadow broker')
+    profile = evidence_profile(broker)
     return dict(rule_type=raw['rule_type'], threshold=number(raw.get('threshold',1), 1, 5000 if raw['rule_type']=='minimum_target_move_bps' else 4),
                 reference_sets=raw.get('reference_sets') if raw['rule_type']=='reference_set_filter' else None,
                 source_intake_id=raw.get('source_intake_id'),
@@ -165,11 +164,18 @@ def validate_spec(raw):
                 simulator='daily-bar-paired-v2', initial_cash=10000.0,
                 risk_fraction=0.0025, max_notional_fraction=0.10,
                 max_positions=5, max_holding_days=10,
+                baseline_contract_version=BASELINE_BEHAVIOUR_CONTRACT['contract_version'],
                 cost_bps_per_leg=80.0 if broker == 'kraken' else 10.0, slippage_bps_per_leg=10.0,
                 costs_status='conservative scenario, not reconciled broker costs',
                 evaluation_days=REVIEW_INTERVAL_DAYS, review_interval_days=REVIEW_INTERVAL_DAYS,
-                weekly_reviews=True, maximum_cycles=12, minimum_opportunities=60,
-                minimum_symbol_days=40, max_drawdown_fraction=0.05,
+                weekly_reviews=True, maximum_cycles=12,
+                minimum_opportunities=profile['final_opportunities'],
+                minimum_independent_days=profile['final_independent_days'],
+                minimum_symbol_days=profile['final_symbol_days'],
+                provisional_opportunities=profile['provisional_opportunities'],
+                provisional_independent_days=profile['provisional_independent_days'],
+                provisional_symbol_days=profile['provisional_symbol_days'],
+                max_drawdown_fraction=0.05,
                 execution_tolerances=dict(entry_bps=50, exit_bps=50, holding_hours=24, cost_bps=25, minimum_pairs=20),
                 execution_validated=False, adoption_environment='paper')
 
@@ -481,8 +487,15 @@ def evaluate(row, ops, *, now):
         (stamp(row['created_at']) + timedelta(days=row['spec']['evaluation_days'])).isoformat()
     )
     finished = now >= ends and (len(complete) == len(ops) or now >= ends + timedelta(days=15))
+    symbol_days = len({(o['symbol'], o['time'][:10]) for o in usable})
+    provisional = (n >= row['spec'].get('provisional_opportunities', 15)
+                   and len(groups) >= row['spec'].get('provisional_independent_days', 7)
+                   and symbol_days >= row['spec'].get('provisional_symbol_days', 10))
+    provisional_signal = ('candidate_ahead' if provisional and mean is not None and mean > 0 else
+                          'baseline_ahead' if provisional and mean is not None and mean < 0 else
+                          'no_clear_difference' if provisional else 'collecting')
     verdict = 'insufficient_evidence'
-    if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len(groups) >= 30 and len({(o['symbol'], o['time'][:10]) for o in usable}) >= row['spec']['minimum_symbol_days']:
+    if finished and len(complete) == len(ops) and n >= row['spec']['minimum_opportunities'] and len(groups) >= row['spec'].get('minimum_independent_days', 30) and symbol_days >= row['spec']['minimum_symbol_days']:
         positive = [o['arms']['candidate']['net'] for o in usable if o['arms']['candidate']['net'] > 0]
         concentration = max(positive) / sum(positive) if positive else 1
         if lower is not None and lower > 0 and concentration < .25 and row['state']['candidate']['realised'] > 0 and row['state']['candidate']['max_drawdown'] <= min(row['spec']['max_drawdown_fraction'], row['state']['baseline']['max_drawdown']):
@@ -494,7 +507,9 @@ def evaluate(row, ops, *, now):
                 closed_trades={arm: sum(o['arms'][arm]['status'] == 'closed' for o in ops) for arm in ('baseline', 'candidate')},
                 skipped={arm: sum(o['arms'][arm]['status'] == 'skipped' for o in ops) for arm in ('baseline', 'candidate')},
                 uncertain=len(complete) - n, paired_mean_usd=mean, descriptive_lower_bound=lower,
-                day_clusters=len(groups),
+                day_clusters=len(groups), symbol_days=symbol_days,
+                evidence_stage='provisional' if provisional else 'collecting',
+                provisional_signal=provisional_signal,
                 reference_decision_differences=sum(o.get('reference_assessment',{}).get('arms',{}).get('baseline',{}).get('allow') != o.get('reference_assessment',{}).get('arms',{}).get('candidate',{}).get('allow') for o in ops if o.get('reference_assessment')),
                 baseline=row['state']['baseline'], candidate=row['state']['candidate'],
                 evaluate_after=ends.isoformat(), costs=row['spec']['costs_status'],
@@ -545,7 +560,7 @@ def list_experiments(db, *, owner='founder', before='', attention=False, view=''
             items.append(r)
         return dict(items=items, next_cursor=items[-1]['created_at'] if len(rows) > 20 else None,
                     reference_blockers=[json.loads(r[0]) for r in conn.execute('SELECT payload_json FROM EXPERIMENT_CONTROL WHERE id LIKE ? LIMIT 10',('reference_budget:%',)).fetchall()],
-                    broker_capacity={b: {'active':sum(json.loads(r[0])['broker']==b for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' AND owner=?",(owner,)).fetchall()),'limit':5} for b in ('alpaca','kraken')},
+                    broker_capacity={b: {'active':sum(json.loads(r[0])['broker']==b for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' AND owner=?",(owner,)).fetchall()),'limit':MAX_ACTIVE_PER_BROKER} for b in ('alpaca','kraken')},
                     proposal_eligibility=control(conn, 'proposal_eligibility', {}),
                     pipeline=[dict(r) for r in conn.execute('SELECT status,COUNT(*) AS count FROM RULE_EXPERIMENTS WHERE owner=? GROUP BY status', (owner,)).fetchall()],
                     policy=control(conn, 'policy', DEFAULT_POLICY), notification_type='strategy_experiment',

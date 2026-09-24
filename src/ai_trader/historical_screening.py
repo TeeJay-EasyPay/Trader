@@ -1,8 +1,9 @@
 """Bounded, descriptive historical screening using the forward engine's pure step.
 
 No broker, network, model, SQL supplied by a model, or live-adoption capability.
-Only recorded signals and source-vetted bars are replayable. Historical results
-are development evidence, NOT an untouched holdout or a forecast.
+Recorded signals and explicitly labelled point-in-time market-rule opportunities are
+replayable over source-vetted bars. Historical results are development evidence, NOT an
+untouched holdout, reconstructed AI opinion or forecast.
 """
 from copy import deepcopy
 from datetime import timedelta
@@ -15,7 +16,7 @@ import tempfile
 from . import experiments as e
 from .experiment_assurance import json_field
 
-VERSION = 'recorded-opportunity-replay-v1'
+VERSION = 'point-in-time-opportunity-replay-v2'
 SUPPORTED = {'minimum_target_r', 'minimum_target_move_bps', 'replace_target_r_gate'}
 MAX_ROWS = 64
 MAX_ROW_BYTES = 8192
@@ -146,22 +147,34 @@ def dataset(conn, broker, now, cached_bars=None):
         if key in signals and signals[key]!=signal:
             conflicts.add(key)
         signals.setdefault(key,signal)
-    signals = sorted((v for k, v in signals.items() if k not in conflicts), key=lambda s: (s['time'], s['symbol'], str(s['source_id'])))
-    for bar in recorded_bars(conn,broker,signals,now):
+    signals = {k:v for k,v in signals.items() if k not in conflicts}
+    signal_list = sorted(signals.values(), key=lambda s: (s['time'], s['symbol'], str(s['source_id'])))
+    for bar in recorded_bars(conn,broker,signal_list,now):
         key=(bar['symbol'],bar['start'])
         if key in bars and not _same_bar(bars[key], bar):
             return dict(signals=[],bars=[],reason='Conflicting recorded bars',broker=broker)
         bars[key]=bar
     for bar in cached_bars or []:
-        if bar.get('quality') != 'verified_unadjusted' or bar.get('symbol') not in {s['symbol'] for s in signals}:
+        if bar.get('quality') != 'verified_unadjusted' or bar.get('symbol') not in {s['symbol'] for s in signal_list}:
             continue
         key=(bar['symbol'],bar['start'])
         if key in bars and not _same_bar(bars[key], bar):
             return dict(signals=[],bars=[],reason='Conflicting provider-cache bars',broker=broker)
         bars[key]=bar
-    result = dict(broker=broker, signals=signals, bars=sorted(bars.values(), key=lambda b: (b['start'], b['symbol'])),
+    recorded_count = len(signals)
+    from .historical_opportunities import generate, RULE_VERSION
+    synthetic = generate(list(bars.values()), broker, limit=240)
+    for signal in synthetic:
+        signals.setdefault(str(signal['source_id']), signal)
+    result = dict(broker=broker, signals=sorted(signals.values(), key=lambda s: (s['time'],s['symbol'],str(s['source_id']))),
+                  bars=sorted(bars.values(), key=lambda b: (b['start'], b['symbol'])),
                   fetched_rows=len(rows), row_limit=MAX_ROWS, conflicting_signals=len(conflicts),
-                  scope='Bounded recorded signals plus source-qualified provider bars from the Render research cache. Price history does not invent missing historical AI decisions.')
+                  recorded_signal_count=recorded_count,
+                  synthetic_signal_count=len(signals)-recorded_count,
+                  historical_opportunity_rule=RULE_VERSION,
+                  scope=('Recorded decisions plus explicitly labelled, point-in-time market-rule opportunities. '
+                         'Synthetic opportunities use only prior prices and never claim to reconstruct an AI opinion, '
+                         'another trader, news or fundamentals. Fresh forward evidence remains mandatory.'))
     result['dataset_version'] = e.digest(result)
     return result
 
@@ -275,9 +288,12 @@ def screen(spec, data, now):
     if spec['rule_type'] not in SUPPORTED:
         return {**result, 'status':'unsupported', 'reason':'Historical reference assessments cannot be reconstructed from prices.'}
     days = sorted({s['time'][:10] for s in data['signals']})
-    result['coverage'] = dict(recorded_signals=len(data['signals']), bars=len(data['bars']),
+    result['coverage'] = dict(recorded_signals=data.get('recorded_signal_count', len(data['signals'])),
+                              synthetic_opportunities=data.get('synthetic_signal_count', 0),
+                              total_opportunities=len(data['signals']), bars=len(data['bars']),
                               first_day=days[0] if days else None, last_day=days[-1] if days else None,
-                              signal_days=len(days))
+                              signal_days=len(days),
+                              opportunity_rule=data.get('historical_opportunity_rule'))
     if len(days) < 20:
         return result
     split = days[int(len(days)*.6)] + 'T00:00:00+00:00'
@@ -341,7 +357,8 @@ def screen_batch(db, candidates, now, *, force=False):
                 trials.append(dict(status='invalid', reason=str(exc)[:200], candidate_key=e.digest(candidate)))
         result = dict(day=now[:10], at=now, status='completed', trials=trials,
                       max_shadow_history_characters=2*MAX_ROWS*MAX_ROW_BYTES,
-                      scope='Recorded-opportunity replay using a bounded provider-to-Render daily-bar cache. No additional AI calls; bulk bars are not stored in Supabase.')
+                      scope=('Recorded and labelled point-in-time opportunity replay using a bounded '
+                             'provider-to-Render daily-bar cache. No additional AI calls; bulk bars are not stored in Supabase.'))
     except Exception as exc:
         result = dict(day=now[:10], at=now, status='failed', trials=[], error_type=type(exc).__name__)
     with e.transaction(db) as conn:
