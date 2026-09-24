@@ -67,3 +67,8 @@ def test_egress_hot_paths_are_projected_and_budgeted():
     assert "'{}' AS payload_json" in intelligence
     assert "daily_row_value_budget_bytes" in telemetry and "family_breaches" in telemetry
     assert "ORDER BY experience_id DESC LIMIT 20" in experience
+
+
+def test_learning_api_rebuilds_a_same_day_legacy_scorecard_shape():
+    source = Path("src/ai_trader/experiment_api.py").read_text()
+    assert "not isinstance(founder_learning.get('brokers'), dict)" in source

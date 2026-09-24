@@ -30,7 +30,12 @@ def get(db, path, query):
             measurement = snapshot(conn) if show_research else None
             historical = exp.control(conn, 'historical_screening_view', {}) if show_research else None
             founder_learning = exp.control(conn, 'founder_learning_scorecard', {}) if show_research else None
-            if show_research and not founder_learning:
+            # A deployment can add fields to the compact scorecard while today's
+            # persisted snapshot still has yesterday's shape. Rebuild the read view
+            # immediately; the normal daily refresh persists it on its next cycle.
+            if show_research and (
+                not founder_learning or not isinstance(founder_learning.get('brokers'), dict)
+            ):
                 from .founder_learning import build
                 founder_learning = build(conn, now=exp.now_iso())
         return 200, {**exp.list_experiments(db, before=first('before'), attention=first('attention') == 'true', view=first('view')), 'source_intake':list_sources(db), 'research_requests': requests,
