@@ -198,7 +198,9 @@ def tick(db, settings, *, now=None, answer=None):
         from .experiment_reviews import grouped_review
         review_due = grouped_review(db, settings, now, policy, answer=answer)
         with exp.transaction(db) as conn:
-            running = conn.execute("SELECT created_at,spec_json,state_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 10").fetchall()
+            from .verified_reads import rows as verified_rows
+            running = verified_rows(conn, "SELECT created_at,spec_json,state_json FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 10",
+                                    partition='checkpoint-experiments')
             checkpoint_due = any(
                 json.loads(r['spec_json']).get('weekly_reviews') and exp.review_due_at({
                     'created_at': r['created_at'],
@@ -219,11 +221,12 @@ def tick(db, settings, *, now=None, answer=None):
         # one-row SELECTs through exp._load on every 15-minute tick.
         with exp.transaction(db) as conn:
             active_rows = []
-            for raw in conn.execute(
+            for raw in verified_rows(conn,
                 "SELECT id,owner,created_at,status,revision,spec_json,state_json "
                 "FROM RULE_EXPERIMENTS WHERE status='shadow_running' "
-                "ORDER BY created_at LIMIT 10"
-            ).fetchall():
+                "ORDER BY created_at LIMIT 10",
+                partition='worker-experiments'
+            ):
                 row = dict(raw)
                 for key in ('spec', 'state'):
                     row[key] = json.loads(row.pop(key + '_json'))
@@ -234,6 +237,7 @@ def tick(db, settings, *, now=None, answer=None):
                 decision_cache[broker] = _decisions(db, min(r['state']['cursor'] for r in own),
                     min(r['created_at'] for r in own), broker)
         for row in active_rows:
+            row_invalid = 0
             # One-time compatibility migration for experiments created before the
             # explicit behaviour contract existed.  The former fingerprint hashed
             # whole source files, so harmless logging/UI/query changes looked like
@@ -319,6 +323,7 @@ def tick(db, settings, *, now=None, answer=None):
                     processed += not added['duplicate']
                 except (ValueError, TypeError):
                     invalid += 1
+                    row_invalid += 1
                 cursor = d['decision_id']
             with exp.transaction(db) as conn:
                 # report_json contains the growing books and is not needed for the cursor
@@ -327,7 +332,7 @@ def tick(db, settings, *, now=None, answer=None):
                 # optimistic revision guard while writing only the state already loaded by
                 # the batch query above. A concurrent review wins and this tick retries.
                 row['state']['cursor'] = cursor
-                row['state']['blocked'] += invalid
+                row['state']['blocked'] += row_invalid
                 updated = conn.execute(
                     'UPDATE RULE_EXPERIMENTS SET revision=revision+1,state_json=? '
                     'WHERE id=? AND revision=?',

@@ -15,13 +15,18 @@ def propose_batch(db, settings, now, policy, answer=None):
             conn.execute('SELECT pg_advisory_xact_lock(71911501)')
         attempt = e.control(conn, 'proposal_attempt', {})
         budget_used = attempt.get('day') == now[:10]
+        if budget_used:
+            # Nothing below can produce a proposal today. Retain the last dated
+            # eligibility explanation; don't reload libraries/outcomes each tick.
+            return 'daily_model_budget_reached'
         specs = [json.loads(r[0]) for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') LIMIT 24").fetchall()]
         history=[]
         for r in conn.execute('SELECT status,spec_json,report_json FROM RULE_EXPERIMENTS ORDER BY created_at DESC LIMIT 24').fetchall():
             spec,report=json.loads(r[1]),json.loads(r[2])
             history.append(dict(broker=spec['broker'],rule_type=spec['rule_type'],threshold=spec['threshold'],
                 hypothesis=spec['hypothesis'][:250],evidence_ids=spec['evidence_ids'],status=r[0],
-                usable=report.get('usable'),mean_difference=report.get('paired_mean_usd'),verdict=report.get('verdict')))
+                usable=report.get('usable'),mean_difference=report.get('paired_mean_usd'),verdict=report.get('verdict'),
+                both_skipped=report.get('both_skipped'),blocker_counts=report.get('blocker_counts',{})))
         evidence, eligibility = {}, {}
         for broker in ('alpaca', 'kraken'):
             slots = max(0, MAX_ACTIVE_PER_BROKER - sum(s['broker'] == broker for s in specs))
@@ -80,6 +85,7 @@ def propose_batch(db, settings, now, policy, answer=None):
         question += '\nBatch response overrides the single-object format: return {"proposals":[objects including broker],"no_change":"optional explanation"}. Respect capacity per broker. Do not fill slots with near-duplicate thresholds. Include risks and evaluation criteria in each hypothesis explanation. Reference no outcome outside that broker supplied evidence.'
         question += '\nAlso supported: minimum_target_move_bps, threshold 1..5000, filters planned percentage target distance in basis points rather than target/risk ratio. This is NOT expected return. Do not propose reference_set_filter automatically: separate paired inference budget is required.'
         question += '\nUse prior results including failures; do not recycle rejected hypotheses without identifying new supporting evidence.'
+        question += '\nBoth-skipped opportunities are not useful comparisons. Consider recorded blocker counts before proposing another filter that cannot affect the blocker. Stop-distance or unsupported interventions need a development request, not an invented executable test. Independent shadow capacity is not permission to change live limits.'
         question += '\nWhen a proposal addresses a queued research request, include source_request_ids containing only its actual request IDs. Do not attach unrelated requests. For requests needing unsupported rules/data, return no_change explaining the limitation instead of substituting a different test.'
         raw = answer(question, context).strip()
         if len(raw) > 20000:

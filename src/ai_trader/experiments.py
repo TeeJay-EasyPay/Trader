@@ -160,8 +160,10 @@ def validate_spec(raw):
                 priority=int(number(raw.get('priority', 3), 1, 5)),
                 broker=broker, currency='GBP' if broker == 'kraken' else 'USD',
                 asset_type='crypto' if broker == 'kraken' else 'equity', side='buy',
-                baseline='unchanged recorded pre-execution eligibility',
+                baseline='recorded safeguards with independent virtual capital only',
                 simulator='daily-bar-paired-v2', initial_cash=10000.0,
+                portfolio_basis='independent-shadow-capacity-v1',
+                max_total_notional_fraction=0.25,
                 risk_fraction=0.0025, max_notional_fraction=0.10,
                 max_positions=5, max_holding_days=10,
                 baseline_contract_version=BASELINE_BEHAVIOUR_CONTRACT['contract_version'],
@@ -181,7 +183,10 @@ def validate_spec(raw):
 
 
 def _load(conn, eid, owner='founder'):
-    row = conn.execute('SELECT * FROM RULE_EXPERIMENTS WHERE id=? AND owner=?', (eid, owner)).fetchone()
+    from .verified_reads import rows
+    result = rows(conn, 'SELECT * FROM RULE_EXPERIMENTS WHERE id=? AND owner=?',
+                  (eid, owner), partition=('experiment', eid, owner))
+    row = result[0] if result else None
     if not row:
         raise ValueError('Experiment not found')
     row = dict(row)
@@ -340,6 +345,15 @@ def add_opportunity(db, eid, opportunity, *, owner='founder'):
             return {'id': same[0], 'duplicate': True}
         # Only an exact, allowlisted strategy rejection can be replaced in shadow.
         # Missing reasons or ANY other failure (costs/risk/permissions/data) block it.
+        # New versions can investigate opportunities blocked ONLY by occupied
+        # real-account capital. Both arms instead enforce their own frozen cash,
+        # exposure and position limits in step(). No other safeguard is removed.
+        op['recorded_eligible'] = op['eligible']
+        independent = row['spec'].get('portfolio_basis') == 'independent-shadow-capacity-v1'
+        op['capacity_rebased'] = bool(independent and not op['eligible'] and reasons
+                                      and set(reasons) == {'maximum_capital_allocation_exceeded'})
+        if op['capacity_rebased']:
+            op['eligible'] = True
         candidate_eligible = op['eligible'] or (row['spec']['rule_type'] == 'replace_target_r_gate'
             and bool(reasons) and set(reasons) == {'reward_risk_below_minimum'})
         candidate_pass = ((op['target']/op['entry']-1)*10000 >= row['spec']['threshold']
@@ -394,6 +408,8 @@ def step(spec, books, op, bar):
             book.update(budget_day=bar['start'][:10], entry_cash_remaining=book['cash'],
                         entry_slots_remaining=spec['max_positions'] - len(book['positions']),
                         occupied_at_open=list(book['positions']))
+            if spec.get('portfolio_basis') == 'independent-shadow-capacity-v1':
+                book['exposure_reserved'] = sum(p['quantity'] * p['mark'] for p in book['positions'].values())
         if outcome['status'] == 'awaiting_bar':
             fill = o * (1 + slip)
             if fill <= op['stop'] or fill >= op['target'] or book['entry_slots_remaining'] <= 0 or op['symbol'] in book['occupied_at_open']:
@@ -403,6 +419,12 @@ def step(spec, books, op, bar):
             raw_quantity = min(risk_cash / (fill - op['stop'] + fill * fee + op['stop'] * (fee + slip)),
                                       spec['initial_cash'] * spec['max_notional_fraction'] / fill,
                                       max(0, min(book['cash'], book['entry_cash_remaining'])) / (fill * (1 + fee)))
+            if spec.get('portfolio_basis') == 'independent-shadow-capacity-v1':
+                # Reserve capital throughout the day, even if an earlier loop's
+                # position happened to exit later in this same daily bar.
+                used = book['exposure_reserved']
+                remaining = max(0, spec['initial_cash'] * spec['max_total_notional_fraction'] - used)
+                raw_quantity = min(raw_quantity, remaining / (fill * (1 + fee)))
             quantity = math.floor(raw_quantity * 1e8) / 1e8 if spec.get('broker') == 'kraken' else math.floor(raw_quantity)
             if quantity <= 0:
                 outcome.update(status='skipped', reason='insufficient virtual cash / risk budget')
@@ -411,6 +433,8 @@ def step(spec, books, op, bar):
             book['cash'] -= quantity * fill + cost
             book['entry_cash_remaining'] -= quantity * fill + cost
             book['entry_slots_remaining'] -= 1
+            if spec.get('portfolio_basis') == 'independent-shadow-capacity-v1':
+                book['exposure_reserved'] += quantity * fill
             book['occupied_at_open'].append(op['symbol'])
             outcome.update(status='open', entry=fill, entered_at=bar['start'], quantity=quantity, cost=cost)
             book['positions'][op['symbol']] = dict(quantity=quantity, mark=c)
@@ -472,7 +496,11 @@ def settle_bars(db, eid, bars, *, owner='founder', now=None):
 
 def evaluate(row, ops, *, now):
     complete = [o for o in ops if all(a['status'] in ('closed', 'skipped') for a in o['arms'].values())]
-    usable = [o for o in complete if not o['uncertain']]
+    both_skipped = [o for o in complete if all(a['status'] == 'skipped' for a in o['arms'].values())]
+    usable = [o for o in complete if not o['uncertain'] and any(a['status'] == 'closed' for a in o['arms'].values())]
+    from collections import Counter
+    blockers = Counter(reason for o in both_skipped for reason in
+                       (o.get('rejection_reasons') or ['filter_or_virtual_portfolio_limit']))
     diff = [o['arms']['candidate']['net'] - o['arms']['baseline']['net'] for o in usable]
     n = len(diff)
     mean = statistics.mean(diff) if diff else None
@@ -503,10 +531,14 @@ def evaluate(row, ops, *, now):
         elif mean is not None and mean < 0:
             verdict = 'rejected'
     return dict(finished=finished and not row['spec'].get('weekly_reviews'), verdict=verdict, observations=len(ops), completed=len(complete), usable=n,
+                both_skipped=len(both_skipped), informative_completed=n,
+                blocker_counts=dict(blockers),
+                capacity_rebased=sum(bool(o.get('capacity_rebased')) for o in ops),
+                decision_differences=sum((o['arms']['baseline']['status']=='skipped') != (o['arms']['candidate']['status']=='skipped') for o in ops),
                 currency=row['spec'].get('currency', 'USD'),
                 closed_trades={arm: sum(o['arms'][arm]['status'] == 'closed' for o in ops) for arm in ('baseline', 'candidate')},
                 skipped={arm: sum(o['arms'][arm]['status'] == 'skipped' for o in ops) for arm in ('baseline', 'candidate')},
-                uncertain=len(complete) - n, paired_mean_usd=mean, descriptive_lower_bound=lower,
+                uncertain=sum(bool(o['uncertain']) for o in complete), paired_mean_usd=mean, descriptive_lower_bound=lower,
                 day_clusters=len(groups), symbol_days=symbol_days,
                 evidence_stage='provisional' if provisional else 'collecting',
                 provisional_signal=provisional_signal,

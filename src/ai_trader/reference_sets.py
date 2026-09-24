@@ -37,7 +37,7 @@ def pair(db, eid, opportunity, settings, *, answer=None, now=None):
     live_inference=answer is None
     with e.transaction(db) as c:
         if e.uses_postgres(): c.execute('SELECT pg_advisory_xact_lock(71911501)')
-        row=e._load(c,eid)
+        row=e._load_opportunity_experiment(c,eid)
         if row['spec']['rule_type']!='reference_set_filter' or row['status']!='shadow_running':
             raise ValueError('Running reference experiment required')
         key='reference_pair:'+e.digest([eid,opportunity['source_id']])

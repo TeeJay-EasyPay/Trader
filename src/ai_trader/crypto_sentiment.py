@@ -77,14 +77,16 @@ def recent_headlines(
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(window_hours)))).isoformat()
     try:
         with closing(connect(db_path)) as conn:
-            rows = conn.execute(
+            from .verified_reads import rows as verified_rows
+            rows = verified_rows(conn,
                 """
                 SELECT symbol, title, summary, source, published_at FROM CRYPTO_NEWS
                 WHERE COALESCE(published_at, created_at) >= ?
                 ORDER BY COALESCE(published_at, created_at) DESC
                 """,
                 (cutoff,),
-            ).fetchall()
+                partition=('sentiment-news', window_hours),
+            )
     except sqlite3.OperationalError:
         return {}
     grouped: dict[str, list[dict[str, str]]] = {}

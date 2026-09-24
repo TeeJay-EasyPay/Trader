@@ -149,7 +149,9 @@ def _headlines(db_path: Path, asset_class: str, symbols: list[str], window_hours
         )
     try:
         with closing(connect(db_path)) as conn:
-            rows = conn.execute(sql, (*symbols, cutoff)).fetchall()
+            from .verified_reads import rows as verified_rows
+            rows = verified_rows(conn, sql, (*symbols, cutoff),
+                                 partition=('theme-news', asset_class, tuple(symbols)))
     except sqlite3.OperationalError:
         return []
     out: list[dict[str, str]] = []

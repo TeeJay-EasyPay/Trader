@@ -275,10 +275,12 @@ def find_historical_analogues(db_path: Path, query: dict[str, Any], *, minimum_c
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     with closing(connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(f"""SELECT experience_id,created_at,proposal_id,recommendation_id,
+        from .verified_reads import rows as verified_rows
+        rows = verified_rows(conn, f"""SELECT experience_id,created_at,proposal_id,recommendation_id,
             broker,symbol,asset_type,strategy_id,regime_id,decision_context_json,
             execution_context_json,result_context_json,immutable_hash
-            FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 20""", tuple(params)).fetchall()
+            FROM EXPERIENCE_RECORDS {where} ORDER BY experience_id DESC LIMIT 20""", tuple(params),
+            partition=('experience', broker, symbol, strategy_id, regime_id, asset_type))
     # Reporting-only outcomes lack the decision evidence required for precedent.
     cases = [dict(row) for row in rows
              if json.loads(row["result_context_json"] or "{}").get("record_kind") != "outcome_only"]

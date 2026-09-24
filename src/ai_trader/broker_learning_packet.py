@@ -176,7 +176,7 @@ def _simulation_evidence(conn: Any, broker: str, asset_class: str, currency: str
                 legacy_unrecoverable += count
     except Exception:
         pass
-    active = observations = 0
+    active = observations = both_skipped = informative = 0
     try:
         if uses_postgres():
             rows = conn.execute(
@@ -197,11 +197,20 @@ def _simulation_evidence(conn: Any, broker: str, asset_class: str, currency: str
                 broker_experiment_ids.append(str(values[0]))
         if broker_experiment_ids:
             placeholders = ",".join("?" for _ in broker_experiment_ids)
+            from .experiment_assurance import json_field
+            baseline = json_field('payload_json', ['arms','baseline','status'])
+            candidate = json_field('payload_json', ['arms','candidate','status'])
+            uncertain = json_field('payload_json', ['uncertain'])
             observation_row = conn.execute(
-                f"SELECT COUNT(*) FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id IN ({placeholders})",
+                f"SELECT COUNT(*) AS observations, SUM(CASE WHEN {baseline}='skipped' AND {candidate}='skipped' THEN 1 ELSE 0 END) AS both_skipped, "
+                f"SUM(CASE WHEN {baseline} IN ('closed','skipped') AND {candidate} IN ('closed','skipped') "
+                f"AND ({baseline}='closed' OR {candidate}='closed') AND LOWER(CAST({uncertain} AS TEXT)) IN ('false','0') THEN 1 ELSE 0 END) AS informative_completed "
+                f"FROM EXPERIMENT_OPPORTUNITIES WHERE experiment_id IN ({placeholders})",
                 tuple(broker_experiment_ids),
             ).fetchone()
             observations = int(row_values(observation_row)[0] or 0) if observation_row else 0
+            if observation_row:
+                both_skipped, informative = (int(v or 0) for v in row_values(observation_row)[1:3])
     except Exception:
         pass
     proof = "adapter_settled_outcomes" if adapter_settled else (
@@ -213,10 +222,13 @@ def _simulation_evidence(conn: Any, broker: str, asset_class: str, currency: str
         "legacy_status_counts": statuses, "legacy_unrecoverable": legacy_unrecoverable,
         "adapter_v2_settled_outcomes": adapter_settled,
         "modern_forward_experiments": active, "modern_forward_observations": observations,
+        "modern_both_skipped": both_skipped, "modern_informative_completed": informative,
         "modern_observation_definition": "recorded paired-simulation opportunities",
         "production_proof": proof,
         "plain_english": (
             "Old unrecoverable rows remain excluded. New simulations use the broker-specific adapter; "
-            "the proof field distinguishes configured code from measured outcomes."
+            "the proof field distinguishes configured code from measured outcomes. Standalone settled "
+            "simulations are not paired comparisons. Both-skipped opportunities provide no trading "
+            "comparison; only completed non-uncertain pairs with at least one closed arm are informative."
         ),
     }
