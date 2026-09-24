@@ -3,6 +3,28 @@ from contextlib import closing
 from .database import connect
 
 
+def kraken_cash_page(db, adapter, offset=0, end=None):
+    """One fifty-row GBP ledger page since allocation; explicit manual audit only."""
+    import math
+    import time
+    from datetime import datetime
+    if isinstance(offset,bool) or not isinstance(offset,int) or offset not in range(0,401,50):
+        raise ValueError('Offset must be 0..400 in fifty-row increments')
+    with closing(connect(db)) as c:
+        start=c.execute("SELECT MIN(event_time) FROM KRAKEN_AI_CAPITAL_LEDGER WHERE entry_type='founder_allocation'").fetchone()[0]
+    if not start:raise ValueError('Recorded allocation start required')
+    start=datetime.fromisoformat(str(start).replace('Z','+00:00')).timestamp()
+    now=time.time();end=now if end is None else float(end)
+    if not math.isfinite(end) or not start<=end<=now+1:raise ValueError('Invalid frozen audit end')
+    result=adapter._private_request('/0/private/Ledgers',{'asset':'ZGBP','start':start,'end':end,'ofs':offset}).get('result',{})
+    rows=result.get('ledger',{})
+    if len(rows)>50:raise ValueError('Broker returned more than one page')
+    fields=('refid','time','type','subtype','asset','amount','fee','balance')
+    return dict(read_only=True,broker_orders=0,start=start,end=end,offset=offset,
+        count=result.get('count'),entries={k:{f:r.get(f) for f in fields} for k,r in rows.items()},
+        limitation='GBP account movements, not an attribution of every movement to Trader. No data written.')
+
+
 def kraken_orders(db, adapter, order_ids):
     if not isinstance(order_ids,list) or not 1<=len(order_ids)<=10 or any(not isinstance(x,str) or not x for x in order_ids):
         raise ValueError('One to ten explicit owned order IDs required')

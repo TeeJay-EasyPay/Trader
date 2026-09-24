@@ -1041,6 +1041,13 @@ class LocalApiService:
                 return 200, kraken_orders(self.settings.db_path, KrakenAdapter(), body.get('order_ids'))
             except ValueError as exc:
                 return 400, {'error': str(exc)}
+        if path == "/readiness/kraken-cash-ledger":
+            from ..readiness_broker_evidence import kraken_cash_page
+            try:
+                return 200, kraken_cash_page(self.settings.db_path, KrakenAdapter(),
+                                            body.get('offset',0),body.get('end'))
+            except (ValueError,TypeError) as exc:
+                return 400, {'error': str(exc)}
         if path == "/kraken-reconciliation/replay":
             return 200, replay_persisted_kraken_evidence(
                 self.settings.db_path,

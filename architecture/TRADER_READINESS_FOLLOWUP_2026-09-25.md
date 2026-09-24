@@ -52,3 +52,66 @@ deployments. There is not yet a complete day after the 22:38 UTC release. Provid
 usage credentials are not present locally; do not invent a day total or savings.
 
 Deployment, bounded repair results and remaining required evidence follow below.
+
+## Applied and verified (23:40–23:47 UTC September 24)
+
+- API and worker both verified at `9e4345d9a9b8fe3a24c85e2d5225247470f3ce85`.
+  Intermediate release was 17f34dc8. The final adjustment scopes the precision
+  projection to Kraken; Alpaca's numeric reader remains unchanged.
+- Fresh Kraken QueryOrders confirmed the four exits closed and fully executed.
+  GBP Balance was 401.1774. No broker orders or cancellations occurred.
+- Repaired XRP, SOL, LTC and ADA exact closures and closed their stale local
+  controls. Original fills retained, previous scalar/control fields audited.
+  Actual closure dates: September 9 (XRP/LTC), September 10 (ADA), September 20
+  (SOL), not the repair date. All four normal learning workflows completed.
+- MDT targeted repair completed. Its canonical closure date is September 22;
+  ordinary learning workflow completed with no error and no invented net fees.
+- Coverage verified: Kraken 91 canonical terminal / 91 linked reviews / 91 known
+  net results; Alpaca 26 terminal / 26 linked reviews / zero verified trade nets.
+  Counts describe coverage, not improvement. They must not be pooled as one currency.
+- Further reconciliation found four *already-repaired learning* records whose
+  canonical synthetic exit records still had side=sell. The unchanged ledger and
+  retained owned buy/sell fills proved the mismatch. `repair_legacy_direction.py`
+  previews four fixed IDs, requires existing repair provenance, cross-checks the
+  corrected arithmetic with ledger cash flows, preserves old values, and updates
+  only canonical/result/linked attribution fields. No learning is repeated.
+  Applied all four; corrected nets approximately -0.0676488, +0.0799101,
+  +0.054855 and +0.12207 GBP. Every completed owned Kraken canonical result now
+  agrees with its ledger cash flows within GBP0.01 (zero mismatches).
+  Aggregate completed net is -GBP19.8958867. These are historical corrections,
+  not new profits made today. Live capital and risk policy are unchanged.
+- One currently open managed control remains (ETH), entry value GBP20.11472.
+  This does not resolve the separate orphan/legacy ownership records.
+- Full suite: 2,042 passed, 21 subtests passed, one skipped, eight known pre-existing
+  failures (six crypto fee-hurdle fixtures; two old Standup section-copy assertions).
+  Focused release checks: 112 passed, additional scope checks 32 passed, legacy
+  repair tests 3 passed including idempotency and preserving learning count.
+- The three bounded repairs consumed approximately 0.722 MB of returned row values
+  in local telemetry, not provider-billed bytes. This included original decision
+  context necessary for learning; no export of the full trade history was made.
+
+## What cannot yet be signed off
+
+1. **Whole cash/ownership bridge:** internal completed-trade P&L is reconciled, but
+   ledger cash GBP445.715 and physical cash GBP401.1774 differ by about GBP44.54.
+   An earmarked internal allocation is not itself an account deposit and these
+   balances need not be identical. To account for the difference, the historical
+   GBP account movements and opening funding basis must distinguish owned trade
+   flows from deposits, withdrawals and non-Trader activity. Do not plug the gap.
+   BCH has an explicitly identifiable split entry/exit across legacy logical IDs;
+   SUI's control only says the balance was zero at a September 9 check, which is
+   not proof of the missing exit price or profit. Four orphan exit-only records
+   still require identity reconciliation. No identities were merged by symbol.
+2. **Alpaca actual per-trade fees:** the available broker feed does not attach FEE
+   activities to order IDs. Keep estimates labelled, and account fees separate;
+   verified trade-net coverage cannot be manufactured from default zero fees.
+3. **Prospective results:** cursors advance and exclusions are recorded, but the
+   seven new versions have zero admitted pairs at the sampled check. Existing
+   daily quotas were intentionally preserved and Alpaca is outside market hours.
+   Need genuinely new eligible opportunities and completed bars, not a forced
+   research run, reset quota or fabricated settlement.
+4. **Egress:** a complete provider day after deployment is still unavailable.
+   Local consumed-value telemetry cannot replace the provider's AI-Trader-only
+   daily chart. No measured saving is claimed.
+
+These remaining evidence gaps are not marked complete merely because code shipped.
