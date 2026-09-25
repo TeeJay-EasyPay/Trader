@@ -92,12 +92,13 @@ Deployment, bounded repair results and remaining required evidence follow below.
 
 ## What cannot yet be signed off
 
-1. **Whole cash/ownership bridge:** internal completed-trade P&L is reconciled, but
+1. **Historical ownership classification:** internal completed-trade P&L is reconciled, but
    ledger cash GBP445.715 and physical cash GBP401.1774 differ by about GBP44.54.
    An earmarked internal allocation is not itself an account deposit and these
-   balances need not be identical. To account for the difference, the historical
-   GBP account movements and opening funding basis must distinguish owned trade
-   flows from deposits, withdrawals and non-Trader activity. Do not plug the gap.
+   balances need not be identical. The bounded GBP cash bridge below now explains
+   the difference arithmetically; classification of unmatched historical trade
+   movements still requires exact ownership and complete fill evidence. Do not
+   label unmatched movements personal or plug the capital gap.
    BCH has an explicitly identifiable split entry/exit across legacy logical IDs;
    SUI's control only says the balance was zero at a September 9 check, which is
    not proof of the missing exit price or profit. Four orphan exit-only records
@@ -115,3 +116,61 @@ Deployment, bounded repair results and remaining required evidence follow below.
    daily chart. No measured saving is claimed.
 
 These remaining evidence gaps are not marked complete merely because code shipped.
+
+## Trader review and final cash diagnostic
+
+One paid read-only follow-up returned `answered`, `read_only=true` and partly
+satisfied. Its attached cached packet predated the last repairs (90/25 reviews,
+old net); this is not the same snapshot as the final direct 91/26 database check.
+The API uses a 90-second fresh / 600-second stale-while-refreshing context cache.
+Do not misreport the cached packet as an independent failure of the completed
+repairs, or claim Trader independently verified deployment. It requested the
+remaining cash/identity, actual-fee and prospective evidence as expected.
+
+To exhaust the remaining safe cash check, added a manual, authenticated GBP-only
+ledger diagnostic: one page of fifty entries per request, offsets bounded to
+0..400, starting at the recorded first allocation and using a frozen end time.
+Only Kraken's fixed read-only Ledgers method is callable. No settings, orders,
+database history export or new automated polling. Ledger permission may differ
+from the existing balance/order permissions.
+Official reference: https://docs.kraken.com/api-reference/account-data/get-ledgers-info
+
+## Final bounded cash bridge (September 24, approximately 23:54 UTC)
+
+Existing broker credentials permitted the diagnostic. Five pages / 209 GBP ledger
+entries reconciled opening GBP38.2326 plus net movements GBP362.9448 to closing
+GBP401.1774, with **zero bridge residual**. Rows were processed in memory, not
+exported as a history file. `tools/audit_kraken_cash_bridge.py` records the bounded
+read-only procedure, rejecting incomplete intervals.
+
+Compared with internal allocation GBP500 and ledger cash GBP445.71502165:
+
+- 194 broker references matched the internal ledger; total numerical difference
+  was about -GBP0.0011781.
+- Unmatched broker movements comprised deposit +GBP481 and trade movements
+  -GBP63.7691. Two unmatched internal items totalled -GBP0.00005645.
+- Opening cash + deposit - allocation = +GBP19.2326; subtracting those unmatched
+  trade movements and allowing for the tiny numerical differences explains the
+  approximately GBP44.54 lower physical balance. This is an accounting bridge,
+  not evidence that the full difference belongs to Trader or permission to
+  increase spendable capital.
+
+Nine unmatched XRP fills (GBP18.6869 total debits) identify original limit order
+OFL7X7-37RD4-2LARC6. A retained broker-submission event explicitly links it through
+`fallback_from_unfilled_limit_order_id` to logical trade
+f7ee5798-1a5a-4ea7-879a-56d16040131a and final order OBJ3IU-4AUJR-QVTI3Y.
+Current submission ownership registers the final order, not that original leg.
+This is concrete missing provenance, not grounds to classify the fills as manual.
+That logical trade is already terminal and reviewed, with 24.14360046 entry/exit
+quantity. Blindly adding the original fills would change exposure and invalidate
+the existing result; complete multi-leg evidence and a guarded learning correction
+are required before historical application. No such repair was applied this turn.
+Two other unmatched KSM fills identify OGMA3U-EFYTY-H2XDHX but have no established
+ownership; no attribution was guessed from the symbol.
+
+Both API and worker were verified deployed at
+37863068c93c83615b48407a7f59fd98407c1d9a; worker was running with heartbeat
+2026-09-24T23:59:52.487552+00:00. Latest focused checks: 114 passed.
+The remaining historical ownership correction, verified Alpaca per-trade fees,
+prospective experiment evidence and full-day provider egress are not signed off.
+Voice redesign remains deferred as requested.
