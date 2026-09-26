@@ -28,16 +28,21 @@ CLAUDE = "claude"
 TRADER = "trader"
 BOTH = "both"
 
-# How many AI turns one Founder message may produce before the floor returns to him.
-#
-# 2026-09-07, lowered from four to two after the Founder used it. Four peer turns on top of the
-# opening two is SIX model calls for one question -- three to six minutes of silence, which he
-# experienced as the app having hung, and then as "they started talking amongst themselves".
-#
-# Two is one reply each: enough to disagree and be answered, and short enough that the floor
-# comes back to him while he is still in the conversation. If he wants more he can simply say
-# so, which is cheaper than guessing on his behalf.
-DEFAULT_EXCHANGE_BUDGET = 2
+# Extra AI-to-AI turns after the addressed opening answers. The Founder can
+# explicitly request up to two; the default never purchases agreement loops.
+DEFAULT_EXCHANGE_BUDGET = 0
+
+
+def substantive_reply(text, status=None):
+    """Do not buy another turn to answer a failure or a bare agreement."""
+    if status in ('failed', 'budget_limited', 'not_configured'):
+        return False
+    said = ' '.join(str(text or '').lower().split())
+    if not said:
+        return False
+    if len(said) < 180 and re.match(r'^(agreed\b|i agree\b|nothing (?:more|further|to add)\b|no(?:thing)? further\b)', said):
+        return False
+    return True
 
 # What each participant answers to. "gpt" and "chatgpt" are the Founder's own words for the
 # trading AI; "trader" is what the system calls it. All of them route to the same place, because

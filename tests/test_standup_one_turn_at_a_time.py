@@ -99,7 +99,7 @@ class OneReplyPerRequestTests(unittest.TestCase):
                     "exchange_used": result["exchange_used"],
                     "opening_left": result["opening_left"],
                 }
-            self.assertEqual(speakers, [TRADER, CLAUDE, TRADER, CLAUDE])
+            self.assertEqual(speakers, [TRADER, CLAUDE])
 
     def test_the_floor_comes_back_to_the_founder(self):
         """It must end. A next_speaker that never becomes None is an app that waits forever."""
@@ -172,7 +172,7 @@ class ExchangeBudgetTests(unittest.TestCase):
         """Four peer turns on top of the opening two is six model calls for one question --
         minutes of silence, which he experienced as the app having hung."""
         self.assertLessEqual(DEFAULT_EXCHANGE_BUDGET, 2)
-        self.assertGreaterEqual(DEFAULT_EXCHANGE_BUDGET, 1, "they must still be able to disagree")
+        self.assertEqual(DEFAULT_EXCHANGE_BUDGET, 0, "additional paid peer turns require explicit selection")
 
 
 class StaleReplyTests(unittest.TestCase):

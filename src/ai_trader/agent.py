@@ -1139,6 +1139,13 @@ def propose_crypto_trades(
                         # Recorded as its own event type rather than agent_no_trade, because
                         # it is not a refusal and filing it as one would corrupt every count
                         # of why trades do not happen.
+                        from .ai_budget import BudgetUnavailable
+                        if isinstance(exc, BudgetUnavailable):
+                            audit.record_execution_event(
+                                proposal_id=proposal.proposal_id, event_type='ai_review_budget_blocked',
+                                payload={'symbol': symbol, 'reason': str(exc),
+                                         'consequence': 'Candidate skipped; unavailable paid review is not approval.'})
+                            continue
                         audit.record_execution_event(
                             proposal_id=proposal.proposal_id,
                             event_type="ai_review_unavailable",

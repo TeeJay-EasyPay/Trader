@@ -98,7 +98,7 @@ function StandupScreen({ request }) {
   const busyRef = useRef(false);
   const floorRequestedRef = useRef(false);
   const pendingSpeechRef = useRef('');
-  const [exchangeBudget, setExchangeBudget] = useState(4);
+  const [exchangeBudget, setExchangeBudget] = useState(0);
   const [statusLine, setStatusLine] = useState('Not started');
   const [spentTotal, setSpentTotal] = useState(0);
   const mountedRef = useRef(true);
@@ -467,7 +467,7 @@ function StandupScreen({ request }) {
         {mode === 'both' ? (
           <CollapsibleSection title={`Conversation settings · ${exchangeBudget} follow-ups`}>
             <View style={styles.standupModeRow}>
-              {[0, 2, 4, 8].map((count) => (
+              {[0, 1, 2].map((count) => (
                 <TouchableOpacity key={count} disabled={busy} onPress={() => setExchangeBudget(count)}
                   style={[styles.standupMode, exchangeBudget === count && styles.standupModeActive]}>
                   <Text style={[styles.standupModeText, exchangeBudget === count && styles.standupModeTextActive]}>{count === 0 ? 'Answers only' : `${count} follow-ups`}</Text>

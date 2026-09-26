@@ -57,7 +57,9 @@ def test_output_cap_reaches_provider_and_partial_answer_is_labelled():
     with patch('ai_trader.ai.urlopen', side_effect=respond):
         answer = OpenAIReadOnlyExplainer('test', 'test-model', timeout_seconds=180, max_output_tokens=6000).answer('question', {})
     assert len(requests) == 1
-    assert requests[0][0]['max_output_tokens'] == 6000
+    assert requests[0][0]['max_output_tokens'] == 1200
+    assert requests[0][0]['model'] == 'gpt-6-luna'
+    assert requests[0][0]['reasoning']['effort'] == 'none'
     assert requests[0][1] == 180
     assert 'Partial evidence' in answer
     assert 'stopped before completion' in answer

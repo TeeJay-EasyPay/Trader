@@ -246,8 +246,10 @@ def refresh_market_themes(
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        from .openai_transport import responses
+        raw = responses(request, category='market_themes', timeout=timeout_seconds, opener=urlopen)
+        from .ai import _usage
+        _usage('market_themes', model, raw)
         judged = json.loads(_extract_text(raw) or "{}")
     except Exception as exc:  # noqa: BLE001 - a failed refresh must never stop research
         return {"status": "failed", "asset_class": asset_class, "written": 0, "message": str(exc)[:200]}

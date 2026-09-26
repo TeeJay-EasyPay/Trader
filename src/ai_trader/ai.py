@@ -8,6 +8,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .models import AccountContext, GuardrailConfig, TradeProposal
+from .openai_transport import responses as budgeted_responses
+from .ai_budget import model_for
 
 
 def _symbol_market(symbol: str, market: dict[str, Any]) -> dict[str, Any]:
@@ -96,8 +98,7 @@ class OpenAIProposalAnalyzer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=30) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        raw = budgeted_responses(request, category='equity_proposal', timeout=30, opener=urlopen)
         text = _extract_response_text(raw)
         _usage('equity_proposal', self.model, raw)
         return _proposal_from_response_text(text)
@@ -173,8 +174,7 @@ class MarketForecastAnalyzer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=45) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        raw = budgeted_responses(request, category='market_forecast', timeout=45, opener=urlopen)
         _usage('market_forecast', self.model, raw)
         return _forecast_from_response_text(_extract_response_text(raw))
 
@@ -273,8 +273,7 @@ class CryptoTradeReviewer:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=25) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        raw = budgeted_responses(request, category='crypto_review', timeout=25, opener=urlopen)
         _usage('crypto_review', self.model, raw)
         return _review_from_response_text(_extract_response_text(raw))
 
@@ -359,8 +358,7 @@ class BenchmarkResearchAnalyzer:
             },
         )
         try:
-            with urlopen(request, timeout=60) as response:
-                raw = json.loads(response.read().decode("utf-8"))
+            raw = budgeted_responses(request, category='benchmark_research', timeout=60, opener=urlopen)
         except HTTPError as exc:
             # 2026-08-21 live-verification finding: this is the first analyzer in this
             # codebase to use a hosted tool (web_search_preview) -- the other analyzers'
@@ -384,9 +382,9 @@ class OpenAIReadOnlyExplainer:
     def __init__(self, api_key: str, model: str, timeout_seconds: float | None = None,
                  max_output_tokens: int | None = None, usage_category: str = 'explanation'):
         self.api_key = api_key
-        self.model = model
+        self.model = model_for(usage_category, model)
         self.timeout_seconds = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
-        self.max_output_tokens = max_output_tokens
+        self.max_output_tokens = min(max_output_tokens or 1200, 1200) if usage_category == 'explanation' else max_output_tokens
         self.usage_category = usage_category
 
     def answer(self, question: str, context: dict[str, Any], history: list[dict[str, Any]] | None = None) -> str:
@@ -479,8 +477,7 @@ class OpenAIReadOnlyExplainer:
         if self.max_output_tokens is not None:
             payload['max_output_tokens'] = int(self.max_output_tokens)
             request.data = json.dumps(payload).encode('utf-8')
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        raw = budgeted_responses(request, category=self.usage_category, timeout=self.timeout_seconds, opener=urlopen)
         self.last_usage = {key: (raw.get('usage') or {}).get(key) for key in ('input_tokens','output_tokens','total_tokens')}
         _usage(self.usage_category, self.model, raw)
         text = _extract_response_text(raw).strip()
@@ -717,9 +714,9 @@ MAX_SPEECH_CHARACTERS = 4000
 
 
 class OpenAISpeaker:
-    """Text to speech for one answer. Never raises for a bad request."""
+    """Budgeted speech for one answer; the API caller retains the text fallback."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini-tts", voice: str = "alloy",
+    def __init__(self, api_key: str, model: str = "tts-1", voice: str = "alloy",
                  timeout_seconds: float = 30.0):
         self.api_key = api_key
         self.model = model
@@ -738,6 +735,14 @@ class OpenAISpeaker:
             return b""
         if len(cleaned) > MAX_SPEECH_CHARACTERS:
             cleaned = cleaned[:MAX_SPEECH_CHARACTERS].rsplit(" ", 1)[0] + "..."
+        from . import ai_budget as budget
+        if budget.enabled():
+            if self.model != 'tts-1':
+                raise budget.BudgetUnavailable('Speech model has no bounded cost accounting; use text.')
+            # $15 per million characters; UTF-8 bytes are a conservative bound.
+            cost = len(cleaned.encode('utf-8')) * 15
+            receipt = budget.reserve('speech', cost)
+            budget.settle(receipt, cost)  # fixed conservative charge, including uncertain failures
         request = Request(
             "https://api.openai.com/v1/audio/speech",
             data=json.dumps({
@@ -757,7 +762,7 @@ class OpenAISpeaker:
 
 
 class OpenAITranscriber:
-    """Speech to text for one recorded question. Never raises for a bad recording."""
+    """Budgeted speech to text; unbounded/invalid recordings fail before dispatch."""
 
     def __init__(self, api_key: str, model: str = "whisper-1", timeout_seconds: float = 45.0):
         self.api_key = api_key
@@ -767,6 +772,23 @@ class OpenAITranscriber:
     def transcribe(self, audio: bytes, *, filename: str = "question.m4a") -> str:
         if not audio:
             return ""
+        from . import ai_budget as budget
+        if budget.enabled():
+            from io import BytesIO
+            import math
+            import mutagen
+            try:
+                recording = mutagen.File(BytesIO(audio))
+                duration = float(recording.info.length)
+                if not math.isfinite(duration) or not 0 < duration <= 120:
+                    raise ValueError('Recording exceeds two minutes')
+            except Exception as exc:
+                raise budget.BudgetUnavailable('Recording duration could not be bounded; use a recording under two minutes or type.') from exc
+            if self.model != 'whisper-1':
+                raise budget.BudgetUnavailable('Transcription model has no verified cost accounting; use text.')
+            cost = math.ceil(duration + 2) * 100
+            receipt = budget.reserve('transcription', cost)
+            budget.settle(receipt, cost)  # $0.006/min; retain this rounded duration charge
         # multipart/form-data by hand: this codebase deliberately has no HTTP client
         # dependency, and one endpoint does not justify adding one.
         boundary = "----aitrader" + hashlib.sha256(audio[:64] + filename.encode()).hexdigest()[:24]

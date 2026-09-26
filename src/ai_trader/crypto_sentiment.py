@@ -184,8 +184,10 @@ def score_crypto_sentiment(
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+        from .openai_transport import responses
+        raw = responses(request, category='crypto_sentiment', timeout=timeout_seconds, opener=urlopen)
+        from .ai import _usage
+        _usage('crypto_sentiment', model, raw)
         judged = json.loads(_extract_text(raw) or "{}")
     except Exception as exc:  # noqa: BLE001 - a failed sentiment read must not stop research
         return {"status": "failed", "scored": 0, "symbols": [], "message": str(exc)[:200]}

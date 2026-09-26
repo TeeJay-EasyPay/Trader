@@ -48,7 +48,10 @@ def _captured_prompt(question="am I up today", context=None, history=None):
             explainer.answer(question, context or {"balances": {}}, history=history)
         except Exception:  # noqa: BLE001 - expected; the fake always raises
             pass
-    return json.loads(captured["body"]["input"])
+    messages = captured["body"]["input"]
+    assert messages[0]['role'] == 'developer'
+    assert messages[1]['role'] == 'user'
+    return {**json.loads(messages[1]['content']), 'instruction': messages[0]['content'][0]['text']}
 
 
 # --------------------------------------------------------------------------

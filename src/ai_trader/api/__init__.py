@@ -1403,7 +1403,7 @@ class LocalApiService:
             "status": "answered",
             "answer": answer or _deterministic_ai_trader_answer(question, context),
             "read_only": True,
-            "model": self.settings.openai_reasoning_model,
+            "model": explainer.model,
             "note": "Ask AI Trader is read-only. It cannot place trades, approve trades, change guardrails, or change broker settings.",
             **({"evidence": context} if include_evidence else {}),
         }
@@ -1521,7 +1521,7 @@ class LocalApiService:
         _record_daily_checkin(self.settings.db_path, question=SELF_ASSESSMENT_QUESTION, answer=answer)
         return record_self_assessment(
             self.settings.db_path, answer=answer,
-            model=self.settings.openai_reasoning_model, status="answered", inventory=inventory,
+            model=explainer.model, status="answered", inventory=inventory,
         )
 
     def _standup_history(self, conversation_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
@@ -1580,10 +1580,13 @@ class LocalApiService:
         except TimeoutError:
             return {'status': 'failed', 'text': 'Trader reached its 3-minute response timeout. No answer was received and no automatic retry was made.'}
         except Exception as exc:  # noqa: BLE001 - one silent participant must not end the standup
+            from ..ai_budget import BudgetUnavailable
+            if isinstance(exc, BudgetUnavailable):
+                return {'status': 'budget_limited', 'text': str(exc) + ' Trading safeguards and broker reconciliation remain independent of this AI allowance.'}
             logger.exception("Trader turn failed in standup.")
             return {"status": "failed", "text": f"The trader could not answer ({type(exc).__name__})."}
         return {"status": "answered", "text": str(answer or "").strip(),
-                "model": self.settings.openai_reasoning_model}
+                "model": explainer.model}
 
     def _claude_turn(self, history: list[dict[str, Any]], question: str,
                      report: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
@@ -1665,7 +1668,7 @@ class LocalApiService:
             budget = DEFAULT_EXCHANGE_BUDGET if requested is None else int(requested)
         except (TypeError, ValueError):
             budget = DEFAULT_EXCHANGE_BUDGET
-        budget = max(0, min(budget, 8))
+        budget = max(0, min(budget, 2))
 
         # How many replies this request may produce. None means "the whole exchange", which is
         # what a test or a script wants; the app asks for one so the Founder sees each reply as
@@ -1708,6 +1711,7 @@ class LocalApiService:
 
         produced: list[dict[str, Any]] = []
         speakers = list(queue)
+        from ..standup import substantive_reply
 
         def _speak(who: str, prompt: str) -> bool:
             if report:
@@ -1753,7 +1757,7 @@ class LocalApiService:
             and _room_left()
             and should_reply_to_peer(
                 mode=mode, turns_used=used, budget=budget,
-                peer_said_something=bool(produced[-1]["text"]),
+                peer_said_something=substantive_reply(produced[-1]["text"], produced[-1].get('status')),
             )
         ):
             peer = other_speaker(produced[-1]["speaker"])
@@ -1769,7 +1773,7 @@ class LocalApiService:
             next_speaker = speakers[0]
         elif produced and should_reply_to_peer(
             mode=mode, turns_used=used, budget=budget,
-            peer_said_something=bool(produced[-1]["text"]),
+            peer_said_something=substantive_reply(produced[-1]["text"], produced[-1].get('status')),
         ):
             next_speaker = other_speaker(produced[-1]["speaker"])
 
@@ -1903,7 +1907,7 @@ class LocalApiService:
             "digest": digest,
             "learned_synthesis": synthesis or deterministic_learned_synthesis(digest),
             "read_only": True,
-            "model": self.settings.openai_reasoning_model,
+            "model": explainer.model,
             "note": "Read-only. Cannot place trades, approve trades, change guardrails, or change broker settings.",
         }
 

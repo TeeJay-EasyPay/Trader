@@ -74,7 +74,7 @@ class PeerExchangeTests(unittest.TestCase):
     someone stops them, and every turn is a real bill."""
 
     def test_the_two_may_answer_each_other_in_a_standup(self):
-        self.assertTrue(should_reply_to_peer(mode=BOTH, turns_used=0, peer_said_something=True))
+        self.assertTrue(should_reply_to_peer(mode=BOTH, turns_used=0, budget=2, peer_said_something=True))
 
     def test_a_one_to_one_conversation_has_no_peer(self):
         self.assertFalse(should_reply_to_peer(mode=CLAUDE, turns_used=0, peer_said_something=True))
@@ -230,9 +230,9 @@ class StandupTurnTests(unittest.TestCase):
             result = self._service(tmp).run_standup_turn(
                 {"message": "morning, where are we?", "exchange_budget": 3}
             )
-            self.assertEqual(result["exchange_turns"], 3)
+            self.assertEqual(result["exchange_turns"], 2)
             self.assertEqual([t["speaker"] for t in result["turns"]],
-                             [TRADER, CLAUDE, TRADER, CLAUDE, TRADER])
+                             [TRADER, CLAUDE, TRADER, CLAUDE])
 
     def test_asking_for_no_exchange_actually_buys_no_exchange(self):
         """A deliberate 0 must not be read as "not supplied". It was: the parse used `or`, so

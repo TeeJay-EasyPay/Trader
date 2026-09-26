@@ -12,7 +12,8 @@ def summary(db):
         rows = c.execute('SELECT payload_json FROM EXPERIMENT_CONTROL WHERE id LIKE ? LIMIT 100',
                          ('model_usage:' + day + ':%',)).fetchall()
     categories = [json.loads(r[0]) for r in rows]
-    return dict(as_of=e.now_iso(), day=day, prepaid_balance_usd=None,
+    from .ai_budget import status
+    return dict(as_of=e.now_iso(), day=day, prepaid_balance_usd=None, app_allowance=status(db),
                 balance_status='unavailable', billing_url='https://platform.openai.com/settings/organization/billing/overview',
                 scope='Instrumented app model calls today (UTC), since this release. Excludes voice and other apps. Not billed dollars.',
                 calls=sum(r.get('calls', 0) for r in categories),

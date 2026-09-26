@@ -61,7 +61,7 @@ def pair(db, eid, opportunity, settings, *, answer=None, now=None):
     try:
         if answer is None:
             from .ai import OpenAIReadOnlyExplainer
-            answer=OpenAIReadOnlyExplainer(settings.openai_api_key,settings.openai_model,timeout_seconds=10,max_output_tokens=500).answer
+            answer=OpenAIReadOnlyExplainer(settings.openai_api_key,settings.openai_model,timeout_seconds=10,max_output_tokens=500,usage_category='reference_assessment').answer
         import json
         remaining=[arm for arm in ('baseline','candidate') if arm not in result['arms']]
         for arm in remaining[:calls]:

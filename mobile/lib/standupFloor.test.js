@@ -45,14 +45,16 @@ function harness() {
   const speaker = { speak: () => { idle = false; }, stop: () => { idle = true; }, isIdle: () => idle };
   const request = (path, options) => {
     if (path.includes('/history')) return Promise.resolve({ turns: [] });
+    if (path.startsWith('/standup/turn?')) return Promise.resolve({ status: 'idle' });
     return new Promise((resolve, reject) => calls.push({ body: JSON.parse(options.body), resolve, reject }));
   };
   const module = { exports: {} };
   vm.runInNewContext(source, { module, require: (name) => {
     if (name === 'react') return React;
-    if (name === 'react-native') return Object.fromEntries(['ActivityIndicator', 'Text', 'TextInput', 'TouchableOpacity', 'View'].map((n) => [n, n]));
+    if (name === 'react-native') return { ...Object.fromEntries(['ActivityIndicator', 'Text', 'TextInput', 'TouchableOpacity', 'View'].map((n) => [n, n])), AppState: { addEventListener: () => ({ remove() {} }) } };
     if (name === '../styles') return { styles: {} };
-    if (name === '../components/shared') return { Section: 'Section', Button: 'Button' };
+    if (name === '../components/shared') return { Section: 'Section', Button: 'Button', CollapsibleSection: 'CollapsibleSection' };
+    if (name === '../components/TraderVoice') return { TraderVoice: 'TraderVoice' };
     if (name === '../lib/useVoiceCapture') return { useVoiceCapture: (opts) => { capture = opts; return voice; } };
     if (name === '../lib/useSpeaker') return { useSpeaker: (opts) => { speakerOptions = opts; return speaker; } };
     return localRequire(name);
@@ -82,12 +84,13 @@ function harness() {
 
 test('mic waits for the final model reply, even when earlier speech finishes first', async () => {
   const h = harness();
+  await flush();
   h.transcript('morning');
-  assert.equal(h.calls[0].body.exchange_budget, 4);
+  assert.equal(h.calls[0].body.exchange_budget, 0);
   h.calls[0].resolve({ turns: [{ speaker: 'trader', text: 'First' }], next_speaker: 'claude', exchange_used: 0, opening_left: 1 });
   await flush();
   assert.equal(h.calls.length, 2);
-  assert.equal(h.calls[1].body.exchange_budget, 4);
+  assert.equal(h.calls[1].body.exchange_budget, 0);
   h.finishSpeech();
   assert.equal(h.listens(), 0);
   h.calls[1].resolve({ turns: [{ speaker: 'claude', text: 'Last' }] });
@@ -99,6 +102,7 @@ test('mic waits for the final model reply, even when earlier speech finishes fir
 
 test('speech arriving during a model turn waits, then becomes a new question, not a peer loop', async () => {
   const h = harness();
+  await flush();
   h.transcript('first question');
   h.transcript('Hey Claude my next question');
   assert.equal(h.calls.length, 1);
@@ -111,6 +115,7 @@ test('speech arriving during a model turn waits, then becomes a new question, no
 
 test('failed current reply preserves pending words without automatically resending', async () => {
   const h = harness();
+  await flush();
   h.transcript('first question');
   h.transcript('words to preserve');
   h.calls[0].reject(new Error('offline'));
@@ -124,6 +129,7 @@ test('failed current reply preserves pending words without automatically resendi
 
 test('ending the conversation abandons queued speech and late model continuations', async () => {
   const h = harness();
+  await flush();
   const start = h.find(h.render(), (node) => node.props?.onPress && JSON.stringify(node.props.children || node.children).includes('Start conversation'));
   start.props.onPress();
   h.transcript('first question');
@@ -139,6 +145,7 @@ test('ending the conversation abandons queued speech and late model continuation
 
 test('even a server that always requests another speaker cannot exceed ten turns', async () => {
   const h = harness();
+  await flush();
   h.transcript('discuss this');
   for (let i = 0; i < 10; i += 1) {
     assert.equal(h.calls.length, i + 1);

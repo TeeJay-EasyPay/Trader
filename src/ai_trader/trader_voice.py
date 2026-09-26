@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from . import experiments as e
 from . import research_requests as research
+from . import ai_budget as shared_budget
 
 MODEL = 'gpt-realtime'
 MONTHLY_MICRO_USD = 10_000_000
@@ -92,7 +93,12 @@ def start(service, body):
     account = budget(service.settings.db_path, reserve=True)
     sid = account['session_id']
     call_id, ws = None, None
+    input_receipt = None
     try:
+        if shared_budget.enabled():
+            # Covers even a lost server's session through the provider's 60-minute
+            # maximum: Whisper $0.006/min, rounded up. Do not release uncertain bills.
+            input_receipt = shared_budget.reserve('voice', 400_000, db=service.settings.db_path)
         from .self_assessment import input_inventory
         evidence = dict(as_of=e.now_iso(), inventory=input_inventory(service.settings.db_path),
                         research=research.chat_context(service.settings.db_path))
@@ -133,7 +139,7 @@ def start(service, body):
         state = dict(id=sid, month=account['month'], call_id=call_id, ws=ws, key=key,
                      db=service.settings.db_path, stop=threading.Event(), status='listening',
                      remaining=account['remaining_micro'], started=time.monotonic(), activity=time.monotonic(),
-                     awaiting=False, reason=None, seen=set())
+                     awaiting=False, reason=None, seen=set(), input_receipt=input_receipt)
         with _lock:
             _sessions[sid] = state
         threading.Thread(target=_watch, args=(state,), daemon=True).start()
@@ -166,6 +172,13 @@ def _respond(s):
         s['reason'] = 'Voice allowance reached; continue in text.'
         s['stop'].set()
         return
+    if shared_budget.enabled():
+        try:
+            s['budget_receipt'] = shared_budget.reserve('voice', RESPONSE_HEADROOM, db=s['db'])
+        except Exception:
+            s['reason'] = 'Shared OpenAI conversation allowance unavailable; no new voice reply was requested.'
+            s['stop'].set()
+            return
     s['awaiting'] = True
     s['pending_reply'] = False
     _send(s, {'type':'response.create'})
@@ -210,6 +223,8 @@ def _watch(s):
                     continue
                 s['seen'].add(rid)
                 cost = usage_cost(response.get('usage'))
+                if s.get('budget_receipt'):
+                    shared_budget.settle(s.pop('budget_receipt'), cost, db=s['db'])
                 s['remaining'] = charge(s['db'],s['month'],s['id'],cost)
                 s['awaiting'] = False
                 s['status'] = 'listening'
@@ -254,6 +269,12 @@ def _watch(s):
         if ended:
             try:
                 charge(s['db'],s['month'],s['id'],RESPONSE_HEADROOM if s['awaiting'] else 0,close=True)
+                if s.get('input_receipt'):
+                    import math
+                    duration_bound = min(3600, math.ceil(time.monotonic()-s['started']) + 30)
+                    shared_budget.settle(s['input_receipt'], duration_bound * 100, db=s['db'])
+                if s.get('budget_receipt'):
+                    shared_budget.settle(s['budget_receipt'], db=s['db'])
             except Exception:
                 s['reason']='Voice ended; accounting requires verification before reconnecting.'
         s['status']='ended'

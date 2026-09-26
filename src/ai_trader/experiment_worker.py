@@ -87,7 +87,7 @@ def _legacy_single_proposal(db, settings, now, policy, answer=None):
         if answer is None:
             from .ai import OpenAIReadOnlyExplainer
             answer = OpenAIReadOnlyExplainer(settings.openai_api_key, settings.openai_model,
-                                            timeout_seconds=20, max_output_tokens=1000).answer
+                                            timeout_seconds=20, max_output_tokens=1000, usage_category='experiment_proposals').answer
         context = {'broker': broker, 'outcomes': evidence, 'previous_experiments': prior}
         if len(exp.dump(context)) > 18000:
             raise ValueError('Combined evidence and library input budget reached')

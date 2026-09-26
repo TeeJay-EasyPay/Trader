@@ -121,6 +121,12 @@ class CryptoReviewParsingTests(unittest.TestCase):
 
 
 class CryptoReviewBehaviourTests(unittest.TestCase):
+    def test_budget_refusal_cannot_continue_as_unreviewed_candidate(self):
+        from ai_trader.ai_budget import BudgetUnavailable
+        with tempfile.TemporaryDirectory() as tmp:
+            reviewer = FakeReviewer(raises=BudgetUnavailable('Monthly allowance reached'))
+            self.assertEqual(_run(Path(tmp) / 'audit.sqlite3', reviewer), [])
+
     def test_a_review_that_declines_stops_the_trade(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "audit.sqlite3"
