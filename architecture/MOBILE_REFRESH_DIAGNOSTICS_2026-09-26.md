@@ -22,3 +22,12 @@ credential was supplied from the local secret environment without printing it.
 This is a diagnostic release and timestamp fix, not a verified fix for the phone's
 underlying failure. Once received, the phone's next Retry should expose its failure
 category if the problem persists. No new native APK is required.
+
+Published successfully from source commit cb06e3cacf7230eb8a6daeebd8b5cafb51c12037:
+- hosted-preview: f578fc21-23c0-4156-a837-42ea23048360
+- preview: f68ca0a6-e1c4-489f-87d2-2146661e65b6
+
+Both updates use Android runtime 1.0.4 and the same verified exported bundle.
+Existing unrelated local files were not committed; EAS reports a dirty worktree.
+Device receipt and next diagnostic outcome remain unverified. Render deployment
+was intentionally skipped; no service restart or production database change.
