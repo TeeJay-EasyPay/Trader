@@ -73,9 +73,9 @@ async function main() {
     });
   });
 
-  await test('apiRequest: a 401 response names the masked token in the error message', async () => {
+  await test('apiRequest: a 401 response exposes only its status, never token/body', async () => {
     await withStubbedFetch(async () => jsonResponse(401, { message: 'unauthorized' }), async () => {
-      await assert.rejects(() => apiRequest('/status'), /Mobile command token is/);
+      await assert.rejects(() => apiRequest('/status'), { message: 'HTTP_401' });
     });
   });
 
@@ -85,7 +85,7 @@ async function main() {
       status: 200,
       text: async () => 'not json at all',
     }), async () => {
-      await assert.rejects(() => apiRequest('/status'), /Backend returned non-JSON data/);
+      await assert.rejects(() => apiRequest('/status'), { message: 'REFRESH_RESPONSE: non-JSON response' });
     });
   });
 
@@ -101,6 +101,11 @@ async function main() {
     });
   });
 
+  await test('apiRequest: HTML proxy errors retain status without parsing or disclosure', async () => {
+    await withStubbedFetch(async () => ({ok: false, status: 502, text: async () => { throw new Error('must not read body'); }}), async () => {
+      await assert.rejects(() => apiRequest('/status'), {message: 'HTTP_502'});
+    });
+  });
   console.log(`\n${passed} passed`);
 }
 

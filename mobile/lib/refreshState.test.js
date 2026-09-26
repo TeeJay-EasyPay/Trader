@@ -128,8 +128,8 @@ test('snapshotFreshness: missing snapshot field (e.g. _snapshot_not_ready_payloa
   assert.strictEqual(result.stale, null);
 });
 
-test('snapshotFreshness: reads age_seconds/stale/generated_at straight from the backend payload', () => {
-  const result = snapshotFreshness({ served_from: 'worker_projection', age_seconds: 512, stale: false, generated_at: '2026-08-03T01:00:00Z' });
+test('snapshotFreshness: retains reported age when greater than local elapsed time', () => {
+  const result = snapshotFreshness({ served_from: 'worker_projection', age_seconds: 512, stale: false, generated_at: '2026-08-03T01:00:00Z' }, Date.parse('2026-08-03T01:00:00Z'));
   assert.deepStrictEqual(result, { known: true, ageSeconds: 512, stale: false, generatedAt: '2026-08-03T01:00:00Z' });
 });
 
@@ -139,6 +139,19 @@ test('snapshotFreshness: stale flag true is preserved exactly, not inferred loca
 });
 
 // --- formatAgeSeconds ---
+test('snapshotFreshness: a cached one-minute age advances with the clock', () => {
+  const snapshot = {age_seconds: 60, generated_at: '2026-09-25T15:06:00Z', stale: false};
+  assert.strictEqual(snapshotFreshness(snapshot, Date.parse('2026-09-26T00:06:00Z')).ageSeconds, 9 * 3600);
+  assert.strictEqual(snapshotFreshness({age_seconds: 60, generated_at: 'invalid'}, 0).ageSeconds, 60);
+});
+
+test('refresh diagnostics classify safely without disclosing supplied secrets', () => {
+  for (const [error, code] of [['HTTP_401 secret-token', 'AUTH'], ['HTTP_403', 'AUTH'], ['HTTP_502', 'SERVER'], ['HTTP_404', 'REQUEST'], ['REFRESH_RESPONSE secret-body', 'RESPONSE'], ['REFRESH_APPLY secret-stack', 'DATA'], ['Network request failed', 'NETWORK'], ['secret-unknown', 'UNKNOWN']]) {
+    const result = friendlyRefreshFailureReason(error);
+    assert.ok(result.includes(`[${code}]`), result);
+    assert.ok(!result.includes('secret'));
+  }
+});
 
 test('formatAgeSeconds: under a minute', () => {
   assert.strictEqual(formatAgeSeconds(45), '45s ago');
@@ -196,7 +209,7 @@ test('friendlyRefreshFailureReason: no error recorded is distinguished from a re
 test('friendlyRefreshFailureReason: a raw HTTP status/path error never leaks into the Founder-facing reason', () => {
   const result = friendlyRefreshFailureReason('Request failed: 500');
   assert.ok(!result.includes('500'));
-  assert.strictEqual(result, 'Live refresh failed: AI Trader could not reach the backend.');
+  assert.strictEqual(result, 'Live refresh failed [SERVER]: the server returned an error.');
 });
 
 test('friendlyRefreshFailureReason: a timeout is named as slow, not as a generic failure', () => {

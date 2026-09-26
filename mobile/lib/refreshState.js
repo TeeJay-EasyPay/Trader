@@ -59,13 +59,18 @@ function shouldReportRefreshFailure({ consecutiveFailures, hadSuccessfulLiveRefr
 // load_founder_evidence_snapshot() attaches this under payload["snapshot"]) into a shape
 // safe to render even when the field is missing entirely (e.g. _snapshot_not_ready_payload,
 // returned while the worker hasn't written its first snapshot yet, has no "snapshot" key).
-function snapshotFreshness(snapshot) {
+function snapshotFreshness(snapshot, nowMs = Date.now()) {
   if (!snapshot || typeof snapshot !== 'object') {
     return { known: false, ageSeconds: null, stale: null, generatedAt: null };
   }
+  const generatedMs = Date.parse(snapshot.generated_at);
+  const elapsed = Number.isFinite(generatedMs) ? Math.max(0, (nowMs - generatedMs) / 1000) : null;
+  const reported = typeof snapshot.age_seconds === 'number' && Number.isFinite(snapshot.age_seconds)
+    ? Math.max(0, snapshot.age_seconds) : null;
+  const ageSeconds = elapsed === null ? reported : Math.max(elapsed, reported || 0);
   return {
     known: true,
-    ageSeconds: typeof snapshot.age_seconds === 'number' ? snapshot.age_seconds : null,
+    ageSeconds,
     stale: typeof snapshot.stale === 'boolean' ? snapshot.stale : null,
     generatedAt: snapshot.generated_at || null,
   };
@@ -101,10 +106,29 @@ function friendlyRefreshFailureReason(lastError) {
     return 'Live refresh failed.';
   }
   const text = String(lastError).toLowerCase();
+  // Fixed messages only: never interpolate response bodies, credentials or stack traces.
+  if (text.includes('refresh_apply')) {
+    return 'Live refresh failed [DATA]: the server replied, but the app could not process its data.';
+  }
+  if (text.includes('unauthorized') || text.includes('http_401') || text.includes('http_403')) {
+    return 'Live refresh failed [AUTH]: the server rejected the app’s access credentials.';
+  }
+  if (/http_5\d\d|request failed: 5\d\d/.test(text)) {
+    return 'Live refresh failed [SERVER]: the server returned an error.';
+  }
+  if (text.includes('non-json') || text.includes('refresh_response')) {
+    return 'Live refresh failed [RESPONSE]: the server returned an unreadable response.';
+  }
+  if (/http_4\d\d/.test(text)) {
+    return 'Live refresh failed [REQUEST]: the server rejected the request.';
+  }
   if (text.includes('timed out') || text.includes('timeout')) {
     return 'Live refresh failed: the backend took too long to respond.';
   }
-  return 'Live refresh failed: AI Trader could not reach the backend.';
+  if (text.includes('network') || text.includes('failed to fetch')) {
+    return 'Live refresh failed [NETWORK]: the app could not connect to the server.';
+  }
+  return 'Live refresh failed [UNKNOWN]: the app could not complete the refresh.';
 }
 
 // The banner content for Requirement 1's "Cached Data / Captured: / Age: / Live refresh

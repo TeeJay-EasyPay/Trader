@@ -59,6 +59,11 @@ async function apiRequest(path, options = {}) {
       ...fetchOptions,
       signal: controller.signal,
     });
+    // Classify status before parsing: proxy error pages may be HTML, not JSON.
+    // Never include token fragments or arbitrary server bodies in a UI error.
+    if (!response.ok) {
+      throw new Error(`HTTP_${response.status}`);
+    }
     const text = await response.text();
     let json = {};
     if (text) {
@@ -66,19 +71,9 @@ async function apiRequest(path, options = {}) {
         json = JSON.parse(text);
       } catch (error) {
         throw new Error(
-          `Backend returned non-JSON data from ${path} (${response.status}). ${bodyPreview(text)}`
+          'REFRESH_RESPONSE: non-JSON response'
         );
       }
-    }
-    if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error(
-          `${json.message || json.error || 'unauthorized'}. Mobile command token is ${
-            API_TOKEN ? `loaded (${API_TOKEN_MASK})` : 'missing'
-          }. It must exactly match AI_TRADER_API_TOKEN in Render.`
-        );
-      }
-      throw new Error(json.message || json.error || `Request failed: ${response.status}`);
     }
     return json;
   } catch (error) {

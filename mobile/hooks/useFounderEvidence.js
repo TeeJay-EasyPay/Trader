@@ -213,6 +213,16 @@ function useFounderEvidence() {
   // and available to development/diagnostic tooling.
   const [cacheWarning, setCacheWarning] = useState(null);
   const [snapshotMeta, setSnapshotMeta] = useState(null);
+  const [freshnessNow, setFreshnessNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (AppState.currentState === 'active') setFreshnessNow(Date.now());
+    }, 30000);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setFreshnessNow(Date.now());
+    });
+    return () => { clearInterval(timer); subscription.remove(); };
+  }, []);
   const [notifications, setNotifications] = useState([]);
   // Phase 7 (2026-08-20): the real market forecast, from /market-forecast. Separate from
   // founder-evidence because it has its own worker-side refresh cadence (every 6h).
@@ -445,7 +455,7 @@ function useFounderEvidence() {
           // the spinner stop. Local cache persistence is a separate, later step (below) and
           // cannot reach this catch block at all any more - see applyLiveFounderEvidence's
           // comment.
-          applyError = String(error.message || error);
+          applyError = 'REFRESH_APPLY';
         }
       }
 
@@ -698,7 +708,7 @@ function useFounderEvidence() {
   // every screen (via the header, which is always visible) shows the identical state - see
   // mobile/lib/refreshState.js for why Live/Refreshing/Cached/Backend-Snapshot-Stale/
   // Refresh-Failed/No-Data-Available must never be merged into one ambiguous indicator.
-  const snapshotInfo = useMemo(() => snapshotFreshness(snapshotMeta), [snapshotMeta]);
+  const snapshotInfo = useMemo(() => snapshotFreshness(snapshotMeta, freshnessNow), [snapshotMeta, freshnessNow]);
   const dataSourceState = useMemo(
     () =>
       classifyDisplayState({
@@ -718,9 +728,9 @@ function useFounderEvidence() {
   const cacheBanner = useMemo(
     () =>
       dataSourceState === DISPLAY_STATE.CACHED
-        ? cacheBannerDetails({ cachedAt, lastError: lastRefreshError })
+        ? cacheBannerDetails({ cachedAt, lastError: lastRefreshError, nowMs: freshnessNow })
         : null,
-    [dataSourceState, cachedAt, lastRefreshError]
+    [dataSourceState, cachedAt, lastRefreshError, freshnessNow]
   );
 
   return {
