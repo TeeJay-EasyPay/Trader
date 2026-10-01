@@ -1,5 +1,19 @@
 # Readiness repairs and egress review — 1 October 2026
 
+## Activation update — 1 October, 15:45 UTC
+
+Founder confirmed October spend USD0 and supplied the provider screenshot:
+October spend USD0, project budget USD30, prepaid credit USD9.91 after a USD10
+top-up. These are separate measures. Render access restored; its API logs show
+HTTP429 at 09:47 UTC, without the provider error body (cause not conclusively
+identified). Existing API model verified as gpt-4.1-mini.
+
+Initialized only EXPERIMENT_CONTROL/openai_budget_policy through the production
+service at 15:45 UTC: start_month 2026-10, opening_micro_usd 0. Transaction used
+the budget advisory lock and asserted both policy and October ledger absent;
+no usage was reset. No trading/risk settings changed. Release verification follows;
+the earlier blocked-state notes below describe the pre-activation investigation.
+
 ## Release gate
 
 Implementation in the existing release worktree, based on 16c9a0e0 (pending
