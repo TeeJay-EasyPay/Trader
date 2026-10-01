@@ -33,6 +33,14 @@ Returned pre-release failures include three Kraken timeouts on October 1 and the
 September 30 strategy-lab error; historical screening/model review still require
 fresh scheduled evidence. No claim that release alone fixes past outcomes.
 
+Final deployment verification: API /experiments/health reports cf627d11; Render
+worker deploy dep-dav83hnf3r2c739uhi40 is Live on the same revision. At 15:54:56
+UTC the database heartbeat independently confirms cf627d11, running, no last_error,
+current job historical-market-refresh. Managed-exit startup was observed in logs.
+Historical completion, subsequent strategy-lab/model reviews, device OTA receipt,
+and equal-window billed egress are still follow-up acceptance evidence, not implied
+by deployment success. No manual broker order or live strategy activation made.
+
 ## Release gate
 
 Implementation in the existing release worktree, based on 16c9a0e0 (pending
