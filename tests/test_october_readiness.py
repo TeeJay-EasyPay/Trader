@@ -69,3 +69,20 @@ def test_scheduler_cannot_call_fallback_or_invalid_research_successful():
         _verify_research_job_result('historical-market-refresh', {'status': 'failed'})
     _verify_research_job_result('historical-market-refresh', {'status': 'completed'})
     _verify_research_job_result('managed-exits', {'status': 'skipped'})
+
+
+def test_health_counts_only_started_recent_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv('AI_TRADER_DATABASE_BACKEND', 'sqlite')
+    db = tmp_path / 'db'
+    e.migrate(db)
+    with e.transaction(db) as c:
+        c.execute('CREATE TABLE SCHEDULED_JOB_RUNS(job_name TEXT,status TEXT,started_at TEXT,scheduled_for TEXT,completed_at TEXT)')
+        c.execute('CREATE TABLE AI_SELF_ASSESSMENTS(created_at TEXT,status TEXT)')
+        for started, scheduled in [('2026-10-01T10:00:00+00:00','2026-10-01T10:00:00+00:00'),
+                                   (None,'2026-10-01T10:00:00+00:00'),
+                                   ('2026-09-28T10:00:00+00:00','2026-10-01T10:00:00+00:00')]:
+            c.execute('INSERT INTO SCHEDULED_JOB_RUNS VALUES (?,?,?,?,?)',
+                      ('research','failed',started,scheduled,'2026-10-01T11:00:00+00:00'))
+    health = snapshot(db, '2026-10-01T12:00:00+00:00')
+    assert health['failed_jobs_24h'][0]['count'] == 1
+    assert not any(issue.startswith('job_evidence_unavailable') for issue in health['issues'])

@@ -14,6 +14,25 @@ the budget advisory lock and asserted both policy and October ledger absent;
 no usage was reset. No trading/risk settings changed. Release verification follows;
 the earlier blocked-state notes below describe the pre-activation investigation.
 
+Release 344f6d24 pushed to master. API served new operational evidence and shared
+allowance. Two small synthetic provider checks via production budget transport
+succeeded (Luna explanation, Sol structured review); both refused to treat unknown
+fees or completed simulations as verified profit/improvement/live approval.
+Conservative ledger USD0.001241, no pending requests or unknown bills afterward;
+not a provider invoice or a representative trading-quality evaluation.
+
+Android runtime 1.0.4 OTA published on both existing channels from 344f6d24:
+hosted-preview group eb24238f-1873-4925-b12f-fe58ad58e337;
+preview group a1a65f0c-9d54-4a49-9124-d81652826395. Device receipt unverified.
+
+Live acceptance exposed a 2-second health-query timeout. Changed its date predicate
+to the existing COALESCE(started_at,scheduled_for) index while explicitly excluding
+unstarted jobs. Read-only production EXPLAIN verified index scan replacing full
+scan; aggregate completed within unchanged timeout. Seven focused tests passed.
+Returned pre-release failures include three Kraken timeouts on October 1 and the
+September 30 strategy-lab error; historical screening/model review still require
+fresh scheduled evidence. No claim that release alone fixes past outcomes.
+
 ## Release gate
 
 Implementation in the existing release worktree, based on 16c9a0e0 (pending

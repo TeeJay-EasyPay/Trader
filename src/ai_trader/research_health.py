@@ -64,7 +64,8 @@ def snapshot(db, now=None):
         with e.transaction(db) as c:
             cutoff = (e.stamp(now)-timedelta(days=1)).isoformat()
             rows = c.execute("SELECT job_name,status,COUNT(*) AS count,MAX(completed_at) AS latest FROM SCHEDULED_JOB_RUNS "
-                "WHERE started_at>=? AND status IN ('failed','timed_out') GROUP BY job_name,status", (cutoff,)).fetchall()
+                "WHERE COALESCE(started_at,scheduled_for)>=? AND started_at IS NOT NULL "
+                "AND status IN ('failed','timed_out') GROUP BY job_name,status", (cutoff,)).fetchall()
             result['failed_jobs_24h'] = [dict(r) for r in rows]
             if rows:
                 result['issues'].append('failed_or_timed_out_jobs')
