@@ -36,6 +36,20 @@ def test_only_changed_rows_transferred_and_old_corrections_seen(conn):
     assert len(conn.sent[-1])==1
 
 
+def test_more_than_48_symbol_partitions_do_not_churn(conn):
+    for symbol in range(80):
+        t.read(conn,'SELECT example',partition=('symbol',symbol))
+    t.read(conn,'SELECT example',partition=('symbol',0))
+    assert conn.sent[-1] == {}
+
+
+def test_total_cache_byte_bound_is_enforced(conn, monkeypatch):
+    monkeypatch.setattr(t, 'MAX_TOTAL_BYTES', 1)
+    t.read(conn, 'SELECT example')
+    t.read(conn, 'SELECT example')
+    assert len(conn.sent[-1]) == 2
+
+
 def test_removal_order_duplicates_and_empty(conn):
     t.read(conn,'SELECT example')
     conn.rows=[conn.rows[1],conn.rows[0],conn.rows[1]]

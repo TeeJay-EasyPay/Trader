@@ -14,12 +14,18 @@ def get(db, path, query):
             return 200, detail
         if path == '/experiments/health':
             from .db_telemetry import report
+            from .research_health import snapshot as health_snapshot
+            health = health_snapshot(db)
             with exp.transaction(db) as conn:
-                return 200, {'policy': exp.control(conn, 'policy', exp.DEFAULT_POLICY),
+                from .experiment_assurance import json_field
+                fields = ','.join(json_field('payload_json', [k], text=False) + ' AS ' + k
+                                  for k in ('day','status','failure','review_count','usage'))
+                attempt = conn.execute('SELECT ' + fields + " FROM EXPERIMENT_CONTROL WHERE id='proposal_attempt'").fetchone()
+                return 200, {'operational_evidence': health, 'policy': exp.control(conn, 'policy', exp.DEFAULT_POLICY),
                              'database_transfer_worker': exp.control(conn, 'db_transfer_view', {}),
                              'database_transfer_api': report(),
                              'last_tick': exp.control(conn, 'last_tick', {}),
-                             'proposal_attempt': exp.control(conn, 'proposal_attempt', {}),
+                             'proposal_attempt': dict(attempt) if attempt else {},
                              'deployment_commit': os.getenv('RENDER_GIT_COMMIT'),
                              'live_enabled': False}
         from .strategy_intake import list_sources

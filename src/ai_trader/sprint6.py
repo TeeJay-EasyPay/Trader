@@ -741,7 +741,7 @@ def refresh_strategy_maturity(db_path: Path, *, strategy_id: str, evidence: dict
                 UPDATE STRATEGY_MATURITY_REGISTRY SET
                     current_stage = ?, sample_size = ?, expectancy = ?, profit_factor = ?,
                     max_drawdown = ?, win_rate = ?, calibration_error = ?,
-                    qualification_date = CASE WHEN ? THEN ? ELSE qualification_date END,
+                    qualification_date = CASE WHEN ? = 1 THEN ? ELSE qualification_date END,
                     next_review_date = ?, suspended = ?, demotion_reason = ?, updated_at = ?
                 WHERE strategy_id = ?
                 """,

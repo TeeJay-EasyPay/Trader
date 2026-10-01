@@ -155,7 +155,7 @@ def test_cache_content_addressing_and_capacity(tmp_path,monkeypatch):
     data=dict(signals=[],bars=[])
     version=h.freeze_dataset(tmp_path/'db',data)
     assert h.freeze_dataset(tmp_path/'db',data)==version
-    assert len(list((tmp_path/'research-cache').glob('*.json')))==1
+    assert len(list((tmp_path/'research-cache').glob('*.json.gz')))==1
     monkeypatch.setattr(h,'MAX_CACHE_BYTES',1)
     with pytest.raises(ValueError,match='capacity'):
         h.freeze_dataset(tmp_path/'db',dict(signals=[],bars=[{'x':1}]))
@@ -206,6 +206,7 @@ def test_failed_freeze_does_not_allow_next_candidate_to_bypass_cache(db,monkeypa
     monkeypatch.setattr(h,'freeze_dataset',lambda *args:(_ for _ in ()).throw(ValueError('cache full')))
     result=h.screen_batch(db,[spec(),{**spec(),'threshold':3}], '2026-09-16T00:00:00+00:00')
     assert [t['status'] for t in result['trials']]==['invalid','invalid']
+    assert result['status']=='failed'
 
 
 def test_measurement_api_reads_compact_views_without_refresh(db,monkeypatch):

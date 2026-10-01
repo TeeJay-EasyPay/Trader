@@ -725,11 +725,13 @@ def _existing_broker_history_keys(conn: Any, broker: str, identities: list[tuple
     existing: set[tuple[Any, ...]] = set()
     for start in range(0, len(timestamps), _BROKER_HISTORY_INSERT_CHUNK):
         chunk = timestamps[start:start + _BROKER_HISTORY_INSERT_CHUNK]
-        rows = conn.execute(
+        from .verified_reads import rows as verified_rows
+        rows = verified_rows(conn,
             "SELECT external_id, status, updated_at FROM BROKER_TRADE_HISTORY "
             f"WHERE broker = ? AND updated_at IN ({', '.join(['?'] * len(chunk))})",
             (broker, *chunk),
-        ).fetchall()
+            partition=('broker-history-identities', broker, start),
+        )
         for row in rows:
             existing.add((row[0], row[1], row[2]))
     return existing

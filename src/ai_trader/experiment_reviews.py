@@ -86,14 +86,22 @@ def grouped_review(db, settings, now, policy, answer=None):
             return False
         # Pending review IDs are bounded; prior failed batches remain visible.
         records = c.execute("SELECT id,experiment_id,version,payload_json FROM EXPERIMENT_EVENTS WHERE action='weekly_review' ORDER BY created_at DESC LIMIT 10").fetchall()
-        pending = [dict(x) for x in records if not e.control(c, 'interpreted:'+x['id'])]
+        pending = []
+        for x in records:
+            prior = e.control(c, 'interpreted:'+x['id'], {})
+            # A failed call formerly hid this review forever. Retry only on a
+            # later day, inside the same daily/shared-money gate, at most 3 times.
+            if not prior or (prior.get('status') == 'unavailable'
+                             and prior.get('day', '') < now[:10]
+                             and prior.get('attempts', 1) < 3):
+                pending.append({**dict(x), 'attempts': prior.get('attempts', 1 if prior else 0) + 1})
         if not pending:
             return False
         if e.control(c, 'proposal_attempt', {}).get('day') == now[:10]:
             return True
         e.put_control(c, 'proposal_attempt', {'day':now[:10], 'status':'grouped_review_reserved', 'max_output_tokens':1500})
         for item in pending:
-            e.put_control(c, 'interpreted:'+item['id'], {'status':'reserved','day':now[:10]})
+            e.put_control(c, 'interpreted:'+item['id'], {'status':'reserved','day':now[:10], 'attempts':item['attempts']})
     evidence = [{'id':p['id'], 'version':p['version'], **json.loads(p['payload_json'])} for p in pending]
     status = 'failed'
     from .reference_sets import snapshot
@@ -122,6 +130,8 @@ def grouped_review(db, settings, now, policy, answer=None):
             if review['version'] != allowed[review['id']]['version'] or not isinstance(review['summary'], str) or not 1 <= len(review['summary']) <= 1000:
                 raise ValueError('Invalid version or explanation')
             seen.add(review['id'])
+        if seen != set(allowed):
+            raise ValueError('Review response omitted supplied evidence')
         with e.transaction(db) as c:
             for review in reviews:
                 e.put_control(c,'interpreted:'+review['id'], {'status':'completed','day':now[:10],**review})
@@ -137,13 +147,16 @@ def grouped_review(db, settings, now, policy, answer=None):
                     save(c,source_type='experiment_review',source_id=source_id,recorded_at=now,
                          broker=finding['broker'],symbol=finding['symbol'],payload=updated)
         status = 'completed'
-    except Exception:
-        pass
+    except Exception as exc:
+        from .provider_errors import details
+        failure = getattr(exc, 'provider_failure', None) or details(exc)
     with e.transaction(db) as c:
         for item in pending:
             if e.control(c,'interpreted:'+item['id'],{}).get('status') == 'reserved':
-                e.put_control(c,'interpreted:'+item['id'], {'status':'unavailable','day':now[:10], 'reason':'No automatic paid retry; numerical review retained.'})
+                e.put_control(c,'interpreted:'+item['id'], {'status':'unavailable','day':now[:10],
+                    'attempts':item['attempts'], 'reason':'No same-day retry; at most three daily attempts within the shared allowance. Numerical review retained.'})
         e.put_control(c,'proposal_attempt', {'day':now[:10], 'status':'grouped_review_'+status,'review_count':len(pending),
+            'failure': failure if status == 'failed' else None,
             'reference_provenance':methodology,
             'usage':getattr(getattr(answer,'__self__',None),'last_usage',None)})
     return True

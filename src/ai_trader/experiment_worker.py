@@ -133,6 +133,12 @@ def _decisions(db, cursor, created_at, broker='alpaca'):
 def _bars(db, symbols, since, now, broker='alpaca'):
     if not symbols:
         return []
+    # The historical importer already paid for these verified provider bars.
+    # Share its host cache with forward settlement, without copying history to
+    # Supabase or changing entry/exit rules. Only completed subsequent bars count.
+    from .historical_market_cache import cached_bars
+    cached = [b for b in cached_bars(db, broker, symbols)
+              if exp.stamp(b['start']) > exp.stamp(since) and exp.stamp(b['end']) <= exp.stamp(now)]
     if broker == 'kraken':
         # Do not mix USD research candles with GBP execution prices. Reuse only
         # exact venue/pair and quality-checked data; missing data stays missing.
@@ -142,10 +148,11 @@ def _bars(db, symbols, since, now, broker='alpaca'):
                 "AND provider='kraken' AND timeframe='1d' AND adjusted_status='unadjusted' AND source_quality_status='pass' "
                 'AND observation_time>? AND observation_time<? ORDER BY observation_time LIMIT 200',
                 (*symbols, since, now)).fetchall()
-        return [dict(symbol=r['normalized_symbol'], start=exp.stamp(r['observation_time']).isoformat(),
+        result = [dict(symbol=r['normalized_symbol'], start=exp.stamp(r['observation_time']).isoformat(),
             end=(exp.stamp(r['observation_time']) + timedelta(days=1)).isoformat(),
             open=r['open'], high=r['high'], low=r['low'], close=r['close'],
             quality='verified_unadjusted', source='kraken_exact_pair_daily') for r in rows]
+        return _merge_bars(result, cached)
     with exp.transaction(db) as conn:
         # Existing equity ingestion uses Alpaca raw IEX daily bars in this table.
         # MARKET_DATA_OBSERVATIONS currently contains crypto only in production.
@@ -169,7 +176,20 @@ def _bars(db, symbols, since, now, broker='alpaca'):
                                quality='verified_unadjusted', source='alpaca_raw_iex_daily'))
         except (ValueError, TypeError):
             continue
-    return result
+    return _merge_bars(result, cached)
+
+
+def _merge_bars(primary, cached):
+    """Conflicting OHLC is missing evidence, never an arbitrary source choice."""
+    result, conflicts = {}, set()
+    for bar in primary + cached:
+        key = (bar['symbol'], exp.stamp(bar['start']))
+        if key in result and any(float(result[key][f]) != float(bar[f]) for f in ('open','high','low','close')):
+            conflicts.add(key)
+        result[key] = bar
+    if conflicts:
+        raise ValueError('Conflicting verified daily bars; settlement requires data reconciliation')
+    return [result[k] for k in sorted(result)]
 
 
 def tick(db, settings, *, now=None, answer=None):

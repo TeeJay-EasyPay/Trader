@@ -21,8 +21,14 @@ def propose_batch(db, settings, now, policy, answer=None):
             return 'daily_model_budget_reached'
         specs = [json.loads(r[0]) for r in conn.execute("SELECT spec_json FROM RULE_EXPERIMENTS WHERE status IN ('queued','shadow_running') LIMIT 24").fetchall()]
         history=[]
-        for r in conn.execute('SELECT status,spec_json,report_json FROM RULE_EXPERIMENTS ORDER BY created_at DESC LIMIT 24').fetchall():
-            spec,report=json.loads(r[1]),json.loads(r[2])
+        # Proposal eligibility needs counts, not the full simulated portfolio.
+        # Project on the server, preserving every field consumed below.
+        from .experiment_assurance import json_field
+        names = ('usable','paired_mean_usd','verdict','both_skipped','blocker_counts')
+        builder = 'jsonb_build_object' if uses_postgres() else 'json_object'
+        projected = builder + '(' + ','.join("'"+n+"',"+json_field('report_json',[n],text=False) for n in names) + ')'
+        for r in conn.execute('SELECT status,spec_json,' + projected + ' AS report_json FROM RULE_EXPERIMENTS ORDER BY created_at DESC LIMIT 24').fetchall():
+            spec,report=json.loads(r[1]),r[2] if isinstance(r[2],dict) else json.loads(r[2])
             history.append(dict(broker=spec['broker'],rule_type=spec['rule_type'],threshold=spec['threshold'],
                 hypothesis=spec['hypothesis'][:250],evidence_ids=spec['evidence_ids'],status=r[0],
                 usable=report.get('usable'),mean_difference=report.get('paired_mean_usd'),verdict=report.get('verdict'),

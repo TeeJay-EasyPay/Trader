@@ -328,8 +328,10 @@ def input_inventory(db_path: Path) -> dict[str, Any]:
     except Exception:
         learning_packets = {"available": False,
             "reason": "Broker learning packets unavailable; this is not evidence of zero trades."}
+    from .research_health import snapshot as research_health_snapshot
     return {
         "generated_at": utc_now_iso(),
+        "research_operational_health": research_health_snapshot(db_path),
         "feeds": feeds,
         "realised_record": record,
         "realised_record_by_broker": _record_by_broker(db_path),

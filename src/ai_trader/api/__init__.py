@@ -1503,7 +1503,8 @@ class LocalApiService:
             return record_self_assessment(
                 self.settings.db_path, answer=answer,
                 model=None, status="evidence_fallback",
-                inventory={**inventory, "reasoning_failure": type(exc).__name__},
+                inventory={**inventory, "reasoning_failure": type(exc).__name__,
+                           "provider_failure": getattr(exc, 'provider_failure', {})},
             )
         # 2026-09-06, Founder-directed: "I just wanna see your question there in the history,
         # and I wanna see what ChatGPT says to you... I want to be able to read that history."

@@ -77,6 +77,22 @@ def test_grouped_call_shared_budget_and_invalid_ids(db):
     assert all(e.detail(db,r['id'])['status']=='shadow_running' for r in rows)
 
 
+def test_failed_interpretation_can_recover_next_day_not_retry_forever(db):
+    row=create(db)
+    e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
+    calls=[]
+    def answer(q, context):
+        calls.append(context)
+        return json.dumps({'reviews': []})
+    policy={**e.DEFAULT_POLICY,'model_enabled':True}
+    for day in (4,4,5,6,7):
+        grouped_review(db,None,f'2026-09-{day:02d}T03:00:00+00:00',policy,answer)
+    assert len(calls)==3
+    with e.transaction(db) as c:
+        assert e.control(c,'proposal_attempt')['status']=='grouped_review_failed'
+    assert e.detail(db,row['id'])['status']=='shadow_running'
+
+
 def test_source_findings_persist_and_deduplicate_without_claiming_activation(db):
     from ai_trader.learning_findings import capture
     with e.transaction(db) as c:

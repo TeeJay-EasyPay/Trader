@@ -577,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         try:
             result = _run_named_job(service, args.job_name, limit=args.limit, report_type=args.report_type)
+            _verify_research_job_result(args.job_name, result)
             status = "completed_no_action" if result.get("status") in {"skipped", "manual_required", "not_available"} else "completed"
             completed = complete_scheduled_job(settings.db_path, int(claim["job_run_id"]), status=status, result=result)
             record_worker_heartbeat(
@@ -800,6 +801,14 @@ def _run_named_job(service, job_name: str, *, limit: int, report_type: str = "da
     raise ValueError(f"Unsupported scheduled job: {job_name}")
 
 
+def _verify_research_job_result(job_name, result):
+    """Saved fallback/invalid evidence is useful, but is not successful research."""
+    if job_name == 'historical-market-refresh' and result.get('status') in ('failed', 'partial'):
+        raise RuntimeError('Historical screening ' + result['status'] + '; inspect saved trial reasons.')
+    if job_name == 'self-assessment' and result.get('status') == 'evidence_fallback':
+        raise RuntimeError('Model self-assessment failed; deterministic fallback was retained, not a model answer.')
+
+
 def _run_worker_cycle_job(
     service,
     job_name: str,
@@ -909,6 +918,7 @@ def _run_worker_cycle_job(
             result = value
         else:
             result = _run_named_job(service, job_name, limit=0)
+        _verify_research_job_result(job_name, result)
         complete_scheduled_job(service.settings.db_path, int(claim["job_run_id"]), status="completed", result=result)
         return result
     except Exception as exc:

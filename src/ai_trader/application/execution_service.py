@@ -528,10 +528,16 @@ class ExecutionService:
         # ordering means the same highest-priority ones are simply tried first each
         # cycle until they clear or age out via the existing 24h freshness cutoff.
         eval_deadline = _auto_exec_t0 + self.settings.auto_execution_job_timeout_seconds - 120
+        longest_evaluation = 0.0
         for _candidate_index, row in enumerate(surviving_rows):
             proposal_id = row["proposal_id"]
             confidence = safe_score(row["ai_confidence"]) or 0.0
-            if time.monotonic() >= eval_deadline:
+            # Leave enough space for the slowest evaluation observed in this
+            # batch, not just a fixed 120 seconds. Never interrupt or retry a
+            # submission: defer BEFORE starting the next governed candidate.
+            if time.monotonic() >= min(eval_deadline,
+                    _auto_exec_t0 + self.settings.auto_execution_job_timeout_seconds
+                    - max(120, longest_evaluation * 1.5)):
                 skipped.append({
                     "proposal_id": proposal_id,
                     "symbol": row["symbol"],
@@ -605,12 +611,14 @@ class ExecutionService:
                     "managed_trade_capacity": managed_capacity,
                 })
                 continue
+            candidate_started = time.monotonic()
             context = OrchestratorContext(
                 account=self._account_context_lookup(broker_name),
                 auto_trade=self._auto_config_for_broker(broker_name),
                 guardrails=self.settings.guardrails,
             )
             decision = self.orchestrator.evaluate_recommendation(proposal, context, auto_execute=True)
+            longest_evaluation = max(longest_evaluation, time.monotonic() - candidate_started)
             print(
                 f"[auto-execution] broker={broker_filter} stage=recommendation_evaluated index={_candidate_index} "
                 f"decision={decision.decision} elapsed={time.monotonic() - _auto_exec_t0:.1f}s",

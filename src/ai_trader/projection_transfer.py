@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 
 MAX_BYTES = 2_000_000
-MAX_ENTRIES = 48
+MAX_ENTRIES = 256
+MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 def _cache(key, value=None):
@@ -37,6 +38,16 @@ def _cache(key, value=None):
                 c.execute('INSERT INTO entries VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,at=excluded.at',
                           (key, raw, time.time()))
                 c.execute('DELETE FROM entries WHERE id NOT IN (SELECT id FROM entries ORDER BY at DESC LIMIT ?)', (MAX_ENTRIES,))
+                # Symbol-specific analogue reads previously churned a 48-entry
+                # cache every research cycle. Keep more partitions, with a hard
+                # byte bound; these are disposable copies, never source evidence.
+                total = c.execute('SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM entries').fetchone()[0]
+                if total > MAX_TOTAL_BYTES:
+                    for old_id, size in c.execute('SELECT id,length(CAST(payload AS BLOB)) FROM entries ORDER BY at').fetchall():
+                        if total <= MAX_TOTAL_BYTES:
+                            break
+                        c.execute('DELETE FROM entries WHERE id=?', (old_id,))
+                        total -= size
     except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError):
         return {}
     return {}

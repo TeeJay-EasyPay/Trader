@@ -21,7 +21,7 @@ SUPPORTED = {'minimum_target_r', 'minimum_target_move_bps', 'replace_target_r_ga
 MAX_ROWS = 64
 MAX_ROW_BYTES = 8192
 MAX_TRIALS = 10
-MAX_CACHE_BYTES = 10 * 1024 * 1024
+MAX_CACHE_BYTES = 128 * 1024 * 1024
 
 
 def _same_bar(left, right):
@@ -200,29 +200,51 @@ def freeze_dataset(db, data):
     root.mkdir(parents=True, exist_ok=True)
     frozen = _semantic_frozen_dataset(data)
     version = frozen.get('dataset_version') or e.digest(frozen)
-    target = root / (version+'.json')
+    # Lossless archives retain every frozen dataset, including active evidence.
+    # Never evict an experiment's input merely to make the next trial fit.
+    import gzip
+    target = root / (version+'.json.gz')
     raw = e.dump(frozen).encode('utf-8')
+    legacy = root / (version+'.json')
+    if legacy.exists() and not target.exists():
+        existing = _semantic_frozen_dataset(json.loads(legacy.read_text(encoding='utf-8')))
+        if e.dump(existing).encode('utf-8') != raw:
+            raise ValueError('Cached historical dataset differs from its frozen version')
+        return version
     if target.exists():
         try:
-            existing = _semantic_frozen_dataset(json.loads(target.read_text(encoding='utf-8')))
+            existing = _semantic_frozen_dataset(json.loads(gzip.decompress(target.read_bytes())))
             existing_raw = e.dump(existing).encode('utf-8')
         except (OSError, ValueError, TypeError):
             existing_raw = target.read_bytes()
         if existing_raw != raw:
             raise ValueError('Cached historical dataset differs from its frozen version')
         return version
-    if sum(p.stat().st_size for p in root.glob('*.json')) + len(raw) > MAX_CACHE_BYTES:
+    compressed = gzip.compress(raw, mtime=0)
+    if sum(p.stat().st_size for p in root.iterdir() if p.is_file()) + len(compressed) > MAX_CACHE_BYTES:
         raise ValueError('Historical cache capacity reached; archive evidence before further screening')
     temp = None
     try:
         with tempfile.NamedTemporaryFile(dir=root, suffix='.tmp', delete=False) as handle:
             temp = Path(handle.name)
-            handle.write(raw)
+            handle.write(compressed)
         os.replace(temp, target)
     finally:
         if temp is not None and temp.exists():
             temp.unlink()
     return version
+
+
+def cache_usage(db):
+    root = Path(os.getenv('AI_TRADER_RESEARCH_CACHE_DIR') or (Path(db).parent / 'research-cache'))
+    try:
+        files = [p for p in root.iterdir() if p.is_file()] if root.exists() else []
+        size = sum(p.stat().st_size for p in files)
+        return dict(bytes=size, limit_bytes=MAX_CACHE_BYTES, datasets=len(files),
+                    status='attention_required' if size >= MAX_CACHE_BYTES * .8 else 'within_limit',
+                    retention='All frozen evidence retained; new datasets losslessly compressed. No automatic evidence deletion.')
+    except OSError:
+        return dict(status='unavailable')
 
 
 def replay(spec, signals, bars, *, cutoff, cost_multiplier=1):
@@ -334,10 +356,12 @@ def screen_batch(db, candidates, now, *, force=False):
         # Reserve before computation: restart/error cannot repeat the daily work.
         e.put_control(conn, 'historical_screening', dict(day=now[:10], status='reserved', trials=[]))
     try:
-        datasets, trials = {}, []
+        datasets, trials, dataset_errors = {}, [], {}
         for candidate in candidates:
             try:
                 spec = e.validate_spec(candidate)
+                if spec['broker'] in dataset_errors:
+                    raise ValueError(dataset_errors[spec['broker']])
                 if spec['broker'] not in datasets:
                     with e.transaction(db) as conn:
                         signals = recorded_signals(conn, spec['broker'], now)
@@ -363,23 +387,32 @@ def screen_batch(db, candidates, now, *, force=False):
                     with e.transaction(db) as conn:
                         loaded = dataset(conn, spec['broker'], now, provider['bars'])
                     loaded['provider_cache'] = {k:v for k,v in provider.items() if k != 'bars'}
-                    freeze_dataset(db, loaded)
+                    try:
+                        freeze_dataset(db, loaded)
+                    except ValueError as exc:
+                        dataset_errors[spec['broker']] = str(exc)
+                        raise
                     datasets[spec['broker']] = loaded
                 trial = screen(spec, datasets[spec['broker']], now)
                 trial.update(hypothesis=spec['hypothesis'], candidate_key=e.digest(candidate))
                 trial['cache_scope'] = 'Content-addressed research-host cache; persistence depends on the host volume.'
                 trials.append(trial)
             except (ValueError, TypeError, KeyError) as exc:
-                trials.append(dict(status='invalid', reason=str(exc)[:200], candidate_key=e.digest(candidate)))
-        result = dict(day=now[:10], at=now, status='completed', trials=trials,
+                trials.append(dict(status='invalid', reason=str(exc)[:200], candidate_key=e.digest(candidate),
+                                   broker=candidate.get('broker') if isinstance(candidate, dict) else None))
+        failed = sum(t['status'] == 'invalid' for t in trials)
+        batch_status = 'failed' if trials and failed == len(trials) else 'partial' if failed else 'completed'
+        result = dict(day=now[:10], at=now, status=batch_status, trials=trials,
                       max_shadow_history_characters=2*MAX_ROWS*MAX_ROW_BYTES,
                       scope=('Recorded and labelled point-in-time opportunity replay using a bounded '
                              'provider-to-Render daily-bar cache. No additional AI calls; bulk bars are not stored in Supabase.'))
     except Exception as exc:
         result = dict(day=now[:10], at=now, status='failed', trials=[], error_type=type(exc).__name__)
     with e.transaction(db) as conn:
+        result['cache'] = cache_usage(db)
         e.put_control(conn, 'historical_screening', result)
         e.put_control(conn, 'historical_screening_view', {k:result[k] for k in ('day','at','status')} | {
+            'cache': result['cache'],
             'trials':[{k:t.get(k) for k in ('hypothesis','broker','currency','status','reason','coverage','later')}
                       for t in result['trials']]})
         history = e.control(conn, 'historical_screening_history', [])

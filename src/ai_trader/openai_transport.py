@@ -64,7 +64,20 @@ def responses(request, *, category, timeout, opener):
         if category == 'crypto_review' and raw.get('status') == 'incomplete':
             raise budget.BudgetUnavailable('AI review stopped at its generation limit; candidate not approved.')
         return raw
-    except Exception:
+    except Exception as exc:
+        from .provider_errors import details
+        failure = details(exc)
+        # Persist only compact error codes. A successful scheduler return must
+        # not hide repeated provider failures behind a generic fallback.
+        if budget.enabled():
+            try:
+                from . import experiments as e
+                with e.transaction(budget.db_path()) as conn:
+                    e.put_control(conn, 'openai_failure:' + category,
+                                  {'at': e.now_iso(), 'model': model, **failure})
+            except Exception:
+                pass
+        exc.provider_failure = failure
         if receipt:
             try:
                 budget.settle(receipt)  # timeout/error may still have incurred a provider charge

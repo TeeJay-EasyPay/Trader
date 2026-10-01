@@ -131,8 +131,14 @@ def report():
         latest_day = sorted(day_map)[-1] if day_map else None
         daily_budget = int(os.getenv("AI_TRADER_DB_DAILY_VALUE_BUDGET_BYTES", DEFAULT_DAILY_ROW_VALUE_BUDGET))
         family_budget = int(os.getenv("AI_TRADER_DB_FAMILY_VALUE_BUDGET_BYTES", DEFAULT_FAMILY_ROW_VALUE_BUDGET))
+        # Compare each family's daily count with a DAILY budget, not the sum
+        # of the entire retained three-day report.
+        today_labels = defaultdict(Counter)
+        for hour,role,label,raw in rows:
+            if hour[:10] == latest_day:
+                today_labels[label].update(json.loads(raw))
         family_breaches = [dict(family=name, row_bytes=counts.get("row_bytes", 0))
-                           for name, counts in labels.items()
+                           for name, counts in today_labels.items()
                            if counts.get("row_bytes", 0) > family_budget]
         current_bytes = day_map.get(latest_day, {}).get("row_bytes", 0) if latest_day else 0
         return dict(metric="consumed_value_bytes_not_billed_egress",
