@@ -5,7 +5,7 @@ from pathlib import Path
 from .database import connect
 
 
-def learning_health_snapshot(db_path: Path, *, connection_factory=connect, placeholder="?") -> dict:
+def learning_health_snapshot(db_path: Path, *, connection_factory=connect, placeholder="?", cost_since=None) -> dict:
     """Grouped reads; no schema bootstrap, history payload export, or trading action."""
     if placeholder not in {"?", "%s"}:
         raise ValueError("Unsupported SQL placeholder")
@@ -52,7 +52,11 @@ def learning_health_snapshot(db_path: Path, *, connection_factory=connect, place
             SUM(CASE WHEN result_context_json LIKE {placeholder} THEN 1 ELSE 0 END) AS reporting_reviews
             FROM EXPERIENCE_RECORDS GROUP BY broker""",
             ('%"record_kind": "outcome_only"%', '%"record_kind": "reconciled_reporting_review"%')).fetchall()
+        # Explicit daily audit only: two/three aggregate rows, no per-trade export.
+        from .paper_cost_measurement import measure
+        paper_costs = measure(conn, since=cost_since, placeholder=placeholder)
     return {'brokers': brokers,
+            'alpaca_paper_cost_measurement': paper_costs,
             'coverage_population': 'brokers counts cover canonical terminal trades; all_run_stages also includes legacy learning runs',
             'all_run_stages': [{key: row[index] for index, key in enumerate(['broker','runs','experience_linked','review_recorded','review_experience_linked','insufficient_evidence','completed_missing_experience'])} for row in stages],
             'experience_coverage': [{'broker': row[0], 'records': row[1], 'outcome_only': row[2], 'reporting_reviews_not_canonical_closures': row[3]} for row in experiences],

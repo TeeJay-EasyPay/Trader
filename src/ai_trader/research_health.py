@@ -43,9 +43,16 @@ def snapshot(db, now=None):
             if str(attempt.get('status','')).endswith('failed'):
                 result['issues'].append('model_review_failed')
             fields = ','.join(json_field('report_json',[k]) + ' AS ' + k
-                              for k in ('observations','informative_completed','verdict'))
+                              for k in ('observations','informative_completed','verdict',
+                                        'decision_differences','both_skipped','closed_trades','blocker_counts',
+                                        'day_clusters','symbol_days'))
+            fields += ',' + ','.join(json_field('spec_json',[k]) + ' AS ' + k
+                for k in ('minimum_opportunities','minimum_independent_days','minimum_symbol_days'))
             rows = c.execute('SELECT id,' + fields + " FROM RULE_EXPERIMENTS WHERE status='shadow_running' LIMIT 10").fetchall()
             result['forward_experiments'] = [dict(r) for r in rows]
+            from .experiment_diagnostics import diagnose
+            for item in result['forward_experiments']:
+                item['diagnostic'] = diagnose(item)
             result['forward_evidence_note'] = 'Counts across experiments may share opportunities; do not add them as independent trades.'
     except Exception as exc:
         result['issues'].append('research_evidence_unavailable:' + type(exc).__name__)
@@ -57,7 +64,8 @@ def snapshot(db, now=None):
             if any(r['closed'] != r['verified_net'] for r in fees):
                 result['issues'].append('individual_net_outcomes_unverified')
             result['cost_limitation'] = ('Account-level fees without order/trade identity cannot be allocated as verified individual costs. '
-                                        'Estimated results remain provisional; unknown net is not zero.')
+                                        'Use the broker learning packet dated estimated results for provisional paper measurement. '
+                                        'Missing verified actual fees is not absence of all measurable outcomes; unknown actual net is not zero.')
     except Exception:
         result['issues'].append('trade_cost_coverage_unavailable')
     try:

@@ -54,6 +54,8 @@ def test_compact_packets_keep_brokers_currencies_and_legacy_cohorts_separate(tmp
           (2,'k-new','completed',11,21,'2026-09-23T12:30:00+00:00'),
           (3,'a-estimated','completed',12,22,'2026-09-23T12:45:00+00:00');
         """)
+        conn.execute("ALTER TABLE LOGICAL_TRADES ADD COLUMN side TEXT DEFAULT 'buy'")
+        conn.execute("ALTER TABLE LOGICAL_TRADES ADD COLUMN average_entry_price REAL")
     packet = broker_learning_packets(db)
     assert packet["brokers"]["alpaca"]["currency"] == "USD"
     assert packet["brokers"]["kraken"]["currency"] == "GBP"

@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .alpaca_costs import estimate_alpaca_round_trip_cost
+from .paper_cost_measurement import measure as measure_paper_costs
 from .database import connect, row_values, uses_postgres
 
-PACKET_SCHEMA_VERSION = 2
+PACKET_SCHEMA_VERSION = 3
 
 
 def broker_learning_packets(db_path: Path) -> dict[str, Any]:
@@ -134,42 +134,9 @@ def _alpaca_estimated_results(conn: Any) -> dict[str, Any]:
     ledger entries and not a replacement for broker-attributed actual costs.
     """
     try:
-        rows = conn.execute(
-            """SELECT t.logical_trade_id,t.gross_pnl,t.average_exit_price,
-                      t.exit_filled_quantity,t.closed_at
-               FROM LOGICAL_TRADES t
-               JOIN CLOSED_LOOP_LEARNING_RUNS l ON l.logical_trade_id=t.logical_trade_id
-               WHERE t.broker='alpaca' AND t.terminal=1 AND t.gross_pnl IS NOT NULL
-                 AND t.net_pnl IS NULL AND l.status='completed'
-                 AND l.experience_id IS NOT NULL AND l.review_id IS NOT NULL
-               ORDER BY t.closed_at DESC LIMIT 200"""
-        ).fetchall()
+        return measure_paper_costs(conn)
     except Exception:
         return {"status": "unavailable", "reason": "Per-trade estimate inputs are unavailable."}
-    estimates = []
-    for row in rows:
-        values = row_values(row)
-        try:
-            gross, exit_price, quantity = float(values[1]), float(values[2]), float(values[3])
-            cost = estimate_alpaca_round_trip_cost(
-                sell_notional=exit_price * quantity, quantity=quantity
-            )["estimated_round_trip_fee_usd"]
-        except (TypeError, ValueError, IndexError):
-            continue
-        estimates.append((gross, float(cost), gross-float(cost)))
-    return {
-        "status": "estimated_not_broker_attributed" if estimates else "inputs_incomplete",
-        "individual_results_estimated": len(estimates),
-        "wins": sum(net > 0 for _gross, _cost, net in estimates),
-        "losses": sum(net < 0 for _gross, _cost, net in estimates),
-        "gross_pnl": round(sum(gross for gross, _cost, _net in estimates), 6) if estimates else None,
-        "estimated_regulatory_costs": round(sum(cost for _gross, cost, _net in estimates), 6) if estimates else None,
-        "estimated_net_pnl": round(sum(net for _gross, _cost, net in estimates), 6) if estimates else None,
-        "currency": "USD", "actual_costs_known": False,
-        "cost_basis": "Alpaca published regulatory formula applied separately to each completed trade",
-        "excludes": ["account-level FEE allocation", "spread", "slippage"],
-        "learning_use": "provisional comparison only; never proof of an actual after-cost edge",
-    }
 
 
 def _simulation_evidence(conn: Any, broker: str, asset_class: str, currency: str) -> dict[str, Any]:

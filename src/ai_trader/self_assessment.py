@@ -132,7 +132,11 @@ QUESTION = (
     "per-broker after-cost outcomes and learning-loop coverage. Never combine Alpaca and Kraken, "
     "and never use legacy incomplete rows to claim that trading improved. A completed workflow "
     "is not an evidence-complete learning loop unless its individual net result is known. Label "
-    "Alpaca published-formula results as estimates, not broker-attributed actual costs. For "
+    "Alpaca published-formula results as estimates, not broker-attributed actual costs. "
+    "When verified net is missing, also report available estimated net, its dated cohort and "
+    "unmeasured count; do not describe missing actual fees as absence of all usable results. "
+    "Do not equate review completion with cost coverage, or closed-trade estimates with "
+    "cash-flow-adjusted portfolio profit. For "
     "simulations, distinguish an adapter that is configured from one that has settled production "
     "outcomes; do not claim the backlog is fixed merely because code exists."
 )

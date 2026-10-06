@@ -7,6 +7,10 @@ from ai_trader.config import load_dotenv
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--since', help='Timezone-aware start of closed-outcome comparison (not total account return)')
+    args = parser.parse_args()
     load_dotenv()
     # Use a dedicated read-only connection; never change application runtime settings.
     import psycopg
@@ -14,7 +18,8 @@ def main():
     def readonly_connect(_):
         return psycopg.connect(os.environ['AUDIT_DATABASE_URL'], connect_timeout=15,
                                options='-c default_transaction_read_only=on -c statement_timeout=20000')
-    print(json.dumps(learning_monitor.learning_health_snapshot(Path('.'), connection_factory=readonly_connect, placeholder='%s'), default=str))
+    print(json.dumps(learning_monitor.learning_health_snapshot(Path('.'), connection_factory=readonly_connect,
+        placeholder='%s', cost_since=args.since), default=str))
 
 
 if __name__ == '__main__':
