@@ -13,18 +13,59 @@ def snapshot(asset_type, *, candidate=False, topics=None):
     for item in chosen:
         metadata=item.get('metadata',{})
         review_due=metadata.get('review_due')
-        if candidate and (not review_due or str(review_due)<e.now_iso()[:10]):
+        if candidate and metadata.get('reference_kind') != 'general_guidance' and (not review_due or str(review_due)<e.now_iso()[:10]):
             raise ValueError('Candidate reference review is missing or overdue')
         body=item['excerpt']
         text=select_passage(item,topics)['selected_passage']
         passages.append(dict(document=Path(item['file_path']).name,title=item['title'],
             document_hash=e.digest(body),passage_hash=e.digest(text),text=text,metadata=metadata,
-            freshness='review_current_not_account_fee_verification' if review_due else 'unknown'))
+            freshness=('general_guidance_maintenance_due' if not review_due or str(review_due)<e.now_iso()[:10]
+                       else 'general_guidance_review_current') if metadata.get('reference_kind')=='general_guidance'
+                       else 'review_current_not_account_fee_verification' if review_due else 'unknown'))
     if not passages:
         raise ValueError('Reference set unavailable')
     result=dict(asset_type=asset_type,passages=passages,scope='shadow_candidate' if candidate else 'baseline',
         limitation='Supplied text is not proof of application or an edge.')
     return dict(result,version=e.digest(result))
+
+
+def review_snapshot(asset_type, *, now):
+    """Capture explanatory guidance, NOT replacement experiment decision evidence."""
+    passages = []
+    failure = None
+    try:
+        for item in relevant_excerpts(asset_type=asset_type, topics=['experiment_design'], limit=3,
+                                     index=load_knowledge_index(KNOWLEDGE_DIR / 'candidates')):
+            passages.append(dict(document=Path(item['file_path']).name, title=item['title'],
+                document_hash=e.digest(item['excerpt']), text=select_passage(item,['experiment_design'])['selected_passage'],
+                metadata=item.get('metadata', {})))
+    except (OSError, ValueError, KeyError, TypeError):
+        # An optional local note must not prevent saving deterministic results.
+        passages = []
+        failure = 'reference_capture_unavailable'
+    result = dict(captured_at=now, scope='explanation_only_not_original_decision_evidence', passages=passages)
+    if failure or not passages:
+        result['capture_warning'] = failure or 'no_explanatory_references'
+    return dict(result, version=e.digest(result))
+
+
+def review_context(frozen, *, start, end, now):
+    from .reference_policy import eligibility
+    usable, excluded, warnings = [], [], []
+    if frozen.get('capture_warning'):
+        warnings.append({'document':None, 'reason':frozen['capture_warning']})
+    for passage in frozen.get('passages', []):
+        state = eligibility(passage.get('metadata', {}), start=start, end=end, reviewed_at=now)
+        identity = {k:passage.get(k) for k in ('document','title','document_hash')}
+        if state['warning']:
+            warnings.append({**identity, 'reason':state['warning']})
+        if state['usable']:
+            usable.append({**identity, 'text':passage['text'], 'basis':state['basis']})
+        else:
+            excluded.append({**identity, 'reason':state['basis']})
+    return dict(version=frozen.get('version'), captured_at=frozen.get('captured_at'),
+        scope=frozen.get('scope'), passages=usable, excluded=excluded, warnings=warnings,
+        limitation='Explanation only; original experiment rules and cost evidence remain unchanged.')
 
 
 def pair(db, eid, opportunity, settings, *, answer=None, now=None):

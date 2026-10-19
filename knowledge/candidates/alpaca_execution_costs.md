@@ -5,6 +5,7 @@ applies_to: [stock]
 sectors: []
 version: 2026-09-11
 status: shadow_only
+reference_kind: mixed
 accessed_at: 2026-09-11
 review_due: 2026-10-11
 publication_date: unknown

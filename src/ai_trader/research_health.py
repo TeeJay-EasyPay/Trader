@@ -40,6 +40,17 @@ def snapshot(db, now=None):
                 result['issues'].append('forward_worker_' + str(tick.get('status')))
             attempt = e.control(c, 'proposal_attempt', {})
             result['model_review'] = {k:attempt.get(k) for k in ('day','status','failure')}
+            result['model_review']['last_success'] = e.control(c, 'review_last_success', {})
+            result['model_review']['backlog'] = e.control(c, 'review_backlog_view', {})
+            # Use already-stored provenance; no reference download or market query.
+            sets = attempt.get('reference_provenance', {}).get('sets', {})
+            result['model_review']['reference_warnings'] = [
+                {'document':w.get('document'), 'reason':w.get('reason')}
+                for ref in sets.values() for w in ref.get('warnings', [])][:10]
+            if result['model_review']['reference_warnings']:
+                result['issues'].append('reference_maintenance_due')
+            if result['model_review']['backlog'].get('unresolved'):
+                result['issues'].append('review_backlog_requires_attention')
             if str(attempt.get('status','')).endswith('failed'):
                 result['issues'].append('model_review_failed')
             fields = ','.join(json_field('report_json',[k]) + ' AS ' + k

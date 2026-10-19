@@ -5,13 +5,15 @@ from test_experiments import db, op
 from ai_trader import experiments as e
 from ai_trader.reference_sets import snapshot, pair
 
-def test_candidates_do_not_replace_live_library():
+def test_candidates_do_not_replace_live_library(monkeypatch):
+    monkeypatch.setattr(e,'now_iso',lambda:'2026-09-12T00:00:00+00:00')
     a=snapshot('stock');b=snapshot('stock',candidate=True,topics=['costs'])
     assert a['version']!=b['version']
     assert all(len(p['text'])<=1200 for p in b['passages'])
     assert any('cost' in p['title'].lower() for p in b['passages'])
 
-def test_reference_pair_requires_budget_and_preserves_safety(db):
+def test_reference_pair_requires_budget_and_preserves_safety(db, monkeypatch):
+    monkeypatch.setattr(e,'now_iso',lambda:'2026-09-12T00:00:00+00:00')
     row=e.create_experiment(db,dict(rule_type='reference_set_filter',hypothesis='Compare revised reference material against existing guidance.',evidence_ids=[1]),now='2026-09-01T00:00:00+00:00')
     calls=[]
     def answer(q,c):

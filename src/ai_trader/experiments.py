@@ -266,6 +266,10 @@ def create_experiment(db, raw, *, owner='founder', now=None, queue=False):
             raise ValueError('Future evidence is not allowed')
         spec['evidence'] = [dict(r) for r in evidence]
         spec['frozen_at'] = now
+        # Explanatory provenance is frozen for new experiments only. Existing
+        # versions are never rewritten when library maintenance dates change.
+        from .reference_sets import review_snapshot
+        spec['explanation_references'] = review_snapshot('crypto' if spec['broker']=='kraken' else 'stock', now=now)
         spec['baseline_deployment'] = os.getenv('RENDER_GIT_COMMIT', 'unverified')
         spec['baseline_fingerprint'] = baseline_fingerprint()
         spec['sampling'] = 'First 20 distinct symbol-days, chronologically; rejected baseline decisions retained'

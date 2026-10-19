@@ -207,11 +207,15 @@ def _simulation_evidence(conn: Any, broker: str, asset_class: str, currency: str
         "modern_forward_experiments": active, "modern_forward_observations": observations,
         "modern_both_skipped": both_skipped, "modern_informative_completed": informative,
         "modern_observation_definition": "recorded paired-simulation opportunities",
+        "modern_count_scope": "summed experiment-opportunity rows, not unique independent market opportunities",
+        "eligible_for_per_experiment_threshold_comparison": False,
         "production_proof": proof,
         "plain_english": (
             "Old unrecoverable rows remain excluded. New simulations use the broker-specific adapter; "
             "the proof field distinguishes configured code from measured outcomes. Standalone settled "
             "simulations are not paired comparisons. Both-skipped opportunities provide no trading "
-            "comparison; only completed non-uncertain pairs with at least one closed arm are informative."
+            "comparison; only completed non-uncertain pairs with at least one closed arm are informative. "
+            "Counts across experiments can overlap: never compare their sum with one experiment's "
+            "acceptance threshold or treat it as an independent sample. Check each frozen experiment separately."
         ),
     }

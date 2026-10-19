@@ -29,6 +29,9 @@ def test_compact_review_keeps_numbers_unknowns_and_envelope_identity():
 
 
 def test_compact_batch_reaches_one_call_without_changing_experiments(db, monkeypatch):
+    from ai_trader import reference_sets
+    # Expiry never prevents general methodology from explaining stored results.
+    monkeypatch.setattr(e, 'now_iso', lambda: '2030-01-01T00:00:00+00:00')
     rows = variants(db, 2)
     a.start_queued(db, '2026-09-01T00:00:00+00:00')
     for row in rows:
@@ -41,6 +44,8 @@ def test_compact_batch_reaches_one_call_without_changing_experiments(db, monkeyp
     calls = []
     def answer(q, context):
         calls.append(context)
+        assert context['methodology']['scope'] == 'explanation_only'
+        assert context['methodology']['sets']
         assert '120 words' in q and 'estimated simulation costs' in q
         return json.dumps({'reviews': [dict(id=r['id'], version=r['version'], summary='Insufficient evidence; continue observing.') for r in context['reviews']]})
     policy = {**e.DEFAULT_POLICY, 'model_enabled': True}
@@ -186,3 +191,57 @@ def test_schedule_migration_keeps_existing_evidence_and_books(db):
     assert updated['state']['next_review_at']=='2026-09-04T00:00:00+00:00'
     module.migrate_schedule(db,'2026-09-03T00:00:00+00:00')
     assert len([event for event in e.detail(db,row['id'])['events'] if event['action']=='review_schedule_migrated'])==1
+
+
+def test_review_uses_frozen_guidance_and_restart_does_not_repeat(db, monkeypatch):
+    from ai_trader import reference_sets
+    row=create(db)
+    original=e.detail(db,row['id'])['spec']['explanation_references']['version']
+    def must_not_reload(*args, **kwargs):
+        raise AssertionError('Frozen experiment must not reload mutable notes')
+    monkeypatch.setattr(reference_sets,'review_snapshot',must_not_reload)
+    e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
+    calls=[]
+    def answer(q,context):
+        calls.append(context)
+        assert context['reviews'][0]['explanation_reference_version']==original
+        return json.dumps({'reviews':[dict(id=r['id'],version=r['version'],summary='Evidence remains insufficient.') for r in context['reviews']]})
+    policy={**e.DEFAULT_POLICY,'model_enabled':True}
+    grouped_review(db,None,'2026-09-04T02:00:00+00:00',policy,answer)
+    grouped_review(db,None,'2026-09-05T02:00:00+00:00',policy,answer)
+    assert len(calls)==1
+    with e.transaction(db) as c:
+        assert e.control(c,'review_last_success')['review_count']==1
+    assert e.detail(db,row['id'])['version']==row['version']
+
+
+def test_exhausted_reviews_are_visible_without_extra_paid_attempt(db):
+    row=create(db)
+    e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
+    with e.transaction(db) as c:
+        event=c.execute("SELECT id FROM EXPERIMENT_EVENTS WHERE action='weekly_review'").fetchone()
+        e.put_control(c,'interpreted:'+event['id'],{'status':'unavailable','attempts':3,'day':'2026-09-04'})
+    def forbidden(*args):raise AssertionError('No fourth paid attempt')
+    assert not grouped_review(db,None,'2026-09-05T02:00:00+00:00',{**e.DEFAULT_POLICY,'model_enabled':True},forbidden)
+    with e.transaction(db) as c:
+        assert e.control(c,'review_backlog_view')['unresolved'][0]['id']==event['id']
+
+
+def test_bounded_scan_reaches_older_missed_review(db):
+    row=create(db)
+    with e.transaction(db) as c:
+        for n in range(11):
+            eid=f'review-{n:02d}'
+            c.execute('INSERT INTO EXPERIMENT_EVENTS VALUES (?,?,?,?,?,?,?,?)',
+                (eid,row['id'],row['owner'],f'2026-09-{n+1:02d}', 'weekly_review',row['version'],
+                 e.dump({'cycle':n+1,'currency':'USD'}),eid))
+            if n:
+                e.put_control(c,'interpreted:'+eid,{'status':'completed','day':'2026-09-12'})
+    calls=[]
+    def answer(q,context):
+        calls.append(context)
+        return json.dumps({'reviews':[dict(id=r['id'],version=r['version'],summary='Not enough evidence.') for r in context['reviews']]})
+    policy={**e.DEFAULT_POLICY,'model_enabled':True}
+    assert not grouped_review(db,None,'2026-09-13T02:00:00+00:00',policy,answer)
+    assert grouped_review(db,None,'2026-09-13T03:00:00+00:00',policy,answer)
+    assert len(calls)==1 and calls[0]['reviews'][0]['id']=='review-00'

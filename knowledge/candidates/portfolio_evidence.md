@@ -5,6 +5,7 @@ applies_to: [stock, crypto]
 sectors: []
 version: 2026-09-11
 status: shadow_only
+reference_kind: general_guidance
 accessed_at: 2026-09-11
 review_due: 2026-10-11
 publication_date: unknown
