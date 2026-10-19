@@ -245,3 +245,39 @@ def test_bounded_scan_reaches_older_missed_review(db):
     assert not grouped_review(db,None,'2026-09-13T02:00:00+00:00',policy,answer)
     assert grouped_review(db,None,'2026-09-13T03:00:00+00:00',policy,answer)
     assert len(calls)==1 and calls[0]['reviews'][0]['id']=='review-00'
+
+
+@pytest.mark.parametrize('succeed',[True,False])
+def test_authorised_retrospective_recovery_is_once_only_and_keeps_evidence(db,succeed):
+    row=create(db)
+    e.settle_bars(db,row['id'],[],now='2026-09-04T01:00:00+00:00')
+    before=e.detail(db,row['id'])
+    with e.transaction(db) as c:
+        event=dict(c.execute("SELECT * FROM EXPERIMENT_EVENTS WHERE action='weekly_review'").fetchone())
+        failed={'status':'unavailable','attempts':3,'day':'2026-09-04','failure':{'error_type':'ValueError'}}
+        e.put_control(c,'interpreted:'+event['id'],failed)
+        e.put_control(c,'review_recovery_authorisation',{'id':'owner-approved','review_ids':[event['id']]})
+        e.put_control(c,'proposal_attempt',{'day':'2026-09-05','status':'already_used'})
+    calls=[]
+    def answer(q,context):
+        calls.append(context)
+        assert context['reviews'][0]['interpretation_timing']=='retrospective'
+        return json.dumps({'reviews':[dict(id=r['id'],version=r['version'],summary='Insufficient evidence for adoption.') for r in context['reviews']] if succeed else []})
+    policy={**e.DEFAULT_POLICY,'model_enabled':True}
+    for day in (5,6,6,7,8):
+        grouped_review(db,None,f'2026-09-{day:02d}T02:00:00+00:00',policy,answer)
+    assert len(calls)==1
+    with e.transaction(db) as c:
+        receipt=e.control(c,'interpreted:'+event['id'])
+        assert receipt['attempts']==4
+        assert receipt['recovery_authorisation']=='owner-approved'
+        assert e.control(c,'review_recovery_history:'+event['id'])==failed
+        assert dict(c.execute('SELECT * FROM EXPERIMENT_EVENTS WHERE id=?',(event['id'],)).fetchone())==event
+        if succeed:
+            assert receipt['interpretation_timing']=='retrospective'
+            finding=json.loads(c.execute("SELECT payload_json FROM LEARNING_FINDINGS WHERE source_type='experiment_review' ORDER BY recorded_at DESC LIMIT 1").fetchone()['payload_json'])
+            assert finding['interpreted_at']=='2026-09-06T02:00:00+00:00'
+            assert finding['reviewed_at']=='2026-09-04T01:00:00+00:00'
+    after=e.detail(db,row['id'])
+    for field in ('version','state','report','status'):
+        assert before[field]==after[field]
